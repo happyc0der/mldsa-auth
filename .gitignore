@@ -1,0 +1,9 @@
+build/
+build-*/
+compile_commands.json
+.cache/
+
+# liboqs (FetchContent) and libsodium (ExternalProject) sources/builds are
+# fetched into build/_deps and $TMPDIR respectively -- never into the repo
+# tree itself, so no separate ignore entries are needed for them (see
+# cmake/Dependencies.cmake).
