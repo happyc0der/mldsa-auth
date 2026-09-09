@@ -1,8 +1,10 @@
 # mldsa-auth
 
 ML-DSA-65 mutual-authentication handshake + X25519/HKDF/ChaCha20-Poly1305
-encrypted session protocol. See [../ml-dsa-auth-protocol-spec.md](../ml-dsa-auth-protocol-spec.md)
-for the full engineering spec.
+encrypted session protocol. See
+[docs/ml-dsa-auth-protocol-spec.md](docs/ml-dsa-auth-protocol-spec.md)
+for the full engineering spec — the canonical, versioned copy lives in this
+repository, alongside the implementation it specifies.
 
 Status: **Step 3 (Wire format) complete.** Build instructions, demo usage,
 exact dependency versions, and the protocol's security scope will be

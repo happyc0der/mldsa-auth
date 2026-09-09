@@ -1,7 +1,7 @@
 # Protocol Decisions (through Step 3)
 
 This is a running log of decisions made while implementing
-[../../ml-dsa-auth-protocol-spec.md](../../ml-dsa-auth-protocol-spec.md), for
+[ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
 anything the spec left underspecified or that required resolving an
 ambiguity. The spec itself (Section 6.3 onward) is the normative source for
 wire format and protocol behavior; this file explains *why* those choices
@@ -53,7 +53,7 @@ acceptance. An earlier draft used a raw, caller-supplied
 `ClientAuth.session_id` field instead; that was rejected specifically
 because it would have been an unauthenticated routing value with no
 cryptographic relationship to the handshake it claimed to identify. See
-[../../ml-dsa-auth-protocol-spec.md](../../ml-dsa-auth-protocol-spec.md)
+[ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md)
 Section 6.3.3 for the normative definition.
 
 ## Network framing and cross-message acceptance: deferred to Step 4
