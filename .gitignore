@@ -10,3 +10,10 @@ compile_commands.json
 
 # Step 6 demo identities (never commit key material)
 demo-data/
+
+# libFuzzer default artifact names (if a run omits -artifact_prefix)
+crash-*
+leak-*
+timeout-*
+oom-*
+slow-unit-*

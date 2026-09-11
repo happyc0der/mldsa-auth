@@ -26,6 +26,32 @@ if(ENABLE_UBSAN)
   list(APPEND MLDSA_SANITIZE_FLAGS -fsanitize=undefined)
 endif()
 
+# --- libFuzzer build (Step 7; separate build directory only) --------------
+# Coverage-guided fuzz targets need a clang that ships the libFuzzer runtime
+# (Apple Clang does not). Configure a SEPARATE build dir, e.g.
+#   cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang -DMLDSA_FUZZ=ON
+# The project's own libraries are then coverage-instrumented
+# (fuzzer-no-link) and built with ASan + UBSan; the fuzz executables link
+# the libFuzzer runtime (tests/fuzz/CMakeLists.txt).
+option(MLDSA_FUZZ "Build libFuzzer targets (requires a libFuzzer-capable clang)" OFF)
+if(MLDSA_FUZZ)
+  include(CheckCSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+  set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=fuzzer")
+  check_c_source_compiles(
+    "#include <stddef.h>\n#include <stdint.h>\nint LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) { (void)d; (void)n; return 0; }\n"
+    MLDSA_HAVE_LIBFUZZER)
+  unset(CMAKE_REQUIRED_FLAGS)
+  unset(CMAKE_REQUIRED_LINK_OPTIONS)
+  if(NOT MLDSA_HAVE_LIBFUZZER)
+    message(FATAL_ERROR
+      "MLDSA_FUZZ=ON requires a compiler with the libFuzzer runtime (-fsanitize=fuzzer must compile AND link). "
+      "Apple Clang does not ship it; configure a separate build dir with e.g. "
+      "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang")
+  endif()
+  list(APPEND MLDSA_SANITIZE_FLAGS -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined)
+endif()
+
 # --- Build hardening (Security Requirement 4.8) ---------------------------
 # Applied to this project's own targets only (src/, apps/, tests/) via
 # MLDSA_HARDENING_FLAGS/MLDSA_HARDENING_DEFS below — NOT injected globally
@@ -47,7 +73,7 @@ set(MLDSA_HARDENING_FLAGS
 # compiler's own definition under -Werror,-Wmacro-redefined. Verified with a
 # real -DENABLE_ASAN=ON build, not assumed.
 set(MLDSA_HARDENING_DEFS "")
-if(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN)
+if(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN AND NOT MLDSA_FUZZ)
   list(APPEND MLDSA_HARDENING_DEFS _FORTIFY_SOURCE=2)
 endif()
 

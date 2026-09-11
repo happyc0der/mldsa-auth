@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 6)
+# Protocol Decisions (through Step 7)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -370,3 +370,115 @@ with the EINTR storm test's `setitimer`.
 - **T2 timeouts.** T2's fragmentation run needs about 2.8 s, because
   roughly 7 KB of handshake crosses the proxy one byte at a time. It
   therefore uses a 15 s handshake timeout instead of the 2 s test default.
+
+---
+
+## Step 7 — fuzzing and adversarial robustness
+
+### Toolchain: Homebrew LLVM, in a separate build directory only
+
+Apple Clang ships no libFuzzer runtime (`libclang_rt.fuzzer_osx.a`), so
+`-fsanitize=fuzzer` compiles but cannot link. Coverage-guided fuzzing uses
+Homebrew's keg-only LLVM (clang 23.1.1), which is not on `PATH`, and only in
+`build-fuzz` (`-DMLDSA_FUZZ=ON`). The normal, ASan and UBSan builds keep
+Apple Clang.
+
+`MLDSA_FUZZ=ON` checks that `-fsanitize=fuzzer` compiles and links, and
+refuses to configure otherwise. Where libFuzzer isn't built, the CTest
+`fuzz_libfuzzer` test reports *Skipped*, never passed.
+
+### One harness, two drivers
+
+Each target is linked twice:
+- with libFuzzer, as `fuzz_<t>`;
+- with a portable driver, as `fuzz_<t>_replay`. This one is built in every
+  configuration and runs in CTest: the empty input, seeds, committed
+  regressions, and a fixed-seed mutation smoke.
+
+The replay smoke is a fallback, not coverage-guided, and says so in its
+output.
+
+### Deterministic RNG, test only
+
+The fuzz binaries install a fixed-key ChaCha20 stream through the public
+hooks `randombytes_set_implementation` and
+`OQS_randombytes_custom_algorithm`. Keys, nonces, signatures and
+`handshake_id` are then identical on every run, so seeds stay valid,
+crashes reproduce exactly, and oracles compare against genuine bytes
+regenerated at runtime.
+
+The hooks appear only under `tests/fuzz/`, and each binary prints a
+test-only banner. Nothing in `src/` or `apps/` changed.
+
+### Oracles are reference models, not "didn't crash"
+
+Each harness predicts the correct outcome independently and aborts on any
+disagreement:
+- **F1:** canonical round trip and full consumption. Transcript digests are
+  compared with `crypto_hash_sha256` built from literal labels. There is
+  deliberately no pairwise digest-inequality check, because equal SHA-256
+  outputs would be a collision, not a bug.
+- **F2 and F3:** exact status, state, ledger and key behavior.
+- **F4:** a reference stream parser. A rejected length must consume exactly
+  the 4 header bytes.
+- **F5:** a structural file model.
+
+"OK only for the genuine bytes" (F2, F3) rests on ML-DSA and AEAD
+unforgeability. A violation would mean a parser non-canonicality, a
+verification bypass, or a cryptographic break.
+
+Two white-box fixture steps are used:
+- **F3** clones a freshly initialized `session_t`; the clone is checked
+  against the real session at start-up.
+- **F4** wraps a socketpair end in a `net_conn_t`.
+
+### Secret policy and identity-mode programs
+
+No ML-DSA secret key bytes, including the deterministic fixture keys, are
+committed anywhere:
+- **Seeds** are generated at runtime into ignored build directories.
+- **Identity-mode inputs are mutation programs.** `fuzz_keys` applies them
+  to a template it regenerates in memory from the fixed RNG, so a stored
+  input never contains the key.
+- **Admission gate:** `fuzz_keys_replay --scan-secret` checks every file
+  for a secret-key file layout, or any 16-byte window of the fixture secret
+  key. It runs in CTest (`fuzz_no_committed_secrets`) and in
+  `add_regression.sh`, for every target.
+
+### Corrections to the plan found while implementing
+
+- **F5 identity oracle.** The plan's "OK iff the key regions equal the
+  template" is unsound: mutating secret-key fields that do not affect
+  validity (the signing seed K, for example) legitimately still loads. The
+  oracle is now:
+  - the unmodified template must load;
+  - OK means exactly the file's key bytes were loaded;
+  - structural failures match the model exactly.
+- **Template length.** The identity template is 5 998 bytes
+  (8 + 1 + 5 + 1952 + 4032), not 6 002 as the plan said.
+
+### OPEN finding: the demo loader accepts a corrupted t0 component
+
+Found by the `fuzz_keys` smoke on its first run, and committed as
+`tests/fuzz/regressions/keys/t0-corruption-accepted-*`, a 9-byte
+instruction program.
+
+`demo_keys_load_identity` checks consistency with a single sign/verify.
+Three bytes overwritten in the secret key's t0 component (offset 2642)
+behave as follows:
+
+| Measurement (20 keys × 200 messages) | Result |
+|---|---|
+| Keys that passed the loader's self-test | 15 of 20 (75%) |
+| Signatures that then failed to verify | 1 284 of 4 000 (32%) |
+
+t0 only feeds the signing hint, so a damaged t0 breaks some signatures and
+not others. This is fail-closed, because peers reject the bad signatures,
+but the corruption goes undetected and shows up as intermittent handshake
+failures.
+
+The fix belongs in `apps/demo_keys.c`, which is outside Step 7 scope, so it
+is deferred. Proposed fix: add an integrity digest to the demo key format
+(SHA-256 over magic ‖ id ‖ pk ‖ sk, checked on load; a format version
+bump), plus a deterministic T14 test with a t0-corrupted key. Until then
+the F5 oracle asserts only the loader's documented contract.

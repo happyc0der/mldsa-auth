@@ -401,6 +401,14 @@ Execute in order. Do not proceed to the next step until the current one's exit c
 **Step 7 — Adversarial testing + fuzzing.** Fuzz harness on the wire-format parser.
 *Exit criteria: 10 minutes of libFuzzer/AFL++ with zero crashes.*
 
+> **How Step 7 meets this.** Five libFuzzer targets cover every attacker-controlled input: the handshake wire decoders and transcript helpers, the handshake state machine, `session_open`, the reference frame reader, and the demo key-file loaders.
+> - The libFuzzer binaries are built in a separate `build-fuzz` directory with a libFuzzer-capable clang, under AddressSanitizer and UndefinedBehaviorSanitizer.
+> - Each runs 600 seconds locally (`tests/fuzz/run_fuzz.sh local`) and must end with zero crashes and no artifacts.
+> - Every configuration also runs a portable, deterministic (not coverage-guided) replay smoke in CTest.
+> - Harnesses assert properties against independent reference models, not just the absence of crashes.
+>
+> A fuzzing run is not a proof of correctness. `tests/fuzz/README.md` lists the properties that remain covered only by deterministic tests.
+
 **Step 8 — Benchmarking.** Measure handshake latency (per-primitive and end-to-end) and throughput at 64 B / 1 KB / 64 KB.
 *Exit criteria: results committed to `bench/results.md` with real measured numbers; any miss against the 15 ms target is explained with a profiling breakdown.*
 

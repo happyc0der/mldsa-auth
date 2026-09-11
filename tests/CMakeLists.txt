@@ -100,3 +100,6 @@ add_test(NAME session_no_alloc_scan
     -DSESSION_C=${PROJECT_SOURCE_DIR}/src/protocol/session.c
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_session_no_alloc.cmake
 )
+
+# Step 7 fuzz targets (portable replay driver + libFuzzer binaries)
+add_subdirectory(fuzz)

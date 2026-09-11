@@ -6,13 +6,16 @@ encrypted session protocol. See
 for the full engineering spec — the canonical, versioned copy lives in this
 repository, alongside the implementation it specifies.
 
-Status: **Step 6 (Reference TCP client/server) complete** — wire format
-(Step 3), handshake state machine (Step 4), authenticated ChaCha20-Poly1305
-record layer (Step 5), and a loopback reference transport with demo
-client/server apps (Step 6). Full build instructions, exact dependency
-versions, and the protocol's security scope will be filled in at Step 9
-per the spec. See [docs/decisions.md](docs/decisions.md) for the protocol
-decisions made through Step 6.
+Status: **Step 7 (Fuzzing and adversarial robustness) complete** — wire
+format (Step 3), handshake state machine (Step 4), authenticated
+ChaCha20-Poly1305 record layer (Step 5), loopback reference transport with
+demo client/server apps (Step 6), and libFuzzer targets plus a portable
+deterministic fuzz smoke for every attacker-controlled input (Step 7; see
+[tests/fuzz/README.md](tests/fuzz/README.md)). One open Step 6 finding from
+fuzzing (demo key loader accepts a corrupted secret-key t0 component) is
+recorded in [docs/decisions.md](docs/decisions.md). Full build
+instructions, exact dependency versions, and the protocol's security scope
+will be filled in at Step 9 per the spec.
 
 ## Demo (reference apps, loopback only)
 

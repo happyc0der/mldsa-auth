@@ -1,0 +1,109 @@
+# Fuzzing and adversarial robustness (Step 7)
+
+Five targets cover every attacker-controlled input:
+
+| Target | Code under test | Input |
+|---|---|---|
+| `fuzz_wire` | Step 3 decoders, transcript helpers | one candidate wire message |
+| `fuzz_handshake` | Step 4 state machine (S0 ClientHello, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
+| `fuzz_session` | Step 5 `session_open` on a valid session | selector (receiver, capacity, limits, clock) + up to 8 records with 4-byte length prefixes |
+| `fuzz_frame` | Step 6 `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
+| `fuzz_keys` | Step 6 demo key-file loaders | selector (mode, expected id) + public-key file bytes or an identity-mode mutation program |
+
+Each harness checks **properties, not just crashes**. An independent
+reference model predicts the correct status, and any disagreement aborts,
+even without a crash.
+
+## Two drivers
+
+- **`fuzz_<t>_replay`** is built in every configuration, with any compiler.
+  CTest `fuzz_replay_<t>` runs, in the normal, ASan and UBSan builds:
+  1. the empty input (passed as NULL with length 0);
+  2. every seed;
+  3. every committed regression;
+  4. a fixed number of deterministic mutations.
+
+  This is the **fallback**. It is **not coverage-guided**.
+  - `fuzz_<t>_replay FILE...` reproduces inputs, with extra logging.
+  - `--write-seeds DIR` writes the corpus seeds into a build directory.
+- **`fuzz_<t>`** is the coverage-guided libFuzzer binary. It is built only with
+  `-DMLDSA_FUZZ=ON` and a clang that ships the libFuzzer runtime; Apple Clang
+  does not. Everywhere else CTest `fuzz_libfuzzer` reports **Skipped**.
+
+```sh
+brew install llvm            # keg-only: does not replace Apple Clang
+cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang -DMLDSA_FUZZ=ON
+cmake --build build-fuzz -j
+ctest --test-dir build-fuzz -L fuzz --output-on-failure   # 30 s libFuzzer smoke per target
+tests/fuzz/run_fuzz.sh smoke build-fuzz                   # 60 s per target
+tests/fuzz/run_fuzz.sh local build-fuzz                   # 600 s per target (spec §8 Step 7)
+```
+
+**Budgets:**
+- CI smoke: F1 20 000, F2 300, F3 5 000, F4 5 000, F5 2 000 mutations (seconds in total).
+- libFuzzer smoke: 30–60 s per target.
+- Local run: 600 s per target, in parallel.
+
+## Deterministic RNG (test only)
+
+`fuzz_common.c` replaces libsodium's and liboqs's randomness with a
+fixed-key ChaCha20 stream, through `randombytes_set_implementation` and
+`OQS_randombytes_custom_algorithm`.
+
+- **What it buys:** keys, nonces, signatures and `handshake_id` are identical on every run, so seeds stay valid, crashes reproduce, and oracles compare against genuine bytes regenerated at runtime.
+- **Where it lives:** it is linked **only** into the fuzz executables, and each prints `DETERMINISTIC RNG - TEST ONLY` on start-up.
+
+## Repository secret policy
+
+> No ML-DSA secret key bytes, including deterministic fixture/test secret
+> keys, are committed to corpus, regression, dictionary, artifact, or source
+> files.
+
+- **Seeds** are generated at runtime into ignored build directories; none are committed.
+- **Identity mode never stores file bytes.** `fuzz_keys` identity-mode inputs are *mutation programs*, applied to a template the harness regenerates in memory from the fixed test RNG.
+- **CTest `fuzz_no_committed_secrets`** scans `regressions/` and `dict/` with `fuzz_keys_replay --scan-secret-dirs`. The scan fails on any ML-DSA secret-key file layout, or any 16-byte window of the fixture secret key. Bare `"MLDSASK1"` tokens in text are reported as "token only" and allowed.
+
+### Identity-mode mutation grammar (`fuzz_keys`, selector bit 0 = 1)
+
+```
+program := count ops*      count = payload[0] % 9; empty payload = 0 ops
+op      := opcode operands opcode = byte % 8; stops early when bytes run out
+0 TRUNCATE  off16          L = off16 % (L+1)
+1 SET_BYTE  off16 v8       buf[off16 % L] = v8           (no-op if L == 0)
+2 FLIP_BIT  off16 b8       buf[off16 % L] ^= 1 << (b8 & 7)
+3 OVERWRITE off16 n8 lit   n = n8 % 33, clipped; write at off16 % (L+1)
+4 DUPLICATE src16 n16      append buf[src16 % L ..] (n16 % 257 bytes, clipped)
+5 APPEND    n8 lit         n = n8 % 33, clipped; append
+6 MAGIC     m8             first 8 bytes := {MLDSASK1, MLDSAPK1, MLDSASK0, 0x00*8}[m8 % 4]
+7 ID_LEN    v8             buf[8] = v8 when L > 8
+```
+
+The capacity is 8192 bytes and the template is 5998 bytes. Every byte string is a valid, bounded program.
+
+## Crash-reproducer workflow
+
+A crash counts as **fixed only when all of these hold:**
+1. **Minimize it:** `build-fuzz/tests/fuzz/fuzz_<t> -minimize_crash=1 -runs=10000 <artifact>`. The replay driver also saves oracle failures as `crash-<t>-replay-*` in its working directory.
+2. **Admit it:** `tests/fuzz/add_regression.sh <build> <t> <artifact> <short-name>`. The **secret scanner is the mandatory admission gate for every target**; F1–F4 and F5 public mode are designed not to consume secret-key formats, but they are scanned anyway. An artifact the scanner refuses stays untracked (build directory only), and its root cause gets a deterministic unit test instead.
+3. **Show it fails first:** `fuzz_<t>_replay <regression>` must fail **before** the fix; record that in the fix's commit message.
+4. **Fix it:** after the fix, `fuzz_replay_<t>` passes in the normal, ASan and UBSan builds. It replays every committed regression.
+5. **Pin logic errors:** a logic-error root cause also gets a deterministic test in the matching `tests/test_*.c`.
+
+### Committed regressions
+
+- **`keys/sample-identity-truncate-*`:** a 5-byte program (TRUNCATE to 5996 bytes). It makes every CI run regenerate the identity template at runtime.
+- **`keys/t0-corruption-accepted-*`:** an **OPEN Step 6 finding**. `demo_keys_load_identity` accepts a secret key whose t0 component is corrupted.
+  - Measured: its one-shot self-test passes about 75% of the time, and about 32% of that key's signatures then fail to verify.
+  - Impact: it fails closed (peers reject the bad signatures), but the corruption goes undetected.
+  - Status: the fix belongs in `apps/demo_keys.c` and is recorded in `docs/decisions.md`.
+
+## Fuzzing proves none of the following
+
+"No crash in N minutes" is **not** evidence of correctness. These properties remain covered **only** by deterministic tests:
+
+- **Cryptography:** KATs; byte-exact KDF info and nonce/AD layout; unforgeability. The "OK only for genuine bytes" oracles in F2/F3 detect acceptance bugs, not cryptanalytic weakness.
+- **Timing and I/O:** timeouts, trickle, EINTR, real TCP fragmentation, peer close, SIGPIPE, FD_CLOEXEC, port files (test_net, demo_e2e).
+- **Resource and lifecycle:** zero-allocation gates, wipe hygiene, exactly-once handoff, session lifecycle, default rekey/expiry values, clock failure (test_session, test_session_alloc).
+- **Ledger time behavior:** TTL, capacity and cancel (test_handshake). F2 uses a fixed clock.
+- **Key-file permissions:** ownership and symlinks (test_net T14).
+- **Concurrency:** none (single-threaded by design).
