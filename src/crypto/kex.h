@@ -15,6 +15,26 @@
 #define KEX_SHARED_SECRET_BYTES 32u
 #define KEX_SESSION_KEY_BYTES 32u /* == crypto_aead_chacha20poly1305_ietf_KEYBYTES */
 
+/* Normative KDF direction bytes (spec §6.3). Single source of truth:
+ * handshake.h's HANDSHAKE_DIR_* are direct aliases of these. */
+#define KEX_DIR_C2S 0x43u /* 'C' -- initiator-to-responder */
+#define KEX_DIR_S2C 0x53u /* 'S' -- responder-to-initiator */
+
+/* Identity/salt bounds the KDF info construction enforces. These mirror
+ * the wire-format constants (WIRE_ID_MIN_LEN/WIRE_ID_MAX_LEN/
+ * WIRE_SESSION_ID_LEN in protocol/transcript.h); they are restated here so
+ * this crypto-layer module does not depend on the protocol layer, and
+ * handshake.c static-asserts the two sets are equal so they cannot drift. */
+#define KEX_ID_MIN_LEN 1u
+#define KEX_ID_MAX_LEN 64u
+#define KEX_SESSION_ID_LEN 16u
+
+/* Literal domain-separation label for the KDF info (17 bytes, no NUL). */
+#define KEX_KDF_LABEL "mldsa-auth/v1/kdf"
+
+/* 17 label + 1 separator + 1 len + 64 id + 1 len + 64 id + 1 direction */
+#define KEX_KDF_INFO_MAX_LEN 149u
+
 typedef struct {
     uint8_t public_key[KEX_PUBLIC_KEY_BYTES];
     uint8_t *private_key; /* secure_mem_alloc'd, KEX_PRIVATE_KEY_BYTES bytes;
@@ -61,13 +81,38 @@ int kex_hkdf_sha256(uint8_t *okm, size_t okm_len,
                      const uint8_t *salt, size_t salt_len,
                      const uint8_t *info, size_t info_len);
 
-/* Derives one direction's session key per Section 6.3:
- *   HKDF-SHA256(shared_secret, salt=session_id,
- *               info = "mldsa-auth-v1" || a_id || b_id || direction)
- * `direction` is a single byte distinguishing the two directions (e.g.
- * 'C' for client-to-server, 'S' for server-to-client) -- call this twice,
- * once per direction, to get independent c2s/s2c keys that are never
- * reused bidirectionally (Section 6.3). Returns 0 on success. */
+/* Builds the exact normative KDF info bytes (spec §6.3) into
+ * caller-provided storage:
+ *
+ *   kdf_info = "mldsa-auth/v1/kdf" || 0x00 ||
+ *              a_id_len_u8 || a_id || b_id_len_u8 || b_id || direction_u8
+ *
+ * a_id is ALWAYS the initiator's id and b_id ALWAYS the responder's,
+ * regardless of which side computes. Each variable-length id is preceded
+ * by its own length byte, which makes the encoding injective: an earlier
+ * unprefixed "label || a_id || b_id || direction" form let
+ * (a="ab", b="c") and (a="a", b="bc") produce identical bytes.
+ *
+ * Validates -- all before writing a single byte -- that out/out_len/a_id/
+ * b_id are non-NULL, 1 <= a_id_len <= 64, 1 <= b_id_len <= 64, direction
+ * is exactly KEX_DIR_C2S or KEX_DIR_S2C, and out_cap holds the full
+ * result. On failure returns nonzero, writes nothing to out, and leaves
+ * *out_len untouched. Exposed (not static) so tests can check the exact
+ * bytes against an independently hand-built expected buffer. */
+int kex_build_kdf_info(uint8_t *out, size_t out_cap, size_t *out_len,
+                       const uint8_t *a_id, size_t a_id_len,
+                       const uint8_t *b_id, size_t b_id_len,
+                       uint8_t direction);
+
+/* Derives one direction's session key per spec §6.3:
+ *   HKDF-SHA256(IKM = shared_secret, salt = session_id (exactly 16 bytes),
+ *               info = kex_build_kdf_info(a_id, b_id, direction), L = 32)
+ * Callers pass identities with explicit lengths and never concatenate
+ * anything themselves -- the info layout is owned entirely by
+ * kex_build_kdf_info(), with the same validation. Call once per
+ * direction to get independent c2s/s2c keys that are never reused
+ * bidirectionally. Returns 0 on success; on failure session_key is left
+ * untouched. */
 int kex_derive_session_key(uint8_t session_key[KEX_SESSION_KEY_BYTES],
                             const uint8_t shared_secret[KEX_SHARED_SECRET_BYTES],
                             const uint8_t *session_id, size_t session_id_len,

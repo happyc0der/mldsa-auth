@@ -64,6 +64,13 @@ static int hash_label_and_two_buffers(const char *label, size_t label_len,
     return 0;
 }
 
+size_t transcript_server_hello_unsigned_len(uint8_t id_len) {
+    if (id_len < WIRE_ID_MIN_LEN || id_len > WIRE_ID_MAX_LEN) {
+        return 0;
+    }
+    return server_hello_unsigned_encoded_len(id_len);
+}
+
 /* --- encoders ------------------------------------------------------------ */
 
 int encode_client_hello(const client_hello_t *msg, uint8_t *out, size_t out_cap, size_t *out_len) {

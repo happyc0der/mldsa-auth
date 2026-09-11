@@ -1,14 +1,20 @@
 /*
- * Step 3 wire-format tests: deterministic serialization for the three
- * handshake messages (ClientHello, ServerHello, ClientAuth), transcript
- * hashing, and malformed/truncated-input rejection. This is the
- * serialization-level slice of "happy path + adversarial cases" -- Step 4
- * extends this same file with real two-party handshake_ctx-level cases
- * once that state machine exists.
+ * "Happy path + adversarial cases" for the handshake (spec §7), in two parts:
  *
- * No actual cryptographic keys are generated or verified here -- sig/
- * handshake_id byte contents are arbitrary filler for structural testing;
- * Step 3 is a pure serialization layer.
+ * STEP 3 -- wire format: deterministic serialization for ClientHello,
+ * ServerHello and ClientAuth, transcript hashing, and malformed/truncated
+ * input rejection. Pure serialization: the sig/handshake_id bytes in that
+ * section are arbitrary filler, and no keys are generated or verified.
+ *
+ * STEP 4 -- the handshake state machine, keystore, pending-handshake
+ * ledger, and the corrected KDF info encoding. Uses real ML-DSA-65
+ * identity keys and real X25519 ephemerals.
+ *
+ * SINGLE-THREADED BY CONSTRUCTION (spec §6.3.6): every handshake context,
+ * keystore and pending store in this file is created and used from this
+ * one thread only. No test here exercises concurrent access, and none
+ * claims to cover it -- concurrency is a documented v1 boundary, not a
+ * tested property.
  */
 
 #include <stdio.h>
@@ -18,6 +24,10 @@
 
 #include <sodium.h>
 
+#include "handshake.h"
+#include "kex.h"
+#include "keystore.h"
+#include "mldsa_wrap.h"
 #include "transcript.h"
 
 static int g_failures = 0;
@@ -710,6 +720,1480 @@ static void test_encoder_negative(void) {
  * main
  * ------------------------------------------------------------------- */
 
+/* =========================================================================
+ * STEP 4 -- handshake state machine, keystore, pending ledger, KDF info.
+ * Every check is labelled "step4 T<n>" after the numbered test plan, so a
+ * mutation's intended target can be identified from the output alone.
+ * ======================================================================= */
+
+/* Opaque identities -- deliberately NOT NUL-terminated C strings. */
+static const uint8_t ID_A[] = {'a', 'l', 'i', 'c', 'e'};
+static const uint8_t ID_B[] = {'b', 'o', 'b'};
+static const uint8_t ID_C[] = {'c', 'a', 'r', 'o', 'l'};
+
+/* Vendored verbatim from libsodium's test/default/scalarmult.c (the same
+ * vector Step 2's tests/test_vectors.c uses): crypto_scalarmult() rejects
+ * this known small-order point. */
+static const uint8_t SMALL_ORDER_POINT[32] = {
+    0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa,
+    0xf1, 0x9f, 0xc4, 0x6a, 0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd,
+    0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00,
+};
+
+static mldsa_keypair_t g_kp_a, g_kp_b, g_kp_c;
+static keystore_t g_ks;        /* pins A, B and C */
+static keystore_t g_ks_b_only; /* pins B only: A is unknown */
+
+static void fatal(const char *what) {
+    fprintf(stderr, "FATAL fixture failure: %s\n", what);
+    exit(EXIT_FAILURE);
+}
+
+/* ---- Controllable monotonic clock ---------------------------------------
+ * Normally returns `now`. When armed, the next `calls_until_switch` reads
+ * return `now`, and every read after that returns `switch_to`. This makes
+ * "the entry expires partway through one call" deterministic, with no
+ * sleeps and no test hooks in production code. */
+typedef struct {
+    uint64_t now;
+    uint64_t switch_to;
+    int calls_until_switch;
+    int armed;
+} test_clock_t;
+
+static test_clock_t g_clock;
+#define TEST_BASE_MS 1000u
+#define TEST_TTL_MS 5000u
+
+static uint64_t test_clock_fn(void *p) {
+    test_clock_t *c = (test_clock_t *)p;
+    if (c->armed) {
+        if (c->calls_until_switch > 0) {
+            c->calls_until_switch--;
+            return c->now;
+        }
+        c->now = c->switch_to;
+        c->armed = 0;
+    }
+    return c->now;
+}
+
+static void clock_reset(void) {
+    memset(&g_clock, 0, sizeof(g_clock));
+    g_clock.now = TEST_BASE_MS;
+}
+
+/* Expire everything live at the next-but-`live_reads` clock read. */
+static void clock_arm_expiry_after(int live_reads) {
+    g_clock.calls_until_switch = live_reads;
+    g_clock.switch_to = g_clock.now + TEST_TTL_MS + 1u;
+    g_clock.armed = 1;
+}
+
+static void store_fresh(handshake_pending_store_t *s, size_t capacity) {
+    if (handshake_pending_store_init(s, capacity, TEST_TTL_MS, test_clock_fn, &g_clock) != PENDING_OK) {
+        fatal("handshake_pending_store_init");
+    }
+}
+
+/* ---- Handshake pair --------------------------------------------------- */
+
+typedef struct {
+    handshake_ctx_t ini; /* A, dialing B */
+    handshake_ctx_t res; /* B */
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN];
+    size_t ch_len;
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t sh_len;
+    uint8_t ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ca_len;
+} pair_t;
+
+static void pair_init(pair_t *p, handshake_pending_store_t *store, const keystore_t *res_ks) {
+    memset(p, 0, sizeof(*p));
+    if (handshake_initiator_init(&p->ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK) {
+        fatal("handshake_initiator_init");
+    }
+    if (handshake_responder_init(&p->res, ID_B, sizeof(ID_B), &g_kp_b, res_ks, store) != HANDSHAKE_OK) {
+        fatal("handshake_responder_init");
+    }
+}
+
+static void pair_wipe(pair_t *p) {
+    handshake_ctx_wipe(&p->ini);
+    handshake_ctx_wipe(&p->res);
+}
+
+static handshake_status_t pair_to_server_hello(pair_t *p) {
+    handshake_status_t st = handshake_initiator_create_client_hello(&p->ini, p->ch, sizeof(p->ch), &p->ch_len);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    st = handshake_responder_accept_client_hello(&p->res, p->ch, p->ch_len);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    return handshake_responder_create_server_hello(&p->res, p->sh, sizeof(p->sh), &p->sh_len);
+}
+
+static handshake_status_t pair_to_client_auth(pair_t *p) {
+    handshake_status_t st = pair_to_server_hello(p);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    st = handshake_initiator_verify_server_hello(&p->ini, p->sh, p->sh_len);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    return handshake_initiator_create_client_auth(&p->ini, p->ca, sizeof(p->ca), &p->ca_len);
+}
+
+static handshake_status_t pair_finish_both(pair_t *p) {
+    handshake_status_t st = handshake_responder_verify_client_auth(&p->res, p->ca, p->ca_len);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    st = handshake_responder_finish(&p->res);
+    if (st != HANDSHAKE_OK) {
+        return st;
+    }
+    return handshake_initiator_finish(&p->ini);
+}
+
+/* handshake_id from the exact wire bytes. */
+static void hid_of(const uint8_t *ch, size_t ch_len, const uint8_t *sh, size_t sh_len, uint8_t hid[16]) {
+    if (transcript_handshake_id(ch, ch_len, sh, sh_len, hid) != 0) {
+        fatal("transcript_handshake_id");
+    }
+}
+
+/* True iff neither key accessor succeeds, both NULL their output, and no
+ * key is flagged committed. keys_committed is read white-box: the struct
+ * is visible only because storage is caller-provided. */
+static int no_keys_exposed(const handshake_ctx_t *ctx) {
+    static const uint8_t sentinel = 0;
+    const uint8_t *k1 = &sentinel;
+    const uint8_t *k2 = &sentinel;
+    const handshake_status_t a = handshake_session_key_c2s(ctx, &k1);
+    const handshake_status_t b = handshake_session_key_s2c(ctx, &k2);
+    return a != HANDSHAKE_OK && b != HANDSHAKE_OK && k1 == NULL && k2 == NULL && !ctx->keys_committed;
+}
+
+/* No keys AND not peer-confirmed: what every pre-ESTABLISHED state owes. */
+static int pre_established_ok(const handshake_ctx_t *ctx) {
+    return no_keys_exposed(ctx) && !handshake_is_peer_confirmed(ctx);
+}
+
+/* ---- Message builders for a test-driven ("manual") peer ---------------- */
+
+static int build_client_hello(const uint8_t *id, size_t id_len, const uint8_t eph_pub[32],
+                              uint8_t *out, size_t cap, size_t *len) {
+    client_hello_t ch;
+    memset(&ch, 0, sizeof(ch));
+    memcpy(ch.id, id, id_len);
+    ch.id_len = (uint8_t)id_len;
+    memcpy(ch.ephemeral_pub, eph_pub, 32);
+    randombytes_buf(ch.session_id, WIRE_SESSION_ID_LEN);
+    randombytes_buf(ch.nonce, WIRE_NONCE_LEN);
+    return encode_client_hello(&ch, out, cap, len);
+}
+
+/* A VALIDLY SIGNED ServerHello answering `ch`, with every field chosen by
+ * the test -- so the one field under test is the only thing that can fail.
+ * sig_B is computed over the exact CH bytes || SH_unsigned. */
+static int build_signed_server_hello(const uint8_t *ch, size_t ch_len,
+                                     const uint8_t *id, size_t id_len, const mldsa_keypair_t *kp,
+                                     const uint8_t eph_pub[32], const uint8_t echo[16],
+                                     uint8_t *out, size_t cap, size_t *len) {
+    server_hello_t sh;
+    uint8_t shu[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN];
+    uint8_t th[32];
+    size_t shu_len = 0;
+    size_t sig_len = 0;
+    memset(&sh, 0, sizeof(sh));
+    memcpy(sh.id, id, id_len);
+    sh.id_len = (uint8_t)id_len;
+    memcpy(sh.ephemeral_pub, eph_pub, 32);
+    randombytes_buf(sh.nonce, WIRE_NONCE_LEN);
+    memcpy(sh.session_id_echo, echo, WIRE_SESSION_ID_LEN);
+    if (encode_server_hello_unsigned(&sh, shu, sizeof(shu), &shu_len) != 0 ||
+        transcript_hash_server_auth(ch, ch_len, shu, shu_len, th) != 0 ||
+        mldsa_sign(sh.sig, &sig_len, th, sizeof(th), kp) != 0) {
+        return -1;
+    }
+    sh.sig_len = (uint16_t)sig_len;
+    return encode_server_hello(&sh, out, cap, len);
+}
+
+/* A VALIDLY SIGNED ClientAuth over the exact CH || SH bytes. */
+static int build_signed_client_auth(const uint8_t *ch, size_t ch_len, const uint8_t *sh, size_t sh_len,
+                                    const mldsa_keypair_t *kp, uint8_t *out, size_t cap, size_t *len) {
+    client_auth_t ca;
+    uint8_t th[32];
+    size_t sig_len = 0;
+    memset(&ca, 0, sizeof(ca));
+    if (transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) != 0 ||
+        transcript_handshake_id(ch, ch_len, sh, sh_len, ca.handshake_id) != 0 ||
+        mldsa_sign(ca.sig, &sig_len, th, sizeof(th), kp) != 0) {
+        return -1;
+    }
+    ca.sig_len = (uint16_t)sig_len;
+    return encode_client_auth(&ca, out, cap, len);
+}
+
+static void session_id_of(const uint8_t *ch, size_t ch_len, uint8_t sid[16]) {
+    client_hello_t msg;
+    size_t consumed = 0;
+    if (decode_client_hello(ch, ch_len, &msg, &consumed) != 0) {
+        fatal("decode_client_hello");
+    }
+    memcpy(sid, msg.session_id, WIRE_SESSION_ID_LEN);
+}
+
+/* Byte offsets inside encoded messages, for tampering. */
+#define CA_HANDSHAKE_ID_OFFSET 1u
+#define CA_SIG_OFFSET (1u + WIRE_HANDSHAKE_ID_LEN + 2u)
+
+/* ---- T1 / T15 / T20 / T21: happy path ---------------------------------- */
+
+static void test_step4_happy_path(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(handshake_get_state(&p.ini) == HANDSHAKE_STATE_NEW && handshake_get_state(&p.res) == HANDSHAKE_STATE_NEW,
+          "step4 T1: both contexts start NEW");
+    CHECK(pre_established_ok(&p.ini) && pre_established_ok(&p.res),
+          "step4 T15/T20: no keys, not peer-confirmed in NEW (both roles)");
+
+    handshake_status_t st = handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.ini) == HANDSHAKE_STATE_CLIENT_HELLO_CREATED,
+          "step4 T1: initiator creates ClientHello -> CLIENT_HELLO_CREATED");
+    CHECK(pre_established_ok(&p.ini), "step4 T15/T20: no keys in initiator CLIENT_HELLO_CREATED");
+
+    st = handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_HELLO_ACCEPTED,
+          "step4 T1: responder accepts ClientHello -> CLIENT_HELLO_ACCEPTED");
+    CHECK(pre_established_ok(&p.res), "step4 T15/T20: no keys in responder CLIENT_HELLO_ACCEPTED");
+
+    st = handshake_responder_create_server_hello(&p.res, p.sh, sizeof(p.sh), &p.sh_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T1: responder creates ServerHello -> SERVER_HELLO_CREATED");
+    CHECK(pre_established_ok(&p.res), "step4 T15/T20: no keys in responder SERVER_HELLO_CREATED");
+
+    st = handshake_initiator_verify_server_hello(&p.ini, p.sh, p.sh_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.ini) == HANDSHAKE_STATE_SERVER_HELLO_VERIFIED,
+          "step4 T1: initiator verifies ServerHello -> SERVER_HELLO_VERIFIED");
+    CHECK(pre_established_ok(&p.ini),
+          "step4 T15/T20: NO traffic keys in initiator SERVER_HELLO_VERIFIED (mutual auth incomplete)");
+
+    st = handshake_initiator_create_client_auth(&p.ini, p.ca, sizeof(p.ca), &p.ca_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.ini) == HANDSHAKE_STATE_CLIENT_AUTH_CREATED,
+          "step4 T1: initiator creates ClientAuth -> CLIENT_AUTH_CREATED");
+    CHECK(pre_established_ok(&p.ini), "step4 T15/T20: no keys in initiator CLIENT_AUTH_CREATED");
+
+    st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED,
+          "step4 T1: responder verifies ClientAuth -> CLIENT_AUTH_VERIFIED");
+    {
+        /* Keys ARE committed to context state at CLIENT_AUTH_VERIFIED (so
+         * no_keys_exposed(), which also checks the committed flag, would
+         * rightly be false here) -- but they must NOT be retrievable. */
+        const uint8_t *k = NULL;
+        CHECK(handshake_session_key_c2s(&p.res, &k) == HANDSHAKE_ERR_UNEXPECTED_STATE && k == NULL &&
+                  !handshake_is_peer_confirmed(&p.res),
+              "step4 T15/T20: responder keys not retrievable in CLIENT_AUTH_VERIFIED");
+    }
+
+    st = handshake_responder_finish(&p.res);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_ESTABLISHED,
+          "step4 T1: responder finish -> ESTABLISHED");
+    st = handshake_initiator_finish(&p.ini);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.ini) == HANDSHAKE_STATE_ESTABLISHED,
+          "step4 T1: initiator finish -> ESTABLISHED");
+
+    const uint8_t *ic2s = NULL, *is2c = NULL, *rc2s = NULL, *rs2c = NULL;
+    const int got = handshake_session_key_c2s(&p.ini, &ic2s) == HANDSHAKE_OK &&
+                    handshake_session_key_s2c(&p.ini, &is2c) == HANDSHAKE_OK &&
+                    handshake_session_key_c2s(&p.res, &rc2s) == HANDSHAKE_OK &&
+                    handshake_session_key_s2c(&p.res, &rs2c) == HANDSHAKE_OK;
+    CHECK(got, "step4 T1: all four key accessors succeed in ESTABLISHED");
+    if (got) {
+        CHECK(sodium_memcmp(ic2s, rc2s, KEX_SESSION_KEY_BYTES) == 0 &&
+                  sodium_memcmp(is2c, rs2c, KEX_SESSION_KEY_BYTES) == 0,
+              "step4 T1: initiator and responder derive identical c2s and identical s2c");
+        CHECK(sodium_memcmp(ic2s, is2c, KEX_SESSION_KEY_BYTES) != 0, "step4 T1: c2s != s2c");
+        CHECK(!sodium_is_zero(ic2s, KEX_SESSION_KEY_BYTES) && !sodium_is_zero(is2c, KEX_SESSION_KEY_BYTES),
+              "step4 T1: session keys are non-zero");
+        CHECK(p.ini.eph.private_key == NULL,
+              "step4 T21: initiator retained no shared secret, recomputed it in finish(), keys match, "
+              "and its ephemeral scalar is now wiped");
+    }
+    CHECK(!handshake_is_peer_confirmed(&p.ini),
+          "step4 T20: initiator ESTABLISHED is NOT peer-confirmed (optimistic)");
+    CHECK(handshake_is_peer_confirmed(&p.res), "step4 T20: responder ESTABLISHED IS peer-confirmed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T2: unknown peer id ----------------------------------------------- */
+
+static void test_step4_unknown_peer(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks_b_only);
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK,
+          "step4 T2: fixture ClientHello created");
+    const handshake_status_t st = handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len);
+    CHECK(st == HANDSHAKE_ERR_UNKNOWN_IDENTITY && handshake_get_state(&p.res) == HANDSHAKE_STATE_FAILED,
+          "step4 T2: unpinned initiator -> UNKNOWN_IDENTITY, responder FAILED");
+    CHECK(handshake_pending_active_count(&store) == 0, "step4 T2: no pending entry was created");
+    CHECK(no_keys_exposed(&p.res), "step4 T15 (after T2): no keys exposed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T3: session_id_echo mismatch, validly signed ---------------------- */
+
+static void test_step4_session_id_echo_mismatch(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    kex_keypair_t eph;
+    uint8_t sid[16];
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t sh_len = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK,
+          "step4 T3: fixture ClientHello created");
+    session_id_of(p.ch, p.ch_len, sid);
+    sid[0] ^= 0x01; /* the ONLY wrong field */
+    if (kex_keypair_generate(&eph) != 0 ||
+        build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, eph.public_key, sid,
+                                  sh, sizeof(sh), &sh_len) != 0) {
+        fatal("T3 fixture");
+    }
+
+    const handshake_status_t st = handshake_initiator_verify_server_hello(&p.ini, sh, sh_len);
+    CHECK(st == HANDSHAKE_ERR_SESSION_ID_MISMATCH && handshake_get_state(&p.ini) == HANDSHAKE_STATE_FAILED,
+          "step4 T3: validly signed ServerHello with wrong session_id_echo -> SESSION_ID_MISMATCH, FAILED");
+    CHECK(no_keys_exposed(&p.ini), "step4 T15 (after T3): no keys exposed");
+
+    kex_keypair_free(&eph);
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T4: tampered sig_b ------------------------------------------------ */
+
+static void test_step4_tampered_sig_b(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_server_hello(&p) == HANDSHAKE_OK, "step4 T4: fixture ServerHello created");
+    const size_t sig_off = transcript_server_hello_unsigned_len((uint8_t)sizeof(ID_B)) + 2u;
+    p.sh[sig_off + 10u] ^= 0x01; /* inside sig_b only */
+
+    const handshake_status_t st = handshake_initiator_verify_server_hello(&p.ini, p.sh, p.sh_len);
+    CHECK(st == HANDSHAKE_ERR_SIGNATURE && handshake_get_state(&p.ini) == HANDSHAKE_STATE_FAILED,
+          "step4 T4: tampered sig_b -> SIGNATURE, initiator FAILED");
+    CHECK(no_keys_exposed(&p.ini), "step4 T15 (after T4): no keys exposed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T5: unexpected responder identity, validly signed ----------------- */
+
+static void test_step4_peer_identity_mismatch(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    kex_keypair_t eph;
+    uint8_t sid[16];
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t sh_len = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks); /* initiator dials B */
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK,
+          "step4 T5: fixture ClientHello created");
+    session_id_of(p.ch, p.ch_len, sid); /* correct echo */
+    /* C is pinned and signs correctly: without identity binding this passes. */
+    if (kex_keypair_generate(&eph) != 0 ||
+        build_signed_server_hello(p.ch, p.ch_len, ID_C, sizeof(ID_C), &g_kp_c, eph.public_key, sid,
+                                  sh, sizeof(sh), &sh_len) != 0) {
+        fatal("T5 fixture");
+    }
+
+    const handshake_status_t st = handshake_initiator_verify_server_hello(&p.ini, sh, sh_len);
+    CHECK(st == HANDSHAKE_ERR_PEER_IDENTITY_MISMATCH && handshake_get_state(&p.ini) == HANDSHAKE_STATE_FAILED,
+          "step4 T5: ServerHello from pinned-but-undialed peer C -> PEER_IDENTITY_MISMATCH, FAILED");
+    CHECK(no_keys_exposed(&p.ini), "step4 T15 (after T5): no keys exposed");
+
+    kex_keypair_free(&eph);
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T6: mutated handshake_id, then the genuine ClientAuth ------------- */
+
+static void test_step4_mutated_handshake_id(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t bad[CLIENT_AUTH_MAX_ENCODED_LEN];
+    uint8_t hid[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0xFF;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T6: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    memcpy(bad, p.ca, p.ca_len);
+    bad[CA_HANDSHAKE_ID_OFFSET + 3u] ^= 0x01; /* sig_A stays valid: it does not cover this field */
+
+    handshake_status_t st = handshake_responder_verify_client_auth(&p.res, bad, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH &&
+              handshake_get_state(&p.res) == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T6: mutated handshake_id -> HANDSHAKE_ID_MISMATCH, responder stays SERVER_HELLO_CREATED");
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_OK && slot == PENDING_SLOT_ACTIVE &&
+              count == 0,
+          "step4 T6: genuine entry untouched (ACTIVE, failure_count 0)");
+    CHECK(no_keys_exposed(&p.res), "step4 T15 (after T6): no keys exposed");
+
+    st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED,
+          "step4 T6: the genuine ClientAuth still succeeds afterwards");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T7: one forged sig_A, then the legitimate ClientAuth ------------- */
+
+static void test_step4_one_forged_then_legit(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t bad[CLIENT_AUTH_MAX_ENCODED_LEN];
+    uint8_t hid[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T7: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    memcpy(bad, p.ca, p.ca_len);
+    bad[CA_SIG_OFFSET + 10u] ^= 0x01;
+
+    handshake_status_t st = handshake_responder_verify_client_auth(&p.res, bad, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_SIGNATURE && handshake_get_state(&p.res) == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T7: one forged sig_A -> SIGNATURE (retryable), responder stays SERVER_HELLO_CREATED");
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_OK && slot == PENDING_SLOT_ACTIVE &&
+              count == 1,
+          "step4 T7: entry preserved and counted (ACTIVE, failure_count 1)");
+    CHECK(no_keys_exposed(&p.res), "step4 T15 (after T7): no keys exposed");
+
+    st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_OK && handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED,
+          "step4 T7: the legitimate ClientAuth then succeeds");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T8: exactly three invalid matching-id ClientAuths ---------------- */
+
+static void test_step4_three_forged(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t bad[3][CLIENT_AUTH_MAX_ENCODED_LEN];
+    uint8_t hid[16];
+    uint8_t scratch[32];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T8: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    for (size_t i = 0; i < 3; i++) {
+        memcpy(bad[i], p.ca, p.ca_len);
+        bad[i][CA_SIG_OFFSET + 10u + 10u * i] ^= 0x01; /* three different forgeries */
+    }
+
+    const handshake_status_t s1 = handshake_responder_verify_client_auth(&p.res, bad[0], p.ca_len);
+    const handshake_state_t a1 = handshake_get_state(&p.res);
+    const handshake_status_t s2 = handshake_responder_verify_client_auth(&p.res, bad[1], p.ca_len);
+    const handshake_state_t a2 = handshake_get_state(&p.res);
+    const handshake_status_t s3 = handshake_responder_verify_client_auth(&p.res, bad[2], p.ca_len);
+    const handshake_state_t a3 = handshake_get_state(&p.res);
+
+    CHECK(s1 == HANDSHAKE_ERR_SIGNATURE && a1 == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T8: forgery #1 -> SIGNATURE, still SERVER_HELLO_CREATED");
+    CHECK(s2 == HANDSHAKE_ERR_SIGNATURE && a2 == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T8: forgery #2 -> SIGNATURE, still SERVER_HELLO_CREATED");
+    CHECK(s3 == HANDSHAKE_ERR_AUTH_FAILURE_LIMIT && a3 == HANDSHAKE_STATE_FAILED,
+          "step4 T8: forgery #3 -> AUTH_FAILURE_LIMIT, terminal FAILED");
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_ERR_AUTH_LIMIT &&
+              slot == PENDING_SLOT_AUTH_LIMITED && count == 3,
+          "step4 T8: entry tombstoned AUTH_LIMITED with failure_count 3");
+
+    const handshake_status_t s4 = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(s4 == HANDSHAKE_ERR_UNEXPECTED_STATE, "step4 T8: genuine ClientAuth afterwards -> UNEXPECTED_STATE");
+    CHECK(handshake_pending_get_digest(&store, hid, scratch) == PENDING_ERR_AUTH_LIMIT,
+          "step4 T8: store layer reports PENDING_ERR_AUTH_LIMIT");
+    CHECK(no_keys_exposed(&p.res), "step4 T15 (after T8): no keys exposed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T9: replay after successful consumption ------------------------- */
+
+static void test_step4_replay_after_success(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t hid[16];
+    uint8_t scratch[32];
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T9: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    CHECK(handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len) == HANDSHAKE_OK,
+          "step4 T9: first ClientAuth accepted");
+
+    handshake_status_t st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_UNEXPECTED_STATE &&
+              handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED,
+          "step4 T9: replay (context layer) -> UNEXPECTED_STATE, state unchanged");
+    CHECK(handshake_pending_get_digest(&store, hid, scratch) == PENDING_ERR_CONSUMED,
+          "step4 T9: replay (store layer) -> PENDING_ERR_CONSUMED");
+
+    CHECK(handshake_responder_finish(&p.res) == HANDSHAKE_OK, "step4 T9: responder finish");
+    st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_UNEXPECTED_STATE && handshake_get_state(&p.res) == HANDSHAKE_STATE_ESTABLISHED,
+          "step4 T9: replay after ESTABLISHED -> UNEXPECTED_STATE, state unchanged");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T10: duplicate ClientHello, two responders, one shared store ----- */
+
+static int expected_responder_keys(const kex_keypair_t *ini_eph, const uint8_t *ch, size_t ch_len,
+                                   const uint8_t *sh, size_t sh_len, uint8_t c2s[32], uint8_t s2c[32]) {
+    server_hello_t msg;
+    size_t consumed = 0;
+    uint8_t sid[16];
+    uint8_t ss[32];
+    if (decode_server_hello(sh, sh_len, &msg, &consumed) != 0) {
+        return -1;
+    }
+    session_id_of(ch, ch_len, sid);
+    if (kex_shared_secret(ss, ini_eph, msg.ephemeral_pub) != 0 ||
+        kex_derive_session_key(c2s, ss, sid, 16, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_C2S) != 0 ||
+        kex_derive_session_key(s2c, ss, sid, 16, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_S2C) != 0) {
+        sodium_memzero(ss, sizeof(ss));
+        return -1;
+    }
+    sodium_memzero(ss, sizeof(ss));
+    return 0;
+}
+
+static void test_step4_duplicate_client_hello(void) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t r1, r2;
+    static uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh1[SERVER_HELLO_MAX_ENCODED_LEN],
+        sh2[SERVER_HELLO_MAX_ENCODED_LEN], ca1[CLIENT_AUTH_MAX_ENCODED_LEN], ca2[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh1_len = 0, sh2_len = 0, ca1_len = 0, ca2_len = 0;
+    uint8_t hid1[16], hid2[16];
+    uint8_t e1c2s[32], e1s2c[32], e2c2s[32], e2s2c[32];
+    pending_slot_state_t st1s, st2s;
+    uint8_t n1 = 0xFF, n2 = 0xFF;
+    kex_keypair_t ini_eph; /* a test-driven initiator, so BOTH sessions' keys can be checked */
+    clock_reset();
+    store_fresh(&store, 16);
+
+    if (kex_keypair_generate(&ini_eph) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), ini_eph.public_key, ch, sizeof(ch), &ch_len) != 0 ||
+        handshake_responder_init(&r1, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK ||
+        handshake_responder_init(&r2, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
+        fatal("T10 fixture");
+    }
+
+    /* (a) */
+    const int a_ok = handshake_responder_accept_client_hello(&r1, ch, ch_len) == HANDSHAKE_OK &&
+                     handshake_responder_accept_client_hello(&r2, ch, ch_len) == HANDSHAKE_OK &&
+                     handshake_responder_create_server_hello(&r1, sh1, sizeof(sh1), &sh1_len) == HANDSHAKE_OK &&
+                     handshake_responder_create_server_hello(&r2, sh2, sizeof(sh2), &sh2_len) == HANDSHAKE_OK;
+    CHECK(a_ok && handshake_get_state(&r1) == HANDSHAKE_STATE_SERVER_HELLO_CREATED &&
+              handshake_get_state(&r2) == HANDSHAKE_STATE_SERVER_HELLO_CREATED &&
+              handshake_pending_active_count(&store) == 2,
+          "step4 T10(a): same ClientHello accepted by both responders; 2 active entries");
+    if (!a_ok) {
+        fatal("T10 setup");
+    }
+
+    /* (b) */
+    hid_of(ch, ch_len, sh1, sh1_len, hid1);
+    hid_of(ch, ch_len, sh2, sh2_len, hid2);
+    CHECK((sh1_len != sh2_len || memcmp(sh1, sh2, sh1_len) != 0) && memcmp(hid1, hid2, 16) != 0,
+          "step4 T10(b): distinct ServerHellos and distinct handshake_ids");
+
+    if (build_signed_client_auth(ch, ch_len, sh1, sh1_len, &g_kp_a, ca1, sizeof(ca1), &ca1_len) != 0 ||
+        build_signed_client_auth(ch, ch_len, sh2, sh2_len, &g_kp_a, ca2, sizeof(ca2), &ca2_len) != 0) {
+        fatal("T10 ClientAuth fixtures");
+    }
+
+    /* (c) cross-delivery */
+    const handshake_status_t x1 = handshake_responder_verify_client_auth(&r2, ca1, ca1_len);
+    const handshake_status_t x2 = handshake_responder_verify_client_auth(&r1, ca2, ca2_len);
+    CHECK(x1 == HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH && x2 == HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH &&
+              handshake_get_state(&r1) == HANDSHAKE_STATE_SERVER_HELLO_CREATED &&
+              handshake_get_state(&r2) == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          "step4 T10(c): cross-delivered ClientAuths -> HANDSHAKE_ID_MISMATCH, both stay SERVER_HELLO_CREATED");
+
+    /* (d) the assertion that makes this test meaningful */
+    CHECK(handshake_pending_inspect(&store, hid1, &st1s, &n1) == PENDING_OK && st1s == PENDING_SLOT_ACTIVE &&
+              n1 == 0 && handshake_pending_inspect(&store, hid2, &st2s, &n2) == PENDING_OK &&
+              st2s == PENDING_SLOT_ACTIVE && n2 == 0,
+          "step4 T10(d): cross-delivery consumed nothing and burned no N=3 budget (both ACTIVE, count 0)");
+
+    /* (e) genuine delivery to the originating contexts */
+    const int e_ok = handshake_responder_verify_client_auth(&r1, ca1, ca1_len) == HANDSHAKE_OK &&
+                     handshake_responder_verify_client_auth(&r2, ca2, ca2_len) == HANDSHAKE_OK &&
+                     handshake_responder_finish(&r1) == HANDSHAKE_OK &&
+                     handshake_responder_finish(&r2) == HANDSHAKE_OK;
+    CHECK(e_ok && handshake_get_state(&r1) == HANDSHAKE_STATE_ESTABLISHED &&
+              handshake_get_state(&r2) == HANDSHAKE_STATE_ESTABLISHED,
+          "step4 T10(e): each genuine ClientAuth succeeds on its own originating context");
+
+    /* (f) independent, and each matches its own (test-driven) initiator */
+    const uint8_t *r1c2s = NULL, *r1s2c = NULL, *r2c2s = NULL, *r2s2c = NULL;
+    const int f_ok = e_ok &&
+                     expected_responder_keys(&ini_eph, ch, ch_len, sh1, sh1_len, e1c2s, e1s2c) == 0 &&
+                     expected_responder_keys(&ini_eph, ch, ch_len, sh2, sh2_len, e2c2s, e2s2c) == 0 &&
+                     handshake_session_key_c2s(&r1, &r1c2s) == HANDSHAKE_OK &&
+                     handshake_session_key_s2c(&r1, &r1s2c) == HANDSHAKE_OK &&
+                     handshake_session_key_c2s(&r2, &r2c2s) == HANDSHAKE_OK &&
+                     handshake_session_key_s2c(&r2, &r2s2c) == HANDSHAKE_OK;
+    CHECK(f_ok && sodium_memcmp(r1c2s, e1c2s, 32) == 0 && sodium_memcmp(r1s2c, e1s2c, 32) == 0 &&
+              sodium_memcmp(r2c2s, e2c2s, 32) == 0 && sodium_memcmp(r2s2c, e2s2c, 32) == 0 &&
+              sodium_memcmp(r1c2s, r2c2s, 32) != 0,
+          "step4 T10(f): R1/R2 keys differ from each other and each matches its own initiator");
+
+    kex_keypair_free(&ini_eph);
+    handshake_ctx_wipe(&r1);
+    handshake_ctx_wipe(&r2);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T11: expired pending handshake ----------------------------------- */
+
+static void test_step4_expired(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t hid[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T11: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    g_clock.now += TEST_TTL_MS; /* now == deadline -> expired */
+
+    const handshake_status_t st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_EXPIRED && handshake_get_state(&p.res) == HANDSHAKE_STATE_FAILED,
+          "step4 T11: ClientAuth after TTL -> EXPIRED, responder FAILED");
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_ERR_NOT_FOUND,
+          "step4 T11: expired entry was evicted");
+    CHECK(no_keys_exposed(&p.res), "step4 T15 (after T11): no keys exposed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T12: capacity exhaustion ----------------------------------------- */
+
+static void test_step4_capacity_exhaustion(void) {
+    static handshake_pending_store_t store;
+    static pair_t p1, p2, p3;
+    clock_reset();
+    store_fresh(&store, 2);
+    pair_init(&p1, &store, &g_ks);
+    pair_init(&p2, &store, &g_ks);
+    pair_init(&p3, &store, &g_ks);
+
+    CHECK(pair_to_server_hello(&p1) == HANDSHAKE_OK && pair_to_server_hello(&p2) == HANDSHAKE_OK,
+          "step4 T12: two handshakes fill a capacity-2 store");
+    const handshake_status_t st = pair_to_server_hello(&p3);
+    CHECK(st == HANDSHAKE_ERR_RESOURCE_EXHAUSTED && handshake_get_state(&p3.res) == HANDSHAKE_STATE_FAILED,
+          "step4 T12: third ServerHello -> RESOURCE_EXHAUSTED, that responder FAILED");
+    CHECK(handshake_pending_active_count(&store) == 2, "step4 T12: the two live entries were not evicted");
+    CHECK(no_keys_exposed(&p3.res), "step4 T15 (after T12): no keys exposed");
+
+    const int completed =
+        handshake_initiator_verify_server_hello(&p1.ini, p1.sh, p1.sh_len) == HANDSHAKE_OK &&
+        handshake_initiator_create_client_auth(&p1.ini, p1.ca, sizeof(p1.ca), &p1.ca_len) == HANDSHAKE_OK &&
+        pair_finish_both(&p1) == HANDSHAKE_OK &&
+        handshake_initiator_verify_server_hello(&p2.ini, p2.sh, p2.sh_len) == HANDSHAKE_OK &&
+        handshake_initiator_create_client_auth(&p2.ini, p2.ca, sizeof(p2.ca), &p2.ca_len) == HANDSHAKE_OK &&
+        pair_finish_both(&p2) == HANDSHAKE_OK;
+    CHECK(completed, "step4 T12: both live handshakes remain completable to ESTABLISHED");
+
+    pair_wipe(&p1);
+    pair_wipe(&p2);
+    pair_wipe(&p3);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T13: wrong state/order, every public function x every state ------ */
+
+enum { FN_I_CH, FN_I_VSH, FN_I_CA, FN_I_FIN, FN_R_ACH, FN_R_SH, FN_R_VCA, FN_R_FIN, FN_COUNT };
+
+static handshake_status_t call_fn(int fn, handshake_ctx_t *ctx) {
+    static uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN + 16];
+    static const uint8_t junk[64] = {0};
+    size_t len = 0;
+    switch (fn) {
+    case FN_I_CH: return handshake_initiator_create_client_hello(ctx, buf, sizeof(buf), &len);
+    case FN_I_VSH: return handshake_initiator_verify_server_hello(ctx, junk, sizeof(junk));
+    case FN_I_CA: return handshake_initiator_create_client_auth(ctx, buf, sizeof(buf), &len);
+    case FN_I_FIN: return handshake_initiator_finish(ctx);
+    case FN_R_ACH: return handshake_responder_accept_client_hello(ctx, junk, sizeof(junk));
+    case FN_R_SH: return handshake_responder_create_server_hello(ctx, buf, sizeof(buf), &len);
+    case FN_R_VCA: return handshake_responder_verify_client_auth(ctx, junk, sizeof(junk));
+    case FN_R_FIN: return handshake_responder_finish(ctx);
+    default: return HANDSHAKE_ERR_INTERNAL;
+    }
+}
+
+static int valid_fn_for(handshake_role_t role, handshake_state_t state) {
+    if (role == HANDSHAKE_ROLE_INITIATOR) {
+        switch (state) {
+        case HANDSHAKE_STATE_NEW: return FN_I_CH;
+        case HANDSHAKE_STATE_CLIENT_HELLO_CREATED: return FN_I_VSH;
+        case HANDSHAKE_STATE_SERVER_HELLO_VERIFIED: return FN_I_CA;
+        case HANDSHAKE_STATE_CLIENT_AUTH_CREATED: return FN_I_FIN;
+        default: return -1;
+        }
+    }
+    switch (state) {
+    case HANDSHAKE_STATE_NEW: return FN_R_ACH;
+    case HANDSHAKE_STATE_CLIENT_HELLO_ACCEPTED: return FN_R_SH;
+    case HANDSHAKE_STATE_SERVER_HELLO_CREATED: return FN_R_VCA;
+    case HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED: return FN_R_FIN;
+    default: return -1;
+    }
+}
+
+/* Every function other than the one valid here must return
+ * UNEXPECTED_STATE and leave the state unchanged. */
+static void reject_all_invalid(handshake_ctx_t *ctx, handshake_role_t role, const char *label) {
+    const handshake_state_t before = handshake_get_state(ctx);
+    const int ok_fn = valid_fn_for(role, before);
+    int calls = 0, violations = 0;
+    for (int fn = 0; fn < FN_COUNT; fn++) {
+        if (fn == ok_fn) {
+            continue;
+        }
+        const handshake_status_t st = call_fn(fn, ctx);
+        calls++;
+        if (st != HANDSHAKE_ERR_UNEXPECTED_STATE || handshake_get_state(ctx) != before) {
+            violations++;
+            printf("      T13 violation in %s: fn=%d returned %d, state %d -> %d\n", label, fn, (int)st,
+                   (int)before, (int)handshake_get_state(ctx));
+        }
+    }
+    char name[160];
+    snprintf(name, sizeof(name), "step4 T13: %s -- all %d invalid calls -> UNEXPECTED_STATE, state unchanged",
+             label, calls);
+    CHECK(violations == 0, name);
+}
+
+static void test_step4_wrong_state_matrix(void) {
+    static handshake_pending_store_t store;
+    static pair_t p, f;
+    static const uint8_t junk[64] = {0};
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    reject_all_invalid(&p.ini, HANDSHAKE_ROLE_INITIATOR, "initiator NEW");
+    reject_all_invalid(&p.res, HANDSHAKE_ROLE_RESPONDER, "responder NEW");
+    if (handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.ini, HANDSHAKE_ROLE_INITIATOR, "initiator CLIENT_HELLO_CREATED");
+    if (handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.res, HANDSHAKE_ROLE_RESPONDER, "responder CLIENT_HELLO_ACCEPTED");
+    if (handshake_responder_create_server_hello(&p.res, p.sh, sizeof(p.sh), &p.sh_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.res, HANDSHAKE_ROLE_RESPONDER, "responder SERVER_HELLO_CREATED");
+    if (handshake_initiator_verify_server_hello(&p.ini, p.sh, p.sh_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.ini, HANDSHAKE_ROLE_INITIATOR, "initiator SERVER_HELLO_VERIFIED");
+    if (handshake_initiator_create_client_auth(&p.ini, p.ca, sizeof(p.ca), &p.ca_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.ini, HANDSHAKE_ROLE_INITIATOR, "initiator CLIENT_AUTH_CREATED");
+    if (handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.res, HANDSHAKE_ROLE_RESPONDER, "responder CLIENT_AUTH_VERIFIED");
+    if (handshake_responder_finish(&p.res) != HANDSHAKE_OK || handshake_initiator_finish(&p.ini) != HANDSHAKE_OK) {
+        fatal("T13 walk");
+    }
+    reject_all_invalid(&p.res, HANDSHAKE_ROLE_RESPONDER, "responder ESTABLISHED");
+    reject_all_invalid(&p.ini, HANDSHAKE_ROLE_INITIATOR, "initiator ESTABLISHED");
+
+    /* FAILED is terminal for both roles. */
+    pair_init(&f, &store, &g_ks);
+    if (handshake_initiator_create_client_hello(&f.ini, f.ch, sizeof(f.ch), &f.ch_len) != HANDSHAKE_OK ||
+        handshake_initiator_verify_server_hello(&f.ini, junk, sizeof(junk)) != HANDSHAKE_ERR_MALFORMED ||
+        handshake_responder_accept_client_hello(&f.res, junk, sizeof(junk)) != HANDSHAKE_ERR_MALFORMED) {
+        fatal("T13 FAILED fixtures");
+    }
+    reject_all_invalid(&f.ini, HANDSHAKE_ROLE_INITIATOR, "initiator FAILED");
+    reject_all_invalid(&f.res, HANDSHAKE_ROLE_RESPONDER, "responder FAILED");
+
+    CHECK(call_fn(FN_I_CH, NULL) == HANDSHAKE_ERR_INVALID_ARG && call_fn(FN_R_VCA, NULL) == HANDSHAKE_ERR_INVALID_ARG,
+          "step4 T13: NULL context -> INVALID_ARG");
+
+    pair_wipe(&p);
+    pair_wipe(&f);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T14: low-order X25519 in a validly-signed ServerHello ------------ */
+
+static void test_step4_initiator_low_order(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t sid[16];
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t sh_len = 0;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK,
+          "step4 T14: fixture ClientHello created");
+    session_id_of(p.ch, p.ch_len, sid);
+    if (build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, SMALL_ORDER_POINT, sid,
+                                  sh, sizeof(sh), &sh_len) != 0) {
+        fatal("T14 fixture");
+    }
+
+    const handshake_status_t st = handshake_initiator_verify_server_hello(&p.ini, sh, sh_len);
+    CHECK(st == HANDSHAKE_ERR_KEX && handshake_get_state(&p.ini) == HANDSHAKE_STATE_FAILED,
+          "step4 T14: low-order point in a validly-signed ServerHello -> KEX (after identity/echo/sig pass), FAILED");
+    CHECK(no_keys_exposed(&p.ini), "step4 T15 (after T14): no keys exposed");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T16: keystore -------------------------------------------------- */
+
+static void test_step4_keystore(void) {
+    static keystore_t ks;
+    const uint8_t *pk = NULL;
+    const uint8_t id_ab[] = {'a', 'b'};
+    const uint8_t id_abc[] = {'a', 'b', 'c'};
+    const uint8_t id_nul[] = {'x', 0x00, 'y'}; /* embedded NUL: opaque bytes, not a C string */
+    const uint8_t id_x[] = {'x'};
+    uint8_t long_id[65];
+    memset(long_id, 'L', sizeof(long_id));
+    keystore_init(&ks);
+
+    CHECK(keystore_lookup(&ks, ID_A, sizeof(ID_A), &pk) == KEYSTORE_ERR_NOT_FOUND && pk == NULL,
+          "step4 T16: unknown id -> NOT_FOUND, NULL key");
+    CHECK(keystore_add(&ks, ID_A, sizeof(ID_A), g_kp_a.public_key) == KEYSTORE_OK && keystore_count(&ks) == 1,
+          "step4 T16: add new id -> OK");
+    CHECK(keystore_add(&ks, ID_A, sizeof(ID_A), g_kp_a.public_key) == KEYSTORE_OK_ALREADY_PRESENT &&
+              keystore_count(&ks) == 1,
+          "step4 T16: identical re-add -> OK_ALREADY_PRESENT, count unchanged");
+    CHECK(keystore_add(&ks, ID_A, sizeof(ID_A), g_kp_b.public_key) == KEYSTORE_ERR_KEY_MISMATCH,
+          "step4 T16: same id, different key -> KEY_MISMATCH");
+    CHECK(keystore_lookup(&ks, ID_A, sizeof(ID_A), &pk) == KEYSTORE_OK &&
+              memcmp(pk, g_kp_a.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
+          "step4 T16: the pinned key was NOT replaced by the mismatching add");
+    CHECK(keystore_add(&ks, ID_A, 0, g_kp_a.public_key) == KEYSTORE_ERR_INVALID_ARG &&
+              keystore_add(&ks, long_id, 65, g_kp_a.public_key) == KEYSTORE_ERR_INVALID_ARG,
+          "step4 T16: id length 0 and 65 rejected");
+    CHECK(keystore_add(&ks, id_ab, sizeof(id_ab), g_kp_b.public_key) == KEYSTORE_OK &&
+              keystore_lookup(&ks, id_abc, sizeof(id_abc), &pk) == KEYSTORE_ERR_NOT_FOUND,
+          "step4 T16: \"ab\" and \"abc\" are distinct identities (length-sensitive)");
+    CHECK(keystore_add(&ks, id_nul, sizeof(id_nul), g_kp_c.public_key) == KEYSTORE_OK &&
+              keystore_lookup(&ks, id_nul, sizeof(id_nul), &pk) == KEYSTORE_OK &&
+              keystore_lookup(&ks, id_x, sizeof(id_x), &pk) == KEYSTORE_ERR_NOT_FOUND,
+          "step4 T16: id with an embedded NUL round-trips; its C-string prefix does not match");
+
+    int filled = 1;
+    for (uint8_t i = 0; keystore_count(&ks) < KEYSTORE_MAX_ENTRIES; i++) {
+        const uint8_t id[] = {'k', i};
+        if (keystore_add(&ks, id, sizeof(id), g_kp_a.public_key) != KEYSTORE_OK) {
+            filled = 0;
+            break;
+        }
+    }
+    const uint8_t extra[] = {'z', 'z'};
+    CHECK(filled && keystore_add(&ks, extra, sizeof(extra), g_kp_a.public_key) == KEYSTORE_ERR_FULL,
+          "step4 T16: full keystore -> FULL");
+    keystore_wipe(&ks);
+}
+
+/* ---- T17: SH_unsigned length helper does not drift -------------------- */
+
+static void test_step4_unsigned_len_helper(void) {
+    const uint8_t lens[] = {1, 32, 64};
+    int ok = 1;
+    for (size_t i = 0; i < sizeof(lens); i++) {
+        server_hello_t sh;
+        uint8_t buf[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN];
+        size_t len = 0;
+        make_server_hello(&sh, lens[i], 10, 0x11);
+        if (encode_server_hello_unsigned(&sh, buf, sizeof(buf), &len) != 0 ||
+            transcript_server_hello_unsigned_len(lens[i]) != len) {
+            ok = 0;
+        }
+    }
+    CHECK(ok, "step4 T17: transcript_server_hello_unsigned_len == encode_server_hello_unsigned length (1/32/64)");
+    CHECK(transcript_server_hello_unsigned_len(0) == 0 && transcript_server_hello_unsigned_len(65) == 0,
+          "step4 T17: invalid id lengths 0 and 65 -> 0 sentinel");
+}
+
+/* ---- T18: get_digest copy-out semantics ------------------------------- */
+
+static int all_zero(const uint8_t *b, size_t n) {
+    return sodium_is_zero(b, n) == 1;
+}
+
+static void test_step4_get_digest_copy_out(void) {
+    static handshake_pending_store_t s;
+    uint8_t h[5][16], th[5][32], scratch[32];
+    clock_reset();
+    store_fresh(&s, 8);
+    for (int i = 0; i < 5; i++) {
+        memset(h[i], 0x10 + i, 16);
+        memset(th[i], 0x60 + i, 32);
+    }
+
+    memset(scratch, 0xAA, sizeof(scratch));
+    CHECK(handshake_pending_get_digest(&s, h[4], scratch) == PENDING_ERR_NOT_FOUND && all_zero(scratch, 32),
+          "step4 T18: absent id -> NOT_FOUND and scratch zeroed");
+
+    CHECK(handshake_pending_insert(&s, h[0], th[0]) == PENDING_OK &&
+              handshake_pending_get_digest(&s, h[0], scratch) == PENDING_OK && memcmp(scratch, th[0], 32) == 0,
+          "step4 T18: live id -> OK and the digest is copied out");
+
+    handshake_pending_insert(&s, h[1], th[1]);
+    handshake_pending_consume_success(&s, h[1]);
+    memset(scratch, 0xAA, sizeof(scratch));
+    CHECK(handshake_pending_get_digest(&s, h[1], scratch) == PENDING_ERR_CONSUMED && all_zero(scratch, 32),
+          "step4 T18: consumed id -> CONSUMED and scratch zeroed");
+
+    handshake_pending_insert(&s, h[2], th[2]);
+    for (int i = 0; i < 3; i++) {
+        handshake_pending_record_failure(&s, h[2]);
+    }
+    memset(scratch, 0xAA, sizeof(scratch));
+    CHECK(handshake_pending_get_digest(&s, h[2], scratch) == PENDING_ERR_AUTH_LIMIT && all_zero(scratch, 32),
+          "step4 T18: auth-limited id -> AUTH_LIMIT and scratch zeroed");
+
+    handshake_pending_insert(&s, h[3], th[3]);
+    g_clock.now += TEST_TTL_MS;
+    memset(scratch, 0xAA, sizeof(scratch));
+    CHECK(handshake_pending_get_digest(&s, h[3], scratch) == PENDING_ERR_EXPIRED && all_zero(scratch, 32),
+          "step4 T18: expired id -> EXPIRED and scratch zeroed");
+    handshake_pending_store_wipe(&s);
+}
+
+/* ---- T19: inspect -- read-only expiry reporting, then eviction ------- */
+
+static void test_step4_inspect_expiry(void) {
+    static handshake_pending_store_t s;
+    uint8_t h[16], h2[16], th[32], scratch[32];
+    pending_slot_state_t s1, s2;
+    uint8_t c1 = 0xEE, c2 = 0xEE;
+    clock_reset();
+    store_fresh(&s, 4);
+    memset(h, 0x21, 16);
+    memset(h2, 0x22, 16);
+    memset(th, 0x33, 32);
+
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK && handshake_pending_active_count(&s) == 1,
+          "step4 T19(a): insert -> OK, active_count 1");
+    g_clock.now += TEST_TTL_MS; /* (b) now == deadline */
+    const pending_status_t r1 = handshake_pending_inspect(&s, h, &s1, &c1);
+    CHECK(r1 == PENDING_ERR_EXPIRED && s1 == PENDING_SLOT_EXPIRED && c1 == 0,
+          "step4 T19(c): inspect reports EXPIRED / PENDING_SLOT_EXPIRED -- never as live");
+    const pending_status_t r2 = handshake_pending_inspect(&s, h, &s2, &c2);
+    CHECK(r2 == r1 && s2 == s1 && c2 == c1, "step4 T19(d): a second inspect is identical -- nothing mutated");
+    CHECK(handshake_pending_active_count(&s) == 0, "step4 T19(e): active_count excludes the expired entry");
+    CHECK(handshake_pending_get_digest(&s, h, scratch) == PENDING_ERR_EXPIRED && all_zero(scratch, 32),
+          "step4 T19(f): get_digest -> EXPIRED and physically frees the slot");
+    CHECK(handshake_pending_inspect(&s, h, &s1, &c1) == PENDING_ERR_NOT_FOUND,
+          "step4 T19(g): inspect -> NOT_FOUND, so (f) -- not (c)/(d) -- performed the eviction");
+
+    /* Same again, with sweep() doing the physical eviction. */
+    CHECK(handshake_pending_insert(&s, h2, th) == PENDING_OK, "step4 T19: second entry inserted");
+    g_clock.now += TEST_TTL_MS;
+    CHECK(handshake_pending_inspect(&s, h2, &s1, &c1) == PENDING_ERR_EXPIRED,
+          "step4 T19: expired entry reported by inspect before sweep");
+    handshake_pending_sweep(&s);
+    CHECK(handshake_pending_inspect(&s, h2, &s1, &c1) == PENDING_ERR_NOT_FOUND,
+          "step4 T19: sweep physically evicts it");
+    handshake_pending_store_wipe(&s);
+}
+
+/* ---- T22: consume_success fails after successful derivation ---------- */
+
+static void test_step4_commit_fails_after_derivation(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t hid[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&store, 4);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK, "step4 T22: fixture ClientAuth created");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid);
+    /* Read #1 (get_digest) is live; read #2 (consume_success) is expired. */
+    clock_arm_expiry_after(1);
+
+    const handshake_status_t st = handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len);
+    CHECK(st == HANDSHAKE_ERR_EXPIRED && handshake_get_state(&p.res) == HANDSHAKE_STATE_FAILED,
+          "step4 T22: commit fails after derivation -> EXPIRED, responder FAILED");
+    CHECK(no_keys_exposed(&p.res) && !handshake_is_peer_confirmed(&p.res),
+          "step4 T22: no key accessible and key-valid flag false after the failed commit");
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_ERR_NOT_FOUND,
+          "step4 T22: ledger state is exactly what consume_success's expiry semantics dictate (evicted)");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T23-T28: KDF info (spec §6.3) ----------------------------------- */
+
+/* The normative layout rebuilt by hand from literal bytes -- deliberately
+ * independent of KEX_KDF_LABEL and of kex_build_kdf_info(). */
+static size_t hand_kdf_info(uint8_t *out, const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len,
+                            uint8_t dir) {
+    static const uint8_t label[17] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't',
+                                      'h', '/', 'v', '1', '/', 'k', 'd', 'f'};
+    size_t off = 0;
+    memcpy(out, label, sizeof(label));
+    off += sizeof(label);
+    out[off++] = 0x00;
+    out[off++] = (uint8_t)a_len;
+    memcpy(out + off, a, a_len);
+    off += a_len;
+    out[off++] = (uint8_t)b_len;
+    memcpy(out + off, b, b_len);
+    off += b_len;
+    out[off++] = dir;
+    return off;
+}
+
+static void derive_or_die(uint8_t key[32], const uint8_t ss[32], const uint8_t sid[16], const uint8_t *a,
+                          size_t a_len, const uint8_t *b, size_t b_len, uint8_t dir) {
+    if (kex_derive_session_key(key, ss, sid, 16, a, a_len, b, b_len, dir) != 0) {
+        fatal("kex_derive_session_key");
+    }
+}
+
+static void test_step4_kdf_info(void) {
+    uint8_t a[64], b[64], ss[32], sid[16];
+    for (size_t i = 0; i < 64; i++) {
+        a[i] = (uint8_t)(0x40 + i);
+        b[i] = (uint8_t)(0x90 + i);
+    }
+    randombytes_buf(ss, sizeof(ss));
+    randombytes_buf(sid, sizeof(sid));
+
+    /* T23 */
+    const size_t shapes[4][2] = {{1, 1}, {1, 64}, {64, 1}, {64, 64}};
+    const uint8_t dirs[2] = {KEX_DIR_C2S, KEX_DIR_S2C};
+    int exact = 1;
+    for (size_t s = 0; s < 4; s++) {
+        for (size_t d = 0; d < 2; d++) {
+            uint8_t expect[KEX_KDF_INFO_MAX_LEN], got[KEX_KDF_INFO_MAX_LEN];
+            size_t got_len = 0;
+            const size_t exp_len = hand_kdf_info(expect, a, shapes[s][0], b, shapes[s][1], dirs[d]);
+            if (kex_build_kdf_info(got, sizeof(got), &got_len, a, shapes[s][0], b, shapes[s][1], dirs[d]) != 0 ||
+                got_len != exp_len || memcmp(got, expect, exp_len) != 0 ||
+                got_len != 23u + (shapes[s][0] - 1u) + (shapes[s][1] - 1u)) {
+                exact = 0;
+            }
+        }
+    }
+    CHECK(exact, "step4 T23: kex_build_kdf_info is byte-exact vs the hand-built layout (1/1,1/64,64/1,64/64 x both dirs)");
+
+    /* T24 */
+    int composes = 1;
+    for (size_t d = 0; d < 2; d++) {
+        uint8_t info[KEX_KDF_INFO_MAX_LEN], k1[32], k2[32];
+        const size_t info_len = hand_kdf_info(info, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), dirs[d]);
+        derive_or_die(k1, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), dirs[d]);
+        if (kex_hkdf_sha256(k2, 32, ss, 32, sid, 16, info, info_len) != 0 || memcmp(k1, k2, 32) != 0) {
+            composes = 0;
+        }
+    }
+    CHECK(composes, "step4 T24: kex_derive_session_key == HKDF(IKM=ss, salt=session_id, info=hand-built kdf_info)");
+
+    /* T25 */
+    uint8_t kc[32], ks[32];
+    derive_or_die(kc, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_C2S);
+    derive_or_die(ks, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_S2C);
+    CHECK(memcmp(kc, ks, 32) != 0, "step4 T25: c2s != s2c for identical secret/salt/ids");
+
+    /* T26 -- the flaw found in review */
+    const uint8_t a1[] = {'a', 'b'}, b1[] = {'c'};
+    const uint8_t a2[] = {'a'}, b2[] = {'b', 'c'};
+    uint8_t cat1[3], cat2[3];
+    memcpy(cat1, a1, 2);
+    memcpy(cat1 + 2, b1, 1);
+    memcpy(cat2, a2, 1);
+    memcpy(cat2 + 1, b2, 2);
+    CHECK(memcmp(cat1, cat2, 3) == 0,
+          "step4 T26 (precondition): the fixtures really are ambiguous under raw concatenation");
+    uint8_t i1[KEX_KDF_INFO_MAX_LEN], i2[KEX_KDF_INFO_MAX_LEN], k1[32], k2[32];
+    size_t l1 = 0, l2 = 0;
+    const int built = kex_build_kdf_info(i1, sizeof(i1), &l1, a1, 2, b1, 1, KEX_DIR_C2S) == 0 &&
+                      kex_build_kdf_info(i2, sizeof(i2), &l2, a2, 1, b2, 2, KEX_DIR_C2S) == 0;
+    CHECK(built && (l1 != l2 || memcmp(i1, i2, l1) != 0),
+          "step4 T26: A=\"ab\",B=\"c\" and A=\"a\",B=\"bc\" produce DIFFERENT kdf_info");
+    derive_or_die(k1, ss, sid, a1, 2, b1, 1, KEX_DIR_C2S);
+    derive_or_die(k2, ss, sid, a2, 1, b2, 2, KEX_DIR_C2S);
+    CHECK(memcmp(k1, k2, 32) != 0,
+          "step4 T26: ...and DIFFERENT derived keys, with identical shared secret and salt");
+
+    /* T27 */
+    const uint8_t base_a[] = {'a', 'b'}, base_b[] = {'c', 'd'};
+    const uint8_t alt_a[] = {'a', 'x'}, alt_b[] = {'c', 'x'};
+    const uint8_t long_a[] = {'a', 'b', 'c'}, long_b[] = {'c', 'd', 'e'};
+    uint8_t v[6][32];
+    derive_or_die(v[0], ss, sid, base_a, 2, base_b, 2, KEX_DIR_C2S); /* baseline */
+    derive_or_die(v[1], ss, sid, alt_a, 2, base_b, 2, KEX_DIR_C2S);  /* A byte */
+    derive_or_die(v[2], ss, sid, base_a, 2, alt_b, 2, KEX_DIR_C2S);  /* B byte */
+    derive_or_die(v[3], ss, sid, long_a, 3, base_b, 2, KEX_DIR_C2S); /* A length */
+    derive_or_die(v[4], ss, sid, base_a, 2, long_b, 3, KEX_DIR_C2S); /* B length */
+    derive_or_die(v[5], ss, sid, base_a, 2, base_b, 2, KEX_DIR_S2C); /* direction */
+    int distinct = 1;
+    for (int x = 0; x < 6; x++) {
+        for (int y = x + 1; y < 6; y++) {
+            if (memcmp(v[x], v[y], 32) == 0) {
+                distinct = 0;
+            }
+        }
+    }
+    CHECK(distinct, "step4 T27: changing A_id, B_id, either length, or direction each changes the key (all pairwise distinct)");
+
+    /* T28 -- validation (committed defects #2/#3) */
+    uint8_t big[128];
+    memset(big, 'q', sizeof(big));
+    const struct {
+        const uint8_t *a;
+        size_t al;
+        const uint8_t *b;
+        size_t bl;
+        uint8_t dir;
+    } bad[] = {
+        {big, 0, big, 3, KEX_DIR_C2S},  {big, 65, big, 3, KEX_DIR_C2S}, {big, 3, big, 0, KEX_DIR_C2S},
+        {big, 3, big, 65, KEX_DIR_C2S}, {NULL, 3, big, 3, KEX_DIR_C2S}, {big, 3, NULL, 3, KEX_DIR_C2S},
+        {big, 3, big, 3, 0x00},         {big, 3, big, 3, 0x44},         {big, 3, big, 3, 0xFF},
+    };
+    int rejected = 1;
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        uint8_t out[KEX_KDF_INFO_MAX_LEN + 8], key[32];
+        size_t out_len = 777;
+        memset(out, 0xAA, sizeof(out));
+        memset(key, 0xAA, sizeof(key));
+        const int r1 = kex_build_kdf_info(out, sizeof(out), &out_len, bad[i].a, bad[i].al, bad[i].b, bad[i].bl, bad[i].dir);
+        const int r2 = kex_derive_session_key(key, ss, sid, 16, bad[i].a, bad[i].al, bad[i].b, bad[i].bl, bad[i].dir);
+        uint8_t untouched_out = 1, untouched_key = 1;
+        for (size_t j = 0; j < sizeof(out); j++) {
+            untouched_out &= (uint8_t)(out[j] == 0xAA);
+        }
+        for (size_t j = 0; j < sizeof(key); j++) {
+            untouched_key &= (uint8_t)(key[j] == 0xAA);
+        }
+        if (r1 == 0 || r2 == 0 || out_len != 777 || !untouched_out || !untouched_key) {
+            rejected = 0;
+            printf("      T28 case %zu not rejected cleanly (r1=%d r2=%d)\n", i, r1, r2);
+        }
+    }
+    {
+        /* out_cap exactly one byte short, and wrong session_id lengths. */
+        uint8_t out[KEX_KDF_INFO_MAX_LEN], key[32];
+        size_t out_len = 777;
+        memset(out, 0xAA, sizeof(out));
+        memset(key, 0xAA, sizeof(key));
+        const size_t need = 23u + 2u + 2u; /* ids of length 3 */
+        if (kex_build_kdf_info(out, need - 1u, &out_len, big, 3, big, 3, KEX_DIR_C2S) == 0 || out_len != 777 ||
+            out[0] != 0xAA || kex_derive_session_key(key, ss, sid, 15, big, 3, big, 3, KEX_DIR_C2S) == 0 ||
+            kex_derive_session_key(key, ss, sid, 17, big, 3, big, 3, KEX_DIR_C2S) == 0 || key[0] != 0xAA) {
+            rejected = 0;
+            printf("      T28 capacity/session_id case not rejected cleanly\n");
+        }
+    }
+    CHECK(rejected,
+          "step4 T28: id len 0/65, NULL ids, bad direction, short out_cap, session_id_len != 16 all rejected, "
+          "writing nothing");
+}
+
+/* ---- T29 / T32: responder-side low-order X25519 after a valid sig_A --- */
+
+static void test_step4_responder_low_order(int expire_mid_failure) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t r;
+    static pair_t fresh;
+    static uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN],
+        ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 0, ca_len = 0;
+    uint8_t hid[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    const char *t = expire_mid_failure ? "T32" : "T29";
+    char name[200];
+    clock_reset();
+    store_fresh(&store, 1); /* capacity 1: reclamation proven by behaviour */
+
+    /* (a) malicious-but-authentic initiator: real A identity, low-order ephemeral */
+    if (build_client_hello(ID_A, sizeof(ID_A), SMALL_ORDER_POINT, ch, sizeof(ch), &ch_len) != 0 ||
+        handshake_responder_init(&r, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
+        fatal("T29 fixture");
+    }
+    /* (b) */
+    const int b_ok = handshake_responder_accept_client_hello(&r, ch, ch_len) == HANDSHAKE_OK &&
+                     handshake_responder_create_server_hello(&r, sh, sizeof(sh), &sh_len) == HANDSHAKE_OK;
+    snprintf(name, sizeof(name), "step4 %s(b): low-order ClientHello accepted, ServerHello created, store now full", t);
+    CHECK(b_ok && handshake_pending_active_count(&store) == 1, name);
+    /* (c) a genuinely valid sig_A over the correct transcript */
+    if (!b_ok || build_signed_client_auth(ch, ch_len, sh, sh_len, &g_kp_a, ca, sizeof(ca), &ca_len) != 0) {
+        fatal("T29 ClientAuth fixture");
+    }
+    hid_of(ch, ch_len, sh, sh_len, hid);
+
+    if (expire_mid_failure) {
+        clock_arm_expiry_after(1); /* live at get_digest, expired by cancel */
+    }
+    /* (d) */
+    const handshake_status_t st = handshake_responder_verify_client_auth(&r, ca, ca_len);
+    snprintf(name, sizeof(name), "step4 %s(d): valid sig_A + low-order ephemeral -> KEX (the root cause)", t);
+    CHECK(st == HANDSHAKE_ERR_KEX, name);
+    /* (e) */
+    snprintf(name, sizeof(name), "step4 %s(e): responder FAILED, no keys, not peer-confirmed", t);
+    CHECK(handshake_get_state(&r) == HANDSHAKE_STATE_FAILED && no_keys_exposed(&r) &&
+              !handshake_is_peer_confirmed(&r),
+          name);
+    /* (f) */
+    snprintf(name, sizeof(name), "step4 %s(f): entry physically removed (inspect -> NOT_FOUND), not left ACTIVE", t);
+    CHECK(handshake_pending_inspect(&store, hid, &slot, &count) == PENDING_ERR_NOT_FOUND, name);
+    /* (g) */
+    snprintf(name, sizeof(name), "step4 %s(g): active_count == 0", t);
+    CHECK(handshake_pending_active_count(&store) == 0, name);
+    /* (h) */
+    pair_init(&fresh, &store, &g_ks);
+    snprintf(name, sizeof(name), "step4 %s(h): capacity reclaimed -- a fresh handshake on the capacity-1 store "
+                                 "reaches SERVER_HELLO_CREATED", t);
+    CHECK(pair_to_server_hello(&fresh) == HANDSHAKE_OK &&
+              handshake_get_state(&fresh.res) == HANDSHAKE_STATE_SERVER_HELLO_CREATED,
+          name);
+
+    pair_wipe(&fresh);
+    handshake_ctx_wipe(&r);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T30: explicit cancellation via handshake_ctx_wipe --------------- */
+
+static void test_step4_wipe_cancels(void) {
+    static handshake_pending_store_t store;
+    static pair_t p, q;
+    uint8_t hid_p[16], hid_q[16];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&store, 4);
+
+    pair_init(&p, &store, &g_ks);
+    CHECK(pair_to_server_hello(&p) == HANDSHAKE_OK && handshake_pending_active_count(&store) == 1,
+          "step4 T30: responder in SERVER_HELLO_CREATED owns one active entry");
+    hid_of(p.ch, p.ch_len, p.sh, p.sh_len, hid_p);
+    handshake_ctx_wipe(&p.res);
+    CHECK(handshake_pending_inspect(&store, hid_p, &slot, &count) == PENDING_ERR_NOT_FOUND &&
+              handshake_pending_active_count(&store) == 0,
+          "step4 T30: wiping it cancels the entry immediately (NOT_FOUND, active_count 0)");
+    handshake_ctx_wipe(&p.ini);
+
+    pair_init(&q, &store, &g_ks);
+    CHECK(pair_to_client_auth(&q) == HANDSHAKE_OK && pair_finish_both(&q) == HANDSHAKE_OK,
+          "step4 T30: second pair completes to ESTABLISHED");
+    hid_of(q.ch, q.ch_len, q.sh, q.sh_len, hid_q);
+    handshake_ctx_wipe(&q.res);
+    CHECK(handshake_pending_inspect(&store, hid_q, &slot, &count) == PENDING_ERR_CONSUMED &&
+              slot == PENDING_SLOT_CONSUMED,
+          "step4 T30: wiping an ESTABLISHED responder leaves its CONSUMED tombstone intact");
+    handshake_ctx_wipe(&q.ini);
+    handshake_pending_store_wipe(&store);
+}
+
+/* ---- T31: cancel semantics, every row of the table ------------------- */
+
+static void test_step4_cancel_semantics(void) {
+    static handshake_pending_store_t s;
+    uint8_t h[6][16], th[32];
+    pending_slot_state_t slot;
+    uint8_t count = 0;
+    clock_reset();
+    store_fresh(&s, 8);
+    memset(th, 0x44, sizeof(th));
+    for (int i = 0; i < 6; i++) {
+        memset(h[i], 0x70 + i, 16);
+    }
+
+    handshake_pending_insert(&s, h[0], th);
+    CHECK(handshake_pending_cancel(&s, h[0]) == PENDING_OK &&
+              handshake_pending_inspect(&s, h[0], &slot, &count) == PENDING_ERR_NOT_FOUND,
+          "step4 T31: live ACTIVE -> OK, then NOT_FOUND");
+
+    handshake_pending_insert(&s, h[1], th);
+    handshake_pending_consume_success(&s, h[1]);
+    CHECK(handshake_pending_cancel(&s, h[1]) == PENDING_ERR_CONSUMED &&
+              handshake_pending_inspect(&s, h[1], &slot, &count) == PENDING_ERR_CONSUMED &&
+              slot == PENDING_SLOT_CONSUMED,
+          "step4 T31: live CONSUMED tombstone -> CONSUMED, and it is still a tombstone");
+
+    handshake_pending_insert(&s, h[2], th);
+    for (int i = 0; i < 3; i++) {
+        handshake_pending_record_failure(&s, h[2]);
+    }
+    CHECK(handshake_pending_cancel(&s, h[2]) == PENDING_ERR_AUTH_LIMIT &&
+              handshake_pending_inspect(&s, h[2], &slot, &count) == PENDING_ERR_AUTH_LIMIT &&
+              slot == PENDING_SLOT_AUTH_LIMITED,
+          "step4 T31: live AUTH_LIMITED tombstone -> AUTH_LIMIT, and it is still a tombstone");
+
+    CHECK(handshake_pending_cancel(&s, h[5]) == PENDING_ERR_NOT_FOUND, "step4 T31: absent -> NOT_FOUND");
+
+    handshake_pending_insert(&s, h[3], th);
+    g_clock.now += TEST_TTL_MS; /* h[1], h[2], h[3] all expire */
+    CHECK(handshake_pending_cancel(&s, h[3]) == PENDING_ERR_EXPIRED &&
+              handshake_pending_inspect(&s, h[3], &slot, &count) == PENDING_ERR_NOT_FOUND,
+          "step4 T31: expired ACTIVE -> EXPIRED, and the slot is physically freed NOW");
+    CHECK(handshake_pending_cancel(&s, h[1]) == PENDING_ERR_EXPIRED &&
+              handshake_pending_inspect(&s, h[1], &slot, &count) == PENDING_ERR_NOT_FOUND,
+          "step4 T31: expired tombstone -> EXPIRED, evicted by ordinary expiry");
+    handshake_pending_store_wipe(&s);
+}
+
+/* ---- T33 (store API hygiene): invalid init, overflow-safe deadline ---- */
+
+static void test_step4_store_api(void) {
+    static handshake_pending_store_t s;
+    uint8_t h[16], th[32];
+    memset(h, 0x5A, 16);
+    memset(th, 0x5B, 32);
+    CHECK(handshake_pending_store_init(&s, 0, TEST_TTL_MS, NULL, NULL) == PENDING_ERR_INVALID_ARG &&
+              handshake_pending_store_init(&s, HANDSHAKE_PENDING_MAX + 1u, TEST_TTL_MS, NULL, NULL) ==
+                  PENDING_ERR_INVALID_ARG &&
+              handshake_pending_store_init(&s, 4, 0, NULL, NULL) == PENDING_ERR_INVALID_ARG,
+          "step4 store: capacity 0 / >MAX and ttl 0 rejected at init");
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_ERR_INVALID_ARG,
+          "step4 store: a store whose init was rejected is unusable");
+    clock_reset();
+    store_fresh(&s, 2);
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK && handshake_pending_insert(&s, h, th) == PENDING_ERR_INVALID_ARG,
+          "step4 store: duplicate handshake_id insert rejected (fail closed)");
+    handshake_pending_store_wipe(&s);
+    /* An unreadable/end-of-time clock must fail CLOSED, never wrap. */
+    clock_reset();
+    g_clock.now = UINT64_MAX - 10u;
+    store_fresh(&s, 2);
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK, "step4 store: insert near UINT64_MAX");
+    g_clock.now = UINT64_MAX;
+    uint8_t scratch[32];
+    CHECK(handshake_pending_get_digest(&s, h, scratch) == PENDING_ERR_EXPIRED,
+          "step4 store: saturating deadline -- the entry expires instead of wrapping to 'never'");
+    handshake_pending_store_wipe(&s);
+}
+
+static void run_step4_tests(void) {
+    if (mldsa_keypair_generate(&g_kp_a) != 0 || mldsa_keypair_generate(&g_kp_b) != 0 ||
+        mldsa_keypair_generate(&g_kp_c) != 0) {
+        fatal("ML-DSA-65 keypair generation");
+    }
+    keystore_init(&g_ks);
+    keystore_init(&g_ks_b_only);
+    if (keystore_add(&g_ks, ID_A, sizeof(ID_A), g_kp_a.public_key) != KEYSTORE_OK ||
+        keystore_add(&g_ks, ID_B, sizeof(ID_B), g_kp_b.public_key) != KEYSTORE_OK ||
+        keystore_add(&g_ks, ID_C, sizeof(ID_C), g_kp_c.public_key) != KEYSTORE_OK ||
+        keystore_add(&g_ks_b_only, ID_B, sizeof(ID_B), g_kp_b.public_key) != KEYSTORE_OK) {
+        fatal("keystore fixtures");
+    }
+
+    test_step4_happy_path();                    /* T1, T15, T20, T21 */
+    test_step4_unknown_peer();                  /* T2 */
+    test_step4_session_id_echo_mismatch();      /* T3 */
+    test_step4_tampered_sig_b();                /* T4 */
+    test_step4_peer_identity_mismatch();        /* T5 */
+    test_step4_mutated_handshake_id();          /* T6 */
+    test_step4_one_forged_then_legit();         /* T7 */
+    test_step4_three_forged();                  /* T8 */
+    test_step4_replay_after_success();          /* T9 */
+    test_step4_duplicate_client_hello();        /* T10 */
+    test_step4_expired();                       /* T11 */
+    test_step4_capacity_exhaustion();           /* T12 */
+    test_step4_wrong_state_matrix();            /* T13 */
+    test_step4_initiator_low_order();           /* T14 */
+    test_step4_keystore();                      /* T16 */
+    test_step4_unsigned_len_helper();           /* T17 */
+    test_step4_get_digest_copy_out();           /* T18 */
+    test_step4_inspect_expiry();                /* T19 */
+    test_step4_commit_fails_after_derivation(); /* T22 */
+    test_step4_kdf_info();                      /* T23-T28 */
+    test_step4_responder_low_order(0);          /* T29 */
+    test_step4_wipe_cancels();                  /* T30 */
+    test_step4_cancel_semantics();              /* T31 */
+    test_step4_responder_low_order(1);          /* T32 */
+    test_step4_store_api();                     /* store API hygiene */
+
+    mldsa_keypair_free(&g_kp_a);
+    mldsa_keypair_free(&g_kp_b);
+    mldsa_keypair_free(&g_kp_c);
+    keystore_wipe(&g_ks);
+    keystore_wipe(&g_ks_b_only);
+}
+
 int main(void) {
     if (sodium_init() < 0) {
         fprintf(stderr, "FATAL: sodium_init() failed\n");
@@ -740,6 +2224,9 @@ int main(void) {
 
     /* Test 6: encoder-negative tests */
     test_encoder_negative();
+
+    /* Step 4 */
+    run_step4_tests();
 
     if (g_failures > 0) {
         printf("\n%d check(s) FAILED\n", g_failures);

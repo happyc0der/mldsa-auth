@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 3)
+# Protocol Decisions (through Step 4)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -70,3 +70,115 @@ Step 4 (`handshake_ctx`, Section 8) and later steps' responsibility — a
 structurally well-formed message can still be semantically wrong, and
 Step 3's decoders have no way to know that. See spec Section 6.3.5 for
 the explicit division of responsibility.
+
+---
+
+## Step 4 — handshake state machine
+
+### KDF info encoding corrected: length-prefixed and injective
+
+The key schedule's HKDF `info` was previously specified — and implemented
+in the Step 2 `kex_derive_session_key` — as plain concatenation of a fixed
+label, `A_id`, `B_id` and a direction byte. That is **not injective**:
+`A="ab", B="c"` and `A="a", B="bc"` produced identical bytes. The same
+function also accepted zero-length identities and arbitrary direction
+bytes, and had **no test coverage** (the Step 2 RFC 5869 KAT exercises only
+the underlying HKDF primitive). Step 4 was its first caller, so no key was
+ever derived through the old encoding.
+
+Replaced by spec §6.3.7: `"mldsa-auth/v1/kdf" || 0x00 || len(A) || A ||
+len(B) || B || direction`, built only by `kex_build_kdf_info()`, which
+rejects ids outside 1..64 and any direction other than `0x43`/`0x53`.
+Both identities are also bound into the signed transcripts, which
+constrained practical exploitation — but a KDF's context input has to be
+unambiguous on its own. This is a breaking change to the normative key
+schedule, acceptable only because nothing had used the old one.
+
+### Direction bytes and identity roles fixed
+
+`0x43` ('C') for initiator→responder, `0x53` ('S') for
+responder→initiator. `A_id` is always the initiator and `B_id` always the
+responder, whichever side computes. `kex.h` is the single source of truth
+(`KEX_DIR_*`); `handshake.h` aliases them.
+
+### The initiator binds the responder's identity
+
+The initiator rejects a ServerHello whose `B_id` is not the peer it
+dialed, before any key lookup. Otherwise a different identity that is
+*also* pinned, and signs correctly with its own key, would pass every
+other check.
+
+### Traffic keys only once each role's mutual-auth obligations are met
+
+The initiator authenticates B at `verify_server_hello` but has not yet
+authenticated itself, so it derives no traffic keys there. It runs X25519
+once as a *validation probe* (to reject a low-order peer key before it
+signs anything) and discards the result immediately; `finish()` recomputes
+the shared secret and derives keys. The initiator context has no
+shared-secret field at all. The responder derives keys into temporary
+buffers only after `sig_A` verifies, then commits them only after the
+single-use commit succeeds.
+
+### The initiator's `ESTABLISHED` is optimistic
+
+A 3-message handshake gives the initiator no signal that the responder
+accepted `ClientAuth`. The state is kept (rather than adding a role-specific
+`KEYS_READY_UNCONFIRMED`), and the distinction is made machine-checkable
+instead: `handshake_is_peer_confirmed()` is false for an initiator and true
+for a responder in `ESTABLISHED`. Irreversible actions must be gated on
+that predicate, never on the state. Confirmation arrives with the first
+authenticated session-layer message (Step 5).
+
+### Pending-handshake store is a digest-only ledger
+
+The responder computes `TH_client_auth` and `handshake_id` once, from the
+exact ClientHello and ServerHello wire bytes, when it creates the
+ServerHello, and stores only those digests (~56 B/entry instead of ~3.6 KB
+of message bytes). The ledger cannot route a ClientAuth or complete a
+handshake; everything needed to finish lives in the responder context that
+created the ServerHello, and in Step 4 the ClientAuth must be delivered to
+that same context. `handshake_id`-to-context routing is deferred to
+transport integration.
+
+### Bounded signature-failure tolerance (N = 3), not replay tolerance
+
+`handshake_id` is derivable by any passive observer, so if a single forged
+ClientAuth consumed the entry, one injected message could deterministically
+kill an honest handshake. Instead a `sig_A` failure is counted and the
+entry kept (retryable) until three failures, then tombstoned. A failure
+never establishes a session, never yields keys, and never extends the
+entry's deadline. A *successful* ClientAuth is single-use immediately.
+Malformed messages and `handshake_id` mismatches are rejected before the
+ledger is consulted, so they cannot burn another handshake's budget.
+
+### Local failures never spend an authenticated handshake's entry
+
+After a valid `sig_A`, the responder performs X25519 and the KDF into
+temporaries *before* committing, so a local failure cancels the orphaned
+entry (reclaiming capacity) instead of consuming it. If the commit itself
+fails, the store's own expiry/terminal semantics decide the ledger state
+and the handshake code makes no second transition.
+
+### Duplicate ClientHello is accepted — an availability trade-off
+
+The same ClientHello delivered twice produces two independent pending
+entries with distinct `handshake_id`s. No `session_id` deduplication is
+done, because ClientHello is unsigned: rejecting a repeated `session_id`
+would let an off-path attacker deny service by pre-claiming an honest
+client's. This is bounded by capacity and TTL only; transport-level rate
+limiting is the deferred mitigation.
+
+### Concurrency is a documented boundary
+
+v1 contexts, keystore and pending store are not thread-safe, and "atomic"
+means logically indivisible under caller serialization (spec §6.3.6). No
+locking was added. A server integration must confine a store and its
+responder contexts to one thread, or make lookup, expiry check,
+signature-result handling and the commit one critical section.
+
+### Security Req 4.7 — "rejected and logged"
+
+A differing key for a pinned identity is rejected with the distinct status
+`KEYSTORE_ERR_KEY_MISMATCH` and never replaces the pin. The library has no
+logging facility in v1, so emitting the log record is the caller's job;
+the distinct status is the hook for it.

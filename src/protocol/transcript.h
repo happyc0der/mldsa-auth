@@ -113,6 +113,16 @@ int encode_server_hello(const server_hello_t *msg, uint8_t *out, size_t out_cap,
 
 int encode_client_auth(const client_auth_t *msg, uint8_t *out, size_t out_cap, size_t *out_len);
 
+/* Length of the SH_unsigned prefix of a ServerHello carrying an id of
+ * `id_len` bytes -- the single source of truth for that boundary, shared
+ * with encode_server_hello_unsigned(). A caller verifying a RECEIVED
+ * ServerHello uses this to slice SH_unsigned out of the original wire
+ * bytes, rather than re-encoding the decoded struct (which the Step 4
+ * handshake must never do) or re-deriving the layout arithmetic itself.
+ * Returns 0 if id_len is outside WIRE_ID_MIN_LEN..WIRE_ID_MAX_LEN; every
+ * valid length is >= 83, so 0 is an unambiguous sentinel. */
+size_t transcript_server_hello_unsigned_len(uint8_t id_len);
+
 /* --- Decoders -----------------------------------------------------------
  *
  * Each decode_* function accepts ONLY its own exact message_type byte
