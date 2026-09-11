@@ -46,3 +46,42 @@ target_compile_definitions(test_handshake PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_handshake PRIVATE ${MLDSA_SANITIZE_FLAGS})
 
 add_test(NAME test_handshake COMMAND test_handshake)
+
+add_executable(test_session test_session.c)
+target_link_libraries(test_session PRIVATE mldsa_core)
+target_compile_options(test_session PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_session PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_session PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+add_test(NAME test_session COMMAND test_session)
+
+# Zero-allocation Gate 1 (spec §8 Step 5). counting_secure_mem.c defines all
+# three secure_mem_* symbols, so when this executable is linked against the
+# STATIC mldsa_core archive the linker never pulls in the library's own
+# secure_mem.o -- every secure allocation anywhere in mldsa_core is counted.
+# The test proves the substitution is live (session init must count exactly
+# one allocation), so it fails loudly rather than passing vacuously if
+# mldsa_core ever stops being a static archive.
+add_executable(test_session_alloc test_session_alloc.c counting_secure_mem.c)
+target_link_libraries(test_session_alloc PRIVATE mldsa_core)
+target_compile_options(test_session_alloc PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_session_alloc PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_session_alloc PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+# Optional macOS developer diagnostic (libmalloc's malloc_logger hook). Not a
+# stable public API: OFF by default, never required, never affects the exit
+# status. The portable proofs are Gate 1 above and Gate 2 below.
+option(MLDSA_MALLOC_DIAG "Run the optional macOS malloc_logger diagnostic in test_session_alloc" OFF)
+if(MLDSA_MALLOC_DIAG)
+  target_compile_definitions(test_session_alloc PRIVATE MLDSA_MALLOC_DIAG=1)
+endif()
+
+add_test(NAME test_session_alloc COMMAND test_session_alloc)
+
+# Zero-allocation Gate 2: portable structural scan of session.c, with
+# built-in negative controls (see the script header).
+add_test(NAME session_no_alloc_scan
+  COMMAND ${CMAKE_COMMAND}
+    -DSESSION_C=${PROJECT_SOURCE_DIR}/src/protocol/session.c
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_session_no_alloc.cmake
+)

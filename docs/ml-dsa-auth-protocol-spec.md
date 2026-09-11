@@ -168,7 +168,7 @@ A structurally well-formed message that fails any of the above is rejected by St
 
 The v1 reference implementation is an **in-process, single-threaded** state machine.
 
-- The handshake context, the keystore, and the responder's pending-handshake store are **not thread-safe** in v1.
+- The handshake context, the keystore, the responder's pending-handshake store, and the session object (6.4) are **not thread-safe** in v1. Every call on a given session must be serialized by the caller.
 - Where this specification or the implementation describes an operation as **atomic** — in particular the responder's commit of a verified `ClientAuth` (`consume_success`) — it means **logically indivisible only when every call into a given pending store is serialized by the caller.** It is a statement about the store's own state transitions under serialized access, not a hardware or memory-model guarantee.
 - A transport or server integration **MUST** either (1) confine each pending store, and every responder context associated with it, to a single thread/event loop; or (2) apply a synchronization strategy under which lookup, the expiry check, signature-result handling, and the single-use commit behave as **one critical section** per store. Under option 2 the ML-DSA verification computation itself need not be held inside the critical section, provided the entry's state is re-validated under the lock before the result is recorded.
 
@@ -199,9 +199,98 @@ kdf_info =  "mldsa-auth/v1/kdf"   17 bytes, literal ASCII, no NUL
 - **Injectivity rationale.** Each variable-length identity is preceded by its own length byte, and the label is fixed-length, so any `kdf_info` byte string corresponds to at most one `(A_id, B_id, direction)` triple. An earlier revision of this section specified plain concatenation of a fixed label, `A_id`, `B_id` and the direction byte, with no length prefixes — which is **not** injective: `A_id="ab", B_id="c"` and `A_id="a", B_id="bc"` produced identical bytes. Both identities are also bound into the signed transcripts (6.3.2), which constrains practical exploitation of that ambiguity, but a KDF's context input must be unambiguous on its own merits rather than by relying on a separate layer happening to cover the same fields. That earlier encoding was never used to derive keys in any implementation; this construction replaces it.
 
 ### 6.4 Session
-- Wire format per message: `[8-byte big-endian sequence number][ChaCha20-Poly1305 ciphertext + tag]`.
-- Sequence number doubles as AEAD nonce material (zero-padded to 12 bytes). Any message with a sequence number ≤ last accepted is rejected — no reordering tolerance in v1.
-- Rekey (re-run handshake with fresh ephemeral keys) after 2³² messages or 1 hour of session age, whichever comes first.
+
+An ESTABLISHED handshake's two directional keys (6.3.7) protect application data as a sequence of records, each sealed with ChaCha20-Poly1305 (IETF variant: 12-byte nonce, 16-byte tag).
+
+#### 6.4.1 Record Format
+
+```
+record = record_type   1 byte   0x04
+      || seq           8 bytes  big-endian; per-direction counter, starting at 0
+      || ciphertext    pt_len bytes
+      || tag           16 bytes
+```
+
+- `0 ≤ pt_len ≤ 65 536`, so a record is 25 to 65 561 bytes. The transport framing (Step 6) carries the record length; the record itself does not.
+- `record_type` shares the message-type namespace with the handshake (`0x01`–`0x03`, 6.3.1). `0x04` is the only record type in v1; any other value is malformed.
+- **v1 records are unpadded; record length reveals plaintext length plus the fixed 25-byte overhead. Padding is deferred to a future protocol version.**
+
+#### 6.4.2 Nonce and Associated Data (normative)
+
+```
+nonce (12 bytes) = 0x00 0x00 0x00 0x00 || seq (8 bytes, big-endian)
+
+ad (47 bytes)    = "mldsa-auth/v1/record"   20 bytes, literal ASCII, no NUL
+                || 0x00                     1-byte separator
+                || handshake_id             16 bytes (6.3.3)
+                || direction                1 byte: 0x43 initiator->responder, 0x53 responder->initiator
+                || record_type              1 byte (0x04)
+                || seq                      8 bytes, big-endian
+```
+
+- Records from the initiator use the `c2s` key and direction `0x43`; records from the responder use the `s2c` key and direction `0x53`.
+- **Nonce uniqueness.** Keys are per direction, `seq` never repeats within a direction (6.4.3), and a handshake's keys can seed exactly one session (6.4.4). So no `(key, nonce)` pair is ever used twice.
+- **What the AD binds:**
+  - the label binds the protocol version and the record-layer purpose;
+  - `handshake_id` binds every record to the exact authenticated transcript;
+  - `direction` stops reflection even if both directions ever shared a key;
+  - `record_type || seq` authenticates every transmitted header byte.
+
+#### 6.4.3 Sequence, Replay and Failure Policy
+
+- A sender assigns `seq` values 0, 1, 2, … and never reuses one: `seq` is reserved before encryption.
+- A receiver **MUST** accept a record only if its `seq` equals the next expected value exactly. A lower `seq` is a replay; a higher `seq` is a gap, meaning a record was deleted. There is no reordering or gap tolerance in v1. The transport is reliable and in-order, so a gap can only mean deletion or a bug.
+- `seq` is checked on the header **before** any AEAD work. A forged header also fails authentication, because `seq` is in both the nonce and the AD.
+- **Every receive failure is terminal for the whole session.** That covers a malformed record, replay, gap, authentication failure, and a peer that exceeds the hard record limit. The session's keys are zeroed immediately.
+  - This gives an attacker who can inject into the transport nothing new, since that attacker can already reset the connection.
+  - It limits every key to at most one failed verification.
+- On authentication failure, the caller's plaintext buffer region is zeroed.
+- API misuse, such as a buffer that is too small, changes no state and consumes no `seq`.
+
+#### 6.4.4 Key Handoff and Initiator Confirmation
+
+- A session is created from an ESTABLISHED handshake context, and creating it **consumes** that context: its keys are wiped. One handshake can therefore never seed two sessions, which would reuse nonces.
+- A responder session is peer-confirmed from creation. `sig_A` has been verified, and the single-use entry has been consumed.
+- An initiator session starts **unconfirmed**. It becomes confirmed on its first successfully authenticated record from the responder, and never otherwise.
+  - A valid record under `s2c` requires the shared secret. The responder commits its keys only after verifying `ClientAuth`. So such a record proves the responder accepted the handshake.
+  - Irreversible actions **MUST** be gated on this confirmation, not on the session existing.
+- The responder **SHOULD** send a record, which may be empty, immediately after creating its session. The initiator is then confirmed without waiting for application data.
+- The initiator **MAY** send before it is confirmed: only the authenticated responder can read that data. What stays unconfirmed is whether the responder accepted the handshake.
+
+#### 6.4.5 Rekey and Expiry Limits
+
+| | Soft limit: rekey due | Hard limit: refuse and expire |
+|---|---|---|
+| Records per direction | 2³² | 2³³ |
+| Session age | 3 600 000 ms (1 h) | 3 900 000 ms (65 min) |
+
+- **Rekey** means running a new full handshake with fresh ephemeral keys. The soft limits signal that a rekey is due; the session keeps working. Either direction's record count, or the age, triggers it.
+- At a hard limit the session refuses every further seal and open and is expired. Its keys are zeroed.
+  - A receiver also rejects any record whose `seq` reaches the hard record limit, because a compliant sender never produces one.
+- Age is measured on a monotonic clock from session creation. A clock that cannot be read, or that goes backwards, counts as expired (fails closed).
+- The grace between soft and hard limits covers a rekey handshake (about 1.5 RTT plus about 2 ms of computation) with a wide margin. At a plausible peak of about 10⁷ records/s, the record grace of 2³² records lasts about 7 minutes, comparable to the 5-minute time grace.
+- **These are conservative v1 protocol-policy limits, not a derived AEAD bound.** They are chosen to stay well below practical ChaCha20-Poly1305 key-usage bounds and to leave headroom for rekeying.
+  - Nonce uniqueness (6.4.2) is necessary but not the only consideration. Aggregate data under one key, record size, and forgery bounds also matter.
+  - At the hard limit one key protects at most 2³³ records of at most 2¹⁶ bytes each, which is 2⁴⁹ bytes per direction.
+  - Forgery exposure is capped separately by 6.4.3: at most one failed verification per key.
+- **These record and key-usage limits are v1 policy values tied to the 65 536-byte maximum plaintext, ChaCha20-Poly1305, a reliable in-order transport, and full-handshake rekeying. They MUST be revisited if any of those change.**
+- Implementations may let a caller tighten these limits, but never loosen them. The reference implementation's tests rely on this, so exercising the thresholds needs no test hooks.
+
+#### 6.4.6 Session Object Lifecycle
+
+- A session object **MUST** be zero-initialized before first use. The zero state is EMPTY and owns no key material.
+- Creating a session is valid **only** on an EMPTY object. On any other object the attempt fails and changes nothing, neither the object nor the handshake context. A live key block is therefore never overwritten or leaked.
+- A FAILED or EXPIRED session keeps its already-zeroed key block until it is wiped. Wiping frees the key block and returns the object to EMPTY. Wiping is idempotent and safe on an EMPTY object.
+- The steady-state record path performs no heap allocation. Its only memory is the session's one key block, allocated at creation and freed at wipe, plus caller-provided record buffers.
+
+An earlier revision of this section gave only a three-bullet sketch:
+- the record was sequence number plus ciphertext, with no type byte;
+- the nonce was "zero-padded to 12 bytes", without saying on which side;
+- it did not specify AD;
+- "≤ last accepted is rejected" would have accepted gaps;
+- the 2³²-message and 1-hour values were stated without saying whether they were triggers or hard stops.
+
+That sketch was never implemented; 6.4.1–6.4.6 replace it.
 
 ## 7. Module Structure
 

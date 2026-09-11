@@ -36,6 +36,10 @@ static uint64_t default_monotonic_ms(void *unused) {
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+uint64_t handshake_default_clock_ms(void *clock_ctx) {
+    return default_monotonic_ms(clock_ctx);
+}
+
 static bool store_usable(const handshake_pending_store_t *s) {
     return s != NULL && s->clock_fn != NULL && s->capacity >= 1u &&
            s->capacity <= HANDSHAKE_PENDING_MAX && s->ttl_ms > 0;
@@ -481,6 +485,33 @@ handshake_state_t handshake_get_state(const handshake_ctx_t *ctx) {
     return (ctx != NULL) ? ctx->state : HANDSHAKE_STATE_FAILED;
 }
 
+handshake_status_t handshake_get_role(const handshake_ctx_t *ctx, handshake_role_t *role_out) {
+    if (ctx == NULL || role_out == NULL) {
+        return HANDSHAKE_ERR_INVALID_ARG;
+    }
+    if (ctx->role != HANDSHAKE_ROLE_INITIATOR && ctx->role != HANDSHAKE_ROLE_RESPONDER) {
+        return HANDSHAKE_ERR_UNEXPECTED_STATE; /* failed init, or wiped */
+    }
+    *role_out = ctx->role;
+    return HANDSHAKE_OK;
+}
+
+handshake_status_t handshake_get_handshake_id(const handshake_ctx_t *ctx,
+                                              uint8_t handshake_id_out[WIRE_HANDSHAKE_ID_LEN]) {
+    if (handshake_id_out == NULL) {
+        return HANDSHAKE_ERR_INVALID_ARG;
+    }
+    memset(handshake_id_out, 0, WIRE_HANDSHAKE_ID_LEN);
+    if (ctx == NULL) {
+        return HANDSHAKE_ERR_INVALID_ARG;
+    }
+    if (ctx->state != HANDSHAKE_STATE_ESTABLISHED || !ctx->keys_committed) {
+        return HANDSHAKE_ERR_UNEXPECTED_STATE;
+    }
+    memcpy(handshake_id_out, ctx->handshake_id, WIRE_HANDSHAKE_ID_LEN);
+    return HANDSHAKE_OK;
+}
+
 /* ============================================================================
  * Initiator
  * ========================================================================= */
@@ -722,12 +753,13 @@ handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx) {
     memcpy(ctx->session_keys, keys, SESSION_KEYS_LEN);
     ctx->keys_committed = true;
 
-    /* 3. Wipe the temporary secret, the ephemeral scalar and the digests. */
+    /* 3. Wipe the temporary secret, the ephemeral scalar and TH_client_auth.
+     *    handshake_id is KEPT: it is public (ClientAuth carries it in the
+     *    clear) and the session layer binds it into every record's AD. */
     secure_mem_free(shared, KEX_SHARED_SECRET_BYTES);
     secure_mem_free(keys, SESSION_KEYS_LEN);
     kex_keypair_free(&ctx->eph);
     sodium_memzero(ctx->th_client_auth, sizeof(ctx->th_client_auth));
-    sodium_memzero(ctx->handshake_id, sizeof(ctx->handshake_id));
     sodium_memzero(ctx->peer_eph_pub, sizeof(ctx->peer_eph_pub));
     ctx->state = HANDSHAKE_STATE_ESTABLISHED;
     return HANDSHAKE_OK;
@@ -1023,7 +1055,7 @@ handshake_status_t handshake_responder_finish(handshake_ctx_t *ctx) {
     }
     kex_keypair_free(&ctx->eph);
     sodium_memzero(ctx->peer_eph_pub, sizeof(ctx->peer_eph_pub));
-    sodium_memzero(ctx->handshake_id, sizeof(ctx->handshake_id));
+    /* handshake_id is kept for the session layer's AD (see initiator_finish). */
     ctx->state = HANDSHAKE_STATE_ESTABLISHED;
     return HANDSHAKE_OK;
 }

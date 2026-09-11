@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 4)
+# Protocol Decisions (through Step 5)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -182,3 +182,104 @@ A differing key for a pinned identity is rejected with the distinct status
 `KEYSTORE_ERR_KEY_MISMATCH` and never replaces the pin. The library has no
 logging facility in v1, so emitting the log record is the caller's job;
 the distinct status is the hook for it.
+
+---
+
+## Step 5 — session layer
+
+### Records carry a type byte (`0x04`)
+
+The earlier §6.4 sketch had records as sequence number plus ciphertext.
+Adding `record_type` puts records in the same message-type namespace as the
+handshake (`0x01`–`0x03`). A handshake message handed to the record parser
+is therefore rejected on its first byte, and later record types (close,
+alert) need no version bump. The type is covered by the AD. Cost: one byte
+per record.
+
+### Exact nonce and AD
+
+The nonce is four zero bytes followed by the big-endian `seq`; the earlier
+"zero-padded to 12 bytes" did not say which side. The 47-byte AD is the
+label `"mldsa-auth/v1/record"`, `0x00`, `handshake_id`, the direction byte,
+and the header (type and `seq`).
+
+`handshake_id` was chosen over `session_id` because it is a hash of both
+authenticated messages, whereas the initiator chooses `session_id`. The
+direction byte is defense in depth: keys are already per direction, so it
+only matters if a future bug ever made both directions share a key.
+
+A test builds the nonce and AD from literal bytes. It is the only check
+that catches a *symmetric* layout bug, where both peers would still
+interoperate.
+
+### `handshake_id` is retained in ESTABLISHED
+
+Both `finish()` functions used to zero `handshake_id`. It is public
+(`ClientAuth` carries it in the clear), so keeping it costs nothing. The
+handshake gained additive accessors: `handshake_get_role()`,
+`handshake_get_handshake_id()` (ESTABLISHED only), and
+`handshake_default_clock_ms()`, the shared fail-closed clock.
+
+### Contiguous sequence numbers; every receive failure is terminal
+
+A record must carry exactly the next expected `seq`. The earlier text
+("≤ last accepted rejected") would have let an attacker delete records
+silently. v1 transport is reliable and in-order, so a gap can only mean
+deletion or a bug.
+
+Any receive failure ends the session, following TLS rather than
+DTLS-style drop-and-continue:
+- anyone able to inject into the stream can already reset it, so terminal
+  failure gives attackers nothing new;
+- each key sees at most one failed verification;
+- `seq` is checked before any AEAD work, so replayed junk costs the
+  receiver no cryptography.
+
+### Exactly-once key handoff
+
+`session_init_from_handshake()` copies the keys and then wipes the
+handshake context, as its last step and only on success. Two sessions
+seeded from one handshake would both send `seq 0` under the same key,
+which is catastrophic nonce reuse for ChaCha20-Poly1305. The API makes
+that impossible, not merely documented.
+
+### Initiator confirmation
+
+The first successfully opened responder record confirms the initiator,
+and nothing else does. The responder commits its keys only after verifying
+`sig_A`, so a valid `s2c` record proves it accepted the handshake. The
+responder should send an empty record immediately; the Step 6 apps do this.
+
+### Two-tier limits
+
+The spec's 2³² records / 1 h are the *rekey trigger*. Hard limits of
+2³³ records / 65 min fail closed if the application ignores the trigger.
+
+These are conservative policy values, not a derived AEAD bound. Nonce
+uniqueness is necessary but not sufficient; aggregate data per key, record
+size and forgery bounds also matter. They must be revisited if the
+maximum plaintext, the AEAD, the transport, or the rekey policy changes.
+
+Limits can only be tightened at init, which is how tests reach the
+thresholds without test hooks.
+
+### Session lifecycle
+
+Session objects must be zero-initialized, and init works only on an EMPTY
+object. Anything else (a live, failed or expired session that still owns a
+key block) is refused with nothing touched, so a key block is never
+overwritten or leaked. Wipe is idempotent.
+
+### Zero allocation: two portable gates
+
+`sodium_malloc` allocates with `mmap` on this platform, so malloc-level
+hooks cannot see secure allocations. The proof is therefore:
+
+1. **Gate 1:** a counting `secure_mem` implementation substituted at link
+   time (the library is a static archive). It proves one allocation at
+   init, zero in the steady state, and one free at wipe.
+2. **Gate 2:** a CMake structural scan of `session.c`, with built-in
+   negative controls, for ordinary-heap freedom.
+
+macOS's `malloc_logger` is only an optional, off-by-default diagnostic.
+It is not a stable public API, and no claim rests on it.

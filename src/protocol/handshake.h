@@ -46,10 +46,12 @@
  *   (a 3-message flow carries no such signal). Its keys are made available
  *   optimistically; the caller is responsible for transmitting ClientAuth
  *   before using them; the initiator's ESTABLISHED is local and unconfirmed
- *   until a valid authenticated session-layer response arrives (Step 5).
- *   Applications MUST NOT treat it as responder confirmation or use it to
- *   authorize irreversible actions -- gate those on
- *   handshake_is_peer_confirmed(), never on the state alone.
+ *   until the first record from the responder is successfully opened by the
+ *   session layer. Applications MUST NOT treat it as responder confirmation
+ *   or use it to authorize irreversible actions -- gate those on
+ *   handshake_is_peer_confirmed(), never on the state alone. Once a session
+ *   has been created from this context (session_init_from_handshake()
+ *   consumes it), session_is_peer_confirmed() is the authority.
  */
 
 #define HANDSHAKE_PENDING_MAX 256u
@@ -76,6 +78,10 @@
  * default clock fails CLOSED: if it cannot read the clock it reports
  * UINT64_MAX, which makes every entry read as expired. */
 typedef uint64_t (*handshake_clock_fn)(void *clock_ctx);
+
+/* The default clock above, exported so the session layer shares the same
+ * fail-closed implementation. clock_ctx is ignored. */
+uint64_t handshake_default_clock_ms(void *clock_ctx);
 
 typedef enum {
     PENDING_SLOT_FREE = 0,
@@ -278,6 +284,17 @@ void handshake_ctx_wipe(handshake_ctx_t *ctx);
 
 /* HANDSHAKE_STATE_FAILED for a NULL context. */
 handshake_state_t handshake_get_state(const handshake_ctx_t *ctx);
+
+/* Role of an initialized context. NULL args -> INVALID_ARG; a context whose
+ * init failed, or that was wiped, -> UNEXPECTED_STATE. */
+handshake_status_t handshake_get_role(const handshake_ctx_t *ctx, handshake_role_t *role_out);
+
+/* Copies the 16-byte handshake_id (spec §6.3.3). It is public -- ClientAuth
+ * carries it in the clear -- and is retained in ESTABLISHED so the session
+ * layer can bind it into every record's AD (spec §6.4). Succeeds ONLY in
+ * ESTABLISHED; otherwise returns UNEXPECTED_STATE with the output zeroed. */
+handshake_status_t handshake_get_handshake_id(const handshake_ctx_t *ctx,
+                                              uint8_t handshake_id_out[WIRE_HANDSHAKE_ID_LEN]);
 
 /* --- Initiator ----------------------------------------------------------- */
 
