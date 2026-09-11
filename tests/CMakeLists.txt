@@ -78,6 +78,21 @@ endif()
 
 add_test(NAME test_session_alloc COMMAND test_session_alloc)
 
+# Step 6 reference transport: framing, sockets, the demo client/server
+# logic and demo key files over real loopback TCP (fork-based, no threads).
+add_executable(test_net test_net.c)
+target_link_libraries(test_net PRIVATE mldsa_demo)
+target_compile_options(test_net PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_net PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_net PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+add_test(NAME test_net COMMAND test_net)
+
+# Step 6 exit criterion, automated: the real executables as two processes.
+add_test(NAME demo_e2e
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/demo_e2e.sh $<TARGET_FILE:auth_server> $<TARGET_FILE:auth_client>
+)
+
 # Zero-allocation Gate 2: portable structural scan of session.c, with
 # built-in negative controls (see the script header).
 add_test(NAME session_no_alloc_scan

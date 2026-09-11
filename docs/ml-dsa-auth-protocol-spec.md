@@ -292,6 +292,60 @@ An earlier revision of this section gave only a three-bullet sketch:
 
 That sketch was never implemented; 6.4.1–6.4.6 replace it.
 
+### 6.5 Reference Transport (v1)
+
+This section specifies how the reference applications (`apps/`, Step 6) carry the protocol over TCP. It is normative for those applications and adds nothing to the cryptographic protocol: 6.3 and 6.4 are unchanged, and the handshake messages and records are the exact bytes those sections define.
+
+**TCP provides no authentication.** Peer addresses and ports are never used for any trust decision, and loopback is not treated as trusted. Identity comes only from the ML-DSA handshake against explicitly pinned keys.
+
+#### 6.5.1 Framing
+
+```
+frame = length (4 bytes, big-endian, unsigned) || payload (length bytes)
+```
+
+- Every handshake message and every record travels in exactly one frame. There is no separate frame-type byte: the payload's first byte is already the message type (`0x01`–`0x03` handshake, `0x04` record), and each state expects exactly one type.
+- **Per-state limits.** The reader checks the length on the 4 header bytes, before reading any payload byte. A length outside the bounds ends the connection. The largest possible frame is the largest record: 65 561 bytes.
+
+| Reader state | Minimum | Maximum |
+|---|---|---|
+| server, awaiting ClientHello | 1 | 146 |
+| client, awaiting ServerHello | 1 | 3 457 |
+| server, awaiting ClientAuth | 1 | 3 328 |
+| client, awaiting the confirmation record | 25 | 25 (the empty record) |
+| session phase, both sides | 25 | 65 561 |
+
+- The length is unauthenticated and needs no authentication. A wrong length shifts the payload boundaries, and then the strict full-consumption decoders (6.3.4) or the AEAD (6.4.3) fail, which is terminal.
+- Implementations **MUST NOT** assume that one read returns one frame. They **MUST** loop over partial reads and writes, retry interrupted system calls, and bound every wait by an **absolute** deadline, so a peer that trickles bytes cannot extend it.
+
+#### 6.5.2 Connection Flow and Policy
+
+1. The client sends ClientHello; the server replies with ServerHello; the client sends ClientAuth. Both sides then create their sessions (6.4.4).
+2. The server sends one **empty** record immediately. The client does not send application data until that record has authenticated (6.4.4).
+3. **Timeouts:**
+   - **Handshake:** 10 s by default, absolute from accept (server) or connect (client) until the session is established. On the client it runs until the confirmation record arrives.
+   - **Idle:** 30 s by default for each session-phase frame.
+   - The server's handshake timeout **MUST NOT** exceed the pending-handshake TTL (6.3.5).
+4. **ClientAuth failure closes the connection.** The server wipes the handshake context, which cancels its pending entry, and closes.
+   - The library still reports a signature failure below the N = 3 limit as retryable. That limit exists for transports where a forged message can arrive alongside the genuine one.
+   - On a TCP stream bound to one connection, anyone who can inject bytes can already reset the connection. Waiting for a second ClientAuth would only turn a bad peer into a timeout.
+5. **Any other failure also ends the connection:** a frame outside the bounds, a handshake or record error, a timeout, or EOF. The reference apps send no alert. Buffers that may have held plaintext are wiped when every connection ends.
+6. The reference server listens on `127.0.0.1` only and handles one connection at a time. It owns its pending-handshake store for its whole lifetime, which is the confinement option of 6.3.6.
+
+#### 6.5.3 Demo Application Protocol
+
+Inside each record after the confirmation record, the plaintext is `op (1 byte) || body`:
+
+| op | Direction | Meaning |
+|---|---|---|
+| `0x01` MSG | client → server | the server replies ECHO with the same body |
+| `0x02` ECHO | server → client | the echoed body |
+| `0x03` GOODBYE | either | authenticated close, answered by GOODBYE |
+
+- A connection has closed in an orderly way **only** after GOODBYE has been exchanged. EOF without GOODBYE is reported as a failure (possible truncation), because a TCP close is unauthenticated.
+- The confirmation record is the only empty record. Every later record must carry an op byte.
+- This is application-level convention for the reference apps. It is not part of the cryptographic protocol, and it adds no record type.
+
 ## 7. Module Structure
 
 ```
