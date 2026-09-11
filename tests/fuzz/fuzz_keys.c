@@ -7,12 +7,15 @@
  *
  *   PUBLIC MODE: the payload IS the candidate public-key file (public data).
  *   IDENTITY MODE: the payload is an edit program, never file bytes. The
- *     fixture identity template -- "MLDSASK1" || 5 || "alice" || pk || sk --
- *     is regenerated IN MEMORY from the fixed test RNG for every input, the
- *     program edits a working copy, and only then is it written to the temp
- *     file. A stored identity-mode input therefore never contains key bytes.
+ *     fixture identity template -- the Step 7.1 MLDSASK2 file
+ *     "MLDSASK2" || 5 || "alice" || pk || sk || digest (6030 bytes) -- is
+ *     regenerated IN MEMORY from the fixed test RNG for every input (digest
+ *     computed by this harness with its OWN copy of the label), the program
+ *     edits a working copy, and only then is it written to the temp file. A
+ *     stored identity-mode input therefore never contains key bytes.
  *
- * Grammar (bounded, total; every byte string is a valid program):
+ * Grammar v2 (bounded, total; every byte string is a valid program; v2 only
+ * changed the MAGIC table -- index 2 is now the legacy MLDSASK1 magic):
  *   program := count ops*      count = payload[0] % 9; empty payload = 0 ops
  *   op      := opcode operands opcode = byte % 8; stops early when bytes run out
  *   0 TRUNCATE  off16          L = off16 % (L+1)
@@ -21,12 +24,14 @@
  *   3 OVERWRITE off16 n8 lit   n = n8 % 33 (clipped); write at off16 % (L+1)
  *   4 DUPLICATE src16 n16      append buf[src16 % L ..] (n16 % 257 bytes, clipped)
  *   5 APPEND    n8 lit         n = n8 % 33 (clipped); append
- *   6 MAGIC     m8             first 8 bytes := one of 4 magics (L grows to 8)
+ *   6 MAGIC     m8             first 8 bytes := MAGICS[m8 % 4] (L grows to 8):
+ *                              MLDSASK2, MLDSAPK1, MLDSASK1 (legacy), 8 x 0x00
  *   7 ID_LEN    v8             buf[8] = v8 when L > 8
  *   Capacity 8192; offsets are 2-byte big-endian.
  *
  * Extra command: --scan-secret FILE... / --scan-secret-dirs DIR... fails if
- * any file contains an ML-DSA secret-key file layout or any 16-byte window of
+ * any file contains an ML-DSA secret-key file layout (MLDSASK1 or MLDSASK2
+ * magic followed by an id and binary key material) or any 16-byte window of
  * the fixture secret key (regenerated in memory). This is the repository
  * admission gate for committed fuzz inputs.
  */
@@ -54,8 +59,16 @@ const size_t fuzz_target_max_len = 8192;
 #define CAP 8192u
 #define HDR 9u
 #define PUB_LEN(idl) (HDR + (size_t)(idl) + MLDSA_PUBLIC_KEY_BYTES)
-#define SK_LEN(idl) (PUB_LEN(idl) + MLDSA_SECRET_KEY_BYTES)
-#define TEMPLATE_LEN SK_LEN(FUZZ_ID_A_LEN) /* 6002 */
+#define SK_BODY_LEN(idl) (PUB_LEN(idl) + MLDSA_SECRET_KEY_BYTES) /* also the whole legacy MLDSASK1 file */
+#define SK2_LEN(idl) (SK_BODY_LEN(idl) + 32u)
+#define TEMPLATE_LEN SK2_LEN(FUZZ_ID_A_LEN)
+_Static_assert(TEMPLATE_LEN == 6030u, "MLDSASK2 template for \"alice\" is 6025 + 5 bytes");
+
+/* This harness's OWN copy of the integrity label and its own length rule, so
+ * the model is independent of apps/demo_keys.c: a label/length/NUL slip made
+ * symmetrically by keygen and the loader still disagrees with this digest. */
+static const char HARNESS_LABEL[] = "mldsa-auth/v1/demo-key-integrity";
+#define HARNESS_LABEL_LEN (sizeof(HARNESS_LABEL) - 1u)
 
 static const char ID64_TEXT[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
 _Static_assert(sizeof(ID64_TEXT) - 1u == 64u, "64-character id");
@@ -70,10 +83,12 @@ static const struct {
     {FUZZ_ID_A, FUZZ_ID_A_LEN},
 };
 
+/* Grammar v2 MAGIC table: 0 valid secret, 1 public, 2 LEGACY secret, 3 zeros. */
+enum { MAGIC_SK2 = 0, MAGIC_PK1 = 1, MAGIC_SK1 = 2 };
 static const uint8_t MAGICS[4][8] = {
-    {'M', 'L', 'D', 'S', 'A', 'S', 'K', '1'},
+    {'M', 'L', 'D', 'S', 'A', 'S', 'K', '2'},
     {'M', 'L', 'D', 'S', 'A', 'P', 'K', '1'},
-    {'M', 'L', 'D', 'S', 'A', 'S', 'K', '0'},
+    {'M', 'L', 'D', 'S', 'A', 'S', 'K', '1'},
     {0, 0, 0, 0, 0, 0, 0, 0},
 };
 
@@ -134,17 +149,30 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 
 /* ---- identity template (regenerated at runtime, never stored) ----------------- */
 
+/* SHA-256(label || 0x00 || b[8, body_end)) -- id_len, id, pk, sk. */
+static void harness_digest(uint8_t out[32], const uint8_t *b, size_t body_end) {
+    static const uint8_t zero = 0x00;
+    crypto_hash_sha256_state st;
+    crypto_hash_sha256_init(&st);
+    crypto_hash_sha256_update(&st, (const unsigned char *)HARNESS_LABEL, HARNESS_LABEL_LEN);
+    crypto_hash_sha256_update(&st, &zero, 1);
+    crypto_hash_sha256_update(&st, b + 8, body_end - 8);
+    crypto_hash_sha256_final(&st, out);
+    sodium_memzero(&st, sizeof(st));
+}
+
 /* Rebuilds the fixture identity from the fixed test RNG into `kp` and writes
- * the template file bytes into g_work. Returns the template length. */
+ * the MLDSASK2 template file bytes into g_work. Returns the template length. */
 static size_t build_template(mldsa_keypair_t *kp) {
     fuzz_regenerate_identity_a(kp);
     FUZZ_ASSERT(sodium_memcmp(kp->public_key, fuzz_identities()->kp_a.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
                 "the runtime template must reproduce the fixture identity exactly");
-    memcpy(g_work, MAGICS[0], 8);
+    memcpy(g_work, MAGICS[MAGIC_SK2], 8);
     g_work[8] = (uint8_t)FUZZ_ID_A_LEN;
     memcpy(g_work + HDR, FUZZ_ID_A, FUZZ_ID_A_LEN);
     memcpy(g_work + HDR + FUZZ_ID_A_LEN, kp->public_key, MLDSA_PUBLIC_KEY_BYTES);
     memcpy(g_work + HDR + FUZZ_ID_A_LEN + MLDSA_PUBLIC_KEY_BYTES, kp->secret_key, MLDSA_SECRET_KEY_BYTES);
+    harness_digest(g_work + SK_BODY_LEN(FUZZ_ID_A_LEN), g_work, SK_BODY_LEN(FUZZ_ID_A_LEN));
     return TEMPLATE_LEN;
 }
 
@@ -272,18 +300,18 @@ static size_t apply_program(uint8_t *buf, size_t L, const uint8_t *p, size_t n, 
 
 /* ---- reference model ------------------------------------------------------------ */
 
-enum { M_FORMAT, M_ID_MISMATCH, M_VALID };
+enum { M_FORMAT, M_ID_MISMATCH, M_VALID, M_UNSUPPORTED, M_INTEGRITY };
 
-static int model(const uint8_t *b, size_t L, int secret, const uint8_t *eid, size_t elen) {
-    const size_t extra = secret ? MLDSA_SECRET_KEY_BYTES : 0u;
-    if (L < PUB_LEN(1) + extra || L > PUB_LEN(64) + extra) {
+/* Public files: MLDSAPK1, unchanged by Step 7.1. */
+static int model_public(const uint8_t *b, size_t L, const uint8_t *eid, size_t elen) {
+    if (L < PUB_LEN(1) || L > PUB_LEN(64)) {
         return M_FORMAT;
     }
-    if (memcmp(b, secret ? MAGICS[0] : MAGICS[1], 8) != 0) {
+    if (memcmp(b, MAGICS[MAGIC_PK1], 8) != 0) {
         return M_FORMAT;
     }
     const size_t idl = b[8];
-    if (idl < 1u || idl > 64u || L != PUB_LEN(idl) + extra) {
+    if (idl < 1u || idl > 64u || L != PUB_LEN(idl)) {
         return M_FORMAT;
     }
     if (idl != elen || memcmp(b + HDR, eid, idl) != 0) {
@@ -292,8 +320,44 @@ static int model(const uint8_t *b, size_t L, int secret, const uint8_t *eid, siz
     return M_VALID;
 }
 
+/* Secret files, model v2 (Step 7.1), first failure wins: size bounds ->
+ * legacy magic -> magic -> id_len and exact size -> digest (recomputed HERE
+ * with the harness's own label) -> id. */
+static int model_secret(const uint8_t *b, size_t L, const uint8_t *eid, size_t elen) {
+    if (L < HDR || L > SK2_LEN(64)) {
+        return M_FORMAT;
+    }
+    if (memcmp(b, MAGICS[MAGIC_SK1], 8) == 0) {
+        return M_UNSUPPORTED;
+    }
+    if (memcmp(b, MAGICS[MAGIC_SK2], 8) != 0) {
+        return M_FORMAT;
+    }
+    const size_t idl = b[8];
+    if (idl < 1u || idl > 64u || L != SK2_LEN(idl)) {
+        return M_FORMAT;
+    }
+    uint8_t d[32];
+    harness_digest(d, b, SK_BODY_LEN(idl));
+    const int intact = (sodium_memcmp(d, b + SK_BODY_LEN(idl), 32) == 0);
+    sodium_memzero(d, sizeof(d));
+    if (!intact) {
+        return M_INTEGRITY;
+    }
+    if (idl != elen || memcmp(b + HDR, eid, idl) != 0) {
+        return M_ID_MISMATCH;
+    }
+    return M_VALID;
+}
+
 static const char *model_name(int m) {
-    return m == M_FORMAT ? "format" : (m == M_ID_MISMATCH ? "id-mismatch" : "structurally-valid");
+    switch (m) {
+    case M_FORMAT: return "format";
+    case M_ID_MISMATCH: return "id-mismatch";
+    case M_UNSUPPORTED: return "unsupported-version";
+    case M_INTEGRITY: return "integrity";
+    default: return "structurally-valid";
+    }
 }
 
 static void run_public(const uint8_t *p, size_t n, const uint8_t *eid, size_t elen) {
@@ -301,7 +365,7 @@ static void run_public(const uint8_t *p, size_t n, const uint8_t *eid, size_t el
     memset(pk, 0xA5, sizeof(pk));
     write_candidate(p, n);
     const demo_keys_status_t st = demo_keys_load_public(g_path, eid, elen, pk);
-    const int m = model(p, n, 0, eid, elen);
+    const int m = model_public(p, n, eid, elen);
     if (m == M_VALID) {
         FUZZ_ASSERT(st == DEMO_KEYS_OK, "public: a structurally valid file must load");
         FUZZ_ASSERT(memcmp(pk, p + HDR + p[8], MLDSA_PUBLIC_KEY_BYTES) == 0, "public: loaded key == file key bytes");
@@ -327,13 +391,17 @@ static void run_identity(const uint8_t *p, size_t n, const uint8_t *eid, size_t 
     if (L == tlen) {
         /* Compare against the template without keeping a second copy: the
          * header, id and both key regions must be byte-identical. */
-        same = memcmp(g_work, MAGICS[0], 8) == 0 && g_work[8] == FUZZ_ID_A_LEN &&
+        uint8_t d[32];
+        harness_digest(d, g_work, SK_BODY_LEN(FUZZ_ID_A_LEN)); /* digest of the ORIGINAL body */
+        same = memcmp(g_work, MAGICS[MAGIC_SK2], 8) == 0 && g_work[8] == FUZZ_ID_A_LEN &&
                memcmp(g_work + HDR, FUZZ_ID_A, FUZZ_ID_A_LEN) == 0 &&
                sodium_memcmp(g_work + HDR + FUZZ_ID_A_LEN, tkp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0 &&
                sodium_memcmp(g_work + HDR + FUZZ_ID_A_LEN + MLDSA_PUBLIC_KEY_BYTES, tkp.secret_key,
-                             MLDSA_SECRET_KEY_BYTES) == 0;
+                             MLDSA_SECRET_KEY_BYTES) == 0 &&
+               sodium_memcmp(g_work + SK_BODY_LEN(FUZZ_ID_A_LEN), d, 32) == 0;
+        sodium_memzero(d, sizeof(d));
     }
-    const int m = model(g_work, L, 1, eid, elen);
+    const int m = model_secret(g_work, L, eid, elen);
     write_candidate(g_work, L);
     const demo_keys_status_t st = demo_keys_load_identity(g_path, eid, elen, &kp);
     clear_candidate();
@@ -350,6 +418,10 @@ static void run_identity(const uint8_t *p, size_t n, const uint8_t *eid, size_t 
 
     if (m == M_FORMAT) {
         FUZZ_ASSERT(st == DEMO_KEYS_ERR_FORMAT, "identity: FORMAT expected");
+    } else if (m == M_UNSUPPORTED) {
+        FUZZ_ASSERT(st == DEMO_KEYS_ERR_UNSUPPORTED_VERSION, "identity: legacy MLDSASK1 -> UNSUPPORTED_VERSION expected");
+    } else if (m == M_INTEGRITY) {
+        FUZZ_ASSERT(st == DEMO_KEYS_ERR_INTEGRITY, "identity: digest mismatch -> INTEGRITY expected");
     } else if (m == M_ID_MISMATCH) {
         FUZZ_ASSERT(st == DEMO_KEYS_ERR_ID_MISMATCH, "identity: ID_MISMATCH expected");
     } else {
@@ -360,13 +432,13 @@ static void run_identity(const uint8_t *p, size_t n, const uint8_t *eid, size_t 
         }
     }
     if (st == DEMO_KEYS_OK) {
-        /* The loader's DOCUMENTED contract: its single sign/verify self-test
-         * passed, and the loaded key is exactly the file's bytes. Deliberately
-         * NOT asserted: that an accepted key signs every message correctly.
-         * Fuzzing showed (regression t0-corruption-accepted-*) that a key with
-         * a corrupted t0 component passes the one-shot self-test ~75% of the
-         * time yet ~32% of its signatures fail to verify -- an OPEN Step 6
-         * finding recorded in docs/decisions.md, to be fixed in apps/. */
+        /* OK => the digest matched (the model agreed above) and the loaded
+         * key is exactly the file's bytes. Step 7 found (regression
+         * t0-corruption-original-*) that the old MLDSASK1 loader's one-shot
+         * sign/verify self-test accepted a key with a corrupted t0 component
+         * ~75% of the time; since Step 7.1 every stored byte is covered by the
+         * digest, so any such edit is predicted -- and required -- to fail
+         * with INTEGRITY (regression t0-corruption-rejected-*). */
         const size_t idl = g_work[8];
         FUZZ_ASSERT(kp.secret_key != NULL &&
                         memcmp(kp.public_key, g_work + HDR + idl, MLDSA_PUBLIC_KEY_BYTES) == 0 &&
@@ -448,10 +520,19 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     const uint8_t magic_pk[] = {1, 6, 1};
     const uint8_t idlen0[] = {1, 7, 0};
     const uint8_t idlen65[] = {1, 7, 65};
+    const uint8_t idlen6[] = {1, 7, 6};
+    const uint8_t magic_legacy[] = {1, 6, MAGIC_SK1};
     const unsigned pkoff = HDR + FUZZ_ID_A_LEN + 100u;
     const unsigned skoff = HDR + FUZZ_ID_A_LEN + MLDSA_PUBLIC_KEY_BYTES + 100u;
+    const unsigned idoff = HDR + 2u;
+    const unsigned dlast = t - 1u;          /* digest[31] */
+    const unsigned t0off = (unsigned)SK_BODY_LEN(FUZZ_ID_A_LEN) - MLDSA_SECRET_KEY_BYTES + 2642u; /* 4608 */
     const uint8_t flip_pk[] = {1, 2, (uint8_t)(pkoff >> 8), (uint8_t)pkoff, 0};
     const uint8_t flip_sk[] = {1, 2, (uint8_t)(skoff >> 8), (uint8_t)skoff, 0};
+    const uint8_t flip_id[] = {1, 2, (uint8_t)(idoff >> 8), (uint8_t)idoff, 0};
+    const uint8_t flip_dlast[] = {1, 2, (uint8_t)(dlast >> 8), (uint8_t)dlast, 7};
+    const uint8_t t0_overwrite[] = {1, 3, (uint8_t)(t0off >> 8), (uint8_t)t0off, 3, 0x70, 0x3c, 0x8d};
+    const uint8_t trunc_digest[] = {1, 0, (uint8_t)((t - 32u) >> 8), (uint8_t)(t - 32u)};
     const uint8_t trunc0[] = {1, 0, 0, 0};
     emit_sel(emit, ctx, "identity-0-ops", 1, zero_ops, sizeof(zero_ops));
     emit_sel(emit, ctx, "identity-empty-program", 1, fuzz_empty, 0);
@@ -463,6 +544,12 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_sel(emit, ctx, "identity-flip-pk", 1, flip_pk, sizeof(flip_pk));
     emit_sel(emit, ctx, "identity-flip-sk", 1, flip_sk, sizeof(flip_sk));
     emit_sel(emit, ctx, "identity-truncate-0", 1, trunc0, sizeof(trunc0));
+    emit_sel(emit, ctx, "identity-flip-id", 1, flip_id, sizeof(flip_id));
+    emit_sel(emit, ctx, "identity-flip-digest-last", 1, flip_dlast, sizeof(flip_dlast));
+    emit_sel(emit, ctx, "identity-t0-overwrite", 1, t0_overwrite, sizeof(t0_overwrite));
+    emit_sel(emit, ctx, "identity-magic-legacy", 1, magic_legacy, sizeof(magic_legacy));
+    emit_sel(emit, ctx, "identity-truncate-digest", 1, trunc_digest, sizeof(trunc_digest));
+    emit_sel(emit, ctx, "identity-idlen-6", 1, idlen6, sizeof(idlen6));
     emit_sel(emit, ctx, "identity-wrong-expected-id", 3, zero_ops, sizeof(zero_ops)); /* expects "a" */
 }
 
@@ -494,13 +581,13 @@ typedef struct {
     unsigned token_only;
 } scan_t;
 
-/* A secret-key file layout: magic, a plausible id length, room for both keys,
- * and a key region that is binary (> 10% non-text bytes). Source and
- * dictionary files that merely mention the magic are text, so they are
- * reported as "token only". */
+/* A secret-key file layout (MLDSASK1 or MLDSASK2 -- both hold a secret key):
+ * magic, a plausible id length, room for both keys, and a key region that is
+ * binary (> 10% non-text bytes). Source and dictionary files that merely
+ * mention a magic are text, so they are reported as "token only". */
 static int looks_like_key_layout(const uint8_t *b, size_t n, size_t o) {
     const size_t idl = (o + 8u < n) ? b[o + 8] : 0u;
-    if (idl < 1u || idl > 64u || n - o < SK_LEN(idl)) {
+    if (idl < 1u || idl > 64u || n - o < SK_BODY_LEN(idl)) {
         return 0;
     }
     const uint8_t *key = b + o + HDR + idl;
@@ -516,7 +603,7 @@ static int looks_like_key_layout(const uint8_t *b, size_t n, size_t o) {
 static void scan_buffer(scan_t *s, const char *path, const uint8_t *b, size_t n) {
     int token = 0;
     for (size_t o = 0; o + 8u <= n; o++) {
-        if (memcmp(b + o, MAGICS[0], 8) != 0) {
+        if (memcmp(b + o, MAGICS[MAGIC_SK2], 8) != 0 && memcmp(b + o, MAGICS[MAGIC_SK1], 8) != 0) {
             continue;
         }
         if (looks_like_key_layout(b, n, o)) {
@@ -545,7 +632,7 @@ static void scan_buffer(scan_t *s, const char *path, const uint8_t *b, size_t n)
         }
     }
     if (token) {
-        printf("token only: %s (bare \"MLDSASK1\" magic, no key-file layout)\n", path);
+        printf("token only: %s (bare \"MLDSASK1\"/\"MLDSASK2\" magic, no key-file layout)\n", path);
         s->token_only++;
     }
     s->files++;

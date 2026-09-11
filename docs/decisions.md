@@ -344,6 +344,9 @@ Loading refuses:
 Trust is explicit: `--pin ID=FILE`, with the id checked against the file.
 Tests never write keys under the repository.
 
+*Step 7.1 replaced the secret-key file format with `MLDSASK2` (integrity
+digest, atomic publish); see the Step 7.1 section below.*
+
 ### Tests use processes, not threads
 
 `tests/test_net.c` forks a server child, an optional frame-aware proxy
@@ -421,7 +424,8 @@ disagreement:
 - **F2 and F3:** exact status, state, ledger and key behavior.
 - **F4:** a reference stream parser. A rejected length must consume exactly
   the 4 header bytes.
-- **F5:** a structural file model.
+- **F5:** a structural file model (since Step 7.1 it also recomputes the
+  secret-key file's integrity digest).
 
 "OK only for the genuine bytes" (F2, F3) rests on ML-DSA and AEAD
 unforgeability. A violation would mean a parser non-canonicality, a
@@ -455,13 +459,14 @@ committed anywhere:
   - OK means exactly the file's key bytes were loaded;
   - structural failures match the model exactly.
 - **Template length.** The identity template is 5 998 bytes
-  (8 + 1 + 5 + 1952 + 4032), not 6 002 as the plan said.
+  (8 + 1 + 5 + 1952 + 4032), not 6 002 as the plan said. (Since Step 7.1
+  the template is the 6 030-byte `MLDSASK2` file.)
 
-### OPEN finding: the demo loader accepts a corrupted t0 component
+### RESOLVED in Step 7.1: the demo loader accepted a corrupted t0 component
 
 Found by the `fuzz_keys` smoke on its first run, and committed as
 `tests/fuzz/regressions/keys/t0-corruption-accepted-*`, a 9-byte
-instruction program.
+instruction program (renamed `t0-corruption-original-*` in Step 7.1).
 
 `demo_keys_load_identity` checks consistency with a single sign/verify.
 Three bytes overwritten in the secret key's t0 component (offset 2642)
@@ -477,8 +482,112 @@ not others. This is fail-closed, because peers reject the bad signatures,
 but the corruption goes undetected and shows up as intermittent handshake
 failures.
 
-The fix belongs in `apps/demo_keys.c`, which is outside Step 7 scope, so it
-is deferred. Proposed fix: add an integrity digest to the demo key format
-(SHA-256 over magic ‖ id ‖ pk ‖ sk, checked on load; a format version
-bump), plus a deterministic T14 test with a t0-corrupted key. Until then
-the F5 oracle asserts only the loader's documented contract.
+The fix belonged in `apps/demo_keys.c`, outside Step 7 scope, so it was
+deferred; Step 7 recorded the finding and relaxed the F5 oracle to the
+loader's documented contract. **Resolved in Step 7.1** by an integrity
+digest over every stored field of the secret-key file (next section).
+
+---
+
+## Step 7.1 — demo secret-key integrity
+
+Scope: the demo/reference secret-key file only (`apps/demo_keys.{c,h}`),
+plus its tests, fuzz harness and docs. No change to `src/`, the handshake,
+session, wire format, transport, KDF or AEAD, and none to the protocol spec,
+which never specifies the demo key format.
+
+### Format `MLDSASK2`
+
+| Offset | Field | Bytes |
+|---|---|---|
+| 0 | magic `"MLDSASK2"` | 8 |
+| 8 | `id_len` (1..64) | 1 |
+| 9 | `id` | `id_len` |
+| 9 + id_len | public key | 1952 |
+| 1961 + id_len | secret key | 4032 |
+| 5993 + id_len | digest | 32 |
+
+```
+digest = SHA-256( "mldsa-auth/v1/demo-key-integrity" || 0x00
+                  || id_len || id || public_key || secret_key )
+file size = 8 + 1 + id_len + 1952 + 4032 + 32 = 6025 + id_len   (6026 .. 6089)
+```
+
+- **Label length.** The label is 32 ASCII bytes, hashed **without** its
+  terminating NUL. The code never hard-codes the number: it uses
+  `sizeof(DEMO_KEY_INTEGRITY_LABEL) - 1`. The hash input is therefore
+  6018 + id_len bytes. (The approval message said 33 bytes and
+  6019 + id_len; measured with `wc -c`, `od -c` and Python, the literal is
+  32 bytes, and 33 is `sizeof`, which counts the NUL.)
+- **Independent checks.** T14 and the `fuzz_keys` model each compute the
+  digest with their own copy of the label and their own length rule, so a
+  label, length or NUL slip made symmetrically by keygen and the loader is
+  still caught (mutations K2, K2b, K4).
+- **Offsets.** The secret key sits at the same offset as in `MLDSASK1`, so
+  existing offset logic (the E2E log scan) is unchanged. The magic itself is
+  compared exactly, not hashed; the label already binds the version.
+
+### Load order (first failure wins)
+
+1. `O_NOFOLLOW` open; regular file, else IO; owner and `mode & 077`, else
+   PERMISSIONS.
+2. `9 <= size <= 6089`, else FORMAT. This admits every legacy size, so a
+   legacy file reaches the next check.
+3. Magic `MLDSASK1` → **`UNSUPPORTED_VERSION`**; anything but `MLDSASK2`
+   → FORMAT.
+4. `id_len` in 1..64 and size exactly `6025 + id_len`, else FORMAT
+   (truncated, extended or digest-stripped files).
+5. Read; the secret key goes straight into `secure_mem`.
+6. Recompute the digest (streaming SHA-256, the secret read in place) and
+   compare all 32 bytes with **`sodium_memcmp`** (constant time). Mismatch
+   → **`INTEGRITY`**. Hash state and both digests are wiped on every path.
+7. Id → ID_MISMATCH. The id is checked after integrity, so a corrupted id
+   reports INTEGRITY.
+8. The sign/verify self-test stays as defense in depth against a buggy
+   *writer* pairing mismatched keys (KEY_MISMATCH). It is no longer relied
+   on to detect corruption.
+
+On any failure `*kp` holds nothing: NULL secret key, zeroed public key. The
+two new statuses are appended to `demo_keys_status_t`, so existing values
+are stable.
+
+### Keygen: atomic, no-clobber, 0600
+
+Both images are built first; the secret image lives in one `secure_mem`
+buffer. Each is written to a hidden temp file in the same directory
+(`.<id>.sk.tmp.<pid>`, `O_CREAT|O_EXCL|O_NOFOLLOW`, final mode), fsync'ed,
+and published with `link()`, which fails rather than overwrite. The secret
+key is published first; a failed public-key link unlinks it again. Temps are
+always removed and the directory is fsync'ed. A reader never sees a partial
+`.sk`, and an existing identity is never overwritten. A crash between write
+and link can leave a hidden 0600 temp file: a demo-only limitation.
+
+### What the digest protects, and what it does not
+
+It is **unkeyed**. It detects accidental corruption, truncation and
+mis-assembly deterministically at load time. It is not an authenticity
+mechanism: anyone able to write the 0600 file can recompute it, or simply
+replace the key. Production key storage remains out of scope (spec §9).
+
+### Legacy files and the public-key format
+
+- **`MLDSASK1` is rejected, not migrated.** A migration would have to trust
+  an unverifiable legacy file, which is exactly the input this step stops
+  accepting, and demo keys are cheap to regenerate. The status message says
+  "regenerate it with keygen".
+- **`MLDSAPK1` is unchanged.** Public files hold no secret, trust comes from
+  out-of-band pinning, and a corrupted pinned key fails deterministically:
+  every signature from that peer is rejected. The intermittent failure mode
+  is specific to secret keys.
+
+### Evidence
+
+- **Before and after**, same probe (keygen → `70 3c 8d` at file offset
+  4608, i.e. secret-key offset 2642 → load, 20 fresh keys): the Step 7
+  loader accepted 11 of 20; the Step 7.1 loader accepts 0 of 20
+  (`integrity-check-failed`).
+- **T14** writes the recorded corruption into 5 fresh keys and requires
+  INTEGRITY for all of them.
+- **Fuzz regressions.** `t0-corruption-original-*` (renamed) and the new
+  `t0-corruption-rejected-*` both replay as `integrity-check-failed`, and the
+  F5 model predicts that status by recomputing the digest.

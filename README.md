@@ -6,14 +6,15 @@ encrypted session protocol. See
 for the full engineering spec — the canonical, versioned copy lives in this
 repository, alongside the implementation it specifies.
 
-Status: **Step 7 (Fuzzing and adversarial robustness) complete** — wire
+Status: **Step 7.1 (demo secret-key integrity) complete** — wire
 format (Step 3), handshake state machine (Step 4), authenticated
 ChaCha20-Poly1305 record layer (Step 5), loopback reference transport with
 demo client/server apps (Step 6), and libFuzzer targets plus a portable
 deterministic fuzz smoke for every attacker-controlled input (Step 7; see
-[tests/fuzz/README.md](tests/fuzz/README.md)). One open Step 6 finding from
-fuzzing (demo key loader accepts a corrupted secret-key t0 component) is
-recorded in [docs/decisions.md](docs/decisions.md). Full build
+[tests/fuzz/README.md](tests/fuzz/README.md)). The Step 7 fuzz finding (the
+demo key loader accepted a corrupted secret-key t0 component) is resolved
+by the `MLDSASK2` integrity digest (Step 7.1; see
+[docs/decisions.md](docs/decisions.md)). Full build
 instructions, exact dependency versions, and the protocol's security scope
 will be filled in at Step 9 per the spec.
 
@@ -23,6 +24,12 @@ will be filled in at Step 9 per the spec.
 > protected only by file permissions — not production key management. The
 > server listens on `127.0.0.1` only. Keep generated keys in the
 > git-ignored `demo-data/` directory and never commit them.
+>
+> `keygen` writes `MLDSASK2` secret key files, which carry a SHA-256
+> integrity digest checked on every load, so a corrupted or truncated key
+> file is rejected. The digest is unkeyed: it detects corruption, not
+> tampering. Legacy `MLDSASK1` key files are rejected; regenerate them with
+> `keygen`.
 
 ```sh
 # 1. Generate one identity per side (secret key file is created 0600).

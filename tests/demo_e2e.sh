@@ -33,6 +33,11 @@ case "$(ls -l "$TMP/keys/e2e-server.sk")" in
     -rw-------*) echo "PASS: E2E: secret key file created with mode 0600" ;;
     *) fail "secret key file mode is not 0600" ;;
 esac
+for who in e2e-server e2e-client; do
+    [ "$(head -c 8 "$TMP/keys/$who.sk")" = "MLDSASK2" ] || fail "$who.sk is not an MLDSASK2 file"
+    [ "$(wc -c < "$TMP/keys/$who.sk" | tr -d ' ')" -eq $((6025 + ${#who})) ] || fail "$who.sk size is not 6025 + id_len"
+done
+echo "PASS: E2E: keygen writes MLDSASK2 secret key files (6025 + id_len bytes)"
 
 "$SERVER" serve --id e2e-server --key "$TMP/keys/e2e-server.sk" \
     --pin "e2e-client=$TMP/keys/e2e-client.pub" \
@@ -70,7 +75,8 @@ echo "PASS: E2E: two authenticated echoes and GOODBYE on both sides"
 
 if grep -q 'E2E-CANARY' "$TMP/server.log" "$TMP/client.log"; then fail "plaintext canary found in a log"; fi
 for who in e2e-server e2e-client; do
-    # Secret key starts after magic(8) + id_len(1) + id + public key(1952).
+    # Secret key starts after magic(8) + id_len(1) + id + public key(1952)
+    # (same offset in MLDSASK2; the 32-byte digest follows the secret key).
     off=$((8 + 1 + ${#who} + 1952))
     hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
     [ "${#hex}" -eq 32 ] || fail "could not read the $who secret key prefix"

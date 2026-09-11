@@ -1,6 +1,7 @@
 # fuzz_keys: format magics (tokens, not key material), id lengths, opcodes
 magic_public="MLDSAPK1"
-magic_secret="MLDSASK1"
+magic_secret_v2="MLDSASK2"
+magic_secret_legacy="MLDSASK1"
 idlen_0="\x00"
 idlen_1="\x01"
 idlen_5="\x05"

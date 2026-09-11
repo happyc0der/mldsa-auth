@@ -21,6 +21,7 @@
  * tests/demo_e2e.sh).
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -1325,6 +1326,62 @@ static int copy_with_edit(const char *from, const char *to, long truncate_by, in
     return 0;
 }
 
+/* ---- Step 7.1: MLDSASK2 layout, derived INDEPENDENTLY of demo_keys.c ------ */
+
+/* The test's own copy of the label and its own length arithmetic: a label,
+ * length or NUL mistake in demo_keys.c (made identically by keygen and the
+ * loader) still makes the file's digest disagree with this one. */
+static const char T14_LABEL[] = "mldsa-auth/v1/demo-key-integrity";
+#define T14_LABEL_LEN (sizeof(T14_LABEL) - 1u)
+#define T14_HDR 9u /* "MLDSASK2" + id_len */
+#define T14_BODY(idl) (T14_HDR + (size_t)(idl) + MLDSA_PUBLIC_KEY_BYTES + MLDSA_SECRET_KEY_BYTES)
+#define T14_FILE(idl) (T14_BODY(idl) + 32u)
+#define T14_SK_OFF(idl) (T14_HDR + (size_t)(idl) + MLDSA_PUBLIC_KEY_BYTES)
+
+static uint8_t g_kf[16384];
+
+static size_t t14_read(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        fatal("T14 read");
+    }
+    const size_t n = fread(g_kf, 1, sizeof(g_kf), f);
+    fclose(f);
+    return n;
+}
+
+static void t14_write(const char *path, const uint8_t *data, size_t n) {
+    const int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        fatal("T14 write");
+    }
+    write_full(fd, data, n);
+    (void)close(fd);
+}
+
+/* SHA-256(label || 0x00 || file bytes [8, body_end)) -- id_len, id, pk, sk. */
+static void t14_digest(uint8_t out[32], const uint8_t *file, size_t body_end) {
+    static const uint8_t zero = 0x00;
+    crypto_hash_sha256_state st;
+    crypto_hash_sha256_init(&st);
+    crypto_hash_sha256_update(&st, (const unsigned char *)T14_LABEL, T14_LABEL_LEN);
+    crypto_hash_sha256_update(&st, &zero, 1);
+    crypto_hash_sha256_update(&st, file + 8, body_end - 8);
+    crypto_hash_sha256_final(&st, out);
+}
+
+static int t14_rejected_cleanly(const char *path, const uint8_t *id, size_t idl, demo_keys_status_t want) {
+    mldsa_keypair_t kp;
+    memset(&kp, 0xA5, sizeof(kp.public_key));
+    kp.secret_key = NULL;
+    const demo_keys_status_t st = demo_keys_load_identity(path, id, idl, &kp);
+    const int clean = kp.secret_key == NULL && sodium_is_zero(kp.public_key, sizeof(kp.public_key));
+    if (st == DEMO_KEYS_OK) {
+        mldsa_keypair_free(&kp);
+    }
+    return st == want && clean;
+}
+
 static void test_t14_demo_keys(void) {
     char dir[512];
     char path[512];
@@ -1346,6 +1403,29 @@ static void test_t14_demo_keys(void) {
     snprintf(path, sizeof(path), "%s/alice.sk", dir);
     CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600, "T14: the secret key file is mode 0600");
     CHECK(demo_keys_generate_files(dir, alice, 5) == DEMO_KEYS_ERR_EXISTS, "T14: keygen refuses to overwrite");
+    {
+        int hidden = 0;
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        while (d != NULL && (e = readdir(d)) != NULL) {
+            hidden += (e->d_name[0] == '.' && strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0);
+        }
+        if (d != NULL) {
+            closedir(d);
+        }
+        CHECK(hidden == 0, "T14.1: keygen leaves no temporary files behind (atomic temp + link publish)");
+    }
+
+    /* Step 7.1: exact MLDSASK2 layout and an independently computed digest. */
+    {
+        uint8_t want[32];
+        const size_t n = t14_read(path);
+        t14_digest(want, g_kf, T14_BODY(5));
+        CHECK(n == T14_FILE(5) && n == 6030u && memcmp(g_kf, "MLDSASK2", 8) == 0 && g_kf[8] == 5 &&
+                  memcmp(g_kf + 9, "alice", 5) == 0 && memcmp(g_kf + T14_BODY(5), want, 32) == 0,
+              "T14.1: MLDSASK2 layout is exact (6025 + id_len bytes) and its digest matches one computed "
+              "independently with the literal label");
+    }
 
     const demo_keys_status_t ls = demo_keys_load_identity(path, alice, 5, &kp);
     snprintf(p2, sizeof(p2), "%s/alice.pub", dir);
@@ -1367,32 +1447,90 @@ static void test_t14_demo_keys(void) {
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_FORMAT, "T14: truncated secret key file -> FORMAT");
     copy_with_edit(path, p2, 0, 1, 0);
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_FORMAT, "T14: oversize secret key file -> FORMAT");
+    copy_with_edit(path, p2, 32, 0, 0);
+    CHECK(t14_rejected_cleanly(p2, alice, 5, DEMO_KEYS_ERR_FORMAT), "T14.1: digest stripped (truncated by 32) -> FORMAT");
     copy_with_edit(path, p2, 0, 0, 1);
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_FORMAT, "T14: wrong magic -> FORMAT");
     CHECK(demo_keys_load_identity(path, bob, 3, &kp) == DEMO_KEYS_ERR_ID_MISMATCH,
           "T14: loading alice.sk as 'bob' -> ID_MISMATCH");
 
-    /* alice's secret key with bob's public key: caught by the self-test. */
+    /* Step 7.1: every covered region and both ends of the digest are checked. */
     {
-        static uint8_t data[16384];
+        const size_t n = t14_read(path);
+        const struct {
+            size_t off;
+            const char *what;
+        } flips[] = {
+            {9u + 2u, "T14.1: one byte changed in the id -> INTEGRITY, nothing left loaded"},
+            {9u + 5u + 100u, "T14.1: one byte changed in the public key -> INTEGRITY, nothing left loaded"},
+            {T14_SK_OFF(5) + 100u, "T14.1: one byte changed in the secret key -> INTEGRITY, nothing left loaded"},
+            {T14_BODY(5), "T14.1: first digest byte changed -> INTEGRITY"},
+            {T14_BODY(5) + 31u, "T14.1: LAST digest byte changed -> INTEGRITY (all 32 bytes are compared)"},
+        };
+        for (size_t i = 0; i < sizeof(flips) / sizeof(flips[0]); i++) {
+            memcpy(g_kf + 8192, g_kf, n); /* scratch copy */
+            g_kf[8192 + flips[i].off] ^= 0x01;
+            t14_write(p2, g_kf + 8192, n);
+            CHECK(t14_rejected_cleanly(p2, alice, 5, DEMO_KEYS_ERR_INTEGRITY), flips[i].what);
+        }
+        memcpy(g_kf + 8192, g_kf, n);
+        g_kf[8192 + 8] = 6; /* id_len 5 -> 6: the size no longer matches */
+        t14_write(p2, g_kf + 8192, n);
+        CHECK(t14_rejected_cleanly(p2, alice, 5, DEMO_KEYS_ERR_FORMAT), "T14.1: id_len changed (5 -> 6) -> FORMAT");
+
+        /* Legacy MLDSASK1: the Step 6 layout (no digest). */
+        memcpy(g_kf + 8192, g_kf, n - 32u);
+        memcpy(g_kf + 8192, "MLDSASK1", 8);
+        t14_write(p2, g_kf + 8192, n - 32u);
+        const demo_keys_status_t legacy = demo_keys_load_identity(p2, alice, 5, &kp);
+        const char *msg = demo_keys_status_name(legacy);
+        CHECK(legacy == DEMO_KEYS_ERR_UNSUPPORTED_VERSION && kp.secret_key == NULL && strstr(msg, "MLDSASK1") != NULL &&
+                  strstr(msg, "keygen") != NULL,
+              "T14.1: a legacy MLDSASK1 secret key file -> UNSUPPORTED_VERSION with a clear 'regenerate with keygen' "
+              "message");
+    }
+
+    /* Step 7.1: the recorded fuzz finding -- t0 bytes 70 3c 8d at secret-key
+     * offset 2642 -- is now rejected deterministically (was ~75% accepted). */
+    {
+        int rejected = 0;
+        for (int k = 0; k < 5; k++) {
+            char kid[8];
+            char kpath[600];
+            snprintf(kid, sizeof(kid), "t0k%d", k);
+            if (demo_keys_generate_files(dir, (const uint8_t *)kid, 4) != DEMO_KEYS_OK) {
+                fatal("T14 t0 keygen");
+            }
+            snprintf(kpath, sizeof(kpath), "%s/%s.sk", dir, kid);
+            const size_t n = t14_read(kpath);
+            const uint8_t t0bytes[3] = {0x70, 0x3c, 0x8d};
+            memcpy(g_kf + T14_SK_OFF(4) + 2642u, t0bytes, sizeof(t0bytes));
+            t14_write(p2, g_kf, n);
+            rejected += t14_rejected_cleanly(p2, (const uint8_t *)kid, 4, DEMO_KEYS_ERR_INTEGRITY);
+            (void)unlink(kpath);
+            snprintf(kpath, sizeof(kpath), "%s/%s.pub", dir, kid);
+            (void)unlink(kpath);
+        }
+        CHECK(rejected == 5, "T14.1: the recorded t0 corruption is rejected at load time -> INTEGRITY (5/5 keys)");
+    }
+
+    /* alice's secret key with bob's public key AND a recomputed valid digest:
+     * integrity passes, so the self-test must still catch the mismatch. */
+    {
         uint8_t bob_pk[MLDSA_PUBLIC_KEY_BYTES];
         char pubb[512];
         snprintf(pubb, sizeof(pubb), "%s/bob.pub", dir);
-        FILE *f = fopen(path, "rb");
-        const size_t n = (f != NULL) ? fread(data, 1, sizeof(data), f) : 0;
-        if (f != NULL) {
-            fclose(f);
-        }
-        if (demo_keys_load_public(pubb, bob, 3, bob_pk) != DEMO_KEYS_OK || n == 0) {
+        const size_t n = t14_read(path);
+        if (demo_keys_load_public(pubb, bob, 3, bob_pk) != DEMO_KEYS_OK || n != T14_FILE(5)) {
             fatal("T14 fixture");
         }
-        memcpy(data + 8 + 1 + 5, bob_pk, sizeof(bob_pk));
-        const int fd = open(p2, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        write_full(fd, data, n);
-        (void)close(fd);
+        memcpy(g_kf + 9u + 5u, bob_pk, sizeof(bob_pk));
+        t14_digest(g_kf + T14_BODY(5), g_kf, T14_BODY(5));
+        t14_write(p2, g_kf, n);
         CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_KEY_MISMATCH && kp.secret_key == NULL,
-              "T14: secret key paired with the wrong public key -> KEY_MISMATCH (sign/verify self-test)");
+              "T14: secret key paired with the wrong public key (valid digest) -> KEY_MISMATCH (sign/verify self-test)");
     }
+    sodium_memzero(g_kf, sizeof(g_kf));
     snprintf(p2, sizeof(p2), "%s/link.sk", dir);
     (void)symlink(path, p2);
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) != DEMO_KEYS_OK, "T14: a symlinked key file is refused (O_NOFOLLOW)");

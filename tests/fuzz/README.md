@@ -61,9 +61,12 @@ fixed-key ChaCha20 stream, through `randombytes_set_implementation` and
 
 - **Seeds** are generated at runtime into ignored build directories; none are committed.
 - **Identity mode never stores file bytes.** `fuzz_keys` identity-mode inputs are *mutation programs*, applied to a template the harness regenerates in memory from the fixed test RNG.
-- **CTest `fuzz_no_committed_secrets`** scans `regressions/` and `dict/` with `fuzz_keys_replay --scan-secret-dirs`. The scan fails on any ML-DSA secret-key file layout, or any 16-byte window of the fixture secret key. Bare `"MLDSASK1"` tokens in text are reported as "token only" and allowed.
+- **CTest `fuzz_no_committed_secrets`** scans `regressions/` and `dict/` with `fuzz_keys_replay --scan-secret-dirs`. The scan fails on any ML-DSA secret-key file layout — current `MLDSASK2` or legacy `MLDSASK1`, since both hold a secret key — or any 16-byte window of the fixture secret key. Bare `"MLDSASK1"`/`"MLDSASK2"` tokens in text are reported as "token only" and allowed.
 
-### Identity-mode mutation grammar (`fuzz_keys`, selector bit 0 = 1)
+### Identity-mode mutation grammar v2 (`fuzz_keys`, selector bit 0 = 1)
+
+The template is the Step 7.1 `MLDSASK2` file for the fixture identity `"alice"`:
+`"MLDSASK2" || 5 || "alice" || pk (1952) || sk (4032) || digest (32)`, 6030 bytes. The harness computes the digest itself, with **its own copy** of the label (`sizeof(label) - 1` bytes, no NUL). The reference model recomputes the digest for every mutated file and predicts `integrity-check-failed` independently of `apps/demo_keys.c`.
 
 ```
 program := count ops*      count = payload[0] % 9; empty payload = 0 ops
@@ -74,11 +77,13 @@ op      := opcode operands opcode = byte % 8; stops early when bytes run out
 3 OVERWRITE off16 n8 lit   n = n8 % 33, clipped; write at off16 % (L+1)
 4 DUPLICATE src16 n16      append buf[src16 % L ..] (n16 % 257 bytes, clipped)
 5 APPEND    n8 lit         n = n8 % 33, clipped; append
-6 MAGIC     m8             first 8 bytes := {MLDSASK1, MLDSAPK1, MLDSASK0, 0x00*8}[m8 % 4]
+6 MAGIC     m8             first 8 bytes := {MLDSASK2, MLDSAPK1, MLDSASK1, 0x00*8}[m8 % 4]
 7 ID_LEN    v8             buf[8] = v8 when L > 8
 ```
 
-The capacity is 8192 bytes and the template is 5998 bytes. Every byte string is a valid, bounded program.
+The capacity is 8192 bytes and the template is 6030 bytes. Every byte string is a valid, bounded program.
+
+v2 (Step 7.1) changed only the MAGIC table: index 0 is now the valid `MLDSASK2` magic, and index 2 is the **legacy** `MLDSASK1` magic (expected status `unsupported-format-version`); it was the invalid `MLDSASK0`. No committed program uses MAGIC, so their meaning is unchanged.
 
 ## Crash-reproducer workflow
 
@@ -91,11 +96,10 @@ A crash counts as **fixed only when all of these hold:**
 
 ### Committed regressions
 
-- **`keys/sample-identity-truncate-*`:** a 5-byte program (TRUNCATE to 5996 bytes). It makes every CI run regenerate the identity template at runtime.
-- **`keys/t0-corruption-accepted-*`:** an **OPEN Step 6 finding**. `demo_keys_load_identity` accepts a secret key whose t0 component is corrupted.
-  - Measured: its one-shot self-test passes about 75% of the time, and about 32% of that key's signatures then fail to verify.
-  - Impact: it fails closed (peers reject the bad signatures), but the corruption goes undetected.
-  - Status: the fix belongs in `apps/demo_keys.c` and is recorded in `docs/decisions.md`.
+- **`keys/sample-identity-truncate-*`:** a 5-byte program (TRUNCATE to 5996 bytes → `bad-format`). It makes every CI run regenerate the identity template at runtime.
+- **`keys/t0-corruption-original-*`:** the Step 7 fuzz finding, as found (first committed as `t0-corruption-accepted-*`). The Step 6 `MLDSASK1` loader accepted a secret key with a corrupted t0 component: its one-shot self-test passed about 75% of the time, and about 32% of that key's signatures then failed to verify. Under grammar v2 its OVERWRITE lands at secret-key offset 2446, still inside t0.
+- **`keys/t0-corruption-rejected-*`:** the exact recorded corruption, `70 3c 8d` at file offset 4608 (secret-key offset 2642).
+- **Status: RESOLVED in Step 7.1** (`MLDSASK2` integrity digest; `docs/decisions.md`). Both t0 programs must replay as `integrity-check-failed`, and the model predicts that status by recomputing the digest.
 
 ## Fuzzing proves none of the following
 
