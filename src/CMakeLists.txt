@@ -1,5 +1,6 @@
 add_library(mldsa_core STATIC
   crypto/mldsa_wrap.c
+  crypto/mlkem_wrap.c
   crypto/kex.c
   crypto/aead.c
   protocol/handshake.c

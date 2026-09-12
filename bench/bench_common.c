@@ -177,6 +177,39 @@ static const char *mldsa_backend(int *runtime_dispatch_out) {
 #endif
 }
 
+/* Same construction as mldsa_backend(), mirroring liboqs's dispatch in
+ * src/kem/ml_kem/kem_ml_kem_768.c (x86_64 needs AVX2 + BMI2 + POPCNT;
+ * aarch64 needs NEON). */
+static const char *mlkem_backend(int *runtime_dispatch_out) {
+#if defined(OQS_DIST_BUILD)
+    *runtime_dispatch_out = 1;
+#else
+    *runtime_dispatch_out = 0;
+#endif
+#if defined(OQS_ENABLE_KEM_ml_kem_768_x86_64)
+#if defined(OQS_DIST_BUILD)
+    if (OQS_CPU_has_extension(OQS_CPU_EXT_AVX2) && OQS_CPU_has_extension(OQS_CPU_EXT_BMI2) &&
+        OQS_CPU_has_extension(OQS_CPU_EXT_POPCNT)) {
+        return "AVX2-optimized (x86_64)";
+    }
+    return "portable reference (C)";
+#else
+    return "AVX2-optimized (x86_64)";
+#endif
+#elif defined(OQS_ENABLE_KEM_ml_kem_768_aarch64)
+#if defined(OQS_DIST_BUILD)
+    if (OQS_CPU_has_extension(OQS_CPU_EXT_ARM_NEON)) {
+        return "NEON-optimized (aarch64)";
+    }
+    return "portable reference (C)";
+#else
+    return "NEON-optimized (aarch64)";
+#endif
+#else
+    return "portable reference (C)";
+#endif
+}
+
 static void print_environment(const char *suite_name) {
     printf(bench_csv_mode ? "# mldsa-auth bench: %s\n" : "mldsa-auth bench: %s\n", suite_name);
 
@@ -205,6 +238,12 @@ static void print_environment(const char *suite_name) {
                    runtime_dispatch ? "run time" : "build time",
                    runtime_dispatch ? " (OQS_DIST_BUILD=ON: a CPU-feature branch per sign/verify)"
                                     : " (OQS_DIST_BUILD=OFF: no per-call branch)");
+    int kem_runtime_dispatch = 0;
+    const char *kem_backend = mlkem_backend(&kem_runtime_dispatch);
+    bench_env_line("ml-kem backend", "%s, selected at %s%s", kem_backend,
+                   kem_runtime_dispatch ? "run time" : "build time",
+                   kem_runtime_dispatch ? " (OQS_DIST_BUILD=ON: a CPU-feature branch per encaps/decaps)"
+                                        : " (OQS_DIST_BUILD=OFF: no per-call branch)");
     bench_env_line("libsodium", "%s", sodium_version_string());
 
 #if defined(__APPLE__)

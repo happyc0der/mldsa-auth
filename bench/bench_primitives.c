@@ -12,6 +12,7 @@
 #include "demo_keys.h"
 #include "kex.h"
 #include "mldsa_wrap.h"
+#include "mlkem_wrap.h"
 #include "transcript.h"
 
 #include <sodium.h>
@@ -32,6 +33,9 @@ typedef struct {
     mldsa_keypair_t sig_kp;
     kex_keypair_t kex_kp;
     kex_keypair_t kex_peer;
+    mlkem_keypair_t kem_kp;
+    uint8_t kem_ct[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t kem_ss[MLKEM_SHARED_SECRET_BYTES];
 
     uint8_t th[TH_LEN];
     uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES];
@@ -109,6 +113,8 @@ static void setup(void) {
     BENCH_REQUIRE(mldsa_keypair_generate(&g.sig_kp) == 0, "mldsa_keypair_generate");
     BENCH_REQUIRE(kex_keypair_generate(&g.kex_kp) == 0 && kex_keypair_generate(&g.kex_peer) == 0,
                   "kex_keypair_generate");
+    BENCH_REQUIRE(mlkem_keypair_generate(&g.kem_kp) == 0, "mlkem_keypair_generate");
+    BENCH_REQUIRE(mlkem_encaps(g.kem_ct, g.kem_ss, g.kem_kp.public_key) == 0, "mlkem_encaps setup");
     randombytes_buf(g.session_id, sizeof(g.session_id));
     randombytes_buf(g.aead_key, sizeof(g.aead_key));
     randombytes_buf(g.aead_nonce, sizeof(g.aead_nonce));
@@ -142,6 +148,8 @@ static void teardown(void) {
     mldsa_keypair_free(&g.sig_kp);
     kex_keypair_free(&g.kex_kp);
     kex_keypair_free(&g.kex_peer);
+    mlkem_keypair_free(&g.kem_kp);
+    sodium_memzero(g.kem_ss, sizeof(g.kem_ss));
     sodium_memzero(g.shared, sizeof(g.shared));
     sodium_memzero(g.session_key, sizeof(g.session_key));
     sodium_memzero(g.aead_key, sizeof(g.aead_key));
@@ -175,6 +183,34 @@ static void w_mldsa_verify(void *ctx, size_t k) {
         BENCH_REQUIRE(mldsa_verify(g.th, TH_LEN, g.sig, g.sig_len, g.sig_kp.public_key) == 0,
                       "mldsa_verify");
     }
+}
+
+static void w_mlkem_keypair(void *ctx, size_t k) {
+    (void)ctx;
+    for (size_t i = 0; i < k; i++) {
+        mlkem_keypair_t kp;
+        BENCH_REQUIRE(mlkem_keypair_generate(&kp) == 0, "mlkem_keypair_generate");
+        mlkem_keypair_free(&kp);
+    }
+}
+
+static void w_mlkem_encaps(void *ctx, size_t k) {
+    (void)ctx;
+    uint8_t ct[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t ss[MLKEM_SHARED_SECRET_BYTES];
+    for (size_t i = 0; i < k; i++) {
+        BENCH_REQUIRE(mlkem_encaps(ct, ss, g.kem_kp.public_key) == 0, "mlkem_encaps");
+    }
+    sodium_memzero(ss, sizeof(ss));
+}
+
+static void w_mlkem_decaps(void *ctx, size_t k) {
+    (void)ctx;
+    uint8_t ss[MLKEM_SHARED_SECRET_BYTES];
+    for (size_t i = 0; i < k; i++) {
+        BENCH_REQUIRE(mlkem_decaps(ss, g.kem_ct, &g.kem_kp) == 0, "mlkem_decaps");
+    }
+    sodium_memzero(ss, sizeof(ss));
 }
 
 static void w_kex_keypair(void *ctx, size_t k) {
@@ -346,6 +382,14 @@ int main(int argc, char **argv) {
     r = bench_run("mldsa_sign", "32 B msg", NULL, w_mldsa_sign, NULL, 0, 0.0);
     bench_report(&r);
     r = bench_run("mldsa_verify", "32 B msg", NULL, w_mldsa_verify, NULL, 0, 0.0);
+    bench_report(&r);
+
+    bench_section("ML-KEM-768 (liboqs)");
+    r = bench_run("mlkem_keypair_generate", "", NULL, w_mlkem_keypair, NULL, 0, 0.0);
+    bench_report(&r);
+    r = bench_run("mlkem_encaps", "", NULL, w_mlkem_encaps, NULL, 0, 0.0);
+    bench_report(&r);
+    r = bench_run("mlkem_decaps", "", NULL, w_mlkem_decaps, NULL, 0, 0.0);
     bench_report(&r);
 
     bench_section("X25519 + HKDF-SHA256 (libsodium)");

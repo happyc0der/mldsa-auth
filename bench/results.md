@@ -245,3 +245,29 @@ Req 4.10 conformance, not performance.
 These numbers still describe **v1 protocol code**; ML-KEM-768 is compiled in
 but not yet called by any code path. The full v1→v2 comparison, including
 the hybrid handshake and padding, is measured in V2-7.
+
+## ML-KEM-768 primitives (V2-3)
+
+Measured on the V2-2 configuration (3 repetitions, medians of run medians).
+The environment block now carries an `ml-kem backend` line alongside
+`ml-dsa backend`; both read "NEON-optimized (aarch64), selected at build
+time".
+
+| Operation | Median | Min | p99 |
+|---|---|---|---|
+| `mlkem_keypair_generate` | 14.62 µs | 12.54 µs | 35.96 µs |
+| `mlkem_encaps` | 8.96 µs | 8.64 µs | 12.26 µs |
+| `mlkem_decaps` | 10.42 µs | 10.12 µs | 14.48 µs |
+
+For scale, on the same run: `mldsa_sign` 63.0 µs, `mldsa_verify`
+30.9 µs, X25519 keypair 14.8 µs, X25519 shared secret
+17.6 µs. **All three ML-KEM operations together cost 34.0 µs** —
+about a sixth of one ML-DSA signature, and roughly what one X25519 keypair
+plus one shared secret costs. Every ML-KEM row is also far tighter than
+`mldsa_sign`, which has no rejection-sampling loop to vary.
+
+**No protocol path calls these yet.** The handshake becomes hybrid in V2-5;
+the measured v1 → v2 handshake comparison is V2-7's. On these figures the
+hybrid handshake should gain roughly 34 µs (one keypair + one encaps
++ one decaps, split across the two peers), which would put it near 0.40 ms
+against the 15 ms target — an arithmetic expectation, not a measurement.

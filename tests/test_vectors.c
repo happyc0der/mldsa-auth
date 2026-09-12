@@ -1,6 +1,6 @@
 /*
- * Step 2 known-answer tests for the crypto wrappers (mldsa_wrap, kex,
- * aead). Every expected value below is transcribed verbatim from an
+ * Known-answer tests for the crypto wrappers (mldsa_wrap, mlkem_wrap,
+ * kex, aead). Every expected value below is transcribed verbatim from an
  * external, non-invented source -- an RFC, or a vendored liboqs/
  * libsodium file -- cited at each vector. No expected value here is
  * derived from this project's own implementation; the ML-DSA-65 KAT
@@ -19,12 +19,16 @@
 #include <sodium.h>
 
 #include "mldsa_wrap.h"
+#include "mlkem_wrap.h"
 #include "kex.h"
 #include "aead.h"
 #include "secure_mem.h"
 
 #ifndef MLDSA_AUTH_LIBOQS_KATS_SIG_JSON
 #error "MLDSA_AUTH_LIBOQS_KATS_SIG_JSON must be defined by the build (see tests/CMakeLists.txt)"
+#endif
+#ifndef MLDSA_AUTH_LIBOQS_KATS_KEM_JSON
+#error "MLDSA_AUTH_LIBOQS_KATS_KEM_JSON must be defined by the build (see tests/CMakeLists.txt)"
 #endif
 
 static int g_failures = 0;
@@ -276,6 +280,234 @@ static void test_mldsa65_tampered_rejection(void) {
 }
 
 /* ---------------------------------------------------------------------
+ * ML-KEM-768 (V2-3): KAT, implicit rejection, and input validation.
+ *
+ * The KAT reproduces liboqs's own official single-vector record
+ * (count = 0) by driving liboqs's public deterministic NIST-KAT RNG API
+ * through OUR mlkem_wrap functions, in the exact format liboqs's own
+ * tests/kat_kem.c emits, then compares SHA-256(record) against the
+ * "single" hash for "ML-KEM-768" read live from liboqs's vendored
+ * tests/KATs/kem/kats.json. Nothing here is this project's own value.
+ * ------------------------------------------------------------------- */
+
+static uint8_t g_kem_ct[MLKEM_CIPHERTEXT_BYTES];
+static uint8_t g_kem_ss[MLKEM_SHARED_SECRET_BYTES];
+static uint8_t g_kem_dk[MLKEM_SECRET_KEY_BYTES];
+static uint8_t g_kem_ek[MLKEM_PUBLIC_KEY_BYTES];
+static int g_kem_kat_available = 0;
+
+static void test_mlkem768_kat(void) {
+    /* Same seeding liboqs's tests/kat_kem.c uses: entropy_input[i] = i,
+     * draw this record's own 48-byte seed, then reseed with it before
+     * keypair/encaps (OQS_KAT_PRNG_seed(prng, seed, NULL)). */
+    uint8_t entropy_input[48];
+    for (size_t i = 0; i < sizeof entropy_input; i++) {
+        entropy_input[i] = (uint8_t)i;
+    }
+    OQS_randombytes_nist_kat_init_256bit(entropy_input, NULL);
+    OQS_randombytes_custom_algorithm(OQS_randombytes_nist_kat);
+
+    uint8_t seed[48];
+    OQS_randombytes(seed, sizeof seed);
+    OQS_randombytes_nist_kat_init_256bit(seed, NULL);
+
+    mlkem_keypair_t kp;
+    if (mlkem_keypair_generate(&kp) != 0) {
+        printf("FAIL: mlkem768_kat (mlkem_keypair_generate failed)\n");
+        g_failures++;
+        return;
+    }
+    uint8_t ct[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t ss[MLKEM_SHARED_SECRET_BYTES];
+    if (mlkem_encaps(ct, ss, kp.public_key) != 0) {
+        printf("FAIL: mlkem768_kat (mlkem_encaps failed)\n");
+        mlkem_keypair_free(&kp);
+        g_failures++;
+        return;
+    }
+
+    /* liboqs's kat_kem.c record format, single-record form (no trailing
+     * blank line, because count == max_count - 1):
+     *   count = 0 / seed / pk / sk / ct / ss   */
+    static char record[16384];
+    size_t off = 0;
+    off += (size_t)snprintf(record + off, sizeof record - off, "count = 0\n");
+    off += (size_t)snprintf(record + off, sizeof record - off, "seed = ");
+    append_hex(record, sizeof record, &off, seed, sizeof seed);
+    off += (size_t)snprintf(record + off, sizeof record - off, "\n");
+    off += (size_t)snprintf(record + off, sizeof record - off, "pk = ");
+    append_hex(record, sizeof record, &off, kp.public_key, MLKEM_PUBLIC_KEY_BYTES);
+    off += (size_t)snprintf(record + off, sizeof record - off, "\n");
+    off += (size_t)snprintf(record + off, sizeof record - off, "sk = ");
+    append_hex(record, sizeof record, &off, kp.secret_key, MLKEM_SECRET_KEY_BYTES);
+    off += (size_t)snprintf(record + off, sizeof record - off, "\n");
+    off += (size_t)snprintf(record + off, sizeof record - off, "ct = ");
+    append_hex(record, sizeof record, &off, ct, MLKEM_CIPHERTEXT_BYTES);
+    off += (size_t)snprintf(record + off, sizeof record - off, "\n");
+    off += (size_t)snprintf(record + off, sizeof record - off, "ss = ");
+    append_hex(record, sizeof record, &off, ss, MLKEM_SHARED_SECRET_BYTES);
+    off += (size_t)snprintf(record + off, sizeof record - off, "\n");
+
+    unsigned char digest[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(digest, (const unsigned char *)record, off);
+    char digest_hex[2 * crypto_hash_sha256_BYTES + 1];
+    sodium_bin2hex(digest_hex, sizeof digest_hex, digest, sizeof digest);
+
+    char *json = read_file(MLDSA_AUTH_LIBOQS_KATS_KEM_JSON, NULL);
+    if (json == NULL) {
+        fprintf(stderr,
+                "FAIL: mlkem768_kat -- expected liboqs KAT reference file not found at: %s\n"
+                "      (partial rebuild? liboqs's KAT-file layout changed?)\n",
+                MLDSA_AUTH_LIBOQS_KATS_KEM_JSON);
+        g_failures++;
+        mlkem_keypair_free(&kp);
+        return;
+    }
+    char expected_hash[65];
+    int found = (extract_single_hash(json, "ML-KEM-768", expected_hash) == 0);
+    free(json);
+    if (!found) {
+        fprintf(stderr, "FAIL: mlkem768_kat -- could not find \"ML-KEM-768\".\"single\" inside: %s\n",
+                MLDSA_AUTH_LIBOQS_KATS_KEM_JSON);
+        g_failures++;
+        mlkem_keypair_free(&kp);
+        return;
+    }
+    const int hash_matches = (strcasecmp(digest_hex, expected_hash) == 0);
+    CHECK(hash_matches, "mlkem768_kat: SHA-256(KAT record) matches liboqs's published single-vector hash");
+
+    /* Decapsulation must reproduce the encapsulator's secret exactly. */
+    uint8_t ss_d[MLKEM_SHARED_SECRET_BYTES];
+    const int dec_rc = mlkem_decaps(ss_d, ct, &kp);
+    CHECK(dec_rc == 0 && sodium_memcmp(ss_d, ss, sizeof ss) == 0,
+          "mlkem768_kat: mlkem_decaps reproduces the encapsulated shared secret");
+
+    if (hash_matches && dec_rc == 0) {
+        memcpy(g_kem_ct, ct, sizeof ct);
+        memcpy(g_kem_ss, ss, sizeof ss);
+        memcpy(g_kem_dk, kp.secret_key, MLKEM_SECRET_KEY_BYTES);
+        memcpy(g_kem_ek, kp.public_key, sizeof g_kem_ek);
+        g_kem_kat_available = 1;
+    }
+    sodium_memzero(ss, sizeof ss);
+    sodium_memzero(ss_d, sizeof ss_d);
+    mlkem_keypair_free(&kp);
+}
+
+/* Security Req 4.11: a tampered CIPHERTEXT is implicitly rejected --
+ * decapsulation SUCCEEDS and returns a pseudorandom secret that does not
+ * match. It is never an error, so it can never be used as a validity
+ * signal; only the record layer's authentication reveals the mismatch. */
+static void test_mlkem768_implicit_rejection(void) {
+    if (!g_kem_kat_available) {
+        printf("FAIL: mlkem768_implicit_rejection (no valid KAT material -- skipped)\n");
+        g_failures++;
+        return;
+    }
+    mlkem_keypair_t kp;
+    memset(&kp, 0, sizeof kp);
+    kp.secret_key = secure_mem_alloc(MLKEM_SECRET_KEY_BYTES);
+    if (kp.secret_key == NULL) {
+        fprintf(stderr, "FATAL: secure_mem_alloc failed in test helper\n");
+        exit(EXIT_FAILURE);
+    }
+    memcpy(kp.secret_key, g_kem_dk, MLKEM_SECRET_KEY_BYTES);
+    memcpy(kp.public_key, g_kem_ek, sizeof kp.public_key);
+
+    uint8_t ct_a[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t ct_b[MLKEM_CIPHERTEXT_BYTES];
+    memcpy(ct_a, g_kem_ct, sizeof ct_a);
+    memcpy(ct_b, g_kem_ct, sizeof ct_b);
+    ct_a[0] ^= 0x01;                             /* first byte */
+    ct_b[MLKEM_CIPHERTEXT_BYTES - 1] ^= 0x80;    /* last byte */
+
+    uint8_t ss_a[MLKEM_SHARED_SECRET_BYTES];
+    uint8_t ss_b[MLKEM_SHARED_SECRET_BYTES];
+    const int rc_a = mlkem_decaps(ss_a, ct_a, &kp);
+    const int rc_b = mlkem_decaps(ss_b, ct_b, &kp);
+
+    CHECK(rc_a == 0 && rc_b == 0,
+          "mlkem768_implicit_rejection: decaps of a tampered ciphertext SUCCEEDS (no error signal)");
+    CHECK(sodium_memcmp(ss_a, g_kem_ss, sizeof ss_a) != 0 && sodium_memcmp(ss_b, g_kem_ss, sizeof ss_b) != 0,
+          "mlkem768_implicit_rejection: ...but yields a secret different from the genuine one");
+    CHECK(sodium_memcmp(ss_a, ss_b, sizeof ss_a) != 0,
+          "mlkem768_implicit_rejection: two different tampered ciphertexts yield different secrets");
+
+    sodium_memzero(ss_a, sizeof ss_a);
+    sodium_memzero(ss_b, sizeof ss_b);
+    mlkem_keypair_free(&kp);
+}
+
+/* FIPS 203's input validation, pinned so a future liboqs that stops
+ * performing it is caught here rather than in a handshake. */
+static void test_mlkem768_input_validation(void) {
+    if (!g_kem_kat_available) {
+        printf("FAIL: mlkem768_input_validation (no valid KAT material -- skipped)\n");
+        g_failures++;
+        return;
+    }
+    /* 7.2 modulus check: every 12-bit coefficient of an all-0xFF key is
+     * 4095, far above q-1 = 3328, so encapsulation must refuse it. */
+    uint8_t bad_ek[MLKEM_PUBLIC_KEY_BYTES];
+    memset(bad_ek, 0xFF, sizeof bad_ek);
+    uint8_t ct[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t ss[MLKEM_SHARED_SECRET_BYTES];
+    memset(ct, 0x42, sizeof ct);
+    memset(ss, 0x42, sizeof ss);
+    const int enc_rc = mlkem_encaps(ct, ss, bad_ek);
+    CHECK(enc_rc != 0, "mlkem768_input_validation: encaps rejects a malformed encapsulation key");
+    CHECK(sodium_is_zero(ct, sizeof ct) && sodium_is_zero(ss, sizeof ss),
+          "mlkem768_input_validation: ...and zeroes both outputs on rejection");
+
+    /* 7.3 hash check: dk = dk_PKE(1152) || ek(1184) || H(ek)(32) || z(32).
+     * Corrupting the stored H(ek) must make decapsulation refuse. */
+    mlkem_keypair_t kp;
+    memset(&kp, 0, sizeof kp);
+    kp.secret_key = secure_mem_alloc(MLKEM_SECRET_KEY_BYTES);
+    if (kp.secret_key == NULL) {
+        fprintf(stderr, "FATAL: secure_mem_alloc failed in test helper\n");
+        exit(EXIT_FAILURE);
+    }
+    memcpy(kp.secret_key, g_kem_dk, MLKEM_SECRET_KEY_BYTES);
+    memcpy(kp.public_key, g_kem_ek, sizeof kp.public_key);
+    kp.secret_key[1152u + 1184u] ^= 0x01; /* first byte of H(ek) */
+
+    uint8_t ss_d[MLKEM_SHARED_SECRET_BYTES];
+    memset(ss_d, 0x42, sizeof ss_d);
+    const int dec_rc = mlkem_decaps(ss_d, g_kem_ct, &kp);
+    CHECK(dec_rc != 0, "mlkem768_input_validation: decaps rejects a corrupted decapsulation key");
+    CHECK(sodium_is_zero(ss_d, sizeof ss_d),
+          "mlkem768_input_validation: ...and zeroes the shared secret on rejection");
+
+    mlkem_keypair_free(&kp);
+}
+
+static void test_mlkem768_contracts(void) {
+    uint8_t ct[MLKEM_CIPHERTEXT_BYTES];
+    uint8_t ss[MLKEM_SHARED_SECRET_BYTES];
+    mlkem_keypair_t empty;
+    memset(&empty, 0, sizeof empty);
+
+    CHECK(mlkem_keypair_generate(NULL) != 0 && mlkem_encaps(ct, ss, NULL) != 0 &&
+              mlkem_decaps(ss, ct, NULL) != 0 && mlkem_decaps(ss, ct, &empty) != 0,
+          "mlkem768_contracts: NULL arguments and a keyless keypair are rejected");
+
+    mlkem_keypair_t kp;
+    if (mlkem_keypair_generate(&kp) != 0) {
+        printf("FAIL: mlkem768_contracts (keypair generation failed)\n");
+        g_failures++;
+        return;
+    }
+    CHECK(kp.secret_key != NULL && !sodium_is_zero(kp.public_key, sizeof kp.public_key),
+          "mlkem768_contracts: a generated keypair holds a decapsulation key and a nonzero ek");
+    mlkem_keypair_free(&kp);
+    CHECK(kp.secret_key == NULL && sodium_is_zero(kp.public_key, sizeof kp.public_key),
+          "mlkem768_contracts: free() clears the key and NULLs the pointer");
+    mlkem_keypair_free(&kp); /* idempotent: must not crash or double-free */
+    CHECK(kp.secret_key == NULL, "mlkem768_contracts: free() is idempotent");
+}
+
+/* ---------------------------------------------------------------------
  * Test 3 + 4: X25519 RFC 7748 vector, and low-order-point rejection.
  *
  * alice_sk / bob_sk and the small-order point are the exact bytes from
@@ -522,6 +754,10 @@ int main(void) {
 
     test_mldsa65_kat();
     test_mldsa65_tampered_rejection();
+    test_mlkem768_kat();
+    test_mlkem768_implicit_rejection();
+    test_mlkem768_input_validation();
+    test_mlkem768_contracts();
     test_x25519_rfc7748_vector();
     test_x25519_low_order_point_rejection();
     test_hkdf_rfc5869_vector();

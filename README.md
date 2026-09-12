@@ -99,7 +99,7 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
 |---|---|
-| `test_vectors` | Known-answer tests for ML-DSA-65, HKDF-SHA256 and ChaCha20-Poly1305, transcribed from RFCs and liboqs's own KAT file |
+| `test_vectors` | Known-answer tests for ML-DSA-65, **ML-KEM-768**, HKDF-SHA256 and ChaCha20-Poly1305, transcribed from RFCs and liboqs's own KAT files, plus ML-KEM implicit rejection and FIPS 203 input validation |
 | `test_handshake` | Wire format plus the handshake state machine: happy path, tampered signatures, wrong ids, replay, transcript substitution, the pending ledger |
 | `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff |
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |

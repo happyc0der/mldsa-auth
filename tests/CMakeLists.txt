@@ -35,6 +35,7 @@ target_link_options(test_vectors PRIVATE ${MLDSA_SANITIZE_FLAGS})
 # is set by FetchContent_MakeAvailable(liboqs) in cmake/Dependencies.cmake.
 target_compile_definitions(test_vectors PRIVATE
     MLDSA_AUTH_LIBOQS_KATS_SIG_JSON="${liboqs_SOURCE_DIR}/tests/KATs/sig/kats.json"
+    MLDSA_AUTH_LIBOQS_KATS_KEM_JSON="${liboqs_SOURCE_DIR}/tests/KATs/kem/kats.json"
 )
 
 add_test(NAME test_vectors COMMAND test_vectors)

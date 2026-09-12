@@ -966,3 +966,139 @@ name fails loudly at compile time rather than silently degrading.
 This change is made for **requirement conformance, not speed**. Step 8
 measured the runtime-dispatch branch at 0.6–3.0%, inside run-to-run noise;
 nobody should read this as a performance optimization.
+
+---
+
+## V2-3 — ML-KEM-768 wrapper
+
+`src/crypto/mlkem_wrap.{c,h}`, the post-quantum half of v2's hybrid key
+exchange. Purely additive: no existing behaviour changes, and no protocol
+code calls the KEM yet (that is V2-5).
+
+### The same shape as `mldsa_wrap`
+
+Identical conventions, so the two wrappers read alike: sizes as macros,
+`_Static_assert`ed against liboqs's `OQS_KEM_ml_kem_768_length_*` **and**
+cross-checked at run time against the `OQS_KEM` object's reported lengths;
+the secret (here FIPS 203's *decapsulation key*) in `secure_mem`, the
+public *encapsulation key* inline; `*_free` wipes, frees, NULLs and is
+idempotent. Status is tested as `!= OQS_SUCCESS`, never `== OQS_ERROR`,
+because liboqs casts mlkem-native's `int` return straight to `OQS_STATUS`
+— a negative internal code that is not exactly `OQS_ERROR` would otherwise
+read as success.
+
+### "Decapsulation never fails" is true of the ciphertext only
+
+The roadmap said ML-KEM decapsulation never fails. Reading mlkem-native's
+`kem.c` shows that is precise about the *ciphertext* and wrong about the
+keys, because mlkem-native implements FIPS 203's input validation:
+
+| Input | Behaviour | Test |
+|---|---|---|
+| Tampered **ciphertext** | Implicit rejection: decaps returns success with a pseudorandom secret | `mlkem768_implicit_rejection` |
+| Malformed **encapsulation key** | Encaps FAILS (§7.2 modulus check, `mlk_kem_check_pk`) | `mlkem768_input_validation` |
+| Corrupted **decapsulation key** | Decaps FAILS (§7.3 hash check, `mlk_kem_check_sk`) | `mlkem768_input_validation` |
+
+Keypair generation performs no pairwise-consistency test
+(`MLK_CONFIG_KEYGEN_PCT` is not defined in liboqs's config), so a caller
+cannot rely on keygen to self-check.
+
+All three are pinned by tests, so a future liboqs that stops validating is
+caught here rather than in a handshake. Spec-v2 Security Req 4.11 needs no
+change — it speaks only of the ciphertext — but the wrapper header now
+documents all three, because "never fails" is the kind of half-truth that
+leads a caller to skip a return-value check.
+
+On any failure the wrapper zeroes its output buffers, so a caller can never
+mistake a partial result or an implicit-rejection secret for a usable key.
+
+### The KAT runs through the wrapper, not around it
+
+`test_vectors` reproduces liboqs's own single-vector KEM KAT record
+(`count / seed / pk / sk / ct / ss`, no trailing blank line) by driving the
+NIST-KAT DRBG through **`mlkem_wrap`'s own functions**, then compares
+SHA-256(record) against `"ML-KEM-768"."single"` read live from liboqs's
+vendored `tests/KATs/kem/kats.json`. Testing liboqs directly would prove
+only that liboqs works; routing the KAT through the wrapper proves the
+wrapper does not corrupt, truncate or mis-order anything on the way. No
+expected value is written into this repository.
+
+### Mutations
+
+Six temporary defects, each required to make a *named* check fail:
+
+| # | Defect | Observed |
+|---|---|---|
+| K1 | encaps returns success without writing `ct`/`ss` | 4 named failures, first the KAT record hash |
+| K2 | decaps ignores liboqs's status | corrupted-dk check fails |
+| K3 | encaps ignores liboqs's status | malformed-ek check fails |
+| K4 | free does not clear the encapsulation key | free-contract check fails |
+| K4b | free leaves the pointer dangling | **SegFault** on the idempotent free — libsodium's guard pages catch the double free before any check prints |
+| K5 | one `ct` byte altered in the hashed record only | KAT hash fails — proves the hash covers every field and the test is not comparing against itself |
+
+### The mutation runner, and a bug class rediscovered
+
+The V2-3 campaign was first run through a **one-off runner**: it deleted
+four artifact paths by name (`mlkem_wrap.c.o`, `test_vectors.c.o`,
+`libmldsa_core.a`, `test_vectors`) and fingerprinted two of them. What
+happened next is worth recording in order, because the final state alone
+hides the lesson.
+
+**1. K5 exposed a dirty restore.** K5 mutates the *test* file rather than
+the wrapper. The first runner's delete list did not include
+`test_vectors.c.o`, so after the mutated source was restored byte-exactly,
+make's one-second timestamp granularity saw no reason to recompile it: the
+stale, still-mutated object was linked into the "clean" rebuild, and the
+post-mutation clean-suite check ran against mutated code. It reported
+`RESTORED-NOT-CLEAN` and `CLEAN-SUITE=FAIL` — the run caught itself, but
+only because K5 happened to mutate a file the list had missed.
+
+**2. Root cause: enumeration, not the missing entry.** This is the same bug
+class as the Step 4 harness, independently rediscovered. That harness took
+four iterations to get right, and the scratch summaries show the identical
+symptom: v1 reported `restored-suite-FAIL(BAD)` on 2 of 4 mutations, v2 on
+**all four** ("source restored, cmp identical | restored-objects=clean |
+CLEAN-SUITE=FAIL"), and only v4 — which added a `mutant-in-binary` text-hash
+fingerprint — came back clean. Both runners named their artifacts, so both
+were one forgotten path away from silently testing stale code. Adding the
+missing entry would have fixed this instance and left the class intact.
+
+**3. The fix is discovery, not a longer list.** The runner used from here on
+is generalized and step-agnostic:
+
+- snapshots **every** `.c`/`.h` under `src/`, `apps/`, `tests/`, `bench/`
+  (49 files today) rather than a per-step subset;
+- before each rebuild deletes **every** object, archive and Mach-O
+  executable found under the build directory, with `_deps/` pruned so the
+  vendored liboqs and libsodium are never rebuilt;
+- fingerprints **all** of them together (41 objects + 15 executables today),
+  so "mutant-in-binaries" and "restored=clean" cover artifacts nobody
+  thought to list;
+- refuses to start if a `MUTATION` marker is already present, and reports
+  any source file a mutation *adds*;
+- takes the mutation ids, the test to run and the expected failure text from
+  an external spec file, so nothing step-specific lives in the runner.
+
+The marker guard exists because of a second flaw in the same session: a run
+that died mid-mutation left its defect in the tree, and the next run
+snapshotted *that* as its baseline, reporting "clean suite fails" at
+preflight. The affected file was new and therefore untracked, so
+`git checkout` could not rescue it — a mutation campaign on unstaged new
+files has no safety net but its own snapshot.
+
+**4. Re-run, same results.** The complete V2-3 campaign (K1–K5 and K4b) was
+re-run through the generalized runner and produced identical outcomes: all
+six killed, every restore clean, no residue. The fix closed the
+artifact-enumeration gap without changing any verdict.
+
+**Cost, accepted deliberately.** Deleting every artifact means a full
+project rebuild per mutation — about 18 builds for a six-mutation campaign,
+several minutes of wall time. The vendored dependencies are pruned, so the
+expensive part is never repeated. That cost buys the guarantee that a
+"clean suite" result was produced by clean code, which is the entire point
+of the exercise.
+
+**Mutation runners are project tooling, not repository content** — as in
+every prior step, they live in the session scratchpad and are not committed.
+V2-4 and V2-5 reuse this generalized runner unchanged, supplying only their
+own mutation script and spec file.
