@@ -33,7 +33,7 @@ static void write_server_hello_unsigned_unchecked(const server_hello_t *msg, uin
     memcpy(out + off, msg->nonce, WIRE_NONCE_LEN);
     off += WIRE_NONCE_LEN;
     memcpy(out + off, msg->session_id_echo, WIRE_SESSION_ID_LEN);
-    off += WIRE_SESSION_ID_LEN;
+    /* off + WIRE_SESSION_ID_LEN == server_hello_unsigned_encoded_len(id_len) */
 }
 
 static int hash_label_and_two_buffers(const char *label, size_t label_len,

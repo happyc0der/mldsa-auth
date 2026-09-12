@@ -126,13 +126,20 @@ static int read_file(const char *path, uint8_t **data, size_t *len) {
                 return -1;
             }
             cap *= 2;
-            buf = realloc(buf, cap);
+            uint8_t *grown = realloc(buf, cap);
+            if (grown == NULL) {
+                free(buf); /* realloc leaves the old block allocated on failure */
+                fclose(f);
+                return -1;
+            }
+            buf = grown;
             continue;
         }
-        const size_t r = fread(buf + n, 1, cap - n, f);
+        const size_t want = cap - n;
+        const size_t r = fread(buf + n, 1, want, f);
         n += r;
-        if (r == 0) {
-            break;
+        if (r < want) {
+            break; /* short read: EOF or error -- ferror() below decides which */
         }
     }
     const int err = ferror(f);
