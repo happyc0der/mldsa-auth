@@ -25,8 +25,9 @@ surface).
 signature algorithm and no KEM algorithm is compiled in, keeping the
 built library's algorithm surface (and thus attack surface) to exactly
 what v1 uses. Confirmed via symbol inspection of the built static library
-(only `OQS_SIG_ml_dsa_65_*` symbols present). This will need revisiting
-when/if v2 adds ML-KEM-768.
+(only `OQS_SIG_ml_dsa_65_*` symbols present). *Extended by V2-2: v2 also
+builds `KEM_ml_kem_768` for the hybrid key exchange — see "V2-2 —
+dependency configuration" below.*
 
 ## Dependencies are pinned, not floated
 
@@ -865,3 +866,103 @@ v1 required a revisit if the maximum plaintext, the AEAD, the transport or
 the rekey policy changed. Padding moves the *content* bound to 65 534 bytes
 but leaves the AEAD plaintext bound at 65 536, and nothing else changed, so
 the v1 values carry over. That review is recorded in spec-v2 §6.4.5.
+
+---
+
+## V2-2 — dependency configuration
+
+Build configuration only: ML-KEM-768 enabled, the liboqs pin moved from a
+mutable tag to an enforced commit, and the algorithm backend chosen at
+compile time (Security Req 4.10). No `src/`, `apps/`, `tests/` or bench
+source changed.
+
+### ML-KEM-768 enabled, and nothing else
+
+`OQS_MINIMAL_BUILD` becomes `"SIG_ml_dsa_65;KEM_ml_kem_768"` — liboqs's
+`filter_algs` takes a `;`-separated list. Symbol inspection of the built
+archive confirms the surface is exactly two algorithms: the only
+algorithm-specific exports are `OQS_SIG_ml_dsa_65*` and
+`OQS_KEM_ml_kem_768*`, alongside liboqs's generic `OQS_SIG_*`/`OQS_KEM_*`
+dispatch entry points. No other signature or KEM family is compiled in.
+
+### The pin is the commit; the tag is only the fetch hint
+
+v1 fetched liboqs at `GIT_TAG 0.16.0` and recorded the resolved commit in a
+comment, which pins nothing: a git tag is mutable, so an upstream re-point
+would silently change what this project builds. The v1 README listed this as
+deferred work.
+
+The obvious fix — setting `GIT_TAG` to the commit SHA — does not work here.
+CMake 4.4.3's `ExternalProject.cmake` states: *"If `GIT_SHALLOW` is enabled
+then `GIT_TAG` works only with branch names and tags. A commit hash is not
+allowed."* Turning the shallow clone off would pull liboqs's full history
+into every build directory; the shallow `.git` is already ~160 MB.
+
+So the tag remains the *fetch mechanism* and the commit is *verified*, by
+`cmake/VerifyLiboqsCommit.cmake`, in two places:
+
+1. **At population**, as the `PATCH_COMMAND`. This runs before liboqs's own
+   `CMakeLists.txt` is ever processed, so a re-pointed or replaced tag never
+   reaches configuration. A wrong pin aborts with both hashes named
+   (verified: the mismatch fires and liboqs's CMake output never appears).
+2. **At every configure**, re-running the same script after
+   `FetchContent_MakeAvailable`. This is the only guard on the path where
+   the first one cannot run: `-DFETCHCONTENT_SOURCE_DIR_LIBOQS=<dir>`, the
+   documented CMake override that points the build at a local source tree
+   and skips download, update and patch entirely. Verified with a
+   substituted source at a different commit: check 2 fires, and the patch
+   step never runs.
+
+**A finding worth recording**: local tampering with an already-populated
+`_deps/liboqs-src` is *self-healing*, not a durable attack. ExternalProject's
+update step re-checks out the tag on every configure, so a commit added by
+hand is silently reverted before either check runs. The realistic vectors
+are therefore (a) upstream re-pointing the tag — caught by check 1 on a
+fresh fetch and by check 2 after an update moves HEAD — and (b) a
+substituted source directory — caught by check 2. The first negative control
+written for this step simulated the self-healing case and passed vacuously;
+it was replaced by the source-substitution test above, which does not.
+
+A CMake trap, recorded so the next editor does not repeat it: **CMake's
+regex engine has no bounded-repetition operator**, so `MATCHES
+"^[0-9a-f]{40}$"` matches `{40}` literally and rejects every valid SHA. The
+script validates the length with `string(LENGTH)` instead. This was caught
+by the very first fresh configure.
+
+### Backend selection at build time: linked, not merely compiled
+
+Security Req 4.10 (spec-v2 §3) asks for the optimized backend to be chosen
+at build time with no runtime branching in hot paths. v1 shipped
+`OQS_DIST_BUILD=ON`, liboqs's default, which compiles every backend and
+dispatches through `OQS_CPU_has_extension()` on each call. v2 sets
+`OQS_DIST_BUILD=OFF`.
+
+The precise claim matters. liboqs compiles its portable-C object library
+unconditionally — `if(OQS_ENABLE_SIG_ml_dsa_65) add_library(ml_dsa_65_ref …)`
+— so those objects are in `liboqs.a` either way. What `OQS_DIST_BUILD=OFF`
+changes is the dispatch in `sig_ml_dsa_65.c` / `kem_ml_kem_768.c` from a
+runtime `if` to a compile-time `#if`, after which nothing references the
+portable-C entry points and the linker never pulls them into a binary. So
+the conformance statement is **"one backend is linked"**, and the
+verification measures executables, not the archive: every Mach-O executable
+in the build tree, discovered dynamically, carries the NEON symbols and zero
+`PQCP_MLDSA_NATIVE_MLDSA65_C_*` symbols (15 of 17 executables link the
+algorithm at all; the check fails if that count is zero, so it cannot pass
+vacuously).
+
+`MLDSA_OQS_OPT_TARGET` (top-level `CMakeLists.txt`) selects the target and
+defaults to **`auto`**. Step 8 used `native`, which liboqs accepts only by
+falling through to its "pass the string to the compiler as a CPU name"
+branch; `auto` is the documented value that means "tune for this machine"
+(`-mcpu=native` on Apple arm64, `-march=native` on x86_64). `generic` is the
+portable baseline (`-march=armv8-a+crypto`, `-march=x86-64`).
+
+**`auto` is not portable**: the binary may use instructions absent on an
+older CPU of the same family. Anything distributed must be built with
+`generic`, which on x86_64 gives up liboqs's AVX2 backends. Both paths are
+tested (a full `generic` build passes the suite), and an unrecognised CPU
+name fails loudly at compile time rather than silently degrading.
+
+This change is made for **requirement conformance, not speed**. Step 8
+measured the runtime-dispatch branch at 0.6–3.0%, inside run-to-run noise;
+nobody should read this as a performance optimization.

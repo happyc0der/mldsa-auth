@@ -65,11 +65,20 @@ Two constraints that will otherwise cost you an afternoon:
 | AddressSanitizer | `-DENABLE_ASAN=ON` | Memory-safety runs of the whole suite |
 | UndefinedBehaviorSanitizer | `-DENABLE_UBSAN=ON` | UB runs of the whole suite |
 | libFuzzer | `-DMLDSA_FUZZ=ON` + a libFuzzer-capable clang | Coverage-guided fuzzing |
+| Portable binaries | `-DMLDSA_OQS_OPT_TARGET=generic` | Anything you distribute (see below) |
 
 Project sources are compiled with `-Wall -Wextra -Werror
 -fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8). Those
 flags apply to this project's own targets only, never to the vendored
 dependencies.
+
+**`MLDSA_OQS_OPT_TARGET` decides portability.** It defaults to `auto`,
+which tunes liboqs for the building machine's CPU (`-mcpu=native` /
+`-march=native`) — fast, but the binary may fault on an older CPU of the same
+family. Build anything you ship with `generic`, the portable baseline; on
+x86_64 that gives up liboqs's AVX2 backends. Any other value is passed to the
+compiler as a CPU name, and an unrecognised one fails the build rather than
+silently degrading.
 
 Apple clang does not ship the libFuzzer runtime, so the fuzz build needs a
 different compiler and its own build directory:
@@ -187,18 +196,24 @@ system packages are used, so a clean checkout builds identical bits.
 
 | Dependency | Version | Pin mechanism |
 |---|---|---|
-| [liboqs](https://github.com/open-quantum-safe/liboqs) | **0.16.0** | `FetchContent` at `GIT_TAG 0.16.0`; resolved commit `5a1a854b0dc9f2141bdc771c555ee60c37950183` recorded in `cmake/Dependencies.cmake` |
+| [liboqs](https://github.com/open-quantum-safe/liboqs) | **0.16.0** | Fetched at `GIT_TAG 0.16.0`, then **verified against commit `5a1a854b0dc9f2141bdc771c555ee60c37950183`** — at population and again at every configure (`cmake/VerifyLiboqsCommit.cmake`) |
 | [libsodium](https://github.com/jedisct1/libsodium) | **1.0.22** | Release tarball pinned byte-exact by `URL_HASH` SHA-256 `adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349`; resolved commit `77e1ce5d6dee871c49ef211222ba18ef0c486bda` |
 
-liboqs is built with `OQS_MINIMAL_BUILD=SIG_ml_dsa_65`: exactly one signature
-algorithm and no KEM is compiled in, so the library's algorithm surface is
-only what v1 uses. libsodium is built via its own Autotools tooling from the
+liboqs is built with `OQS_MINIMAL_BUILD="SIG_ml_dsa_65;KEM_ml_kem_768"`:
+exactly one signature algorithm and one KEM, so the library's algorithm
+surface is only what the protocol uses. The backend is selected at build
+time (`OQS_DIST_BUILD=OFF`), so no CPU-feature branch is taken per
+cryptographic call. libsodium is built via its own Autotools tooling from the
 maintainer's release tarball, outside the build tree (see the path constraint
 above).
 
-The libsodium pin is byte-exact. The liboqs pin is by **tag**, with the
-resolved commit recorded in a comment rather than enforced by the build — see
-[Deferred work](#deferred-work).
+**Both pins are exact and neither trusts a mutable ref.** libsodium is
+pinned by the SHA-256 of its release tarball. liboqs is *fetched* by tag —
+CMake forbids a shallow clone of a bare commit — and then *verified* against
+the pinned commit, twice: once when the source is first populated, before
+liboqs's own CMake runs, and again on every configure, which also covers
+`-DFETCHCONTENT_SOURCE_DIR_LIBOQS=<dir>`. Either mismatch aborts the build
+naming both hashes.
 
 ## Performance
 
@@ -284,14 +299,6 @@ ships; each is a decision to stop somewhere.
   policy values, not derived bounds, and must be revisited if the maximum
   plaintext size, the AEAD, the transport or the rekey policy changes.
   (§ *Two-tier limits*)
-- **liboqs pin hardening** — pinned by tag with the resolved commit recorded
-  in a comment; enforcing the SHA directly was left as a separate decision.
-  ([cmake/Dependencies.cmake](cmake/Dependencies.cmake))
-- **Backend selection at build time** — spec §5 req 3 asks for no runtime
-  branching, but liboqs is built with `OQS_DIST_BUILD=ON` and picks its
-  ML-DSA backend with a CPU-feature check per call. Step 8 measured the cost
-  at 0.6–3.0%, inside run-to-run noise, so the default stands.
-  (§ *Req 3 (build-time backend selection): measured, deviation kept*)
 - **Fuzz scanner precision** — the secret scanner's 16-byte window rule also
   matches public-key prefixes, so it would refuse a legitimate public-mode
   fuzz regression. It over-rejects, never under-rejects.

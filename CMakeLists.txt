@@ -77,6 +77,20 @@ if(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN AND NOT MLDSA_FUZZ)
   list(APPEND MLDSA_HARDENING_DEFS _FORTIFY_SOURCE=2)
 endif()
 
+# --- liboqs optimisation target (Security Req 4.10) -----------------------
+# The algorithm backend is selected at COMPILE time (OQS_DIST_BUILD=OFF in
+# cmake/Dependencies.cmake), so this choice is baked into the binary:
+#   auto     tune for THIS machine's CPU (-mcpu=native / -march=native).
+#            Fast, and NOT portable -- the binary may crash with an illegal
+#            instruction on an older CPU of the same family.
+#   generic  portable baseline (-march=armv8-a+crypto / -march=x86-64).
+#            Use this for anything you distribute; on x86_64 it gives up
+#            liboqs's AVX2 backends.
+#   <cpu>    any CPU name your compiler accepts, passed through verbatim.
+set(MLDSA_OQS_OPT_TARGET "auto" CACHE STRING
+    "liboqs optimisation target: auto (this CPU, not portable), generic (portable), or a CPU name")
+set_property(CACHE MLDSA_OQS_OPT_TARGET PROPERTY STRINGS auto generic)
+
 # --- Dependencies (pinned versions; see cmake/Dependencies.cmake) ---------
 include(cmake/Dependencies.cmake)
 

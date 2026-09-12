@@ -30,7 +30,7 @@ unchanged.
 | OS | Darwin 25.5.0 arm64 |
 | Compiler | Apple clang 21.0.0 (clang-2100.1.1.101) |
 | Build | `-DCMAKE_BUILD_TYPE=Release` → `-O3 -DNDEBUG -Wall -Wextra -Werror -fstack-protector-strong` |
-| liboqs | 0.16.0, ML-DSA-65 **NEON-optimized (aarch64)**, selected at **run time** (`OQS_DIST_BUILD=ON`) |
+| liboqs | 0.16.0, ML-DSA-65 **NEON-optimized (aarch64)**, selected at **run time** (`OQS_DIST_BUILD=ON`) — *changed in V2-2, see the note at the end* |
 | libsodium | 1.0.22 |
 | Scheduling | `QOS_CLASS_USER_INTERACTIVE` granted (performance cores) |
 | Clock | `CLOCK_MONOTONIC_RAW`, measured resolution **41.0 ns** |
@@ -219,3 +219,29 @@ Release builds.**
   no thermal pressure beyond a minute-long run.
 - **Not the spec's stated platform.** arm64 measured against an
   x86_64-worded target.
+
+---
+
+## Re-measured after V2-2 (2026-09-12)
+
+V2-2 turned off liboqs's runtime backend dispatch (`OQS_DIST_BUILD=OFF`,
+`OQS_OPT_TARGET=auto`) and enabled ML-KEM-768. The environment block now
+reads *"NEON-optimized (aarch64), selected at build time (OQS_DIST_BUILD=OFF:
+no per-call branch)"*. Three repetitions on the reconfigured `build-bench`:
+
+| | V2-2 | Step 8 (runtime dispatch) | Step 8 (comparison build) |
+|---|---|---|---|
+| Handshake, in process | **0.364 ms** | 0.372 ms | 0.370 ms |
+| `session_seal`, 64 KiB | 727 MiB/s | 722 MiB/s | — |
+| `session_open`, 64 KiB | 727 MiB/s | 721 MiB/s | — |
+| `mldsa_sign` | 63.4 µs | 64.5 µs | 62.6 µs |
+| `mldsa_verify` | 31.5 µs | 32.2 µs | 31.3 µs |
+
+As Step 8's comparison predicted, removing the per-call CPU-feature branch
+is **not a measurable speed-up**: the differences are inside the 7–8%
+run-to-run spread of the ML-DSA rows. The change was made for Security
+Req 4.10 conformance, not performance.
+
+These numbers still describe **v1 protocol code**; ML-KEM-768 is compiled in
+but not yet called by any code path. The full v1→v2 comparison, including
+the hybrid handshake and padding, is measured in V2-7.

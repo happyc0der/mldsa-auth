@@ -22,7 +22,7 @@ before implementation; there are none open in v2.
 | ServerHello | ≤ 3 457 bytes | ≤ **4 545** bytes (+1 088-byte ML-KEM ciphertext) |
 | ClientAuth | ≤ 3 328 bytes | ≤ 3 328 bytes (unchanged) |
 | Max record plaintext | 65 536 bytes of content | 65 536 bytes of *padded inner*, so ≤ **65 534** bytes of content (§6.4.1) |
-| liboqs build | `SIG_ml_dsa_65`, pinned by tag | `SIG_ml_dsa_65;KEM_ml_kem_768`, pinned by **commit SHA**, backend selected at **build time** (§3) |
+| liboqs build | `SIG_ml_dsa_65`, tag pin only | `SIG_ml_dsa_65;KEM_ml_kem_768`, checkout **verified against a commit SHA**, backend selected at **build time** (§3) |
 | Demo key files | `MLDSASK2` | Unchanged — identity keys are ML-DSA-65 in both versions |
 
 Also in the v2 milestone, outside the protocol itself: the fuzz corpus
@@ -92,19 +92,25 @@ as follow-up work or integrator obligations in Section 9.
 - Build liboqs with `-DOQS_MINIMAL_BUILD="SIG_ml_dsa_65;KEM_ml_kem_768"` —
   exactly one signature algorithm and one KEM, no other family — to keep
   binary size and algorithm attack surface to what v2 uses.
-- **Pin by commit, not by tag.** `GIT_TAG` is set to the resolved commit
-  SHA (`5a1a854b0dc9f2141bdc771c555ee60c37950183` for 0.16.0), so a
-  re-pointed upstream tag cannot change what this project builds. The tag
-  name is retained in a comment for human readability. libsodium is already
-  pinned byte-exactly by `URL_HASH`.
+- **Pin by commit, verified; the tag is only a fetch hint.** liboqs is
+  fetched at `GIT_TAG 0.16.0` — CMake forbids a shallow clone of a bare
+  commit hash — and the checkout is then verified against the pinned commit
+  `5a1a854b0dc9f2141bdc771c555ee60c37950183`, both when the source is first
+  populated and again on every configure. A re-pointed upstream tag, or a
+  substituted source directory, aborts the build. libsodium is pinned
+  byte-exactly by `URL_HASH`.
 - **Backend selection at build time** (Security Req 4.10): liboqs is built
-  with `OQS_DIST_BUILD=OFF` and a single optimization target, so no
-  CPU-feature branch is taken per signing or KEM call. The target is a
-  project option defaulting to `native`. **A `native` build is tied to the
-  build machine's CPU family**; builds for distribution must select
-  `generic`, which on x86_64 gives up the AVX2 backend. This is done for
-  requirement conformance, not for speed: the runtime-dispatch branch it
-  removes was measured at 0.6–3.0%, inside run-to-run noise.
+  with `OQS_DIST_BUILD=OFF`, which turns its backend dispatch from a runtime
+  CPU-feature test into a compile-time `#if`, so no branch is taken per
+  signing or KEM call. liboqs still *compiles* its portable-C objects into
+  the static archive; what this guarantees is that exactly one backend is
+  **linked** into any binary, which is the property implementations must
+  verify. The target is a project option defaulting to `auto` (tune for the
+  building machine). **An `auto` build is tied to the build machine's CPU
+  family**; builds for distribution must select `generic`, which on x86_64
+  gives up the AVX2 backend. This is done for requirement conformance, not
+  for speed: the runtime-dispatch branch it removes was measured at
+  0.6–3.0%, inside run-to-run noise.
 
 ## 4. Security Requirements
 
