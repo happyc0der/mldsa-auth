@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 8)
+# Protocol Decisions (through Step 9)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -724,3 +724,61 @@ harness: it now patches the shared library function, where both paths must
 see it. M4's effect is real but small and noisy (p99 widened by 3% in one
 run, 70% in another), because warmup matters least for a batch-timed AEAD
 row.
+
+---
+
+## Step 9 — documentation
+
+Scope: `README.md` rewritten as the repository's front door, plus this
+section. No code, test, build-system or spec change.
+
+### The spec is not edited, and the README carries the gap
+
+Spec §5.1 targets "a modern x86_64 core" and §9's limitations list predates
+Steps 4-8, so it does not mention traffic analysis, the routing gap, rate
+limiting or thread safety. Both could have been "fixed" by editing the spec.
+Neither was.
+
+The spec is the brief this project was built against; editing a requirement
+after measuring on different hardware would be fitting the target to the
+result, and back-filling §9 would erase the evidence that those limitations
+were discovered while implementing rather than anticipated. The README states
+the full, current picture and says plainly where it differs from the spec --
+the measurement platform, and the Req 3 backend deviation. A reader comparing
+the two documents can see exactly what changed and when.
+
+### Limitations and deferred work are separate lists
+
+"What this does not protect against" and "deferred work" answer different
+questions, so the README keeps them apart. The first is a **security scope**
+statement: what an attacker can still do to someone who deploys this
+correctly -- no CA, harvest-now-decrypt-later, traffic analysis, DoS, thread
+safety, demo key storage. The second is an **engineering backlog**: routing,
+scanner precision, key migration, pin hardening, padding, hybrid KEX.
+
+The two overlap (padding appears in both, as a leak and as a deferred
+feature), but merging them would bury a security caveat in a to-do list. A
+reader deciding whether the protocol is safe for their threat model reads the
+first; a reader deciding what to build next reads the second.
+
+### Every documented command was executed
+
+Documentation rots by asserting things that stopped being true. Rather than
+proofreading, every fenced command in the README was extracted and run
+verbatim, in order, against freshly deleted build directories -- configure,
+build, ctest, the sanitizer build, both fuzz modes, the benchmark build and
+run, and the three-step demo -- and the test count, dependency versions and
+performance figures were compared against `ctest -N`,
+`cmake/Dependencies.cmake` and `bench/results.md` rather than memory.
+
+That immediately found one defect: the benchmark section told the reader to
+run `bench/run_bench.sh build-bench 3` without ever showing how `build-bench`
+is created. The command block is now self-contained.
+
+### Citations are section names, not line numbers
+
+The README cites `docs/decisions.md` by section heading rather than by line
+number. Line numbers in a cross-file citation are wrong as soon as anything is
+inserted above them -- this file grew by ~100 lines in Step 8 alone -- whereas
+headings survive edits and can be verified mechanically. Each cited heading
+was checked to exist verbatim.
