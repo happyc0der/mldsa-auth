@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 7)
+# Protocol Decisions (through Step 7.1)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -591,3 +591,29 @@ replace the key. Production key storage remains out of scope (spec §9).
 - **Fuzz regressions.** `t0-corruption-original-*` (renamed) and the new
   `t0-corruption-rejected-*` both replay as `integrity-check-failed`, and the
   F5 model predicts that status by recomputing the digest.
+
+### OPEN issue: the secret scanner's 16-byte window rule also matches public-key prefixes
+
+Not a Step 7.1 regression — the rule dates from Step 7 — but it was measured
+while verifying this step, so it is recorded here.
+
+`fuzz_keys_replay --scan-secret` rejects any file containing a 16-byte window
+of the fixture **secret** key. An ML-DSA-65 secret key begins with `rho`,
+which is also the first 32 bytes of the public key, so every file holding the
+fixture public key matches 17 of those windows. Measured: the 9 generated
+public-mode seeds produce 153 violations.
+
+- **No effect today.** Seeds live only in ignored build directories, and no
+  committed file contains the fixture public key: the scan over every tracked
+  file reports 0 violations.
+- **The limitation.** A minimized F5 *public-mode* artifact would be refused
+  by `add_regression.sh`, even though a public key is not secret. That is a
+  scanner **precision** problem: it over-rejects.
+- **Not a reason to weaken secret-key scanning.** The window rule is what
+  makes the admission gate conservative, and a public-key false positive
+  costs one untracked artifact plus a deterministic unit test, which the
+  crash workflow already requires.
+- **Deferred** to a future narrow task: for example, excluding windows that
+  fall inside the `rho` prefix shared with the public key, or matching the
+  secret key only from offset 32 onward, with a test proving that a real
+  secret-key file is still refused.

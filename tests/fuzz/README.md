@@ -62,6 +62,7 @@ fixed-key ChaCha20 stream, through `randombytes_set_implementation` and
 - **Seeds** are generated at runtime into ignored build directories; none are committed.
 - **Identity mode never stores file bytes.** `fuzz_keys` identity-mode inputs are *mutation programs*, applied to a template the harness regenerates in memory from the fixed test RNG.
 - **CTest `fuzz_no_committed_secrets`** scans `regressions/` and `dict/` with `fuzz_keys_replay --scan-secret-dirs`. The scan fails on any ML-DSA secret-key file layout — current `MLDSASK2` or legacy `MLDSASK1`, since both hold a secret key — or any 16-byte window of the fixture secret key. Bare `"MLDSASK1"`/`"MLDSASK2"` tokens in text are reported as "token only" and allowed.
+  - **Known precision limit (open, deferred):** a secret key starts with `rho`, which is also the public key's first 32 bytes, so the window rule also matches files holding the fixture *public* key — it would refuse a minimized public-mode artifact. It over-rejects; it never under-rejects. See `docs/decisions.md`.
 
 ### Identity-mode mutation grammar v2 (`fuzz_keys`, selector bit 0 = 1)
 
