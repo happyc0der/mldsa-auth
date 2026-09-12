@@ -6,15 +6,26 @@ Mutual authentication and an encrypted session protocol in C11: **ML-DSA-65**
 with a reference TCP client and server, a deterministic test suite, libFuzzer
 targets, and measured benchmarks.
 
-The engineering specification is
-[docs/ml-dsa-auth-protocol-spec.md](docs/ml-dsa-auth-protocol-spec.md) — the
-canonical, versioned copy lives here, beside the implementation it specifies.
-Every design decision and its rationale is recorded in
-[docs/decisions.md](docs/decisions.md).
+The engineering specifications live here, beside the implementation they
+specify: [v1](docs/ml-dsa-auth-protocol-spec.md) (frozen) and
+[v2](docs/ml-dsa-auth-protocol-spec-v2.md) (current). Every design decision
+and its rationale is recorded in [docs/decisions.md](docs/decisions.md).
 
-**Status: v1 feature-complete** (spec Steps 3–9). Wire format, handshake state
-machine, record layer, reference transport, fuzzing, benchmarks and this
-documentation are all done and verified.
+**Status: v1.0.0 released; v2 in progress on `main`.** v1 is feature-complete
+(spec Steps 3–9): wire format, handshake state machine, record layer,
+reference transport, fuzzing, benchmarks and documentation, all verified.
+
+> **v1 is frozen at the [`v1.0.0`](https://github.com/happyc0der/mldsa-auth/releases/tag/v1.0.0)
+> tag and receives no patches — upgrade or fork.** v2 is a deliberate clean
+> break with no version negotiation, and it deletes v1's key-schedule, wire
+> and handshake code rather than maintaining two protocol tracks. v2 adds a
+> **hybrid X25519 + ML-KEM-768 key exchange** (so session confidentiality
+> becomes post-quantum, not just identity authentication) and **record
+> padding**. It is specified in
+> [docs/ml-dsa-auth-protocol-spec-v2.md](docs/ml-dsa-auth-protocol-spec-v2.md);
+> the reasoning for the break and the freeze is in
+> [docs/decisions.md](docs/decisions.md). The code on `main` below `v1.0.0`
+> still implements v1 until the v2 steps land.
 
 > **Not production-ready.** The trust model is manual key pinning with no CA
 > or revocation, the reference server is loopback-only, demo key files are

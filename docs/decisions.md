@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 9)
+# Protocol Decisions (through v1.0.0; v2 in progress)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -782,3 +782,86 @@ number. Line numbers in a cross-file citation are wrong as soon as anything is
 inserted above them -- this file grew by ~100 lines in Step 8 alone -- whereas
 headings survive edits and can be verified mechanically. Each cited heading
 was checked to exist verbatim.
+
+---
+
+## v2 — roadmap decisions
+
+These four decisions were taken before any v2 code was written. The
+technical design they govern is in
+[ml-dsa-auth-protocol-spec-v2.md](ml-dsa-auth-protocol-spec-v2.md).
+
+### Compatibility: clean break, no negotiation
+
+v2 peers speak only v2. Every domain label moves from `mldsa-auth/v1/` to
+`mldsa-auth/v2/`, and the ClientHello/ServerHello layouts grow by the ML-KEM
+encapsulation key and ciphertext, so a v1 message fails a v2 decoder on
+length and full consumption alone -- and a v2 message fails a v1 decoder the
+same way. There is no version field.
+
+The alternative, a version byte with negotiation, was rejected: it would
+create a downgrade surface that then has to be authenticated and tested, and
+it would double the handshake state machine's surface, all to serve mixed
+fleets that do not exist. Trust here is explicit pinning, so there is no
+discovery step in which a version could be negotiated away; peers are
+upgraded together by whoever pinned them.
+
+### v1 maintenance life: frozen at `v1.0.0` (upgrade-or-fork)
+
+**This repository does not maintain a patchable v1 branch.** When v2's
+wire-format, key-schedule and handshake functions replace v1's, the v1
+functions are deleted from `src/` rather than kept behind a build flag or on
+a maintenance branch.
+
+Reasoning:
+
+- v1 is documented as not production-ready (no CA or revocation,
+  loopback-only reference server, unencrypted demo keys, single-threaded),
+  so there is no deployed base a patch branch would serve.
+- The break is at the wire level, so a v1 security fix would still force
+  both peers to upgrade. A v1 patch would buy nothing that upgrading to v2
+  does not.
+- Every change in this project carries a fixed verification cost -- fresh
+  ASan and UBSan builds, fuzz budgets, a mutation campaign. Maintaining a
+  second protocol track would double that cost indefinitely, and nobody has
+  committed to paying it.
+- Keeping dead cryptographic code compiled-but-unused is its own hazard: it
+  invites accidental use and has to be tested to stay trustworthy.
+
+Anyone who needs a patched v1 can branch from the `v1.0.0` tag -- git makes
+that trivial, and the tag is immutable -- but no such branch is promised
+here. This is stated in three places a reader might look: this section, the
+README status line, and spec-v2 §2.1, so it is never discoverable only as a
+code-deletion rationale.
+
+### Specification versioning: a new v2 document, v1 frozen
+
+v2 is specified in a new file, `docs/ml-dsa-auth-protocol-spec-v2.md`, and
+`docs/ml-dsa-auth-protocol-spec.md` is never edited again.
+
+Editing the v1 document in place would have left every v1 tag pointing at a
+specification that no longer describes the code at that tag -- including
+`v1.0.0`, which is a published release. A complete second document costs
+some duplication, and that is the price of keeping each released version
+self-describing. It also preserves the project's standing rule that the
+brief is not rewritten after the fact (Step 8 and Step 9 both declined to
+edit it).
+
+### Scope of v2
+
+**In:** hybrid X25519 + ML-KEM-768 key exchange (the spec's one deferred
+decision); record padding (the other item v1 deferred to "a future protocol
+version"); and four narrow backlog items -- fuzz-scanner precision, pinning
+liboqs by commit SHA, build-time backend selection (Security Req 3), and
+`MLDSASK1` -> `MLDSASK2` key migration.
+
+**Out, and recorded as such:** multi-connection handshake routing, transport
+rate limiting, thread safety, CA/revocation, group sessions, and production
+key storage. These remain integrator obligations or later work, listed in
+spec-v2 §9 and the README.
+
+The AEAD rekey and expiry limits are *reviewed* by v2 rather than changed:
+v1 required a revisit if the maximum plaintext, the AEAD, the transport or
+the rekey policy changed. Padding moves the *content* bound to 65 534 bytes
+but leaves the AEAD plaintext bound at 65 536, and nothing else changed, so
+the v1 values carry over. That review is recorded in spec-v2 §6.4.5.
