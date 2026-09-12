@@ -303,6 +303,23 @@ ships; each is a decision to stop somewhere.
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
 
+## License
+
+Copyright (C) 2026 happyc0der.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License, version 3**, as published by
+the Free Software Foundation. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE)
+for the full text.
+
+The dependencies are fetched and built from source, not vendored here, and
+both are GPL-compatible: [liboqs](https://github.com/open-quantum-safe/liboqs)
+is MIT and [libsodium](https://github.com/jedisct1/libsodium) is ISC. A binary
+built from this repository combines all three, and the combined work is
+covered by the GPL.
+
 Where to read next: the [specification](docs/ml-dsa-auth-protocol-spec.md) for
 what the protocol is, the [decision log](docs/decisions.md) for why it is that
 way, [tests/fuzz/README.md](tests/fuzz/README.md) for the adversarial testing
