@@ -6,7 +6,7 @@ encrypted session protocol. See
 for the full engineering spec — the canonical, versioned copy lives in this
 repository, alongside the implementation it specifies.
 
-Status: **Step 7.1 (demo secret-key integrity) complete** — wire
+Status: **Step 8 (Benchmarking) complete** — wire
 format (Step 3), handshake state machine (Step 4), authenticated
 ChaCha20-Poly1305 record layer (Step 5), loopback reference transport with
 demo client/server apps (Step 6), and libFuzzer targets plus a portable
@@ -14,7 +14,10 @@ deterministic fuzz smoke for every attacker-controlled input (Step 7; see
 [tests/fuzz/README.md](tests/fuzz/README.md)). The Step 7 fuzz finding (the
 demo key loader accepted a corrupted secret-key t0 component) is resolved
 by the `MLDSASK2` integrity digest (Step 7.1; see
-[docs/decisions.md](docs/decisions.md)). Full build
+[docs/decisions.md](docs/decisions.md)). Measured performance is in
+[bench/results.md](bench/results.md): a full mutual handshake takes
+**0.372 ms** (median, in process, Apple M4 Pro) against the spec's 15 ms
+target, and the record layer runs at 722 MiB/s with 64 KiB payloads. Full build
 instructions, exact dependency versions, and the protocol's security scope
 will be filled in at Step 9 per the spec.
 

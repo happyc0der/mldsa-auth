@@ -1,4 +1,4 @@
-# Protocol Decisions (through Step 7.1)
+# Protocol Decisions (through Step 8)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -617,3 +617,110 @@ public-mode seeds produce 153 violations.
   fall inside the `rho` prefix shared with the public key, or matching the
   secret key only from offset 32 onward, with a test proving that a real
   secret-key file is still refused.
+
+---
+
+## Step 8 — benchmarking
+
+Scope: a new `bench/` tree, its CMake wiring, one CTest smoke, and
+`bench/results.md`. No change to `src/`, `apps/`, the protocol, the spec or
+the dependency configuration — the benches only call the same public APIs
+the tests use.
+
+### Headline: 0.372 ms against a 15 ms target
+
+The full mutual handshake, measured in process, has a median of 0.372 ms on
+an Apple M4 Pro — about 40x inside spec §5.1's budget. Two signatures and
+two verifications are 81% of that; parsing, encoding and transcript hashing
+together are under 2%. **This is a signature-bound protocol.** Record-layer
+throughput is 722 MiB/s at 64 KiB and 4.19 M records/s at 64 B. Full tables,
+including the loopback transport cost, are in `bench/results.md`.
+
+### The platform does not match the spec's wording
+
+§5.1 targets "a modern x86_64 core"; the only machine available is arm64.
+`bench/results.md` states plainly that these are real measurements on a
+different architecture and therefore not a literal verification of Req 5.1.
+The spec is left unchanged: editing a requirement to match the hardware that
+happened to be available would be the wrong direction of fit.
+
+### Measurement decisions
+
+- **The clock is chosen, not assumed.** macOS `CLOCK_MONOTONIC` reports
+  whole microseconds, which would have quantized every unbatched row (ML-DSA
+  verify measured in 1 us steps). The harness measures each candidate at
+  startup and takes the finest: `CLOCK_MONOTONIC_RAW`, 41 ns here. The
+  chosen clock and its measured resolution print with every result.
+- **Two timing shapes.** Stateless operations are batch-timed, with the
+  batch size calibrated so one batch lasts ~20 us; stateful ones (handshake
+  phases, `session_open`) rebuild state in a prepare step outside the timed
+  region. Every row reports its batch size, so a reader can see which is
+  which.
+- **Performance cores.** On Apple Silicon an unhinted thread can be
+  scheduled on an efficiency core, which would produce numbers unrelated to
+  the code. The bench requests `QOS_CLASS_USER_INTERACTIVE` and reports the
+  class actually granted.
+- **The executing backend is checked, not inferred.** The harness calls the
+  same `OQS_CPU_has_extension` predicate liboqs branches on internally, so
+  the reported backend cannot drift from the one that ran.
+- **The loopback bench fixes its socket buffers up front.** It drives both
+  ends from one process in strict request/response order, which is only safe
+  while every message fits the socket buffer. Both ends are set to 256 KiB
+  (the `tests/fuzz/fuzz_frame.c` pattern), the granted size is read back with
+  `getsockopt`, and the bench aborts at startup unless it exceeds the largest
+  handshake message by 4x. There is deliberately no runtime fallback and no
+  forked variant: the control flow is guaranteed by construction.
+
+### Req 3 (build-time backend selection): measured, deviation kept
+
+`OQS_DIST_BUILD=ON` means liboqs compiles both the reference and aarch64
+ML-DSA backends and picks between them with a CPU-feature branch per
+sign/verify call — where Req 3 asks for build-time selection with no runtime
+branching. A comparison build (`OQS_DIST_BUILD=OFF`,
+`OQS_OPT_TARGET=native`) was benchmarked against the default.
+
+The difference is 0.6-3.0%, smaller than the 7-8% run-to-run spread of the
+ML-DSA rows themselves: **not distinguishable from noise**. Both builds run
+the same NEON backend, and the branch is one feature test against tens of
+microseconds of lattice arithmetic. Changing the default is therefore not
+justified on performance grounds, and a `native` non-dist build would tie
+binaries to the build machine's CPU. The deviation stands, now with a
+measurement behind the decision rather than an assumption.
+
+### Benchmarks run in CI, but only as a smoke test
+
+`bench_smoke` runs every bench binary with `--smoke` (tiny iteration counts)
+in the normal, ASan and UBSan builds, so bench code cannot rot or drift out
+of the API. It asserts correctness only — handshakes complete, sealed records
+open, no zero medians — never a performance threshold, since sanitizer builds
+are several times slower.
+
+### The default build type is Debug, and that matters
+
+liboqs is built inside this CMake project, so a default build compiles
+ML-DSA unoptimized: signing is 5.8x slower, the handshake 4.0x. libsodium is
+an ExternalProject with its own Autotools defaults, so it stays optimized in
+every configuration — meaning a Debug bench run pairs slow signatures with
+normal-speed AEAD and misleads twice over. `bench/run_bench.sh` and both
+READMEs say to benchmark Release builds only; the default is deliberately
+left as Debug, since it is the right default for development.
+
+### Harness-sanity mutations (M1-M4)
+
+Steps 4-7 validated tests by making them fail. A benchmark has no pass/fail,
+so the analogue is: a deliberate change must move a reported number in a
+predicted direction. Injecting 1 ms into the timed sign callback moved the
+sign median by +1.28 ms and left verify unchanged (M1); the same delay inside
+`handshake_responder_create_server_hello` moved both that phase (+1.28 ms)
+and the end-to-end handshake (+1.30 ms) (M2); sealing half the bytes a row
+claims produced an implausible 1.84x MiB/s (M3); removing warmup widened p99
+while the median held (M4).
+
+**A correction found while running these.** M2 first injected its delay into
+the bench's own phase wrapper, which moved the phase row but not the
+end-to-end row — correctly, since the end-to-end path calls the library
+function directly rather than the wrapper. The mutation was wrong, not the
+harness: it now patches the shared library function, where both paths must
+see it. M4's effect is real but small and noisy (p99 widened by 3% in one
+run, 70% in another), because warmup matters least for a batch-timed AEAD
+row.
