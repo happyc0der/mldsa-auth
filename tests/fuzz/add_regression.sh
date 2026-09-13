@@ -5,10 +5,14 @@
 #
 # The secret scanner (fuzz_keys_replay --scan-secret) is the MANDATORY
 # repository admission gate for every target: an input containing an ML-DSA
-# secret-key file layout or any 16-byte window of the fixture secret key is
-# refused and must stay untracked (then give the root cause a deterministic
-# unit test instead). F5 identity-mode inputs are mutation programs by
-# construction; replay regenerates the template at runtime.
+# secret-key file layout or any 16-byte window of the fixture secret key's
+# SECRET regions is refused and must stay untracked (then give the root cause
+# a deterministic unit test instead). Windows lying entirely inside rho or tr
+# are excluded because the public key reveals both -- the scanner proves that
+# derivability, and runs its own negative controls, before every scan (V2-8),
+# so a public-mode artifact is admissible. F5 identity-mode inputs are
+# mutation programs by construction; replay regenerates the template at
+# runtime.
 set -eu
 
 [ $# -eq 4 ] || { echo "usage: $0 <build-dir> <target> <artifact> <short-name>"; exit 2; }

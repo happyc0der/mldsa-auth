@@ -32,8 +32,11 @@
  * Extra command: --scan-secret FILE... / --scan-secret-dirs DIR... fails if
  * any file contains an ML-DSA secret-key file layout (MLDSASK1 or MLDSASK2
  * magic followed by an id and binary key material) or any 16-byte window of
- * the fixture secret key (regenerated in memory). This is the repository
- * admission gate for committed fuzz inputs.
+ * the SECRET regions of the fixture secret key (regenerated in memory).
+ * Windows lying entirely inside rho or tr are excluded: both are derivable
+ * from the PUBLIC key, and the scanner proves that derivability, and runs
+ * its own negative controls, before every scan (V2-8). This is the
+ * repository admission gate for committed fuzz inputs.
  */
 
 #include "fuzz_common.h"
@@ -41,6 +44,7 @@
 #include "demo_keys.h"
 #include "secure_mem.h"
 
+#include <oqs/sha3.h> /* OQS_SHA3_shake256, for the tr derivability proof */
 #include <sodium.h>
 
 #include <dirent.h>
@@ -555,6 +559,43 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
 
 /* ---- repository admission gate: --scan-secret ------------------------------------- */
 
+/* FIPS 204 ML-DSA-65 secret-key layout, taken from the code that packs it --
+ * liboqs's mldsa-native mld_pack_sk_rho_key_tr_s2() / mld_unpack_sk() and
+ * params.h (SEEDBYTES 32, TRBYTES 64, K 6, L 5, ETA 4 -> POLYETA 128,
+ * POLYT0 416):
+ *
+ *   rho [0,32)  K [32,64)  tr [64,128)  s1 [128,768)  s2 [768,1536)  t0 [1536,4032)
+ *
+ * rho IS pk[0..32) and tr IS SHAKE256(pk, 64), so a 16-byte window lying
+ * entirely inside either one is computable by anyone holding the public key
+ * and reveals nothing secret. Every other window -- including the 45 that
+ * straddle a boundary, e.g. rho[17..32) || K[0] -- contains at least one
+ * secret byte and is kept. Both identities are PROVEN at run time in
+ * derivable_from_public() before any exclusion is applied. */
+#define SK_RHO_LEN 32u
+#define SK_K_OFF 32u
+#define SK_TR_OFF 64u
+#define SK_TR_LEN 64u
+#define SK_S1_OFF 128u
+#define SCAN_WINDOW 16u
+_Static_assert(SK_S1_OFF + 5u * 128u + 6u * 128u + 6u * 416u == MLDSA_SECRET_KEY_BYTES,
+               "ML-DSA-65 sk = rho|K|tr|s1(L=5)|s2(K=6)|t0(K=6), ETA=4 (POLYETA 128), POLYT0 416");
+_Static_assert(SK_K_OFF == SK_RHO_LEN && SK_TR_OFF == SK_K_OFF + 32u && SK_S1_OFF == SK_TR_OFF + SK_TR_LEN,
+               "the regions are contiguous in that order");
+
+#define SCAN_TOTAL_WINDOWS (MLDSA_SECRET_KEY_BYTES - SCAN_WINDOW + 1u)                                 /* 4017 */
+#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 1u) + (SK_TR_LEN - SCAN_WINDOW + 1u))         /* 17 + 49 */
+#define SCAN_KEPT_WINDOWS (SCAN_TOTAL_WINDOWS - SCAN_PUBLIC_WINDOWS)                                   /* 3951 */
+_Static_assert(SCAN_TOTAL_WINDOWS == 4017u, "4032 - 16 + 1");
+_Static_assert(SCAN_PUBLIC_WINDOWS == 66u, "17 windows inside rho, 49 inside tr");
+_Static_assert(SCAN_KEPT_WINDOWS == 3951u, "every window holding at least one secret byte");
+
+/* True only when the window at `o` lies ENTIRELY inside rho or entirely
+ * inside tr. A window that straddles a boundary holds secret bytes. */
+static int window_is_public(size_t o) {
+    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);
+}
+
 typedef struct {
     uint64_t key;
     uint32_t idx;
@@ -578,7 +619,10 @@ typedef struct {
     const uint8_t *sk;
     unsigned files;
     unsigned violations;
+    unsigned layout_violations;
+    unsigned window_violations;
     unsigned token_only;
+    int quiet; /* controls scan in-memory buffers; their findings are counted, not printed */
 } scan_t;
 
 /* A secret-key file layout (MLDSASK1 or MLDSASK2 -- both hold a secret key):
@@ -607,8 +651,11 @@ static void scan_buffer(scan_t *s, const char *path, const uint8_t *b, size_t n)
             continue;
         }
         if (looks_like_key_layout(b, n, o)) {
-            printf("VIOLATION: %s: secret-key file layout at offset %zu\n", path, o);
+            if (!s->quiet) {
+                printf("VIOLATION: %s: secret-key file layout at offset %zu\n", path, o);
+            }
             s->violations++;
+            s->layout_violations++;
         } else {
             token = 1;
         }
@@ -625,14 +672,21 @@ static void scan_buffer(scan_t *s, const char *path, const uint8_t *b, size_t n)
         }
         for (; hit < s->win + s->nwin && hit->key == k.key; hit++) {
             if (memcmp(b + o, s->sk + hit->idx, 16) == 0) {
-                printf("VIOLATION: %s: 16-byte window of the fixture secret key at offset %zu\n", path, o);
+                if (!s->quiet) {
+                    printf("VIOLATION: %s: 16-byte window of the fixture secret key at offset %zu "
+                           "(secret-key offset %u)\n",
+                           path, o, hit->idx);
+                }
                 s->violations++;
+                s->window_violations++;
                 break;
             }
         }
     }
     if (token) {
-        printf("token only: %s (bare \"MLDSASK1\"/\"MLDSASK2\" magic, no key-file layout)\n", path);
+        if (!s->quiet) {
+            printf("token only: %s (bare \"MLDSASK1\"/\"MLDSASK2\" magic, no key-file layout)\n", path);
+        }
         s->token_only++;
     }
     s->files++;
@@ -683,6 +737,151 @@ static void scan_path(scan_t *s, const char *path) {
     free(buf);
 }
 
+/* An exclusion is applied ONLY to bytes this scanner can itself derive from
+ * the public key, and it proves both identities here, on the regenerated
+ * fixture, before every scan. A failure is not a narrower scan -- it stops
+ * the gate, because a layout this code no longer understands must never be
+ * allowed to decide what counts as secret. */
+static int derivable_from_public(const mldsa_keypair_t *kp) {
+    int ok = 1;
+    if (memcmp(kp->secret_key, kp->public_key, SK_RHO_LEN) != 0) {
+        printf("SCANNER ABORT: sk[0..32) != pk[0..32) -- rho is not the shared public prefix this scanner assumes\n");
+        ok = 0;
+    }
+    uint8_t tr[SK_TR_LEN];
+    OQS_SHA3_shake256(tr, sizeof(tr), kp->public_key, MLDSA_PUBLIC_KEY_BYTES);
+    if (sodium_memcmp(tr, kp->secret_key + SK_TR_OFF, sizeof(tr)) != 0) {
+        printf("SCANNER ABORT: sk[64..128) != SHAKE256(pk, 64) -- tr is not derivable as this scanner assumes\n");
+        ok = 0;
+    }
+    sodium_memzero(tr, sizeof(tr));
+    return ok;
+}
+
+/* ---- built-in negative controls (run before every scan) --------------------------- */
+
+/* The scanner proves its own rules still fire before it is allowed to admit
+ * anything -- the session_no_alloc_scan pattern. Every control buffer is
+ * built in memory from the regenerated fixture and wiped; none touches disk. */
+
+typedef struct {
+    unsigned layout;
+    unsigned window;
+    unsigned token;
+} counts_t;
+
+static counts_t control_scan(const scan_t *base, const uint8_t *b, size_t n) {
+    scan_t t = *base; /* shares the window table; own counters */
+    t.files = 0;
+    t.violations = 0;
+    t.layout_violations = 0;
+    t.window_violations = 0;
+    t.token_only = 0;
+    t.quiet = 1;
+    scan_buffer(&t, "<control>", b, n);
+    const counts_t c = {t.layout_violations, t.window_violations, t.token_only};
+    return c;
+}
+
+static int control_check(const char *id, const char *what, counts_t got, unsigned layout, unsigned window,
+                         unsigned token) {
+    const int ok = (got.layout == layout && got.window == window && got.token == token);
+    printf("%s: scanner control %s: %s (layout %u, window %u, token-only %u; expected %u/%u/%u)\n",
+           ok ? "PASS" : "FAIL", id, what, got.layout, got.window, got.token, layout, window, token);
+    return ok;
+}
+
+/* The fixture identity file, laid out HERE so the controls do not depend on
+ * the fuzz harness's own template helper. legacy=1 is the MLDSASK1 form (no
+ * trailing digest). */
+static size_t control_key_file(uint8_t *out, const mldsa_keypair_t *kp, int legacy) {
+    memcpy(out, MAGICS[legacy ? MAGIC_SK1 : MAGIC_SK2], 8);
+    out[8] = (uint8_t)FUZZ_ID_A_LEN;
+    memcpy(out + HDR, FUZZ_ID_A, FUZZ_ID_A_LEN);
+    memcpy(out + HDR + FUZZ_ID_A_LEN, kp->public_key, MLDSA_PUBLIC_KEY_BYTES);
+    memcpy(out + HDR + FUZZ_ID_A_LEN + MLDSA_PUBLIC_KEY_BYTES, kp->secret_key, MLDSA_SECRET_KEY_BYTES);
+    if (legacy) {
+        return SK_BODY_LEN(FUZZ_ID_A_LEN); /* 5998 */
+    }
+    harness_digest(out + SK_BODY_LEN(FUZZ_ID_A_LEN), out, SK_BODY_LEN(FUZZ_ID_A_LEN));
+    return SK2_LEN(FUZZ_ID_A_LEN); /* 6030 */
+}
+
+static int run_controls(const scan_t *base, const mldsa_keypair_t *kp) {
+    const uint8_t *sk = kp->secret_key;
+    int ok = 1;
+
+    /* C1/C2: a real secret-key file is still refused, by BOTH rules. */
+    uint8_t *f = secure_mem_alloc(SK2_LEN(FUZZ_ID_A_LEN));
+    FUZZ_ASSERT(f != NULL, "control key-file buffer");
+    size_t n = control_key_file(f, kp, 0);
+    ok &= control_check("C1", "the fixture MLDSASK2 identity file is refused", control_scan(base, f, n), 1,
+                        SCAN_KEPT_WINDOWS, 0);
+    n = control_key_file(f, kp, 1);
+    ok &= control_check("C2", "a legacy MLDSASK1 identity file is refused", control_scan(base, f, n), 1,
+                        SCAN_KEPT_WINDOWS, 0);
+    sodium_memzero(f, SK2_LEN(FUZZ_ID_A_LEN));
+    secure_mem_free(f, SK2_LEN(FUZZ_ID_A_LEN));
+
+    /* C3: the generated public-mode seed files -- the artifact class this
+     * step makes admissible (17 window hits each before V2-8). */
+    for (unsigned e = 0; e < 3; e++) {
+        const size_t pn = pub_file(g_pubfile, EXPECT[e].id, EXPECT[e].len);
+        char id[8];
+        char what[96];
+        snprintf(id, sizeof(id), "C3.%u", e + 1u);
+        snprintf(what, sizeof(what), "a public-key file (id length %zu) is clean", EXPECT[e].len);
+        ok &= control_check(id, what, control_scan(base, g_pubfile, pn), 0, 0, 0);
+    }
+    sodium_memzero(g_pubfile, sizeof(g_pubfile));
+
+    /* C4: the excluded regions themselves, alone and together. */
+    uint8_t cat[SK_RHO_LEN + SK_TR_LEN];
+    memcpy(cat, sk, SK_RHO_LEN);
+    memcpy(cat + SK_RHO_LEN, sk + SK_TR_OFF, SK_TR_LEN);
+    ok &= control_check("C4.1", "rho alone is not flagged (it is pk[0..32))", control_scan(base, sk, SK_RHO_LEN), 0,
+                        0, 0);
+    ok &= control_check("C4.2", "tr alone is not flagged (it is SHAKE256(pk, 64))",
+                        control_scan(base, sk + SK_TR_OFF, SK_TR_LEN), 0, 0, 0);
+    ok &= control_check("C4.3", "rho || tr together are not flagged", control_scan(base, cat, sizeof(cat)), 0, 0, 0);
+    sodium_memzero(cat, sizeof(cat));
+
+    /* C5: the two boundaries, one window either side of each. */
+    ok &= control_check("C5.1", "sk[16..32) -- the last window inside rho -- is not flagged",
+                        control_scan(base, sk + 16, SCAN_WINDOW), 0, 0, 0);
+    ok &= control_check("C5.2", "sk[17..33) -- the first window touching K -- IS flagged",
+                        control_scan(base, sk + 17, SCAN_WINDOW), 0, 1, 0);
+    ok &= control_check("C5.3", "sk[112..128) -- the last window inside tr -- is not flagged",
+                        control_scan(base, sk + 112, SCAN_WINDOW), 0, 0, 0);
+    ok &= control_check("C5.4", "sk[113..129) -- the first window touching s1 -- IS flagged",
+                        control_scan(base, sk + 113, SCAN_WINDOW), 0, 1, 0);
+
+    /* C6: one window from each genuinely secret region, embedded in text. */
+    static const struct {
+        size_t off;
+        const char *region;
+    } SECRET_AT[3] = {{40, "K"}, {200, "s1"}, {2000, "t0"}};
+    for (unsigned i = 0; i < 3; i++) {
+        uint8_t buf[10u + SCAN_WINDOW + 10u];
+        memcpy(buf, "prefix--->", 10);
+        memcpy(buf + 10, sk + SECRET_AT[i].off, SCAN_WINDOW);
+        memcpy(buf + 10 + SCAN_WINDOW, "<---suffix", 10);
+        char id[8];
+        char what[96];
+        snprintf(id, sizeof(id), "C6.%u", i + 1u);
+        snprintf(what, sizeof(what), "16 bytes of %s (sk[%zu..%zu)) inside text IS flagged", SECRET_AT[i].region,
+                 SECRET_AT[i].off, SECRET_AT[i].off + SCAN_WINDOW);
+        ok &= control_check(id, what, control_scan(base, buf, sizeof(buf)), 0, 1, 0);
+        sodium_memzero(buf, sizeof(buf));
+    }
+
+    /* C7: prose that merely names the magic stays admissible. */
+    static const char TOKEN_TEXT[] = "a source file that merely mentions MLDSASK2 in prose";
+    ok &= control_check("C7", "bare MLDSASK2 text is token-only, not a violation",
+                        control_scan(base, (const uint8_t *)TOKEN_TEXT, sizeof(TOKEN_TEXT) - 1u), 0, 0, 1);
+    return ok;
+}
+
 int fuzz_target_command(int argc, char **argv) {
     const int files = (strcmp(argv[1], "--scan-secret") == 0);
     const int dirs = (strcmp(argv[1], "--scan-secret-dirs") == 0);
@@ -692,24 +891,46 @@ int fuzz_target_command(int argc, char **argv) {
     mldsa_keypair_t kp;
     memset(&kp, 0, sizeof(kp));
     fuzz_regenerate_identity_a(&kp); /* in memory only */
+    if (!derivable_from_public(&kp)) {
+        mldsa_keypair_free(&kp);
+        return 1;
+    }
     scan_t s;
     memset(&s, 0, sizeof(s));
     s.sk = kp.secret_key;
-    s.nwin = MLDSA_SECRET_KEY_BYTES - 16u + 1u;
-    s.win = malloc(s.nwin * sizeof(window_t));
+    s.win = malloc(SCAN_KEPT_WINDOWS * sizeof(window_t));
     FUZZ_ASSERT(s.win != NULL, "scan buffer");
-    for (size_t i = 0; i < s.nwin; i++) {
-        s.win[i].key = load64(kp.secret_key + i);
-        s.win[i].idx = (uint32_t)i;
+    size_t w = 0;
+    for (size_t i = 0; i + SCAN_WINDOW <= MLDSA_SECRET_KEY_BYTES; i++) {
+        if (window_is_public(i)) {
+            continue; /* computable from pk: rho, or tr = SHAKE256(pk, 64) */
+        }
+        /* Checked BEFORE the write: if window_is_public() and the layout
+         * arithmetic ever disagree, this must fail by name, not by
+         * overrunning the table. (V2-8 mutation X1 overran it.) */
+        FUZZ_ASSERT(w < SCAN_KEPT_WINDOWS, "more kept windows than the layout arithmetic allows");
+        s.win[w].key = load64(kp.secret_key + i);
+        s.win[w].idx = (uint32_t)i;
+        w++;
     }
+    FUZZ_ASSERT(w == SCAN_KEPT_WINDOWS, "fewer kept windows than the layout arithmetic requires");
+    s.nwin = w;
     qsort(s.win, s.nwin, sizeof(window_t), window_cmp);
+
+    if (!run_controls(&s, &kp)) {
+        printf("scan-secret: REFUSING TO SCAN -- the scanner's own controls failed; no file was admitted\n");
+        sodium_memzero(s.win, s.nwin * sizeof(window_t));
+        free(s.win);
+        mldsa_keypair_free(&kp);
+        return 1;
+    }
     for (int i = 2; i < argc; i++) {
         scan_path(&s, argv[i]);
     }
     sodium_memzero(s.win, s.nwin * sizeof(window_t));
     free(s.win);
     mldsa_keypair_free(&kp);
-    printf("scan-secret: %u file(s) scanned, %u violation(s), %u token-only file(s)\n", s.files, s.violations,
-           s.token_only);
+    printf("scan-secret: %u file(s) scanned, %u violation(s) (%u layout, %u window), %u token-only file(s)\n",
+           s.files, s.violations, s.layout_violations, s.window_violations, s.token_only);
     return s.violations == 0 ? 0 : 1;
 }

@@ -110,7 +110,7 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, and asymmetric pad buckets on the wire (27/281/4121-byte confirmation records) |
 | `demo_e2e` | The full client/server demo end to end — twice, once with default padding and once with mismatched `--pad-bucket` policies — including a check that no key material reaches any log |
 | `fuzz_replay_*` (5) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
-| `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file |
+| `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on sixteen built-in controls before every scan |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
 | `bench_smoke` | Every benchmark binary at tiny iteration counts, so bench code cannot rot |
 
@@ -334,11 +334,6 @@ ships; each is a decision to stop somewhere.
 - **Traffic-analysis resistance beyond padding** — v2 pads record lengths,
   but message timing, counts and direction are unprotected; no cover traffic
   and no constant-rate sending. (spec-v2 §6.4.1, §9)
-- **Fuzz scanner precision** — the secret scanner's 16-byte window rule also
-  matches public-key prefixes, so it would refuse a legitimate public-mode
-  fuzz regression. It over-rejects, never under-rejects. Scheduled as V2-8.
-  (§ *OPEN issue: the secret scanner's 16-byte window rule also matches
-  public-key prefixes*)
 - **Legacy key migration** — `MLDSASK1` files are rejected rather than
   migrated, because migrating would mean trusting an unverifiable file.
   Regenerate demo keys instead; a `migrate-key` command is scheduled as V2-9.

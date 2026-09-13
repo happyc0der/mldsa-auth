@@ -595,6 +595,12 @@ replace the key. Production key storage remains out of scope (spec §9).
 
 ### OPEN issue: the secret scanner's 16-byte window rule also matches public-key prefixes
 
+**RESOLVED in V2-8** — see § *V2-8 — fuzz-scanner precision*. The measurement
+below (153 violations from the generated public-mode seeds) is now 0, with the
+secret-key rules unchanged. The rest of this section is left as written,
+because it is the record of how the limitation was found and why it was
+allowed to stand for four steps.
+
 Not a Step 7.1 regression — the rule dates from Step 7 — but it was measured
 while verifying this step, so it is recorded here.
 
@@ -1822,3 +1828,142 @@ asked for. Requeued with the leading dashes trimmed, it reported
 distinction is only visible because the runner keeps every per-mutation log,
 so the verdict could be checked against the evidence instead of being
 believed.
+
+## V2-8 — fuzz-scanner precision
+
+The repository admission gate refused files it had no reason to refuse. A
+minimized *public-mode* `fuzz_keys` artifact — a file whose entire content is
+public data — could not be committed as a regression, because the scanner's
+16-byte window rule matched the fixture public key. Measured before this
+step: the nine generated public-mode seeds produced **153 violations**, 17
+each. Measured after, with every secret-key rule unchanged: **0**.
+
+### What is actually secret in an ML-DSA-65 secret key
+
+The layout comes from the code that packs it — liboqs's mldsa-native
+`mld_pack_sk_rho_key_tr_s2()` / `mld_unpack_sk()` and `params.h` — not from a
+reading of FIPS 204:
+
+| region | offsets | secret? | why |
+|---|---|---|---|
+| `rho` | [0, 32) | **no** | it *is* `pk[0..32)` |
+| `K` | [32, 64) | yes | the signing seed |
+| `tr` | [64, 128) | **no** | `SHAKE256(pk, 64)` (`sign.c:371`) |
+| `s1` | [128, 768) | yes | 5 x 128 |
+| `s2` | [768, 1536) | yes | 6 x 128 |
+| `t0` | [1536, 4032) | yes | 6 x 416 |
+
+Two regions totalling 96 bytes are recoverable by anyone holding the public
+key. Everything else is key material.
+
+### The kept set is "holds a secret byte", not "lies in a secret region"
+
+A window is excluded only when it lies **entirely** inside `rho` or entirely
+inside `tr`: 17 windows at offsets 0..16, and 49 at 64..112. That leaves
+4017 - 66 = **3951** of the original 4017.
+
+The alternative reading — keep only windows fully inside a secret region —
+would have kept 3906 and dropped the 45 that straddle a boundary. Those 45
+each contain secret bytes (the window at offset 17 is `rho[17..32) || K[0]`),
+so dropping them would have weakened the gate to no purpose. They also cannot
+produce a public-key false positive: in the public key the byte following
+`rho` is `t1[0]`, not `K[0]`, so a match would require the two to coincide.
+The result is zero public-key false positives *and* full coverage of every
+secret byte — the choice was not a trade-off once the question was asked
+precisely.
+
+### The exclusions are proven at run time, and failure stops the gate
+
+Before any exclusion is applied, the scanner checks two identities against
+the regenerated fixture: `sk[0..32) == pk[0..32)`, and
+`SHAKE256(pk, 64) == sk[64..128)`. If either fails it prints `SCANNER ABORT`
+and refuses to scan — it does not fall back to the old, wider rule, and it
+does not proceed with a narrower one.
+
+That direction is deliberate. The exclusions are only sound while the packing
+is what this code believes it is; a liboqs that repacked the secret key would
+make "offsets 0..32 are public" a false statement about real key bytes. A
+gate that quietly kept running would be worse than one that goes red, because
+its silence is exactly what everyone relies on. The check costs one SHAKE256
+per scan.
+
+`OQS_SHA3_shake256` is declared in `<oqs/sha3.h>` — `<oqs/oqs.h>` includes
+only `sha3_ops.h`, which names the function in a comment but does not declare
+it, so the first build failed with an implicit-declaration error. It needs no
+`OQS_init()`: the SHA3 callbacks are statically initialised
+(`sha3.c:9`), and `OQS_init()` is a no-op unless `OQS_DIST_BUILD` is set,
+which V2-2 turned off.
+
+### The scanner proves its own rules before it admits anything
+
+Sixteen controls (C1-C7) run inside the existing `fuzz_no_committed_secrets`
+gate, on in-memory buffers, before a single file is read; any failure refuses
+the whole scan. This is the `session_no_alloc_scan` pattern: a checker whose
+negative controls are part of the check, so it cannot pass by doing nothing.
+
+C1 and C2 are the load-bearing ones — a real `MLDSASK2` file and a legacy
+`MLDSASK1` file must still be caught by **both** rules, with exactly 3951
+window hits. That literal is what makes an off-by-one at either boundary die:
+3950 or 3952 fails the control. C5 then names *which* boundary, by scanning
+the single window either side of each. C3 is the step's purpose, executable:
+the three public-key seed files, clean. C6 keeps one window from each of `K`,
+`s1` and `t0` under test, so a future "optimisation" that narrowed the kept
+set further would fail immediately.
+
+No new CTest was added; the suite stays at 15. The controls run in every
+configuration the gate runs in, which includes both sanitizer builds.
+
+### Why the gate's own output changed shape
+
+The summary line now reads `N file(s) scanned, V violation(s) (L layout,
+W window), T token-only file(s)`. The two rules have different meanings — one
+says "this is a key file", the other "this contains key bytes" — and a report
+that sums them cannot distinguish a scanner that lost a rule from one that
+found nothing. Every control asserts the two counts separately for the same
+reason.
+
+### Mutations
+
+Ten mutations through `tools/run_mutations_v2.sh` against the fresh ASan
+tree, test `fuzz_no_committed_secrets`. All killed; every restore verified
+clean with a passing suite and zero residue.
+
+| # | Defect | Killed by |
+|---|---|---|
+| X1 | the exclusion is disabled: every window kept | the in-loop bound assert (abort) — see below |
+| X2 | the layout rule never fires | C1, C2 |
+| X3 | the window rule never fires (empty table) | C1, C6.1 and 5 more (7) |
+| X4 | `rho` exclusion off by one, arithmetic unchanged | the kept-window count assert (abort) |
+| X5 | `tr` exclusion off by one, arithmetic unchanged | the kept-window count assert (abort) |
+| X6 | the derivability proof compares `tr` at the wrong offset | `SCANNER ABORT`, before any control runs |
+| X7 | test-side: C3 expects the pre-V2-8 count of 17 | C3.1 and 2 more (3) |
+| X8 | exclusion disabled **and** the arithmetic updated to match | C1, C3.1-C3.3 and 6 more (10) |
+| X9 | `rho` boundary slips **and** the arithmetic is corrected to match | **C5.2 alone** |
+| X10 | `tr` boundary slips **and** the arithmetic is corrected to match | **C5.4 alone** |
+
+**X1 found a real sharp edge, and the fix is in this commit.** Disabling the
+exclusion makes the fill loop produce 4017 windows for a table sized 3951,
+and the equality assertion that was supposed to catch a miscount ran *after*
+the loop — so the first campaign reported an ASan heap-buffer-overflow at the
+table write rather than a named failure. The table is sized from a
+compile-time constant and the predicate is a pure function of the offsets, so
+correct code never reaches it; but a checker whose failure mode is heap
+corruption is the wrong failure mode for a checker. The loop now bound-checks
+*before* each write (`w < SCAN_KEPT_WINDOWS`), and the after-loop equality
+assert catches the other direction. The mutation was retained exactly as
+written, and now dies by name.
+
+**X1, X4 and X5 die before the controls, which is why X8, X9 and X10 exist.**
+Each of the first three changes how many windows are kept, so a count
+assertion fires before a single control runs — a kill, but one that proves
+the *arithmetic* is guarded, not that the controls work. X8, X9 and X10 make
+the same three defects while updating the constants to agree, so execution
+reaches the controls. X9 and X10 are then killed by **one control each**,
+C5.2 and C5.4 — the single window either side of the boundary. That is the
+whole case for writing C5: with the arithmetic self-consistent, nothing else
+in the suite can tell a 32-byte exclusion from a 33-byte one.
+
+**X6 never reaches the controls either, by design.** A broken derivability
+proof must stop the gate before it decides anything, so its expected failure
+text is empty ("must fail somehow") and the evidence is the `SCANNER ABORT`
+line in its log.
