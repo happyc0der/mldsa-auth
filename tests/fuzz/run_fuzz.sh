@@ -29,7 +29,7 @@ BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "SKIP: build directory not fou
 
 maxlen() {
     case "$1" in
-        wire) echo 4096 ;; handshake) echo 16384 ;; session) echo 140000 ;; frame) echo 140000 ;; keys) echo 8192 ;;
+        wire) echo 8192 ;; handshake) echo 16384 ;; session) echo 140000 ;; frame) echo 140000 ;; keys) echo 8192 ;;
     esac
 }
 

@@ -1,18 +1,34 @@
 #include "transcript.h"
 
+#include "mlkem_wrap.h" /* MLKEM_PUBLIC_KEY_BYTES / MLKEM_CIPHERTEXT_BYTES --
+                         * included HERE, not in transcript.h, so the wire
+                         * header keeps no crypto-layer dependency while the
+                         * two sets of constants are still proven equal at
+                         * compile time. */
 #include "wire_int.h"
 
 #include <sodium.h>
 #include <string.h>
 
+/* The wire constants restate the KEM's own sizes; a liboqs bump that
+ * changed either must fail here rather than on the wire. */
+_Static_assert(WIRE_MLKEM_EK_LEN == MLKEM_PUBLIC_KEY_BYTES, "ML-KEM-768 ek size on the wire");
+_Static_assert(WIRE_MLKEM_CT_LEN == MLKEM_CIPHERTEXT_BYTES, "ML-KEM-768 ciphertext size on the wire");
+
+/* spec-v2 6.3.1's maximum-length table, pinned to the literals. */
+_Static_assert(CLIENT_HELLO_MAX_ENCODED_LEN == 1330u, "ClientHello maximum (spec-v2 6.3.1)");
+_Static_assert(SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN == 1234u, "ServerHello_unsigned maximum (spec-v2 6.3.1)");
+_Static_assert(SERVER_HELLO_MAX_ENCODED_LEN == 4545u, "ServerHello maximum (spec-v2 6.3.1)");
+_Static_assert(CLIENT_AUTH_MAX_ENCODED_LEN == 3328u, "ClientAuth maximum (spec-v2 6.3.1)");
+
 /* --- internal helpers --------------------------------------------------- */
 
 static size_t client_hello_encoded_len(uint8_t id_len) {
-    return 1u + 1u + id_len + WIRE_X25519_PUB_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN;
+    return 1u + 1u + id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_EK_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN;
 }
 
 static size_t server_hello_unsigned_encoded_len(uint8_t id_len) {
-    return 1u + 1u + id_len + WIRE_X25519_PUB_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
+    return 1u + 1u + id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
 }
 
 /* Writes ServerHello's unsigned prefix with NO validation -- callers
@@ -30,6 +46,8 @@ static void write_server_hello_unsigned_unchecked(const server_hello_t *msg, uin
     off += msg->id_len;
     memcpy(out + off, msg->ephemeral_pub, WIRE_X25519_PUB_LEN);
     off += WIRE_X25519_PUB_LEN;
+    memcpy(out + off, msg->mlkem_ct, WIRE_MLKEM_CT_LEN);
+    off += WIRE_MLKEM_CT_LEN;
     memcpy(out + off, msg->nonce, WIRE_NONCE_LEN);
     off += WIRE_NONCE_LEN;
     memcpy(out + off, msg->session_id_echo, WIRE_SESSION_ID_LEN);
@@ -95,6 +113,8 @@ int encode_client_hello(const client_hello_t *msg, uint8_t *out, size_t out_cap,
     off += msg->id_len;
     memcpy(out + off, msg->ephemeral_pub, WIRE_X25519_PUB_LEN);
     off += WIRE_X25519_PUB_LEN;
+    memcpy(out + off, msg->mlkem_ek, WIRE_MLKEM_EK_LEN);
+    off += WIRE_MLKEM_EK_LEN;
     memcpy(out + off, msg->session_id, WIRE_SESSION_ID_LEN);
     off += WIRE_SESSION_ID_LEN;
     memcpy(out + off, msg->nonce, WIRE_NONCE_LEN);
@@ -215,11 +235,18 @@ int decode_client_hello(const uint8_t *buf, size_t len, client_hello_t *out, siz
     out->id_len = id_len;
     off += id_len;
 
-    if (len - off < WIRE_X25519_PUB_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN) {
+    /* Every remaining ClientHello field is fixed-length, so one exact
+     * remaining-length check covers all of them. A v1 ClientHello is
+     * exactly WIRE_MLKEM_EK_LEN bytes short and fails right here --
+     * spec-v2 6.3.4's "a v1 message MUST fail a v2 decoder" needs no
+     * special case. */
+    if (len - off < WIRE_X25519_PUB_LEN + WIRE_MLKEM_EK_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN) {
         goto fail;
     }
     memcpy(out->ephemeral_pub, buf + off, WIRE_X25519_PUB_LEN);
     off += WIRE_X25519_PUB_LEN;
+    memcpy(out->mlkem_ek, buf + off, WIRE_MLKEM_EK_LEN);
+    off += WIRE_MLKEM_EK_LEN;
     memcpy(out->session_id, buf + off, WIRE_SESSION_ID_LEN);
     off += WIRE_SESSION_ID_LEN;
     memcpy(out->nonce, buf + off, WIRE_NONCE_LEN);
@@ -270,11 +297,16 @@ int decode_server_hello(const uint8_t *buf, size_t len, server_hello_t *out, siz
     out->id_len = id_len;
     off += id_len;
 
-    if (len - off < WIRE_X25519_PUB_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN) {
+    /* As in decode_client_hello: one exact check for the whole
+     * fixed-length run, which a v1 ServerHello (short by
+     * WIRE_MLKEM_CT_LEN) cannot satisfy. */
+    if (len - off < WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN) {
         goto fail;
     }
     memcpy(out->ephemeral_pub, buf + off, WIRE_X25519_PUB_LEN);
     off += WIRE_X25519_PUB_LEN;
+    memcpy(out->mlkem_ct, buf + off, WIRE_MLKEM_CT_LEN);
+    off += WIRE_MLKEM_CT_LEN;
     memcpy(out->nonce, buf + off, WIRE_NONCE_LEN);
     off += WIRE_NONCE_LEN;
     memcpy(out->session_id_echo, buf + off, WIRE_SESSION_ID_LEN);

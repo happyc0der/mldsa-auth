@@ -360,6 +360,15 @@ static int cmd_ci(int argc, char **argv) {
     blobs_t seeds = {0};
     fuzz_target_seeds(emit_to_blobs, &seeds);
     for (size_t i = 0; i < seeds.n; i++) {
+        /* A seed the target cannot accept is a HARNESS defect: the
+         * mutation loop below used to silently truncate it to `cap`, so a
+         * fuzz_target_max_len left behind after a message grew would
+         * quietly shrink the corpus instead of failing. Fail loudly. */
+        if (seeds.v[i].len > fuzz_target_max_len) {
+            fprintf(stderr, "fuzz_%s_replay: seed \"%s\" is %zu bytes, over the target maximum of %zu\n",
+                    fuzz_target_name, seeds.v[i].name, seeds.v[i].len, fuzz_target_max_len);
+            die("seed longer than fuzz_target_max_len (raise it; do not truncate the corpus)");
+        }
         run_one(seeds.v[i].data, seeds.v[i].len);
     }
     printf("fuzz_%s_replay: seeds: %zu ok\n", fuzz_target_name, seeds.n);
@@ -381,7 +390,7 @@ static int cmd_ci(int argc, char **argv) {
     g_x = seed ? seed : 1;
     for (unsigned long long it = 0; it < iterations; it++) {
         const blob_t *s = &seeds.v[xr() % seeds.n];
-        size_t len = (s->len <= cap) ? s->len : cap;
+        size_t len = s->len; /* <= cap: checked above, not truncated here */
         memcpy(buf, s->data, len);
         len = mutate(buf, len, cap, &dict);
         run_one(buf, len);

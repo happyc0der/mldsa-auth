@@ -233,8 +233,11 @@ static void emit_msgs(fuzz_emit_fn emit, void *ctx, const char *name, uint8_t se
 
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     const fuzz_transcript_t *g = fuzz_genuine_transcript();
-    uint8_t a[4096];
-    uint8_t b[4096];
+    /* Sized from the wire maximum, not a round number: a v2 ServerHello
+     * is 4484 bytes here, so a fixed 4096-byte scratch would make
+     * encode_server_hello fail and silently drop the seeds below. */
+    uint8_t a[SERVER_HELLO_MAX_ENCODED_LEN];
+    uint8_t b[SERVER_HELLO_MAX_ENCODED_LEN];
     size_t an = 0;
     size_t used = 0;
     emit(ctx, "empty", fuzz_empty, 0);

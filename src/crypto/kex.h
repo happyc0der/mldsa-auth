@@ -5,9 +5,14 @@
 #include <stdint.h>
 
 /*
- * X25519 ECDH + HKDF-SHA256 key exchange, via libsodium. v1 scope:
- * classical X25519 only -- hybrid X25519 + ML-KEM-768 is deferred to a v2
- * milestone (Section 10 decision).
+ * X25519 ECDH + HKDF-SHA256 key exchange, via libsodium.
+ *
+ * v2 derives session keys from a HYBRID secret: the X25519 shared secret
+ * AND the ML-KEM-768 shared secret (src/crypto/mlkem_wrap.h), combined by
+ * HKDF-SHA256's extract step over IKM = ss_x || ss_k in that fixed order
+ * (spec-v2 6.3.7). Neither secret is ever used alone, so the session
+ * survives the failure of either assumption. The X25519 half below is
+ * unchanged from v1 -- only the key schedule is hybrid.
  */
 
 #define KEX_PUBLIC_KEY_BYTES 32u
@@ -29,11 +34,33 @@
 #define KEX_ID_MAX_LEN 64u
 #define KEX_SESSION_ID_LEN 16u
 
+/* Length of the transcript digest bound into the v2 KDF info. Mirrors
+ * HANDSHAKE_TRANSCRIPT_HASH_BYTES / crypto_hash_sha256_BYTES; restated
+ * here so this crypto-layer module stays independent of the protocol
+ * layer, exactly like the KEX_ID and KEX_SESSION_ID_LEN constants above. */
+#define KEX_TRANSCRIPT_HASH_BYTES 32u
+
+/* --- v1 key schedule (RETAINED FOR ONE STEP) ---------------------------
+ * KEX_KDF_LABEL, KEX_KDF_INFO_MAX_LEN, kex_build_kdf_info() and
+ * kex_derive_session_key() below are the v1 (X25519-only) schedule. They
+ * survive V2-4 only because protocol/handshake.c still calls them; V2-5
+ * rewrites that caller for the hybrid handshake and DELETES all four.
+ * No new caller may use them.
+ * --------------------------------------------------------------------- */
+
 /* Literal domain-separation label for the KDF info (17 bytes, no NUL). */
 #define KEX_KDF_LABEL "mldsa-auth/v1/kdf"
 
 /* 17 label + 1 separator + 1 len + 64 id + 1 len + 64 id + 1 direction */
 #define KEX_KDF_INFO_MAX_LEN 149u
+
+/* Literal domain-separation label for the v2 KDF info (17 bytes, no NUL). */
+#define KEX_KDF_V2_LABEL "mldsa-auth/v2/kdf"
+
+/* 17 label + 1 separator + 1 len + id + 1 len + id + 32 digest + 1
+ * direction, with each id 1..64 bytes (spec-v2 6.3.7). */
+#define KEX_KDF_V2_INFO_MIN_LEN 55u
+#define KEX_KDF_V2_INFO_MAX_LEN 181u
 
 typedef struct {
     uint8_t public_key[KEX_PUBLIC_KEY_BYTES];
@@ -119,5 +146,67 @@ int kex_derive_session_key(uint8_t session_key[KEX_SESSION_KEY_BYTES],
                             const uint8_t *a_id, size_t a_id_len,
                             const uint8_t *b_id, size_t b_id_len,
                             uint8_t direction);
+
+/* --- v2 hybrid key schedule (spec-v2 6.3.7) ---------------------------- */
+
+/* Builds the exact normative v2 KDF info bytes into caller-provided
+ * storage:
+ *
+ *   kdf_info = "mldsa-auth/v2/kdf" || 0x00 ||
+ *              a_id_len_u8 || a_id || b_id_len_u8 || b_id ||
+ *              th_client_auth (32) || direction_u8
+ *
+ * The v1 layout with one fixed-length field inserted before the direction
+ * byte. a_id is ALWAYS the initiator's id and b_id ALWAYS the responder's,
+ * regardless of which side computes, so both peers build byte-identical
+ * info. Injectivity is unchanged: each variable-length id still carries
+ * its own length byte, and the label, digest and direction are all
+ * fixed-length.
+ *
+ * th_client_auth is TH_client_auth (spec-v2 6.3.3) -- the digest sig_A is
+ * verified against. Binding it makes a derived key valid only for the
+ * exact transcript that produced it, which is what stops key material,
+ * and in particular a captured ML-KEM ciphertext, from being transplanted
+ * between handshakes.
+ *
+ * Validates -- all before writing a single byte -- that out/out_len/a_id/
+ * b_id/th_client_auth are non-NULL, 1 <= a_id_len <= 64, 1 <= b_id_len
+ * <= 64, direction is exactly KEX_DIR_C2S or KEX_DIR_S2C, and out_cap
+ * holds the full result. On failure returns nonzero, writes nothing to
+ * out, and leaves *out_len untouched. Exposed (not static) so tests can
+ * check the exact bytes against an independently hand-built buffer. */
+int kex_build_kdf_info_v2(uint8_t *out, size_t out_cap, size_t *out_len,
+                          const uint8_t *a_id, size_t a_id_len,
+                          const uint8_t *b_id, size_t b_id_len,
+                          const uint8_t th_client_auth[KEX_TRANSCRIPT_HASH_BYTES],
+                          uint8_t direction);
+
+/* Derives one direction's session key per spec-v2 6.3.7:
+ *   HKDF-SHA256(IKM  = ss_x || ss_k (64 bytes, THIS order),
+ *               salt = session_id (exactly 16 bytes),
+ *               info = kex_build_kdf_info_v2(...),
+ *               L    = 32)
+ *
+ * ss_x is the X25519 shared secret (kex_shared_secret, low-order points
+ * already rejected) and ss_k the ML-KEM-768 shared secret (mlkem_encaps
+ * on the responder, mlkem_decaps on the initiator). HKDF's extract step
+ * IS the combiner; neither secret is ever used alone, so an implementation
+ * that dropped ss_k would interoperate with itself perfectly while
+ * silently losing all post-quantum protection. That class of bug is
+ * invisible to round-trip tests and is pinned instead by byte-exact
+ * vectors computed outside this codebase (tests/test_handshake.c, D3).
+ *
+ * Call once per direction to get independent c2s/s2c keys that are never
+ * reused bidirectionally. Returns 0 on success; on failure session_key is
+ * left untouched. Every intermediate (IKM, info, scratch key) is wiped on
+ * every path. */
+int kex_derive_session_key_v2(uint8_t session_key[KEX_SESSION_KEY_BYTES],
+                              const uint8_t ss_x[KEX_SHARED_SECRET_BYTES],
+                              const uint8_t ss_k[KEX_SHARED_SECRET_BYTES],
+                              const uint8_t *session_id, size_t session_id_len,
+                              const uint8_t *a_id, size_t a_id_len,
+                              const uint8_t *b_id, size_t b_id_len,
+                              const uint8_t th_client_auth[KEX_TRANSCRIPT_HASH_BYTES],
+                              uint8_t direction);
 
 #endif /* MLDSA_AUTH_CRYPTO_KEX_H */

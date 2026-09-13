@@ -88,7 +88,8 @@ static demo_buffers_t *g_cli_buf;
 #define OPS_MS 5000u
 
 /* Exact frame sizes for alice <-> bob (ML-DSA-65 signatures are fixed-length). */
-#define CH_PAYLOAD (1u + 1u + sizeof(ID_A) + WIRE_X25519_PUB_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN)
+#define CH_PAYLOAD \
+    (1u + 1u + sizeof(ID_A) + WIRE_X25519_PUB_LEN + WIRE_MLKEM_EK_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN)
 #define CH_FRAME (FRAME_HEADER_BYTES + CH_PAYLOAD)
 #define CA_FRAME (FRAME_HEADER_BYTES + CLIENT_AUTH_MAX_ENCODED_LEN)
 #define CONFIRM_FRAME (FRAME_HEADER_BYTES + FRAME_CONFIRM_LEN)
@@ -734,7 +735,7 @@ static void server_vs_header(uint32_t len, const char *name) {
 
 static void test_t3_oversize(void) {
     server_vs_header((uint32_t)FRAME_MAX_CLIENT_HELLO + 1u,
-                     "T3: ClientHello-state header 147 (one over the 146 limit) -> FRAME_BAD_LENGTH");
+                     "T3: ClientHello-state header 1331 (one over the 1330 limit) -> FRAME_BAD_LENGTH");
     server_vs_header((uint32_t)FRAME_MAX_PAYLOAD + 1u, "T3: ClientHello-state header 65562 -> FRAME_BAD_LENGTH");
     server_vs_header(0xFFFFFFFFu, "T3: ClientHello-state header 0xFFFFFFFF -> FRAME_BAD_LENGTH");
     server_vs_header(0u, "T3: zero-length frame -> FRAME_BAD_LENGTH");
@@ -761,7 +762,7 @@ static void test_t3_oversize(void) {
     client_vs_raw_server(RAW_SRV_OVERSIZE_SH_HEADER, &r, &elapsed);
     CHECK(r.status == DEMO_ERR_FRAME_SIZE && r.frame_status == FRAME_BAD_LENGTH && r.stage == DEMO_STAGE_SERVER_HELLO &&
               elapsed < 500u,
-          "T3: client rejects a ServerHello header of 3458 (one over the 3457 limit) immediately");
+          "T3: client rejects a ServerHello header of 4546 (one over the 4545 limit) immediately");
 }
 
 /* =====================================================================

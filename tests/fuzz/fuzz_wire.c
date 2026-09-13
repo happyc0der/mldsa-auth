@@ -1,5 +1,5 @@
 /*
- * F1 fuzz_wire -- Step 3 wire decoders and transcript helpers (spec 6.3.1-6.3.4).
+ * F1 fuzz_wire -- v2 wire decoders and transcript helpers (spec-v2 6.3.1-6.3.4).
  *
  * Input: the whole input is one candidate wire message (no selector split),
  * fed to all three decoders. For the transcript helpers it is split at
@@ -22,7 +22,10 @@
 #include <string.h>
 
 const char *const fuzz_target_name = "wire";
-const size_t fuzz_target_max_len = 4096;
+/* Must exceed the largest v2 message (SERVER_HELLO_MAX_ENCODED_LEN =
+ * 4545), or every seed carrying a genuine ServerHello would be rejected
+ * by the replay driver and libFuzzer would never generate one. */
+const size_t fuzz_target_max_len = 8192;
 
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
     (void)argc;
@@ -50,12 +53,15 @@ static void expected_digest(uint8_t out[32], const char *label, const uint8_t *a
     crypto_hash_sha256_final(&st, out);
 }
 
+/* The v2 unsigned prefix, spelled out in literal field sizes (x25519 32,
+ * mlkem_ct 1088, nonce 32, session_id_echo 16) rather than reusing the
+ * wire macros -- this is the independent model. */
 static size_t expected_unsigned_len(uint8_t id_len) {
-    return (id_len >= 1u && id_len <= 64u) ? (size_t)(1u + 1u + id_len + 32u + 32u + 16u) : 0u;
+    return (id_len >= 1u && id_len <= 64u) ? (size_t)(1u + 1u + id_len + 32u + 1088u + 32u + 16u) : 0u;
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    static uint8_t re[4096];
+    static uint8_t re[8192];
     if (size > fuzz_target_max_len) {
         return 0;
     }
@@ -131,9 +137,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                     transcript_handshake_id(chp, chn, shp, shn, got3b) == 0,
                 "transcript_handshake_id must accept any byte strings");
 
-    expected_digest(want1, "mldsa-auth/v1/server-auth", chp, chn, shup, u);
-    expected_digest(want2, "mldsa-auth/v1/client-auth", chp, chn, shp, shn);
-    expected_digest(want3, "mldsa-auth/v1/handshake-id", chp, chn, shp, shn);
+    expected_digest(want1, "mldsa-auth/v2/server-auth", chp, chn, shup, u);
+    expected_digest(want2, "mldsa-auth/v2/client-auth", chp, chn, shp, shn);
+    expected_digest(want3, "mldsa-auth/v2/handshake-id", chp, chn, shp, shn);
     FUZZ_ASSERT(memcmp(got1, want1, 32) == 0, "server-auth digest != independently built expected value");
     FUZZ_ASSERT(memcmp(got2, want2, 32) == 0, "client-auth digest != independently built expected value");
     FUZZ_ASSERT(memcmp(got3, want3, 16) == 0, "handshake_id != first 16 bytes of the expected digest");
@@ -146,7 +152,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
 static void emit_with_id(fuzz_emit_fn emit, void *ctx, const char *name, int server, uint8_t id_len) {
     const fuzz_transcript_t *g = fuzz_genuine_transcript();
-    uint8_t buf[4096];
+    uint8_t buf[8192];
     size_t n = 0;
     size_t used = 0;
     if (!server) {
@@ -174,7 +180,7 @@ static void emit_with_id(fuzz_emit_fn emit, void *ctx, const char *name, int ser
 
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     const fuzz_transcript_t *g = fuzz_genuine_transcript();
-    uint8_t buf[4096];
+    uint8_t buf[8192];
     emit(ctx, "empty", fuzz_empty, 0);
     emit(ctx, "client-hello", g->ch, g->ch_len);
     emit(ctx, "server-hello", g->sh, g->sh_len);

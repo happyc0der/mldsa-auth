@@ -57,6 +57,7 @@ static void make_client_hello(client_hello_t *ch, uint8_t id_len, uint8_t seed) 
     ch->id_len = id_len;
     fill_pattern(ch->id, id_len, seed);
     fill_pattern(ch->ephemeral_pub, WIRE_X25519_PUB_LEN, (uint8_t)(seed + 1));
+    fill_pattern(ch->mlkem_ek, WIRE_MLKEM_EK_LEN, (uint8_t)(seed + 4));
     fill_pattern(ch->session_id, WIRE_SESSION_ID_LEN, (uint8_t)(seed + 2));
     fill_pattern(ch->nonce, WIRE_NONCE_LEN, (uint8_t)(seed + 3));
 }
@@ -66,6 +67,7 @@ static void make_server_hello(server_hello_t *sh, uint8_t id_len, uint16_t sig_l
     sh->id_len = id_len;
     fill_pattern(sh->id, id_len, seed);
     fill_pattern(sh->ephemeral_pub, WIRE_X25519_PUB_LEN, (uint8_t)(seed + 1));
+    fill_pattern(sh->mlkem_ct, WIRE_MLKEM_CT_LEN, (uint8_t)(seed + 5));
     fill_pattern(sh->nonce, WIRE_NONCE_LEN, (uint8_t)(seed + 2));
     fill_pattern(sh->session_id_echo, WIRE_SESSION_ID_LEN, (uint8_t)(seed + 3));
     sh->sig_len = sig_len;
@@ -194,14 +196,19 @@ static void test_transcript_hashes(void) {
     uint8_t th_server_auth[32], th_server_auth_expected[32];
     CHECK(transcript_hash_server_auth(ch_bytes, ch_len, sh_unsigned_bytes, sh_unsigned_len, th_server_auth) == 0,
           "transcript_hashes: transcript_hash_server_auth succeeds");
-    hand_hash(TRANSCRIPT_LABEL_SERVER_AUTH, ch_bytes, ch_len, sh_unsigned_bytes, sh_unsigned_len, th_server_auth_expected);
+    /* The labels are spelled out here, NOT taken from TRANSCRIPT_LABEL_*:
+     * passing the macro would make this test agree with any label the
+     * header happens to contain, including a v1 one left behind. Same
+     * discipline hand_kdf_info() applies to the KDF label. */
+    hand_hash("mldsa-auth/v2/server-auth", ch_bytes, ch_len, sh_unsigned_bytes, sh_unsigned_len,
+              th_server_auth_expected);
     CHECK(memcmp(th_server_auth, th_server_auth_expected, 32) == 0,
           "transcript_hashes: transcript_hash_server_auth matches independent hand-built SHA-256(label||0x00||CH||SH_unsigned)");
 
     uint8_t th_client_auth[32], th_client_auth_expected[32];
     CHECK(transcript_hash_client_auth(ch_bytes, ch_len, sh_bytes, sh_len, th_client_auth) == 0,
           "transcript_hashes: transcript_hash_client_auth succeeds");
-    hand_hash(TRANSCRIPT_LABEL_CLIENT_AUTH, ch_bytes, ch_len, sh_bytes, sh_len, th_client_auth_expected);
+    hand_hash("mldsa-auth/v2/client-auth", ch_bytes, ch_len, sh_bytes, sh_len, th_client_auth_expected);
     CHECK(memcmp(th_client_auth, th_client_auth_expected, 32) == 0,
           "transcript_hashes: transcript_hash_client_auth matches independent hand-built SHA-256(label||0x00||CH||SH)");
 
@@ -209,7 +216,7 @@ static void test_transcript_hashes(void) {
     uint8_t handshake_id_full_expected[32];
     CHECK(transcript_handshake_id(ch_bytes, ch_len, sh_bytes, sh_len, handshake_id) == 0,
           "transcript_hashes: transcript_handshake_id succeeds");
-    hand_hash(TRANSCRIPT_LABEL_HANDSHAKE_ID, ch_bytes, ch_len, sh_bytes, sh_len, handshake_id_full_expected);
+    hand_hash("mldsa-auth/v2/handshake-id", ch_bytes, ch_len, sh_bytes, sh_len, handshake_id_full_expected);
     CHECK(memcmp(handshake_id, handshake_id_full_expected, 16) == 0,
           "transcript_hashes: transcript_handshake_id == independently-computed digest[0:16]");
 
@@ -506,7 +513,7 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         buf[0] = MSG_TYPE_CLIENT_HELLO;
         buf[1] = 65;
         /* fill the rest with arbitrary bytes -- plenty of them */
-        size_t len = 2 + 65 + WIRE_X25519_PUB_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN;
+        size_t len = 2 + 65 + WIRE_X25519_PUB_LEN + WIRE_MLKEM_EK_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN;
         CHECK(decode_client_hello(buf, len, &tmp_ch, &consumed) != 0,
               "malformed: decode_client_hello rejects id_len == 65 (one past max) even with enough trailing bytes");
     }
@@ -517,7 +524,8 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN];
         size_t len = 0;
         encode_server_hello(&sh, buf, sizeof buf, &len);
-        size_t unsigned_len = 1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
+        size_t unsigned_len =
+            1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
         buf[unsigned_len] = 0;
         buf[unsigned_len + 1] = 0; /* sig_len = 0, big-endian */
         CHECK(decode_server_hello(buf, len, &tmp_sh, &consumed) != 0,
@@ -530,7 +538,8 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN + 8];
         size_t len = 0;
         encode_server_hello(&sh, buf, sizeof buf, &len);
-        size_t unsigned_len = 1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
+        size_t unsigned_len =
+            1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
         uint16_t too_big = (uint16_t)(MLDSA_SIGNATURE_MAX_BYTES + 1);
         buf[unsigned_len] = (uint8_t)(too_big >> 8);
         buf[unsigned_len + 1] = (uint8_t)(too_big & 0xFF);
@@ -544,7 +553,8 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN];
         size_t len = 0;
         encode_server_hello(&sh, buf, sizeof buf, &len);
-        size_t unsigned_len = 1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
+        size_t unsigned_len =
+            1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
         uint16_t bigger_than_remaining = (uint16_t)(sh.sig_len + 50);
         buf[unsigned_len] = (uint8_t)(bigger_than_remaining >> 8);
         buf[unsigned_len + 1] = (uint8_t)(bigger_than_remaining & 0xFF);
@@ -714,6 +724,246 @@ static void test_encoder_negative(void) {
         CHECK(encode_client_auth(&ca, buf, exact_len - 1, &out_len) != 0,
               "encoder_negative: encode_client_auth rejects out_cap one byte short of exact required length");
     }
+}
+
+/* ---------------------------------------------------------------------
+ * V2-4 W1-W5: the v2 wire format (spec-v2 6.3.1).
+ *
+ * Everything here is written against LITERAL numbers and LITERAL bytes.
+ * The tests above are all self-consistent: they encode with the same code
+ * they decode with, so a wrong-but-symmetric layout passes them. These do
+ * not.
+ * ------------------------------------------------------------------- */
+
+static void test_v24_wire_constants(void) {
+    /* W1 -- the four maxima against spec-v2 6.3.1's table. Checked before
+     * anything else, because every buffer below is sized by these macros:
+     * if they are wrong, a later failure could be an overflow rather than
+     * the size error itself. The values are moved through arrays so the
+     * comparison is between variables, not a constant folded at compile
+     * time. */
+    const size_t got[6] = {CLIENT_HELLO_MAX_ENCODED_LEN, SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN,
+                           SERVER_HELLO_MAX_ENCODED_LEN, CLIENT_AUTH_MAX_ENCODED_LEN,
+                           WIRE_MLKEM_EK_LEN, WIRE_MLKEM_CT_LEN};
+    const size_t want[6] = {1330u, 1234u, 4545u, 3328u, 1184u, 1088u};
+    int ok = 1;
+    for (size_t i = 0; i < 6; i++) {
+        if (got[i] != want[i]) {
+            ok = 0;
+            printf("      W1: constant %zu is %zu, expected %zu\n", i, got[i], want[i]);
+        }
+    }
+    CHECK(ok, "v2-4 W1: CH/SH_unsigned/SH/CA maxima are 1330/1234/4545/3328 and the ML-KEM fields 1184/1088");
+
+    /* W2 -- exact encoded sizes from literal arithmetic, at both id
+     * boundaries. 1267 = 2+1+32+1184+16+32; 1171 = 2+1+32+1088+32+16. */
+    client_hello_t ch;
+    server_hello_t sh;
+    uint8_t chb[CLIENT_HELLO_MAX_ENCODED_LEN];
+    uint8_t shb[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t n1 = 0, n64 = 0, u1 = 0, u64 = 0, full = 0;
+    make_client_hello(&ch, 1, 0x01);
+    encode_client_hello(&ch, chb, sizeof chb, &n1);
+    make_client_hello(&ch, 64, 0x01);
+    encode_client_hello(&ch, chb, sizeof chb, &n64);
+    make_server_hello(&sh, 1, 3309, 0x02);
+    encode_server_hello_unsigned(&sh, shb, sizeof shb, &u1);
+    make_server_hello(&sh, 64, 3309, 0x02);
+    encode_server_hello_unsigned(&sh, shb, sizeof shb, &u64);
+    encode_server_hello(&sh, shb, sizeof shb, &full);
+    CHECK(n1 == 1267u && n64 == 1330u && u1 == 1171u && u64 == 1234u && full == 4545u,
+          "v2-4 W2: encoded sizes are 1267/1330 (ClientHello id 1/64), 1171/1234 (SH_unsigned), 4545 (full SH)");
+    CHECK(transcript_server_hello_unsigned_len(1) == 1171u && transcript_server_hello_unsigned_len(64) == 1234u &&
+              transcript_server_hello_unsigned_len(0) == 0u && transcript_server_hello_unsigned_len(65) == 0u,
+          "v2-4 W2: transcript_server_hello_unsigned_len is 1171/1234 in range and 0 outside it");
+
+    /* W3 -- field ORDER, read at literal offsets. Each field gets a
+     * distinct constant byte, so a layout that moved mlkem_ek before
+     * ephemeral_pub in BOTH the encoder and the decoder -- which every
+     * round-trip test above would still pass -- is caught here. */
+    memset(&ch, 0, sizeof ch);
+    ch.id_len = 5;
+    memset(ch.id, 0x11, 5);
+    memset(ch.ephemeral_pub, 0x22, WIRE_X25519_PUB_LEN);
+    memset(ch.mlkem_ek, 0x33, WIRE_MLKEM_EK_LEN);
+    memset(ch.session_id, 0x44, WIRE_SESSION_ID_LEN);
+    memset(ch.nonce, 0x55, WIRE_NONCE_LEN);
+    size_t cn = 0;
+    int layout = encode_client_hello(&ch, chb, sizeof chb, &cn) == 0 && cn == 1271u;
+    {
+        size_t o = 0;
+        layout = layout && chb[o] == 0x01 && chb[1] == 5;
+        o = 2;
+        for (size_t i = 0; i < 5u; i++) {
+            layout = layout && chb[o + i] == 0x11;
+        }
+        o += 5u;
+        for (size_t i = 0; i < WIRE_X25519_PUB_LEN; i++) {
+            layout = layout && chb[o + i] == 0x22;
+        }
+        o += WIRE_X25519_PUB_LEN;
+        for (size_t i = 0; i < WIRE_MLKEM_EK_LEN; i++) {
+            layout = layout && chb[o + i] == 0x33;
+        }
+        o += WIRE_MLKEM_EK_LEN;
+        for (size_t i = 0; i < WIRE_SESSION_ID_LEN; i++) {
+            layout = layout && chb[o + i] == 0x44;
+        }
+        o += WIRE_SESSION_ID_LEN;
+        for (size_t i = 0; i < WIRE_NONCE_LEN; i++) {
+            layout = layout && chb[o + i] == 0x55;
+        }
+        layout = layout && (o + WIRE_NONCE_LEN) == cn;
+    }
+    CHECK(layout, "v2-4 W3: ClientHello bytes are type|id_len|id|x25519_pub|mlkem_ek|session_id|nonce, at literal "
+                  "offsets");
+
+    memset(&sh, 0, sizeof sh);
+    sh.id_len = 3;
+    memset(sh.id, 0x66, 3);
+    memset(sh.ephemeral_pub, 0x77, WIRE_X25519_PUB_LEN);
+    memset(sh.mlkem_ct, 0x88, WIRE_MLKEM_CT_LEN);
+    memset(sh.nonce, 0x99, WIRE_NONCE_LEN);
+    memset(sh.session_id_echo, 0xAA, WIRE_SESSION_ID_LEN);
+    sh.sig_len = 8;
+    memset(sh.sig, 0xBB, 8);
+    size_t sn = 0;
+    int slayout = encode_server_hello(&sh, shb, sizeof shb, &sn) == 0 && sn == 1173u + 2u + 8u;
+    {
+        size_t o = 0;
+        slayout = slayout && shb[0] == 0x02 && shb[1] == 3;
+        o = 2;
+        for (size_t i = 0; i < 3u; i++) {
+            slayout = slayout && shb[o + i] == 0x66;
+        }
+        o += 3u;
+        for (size_t i = 0; i < WIRE_X25519_PUB_LEN; i++) {
+            slayout = slayout && shb[o + i] == 0x77;
+        }
+        o += WIRE_X25519_PUB_LEN;
+        for (size_t i = 0; i < WIRE_MLKEM_CT_LEN; i++) {
+            slayout = slayout && shb[o + i] == 0x88;
+        }
+        o += WIRE_MLKEM_CT_LEN;
+        for (size_t i = 0; i < WIRE_NONCE_LEN; i++) {
+            slayout = slayout && shb[o + i] == 0x99;
+        }
+        o += WIRE_NONCE_LEN;
+        for (size_t i = 0; i < WIRE_SESSION_ID_LEN; i++) {
+            slayout = slayout && shb[o + i] == 0xAA;
+        }
+        o += WIRE_SESSION_ID_LEN;
+        /* the signature length field sits exactly at the end of the
+         * unsigned prefix: 1173 = 2+3+32+1088+32+16 */
+        slayout = slayout && o == 1173u && shb[o] == 0x00 && shb[o + 1u] == 0x08 && shb[o + 2u] == 0xBB;
+    }
+    CHECK(slayout, "v2-4 W3: ServerHello_unsigned bytes are type|id_len|id|x25519_pub|mlkem_ct|nonce|session_id_echo, "
+                   "with sig_len at offset 1173");
+}
+
+static void test_v24_new_field_binding(void) {
+    /* W4 -- the new fields are inside what the signatures cover. Flipping
+     * the first and last byte of each must change every digest that
+     * includes it. Without this, a decoder that silently dropped ek/ct
+     * from the hashed bytes would go unnoticed. */
+    client_hello_t ch;
+    server_hello_t sh;
+    make_client_hello(&ch, 10, 0xC1);
+    make_server_hello(&sh, 12, 200, 0xD1);
+
+    uint8_t chb[CLIENT_HELLO_MAX_ENCODED_LEN], shb[SERVER_HELLO_MAX_ENCODED_LEN],
+        shu[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN];
+    size_t chn = 0, shn = 0, shun = 0;
+    encode_client_hello(&ch, chb, sizeof chb, &chn);
+    encode_server_hello(&sh, shb, sizeof shb, &shn);
+    encode_server_hello_unsigned(&sh, shu, sizeof shu, &shun);
+
+    uint8_t base_sa[32], base_ca[32], base_hid[16];
+    transcript_hash_server_auth(chb, chn, shu, shun, base_sa);
+    transcript_hash_client_auth(chb, chn, shb, shn, base_ca);
+    transcript_handshake_id(chb, chn, shb, shn, base_hid);
+
+    int ek_binds = 1;
+    const size_t ek_probe[2] = {0u, WIRE_MLKEM_EK_LEN - 1u};
+    for (size_t p = 0; p < 2; p++) {
+        client_hello_t ch2 = ch;
+        ch2.mlkem_ek[ek_probe[p]] ^= 0x01;
+        uint8_t b2[CLIENT_HELLO_MAX_ENCODED_LEN];
+        size_t n2 = 0;
+        uint8_t sa2[32], ca2[32], hid2[16];
+        encode_client_hello(&ch2, b2, sizeof b2, &n2);
+        transcript_hash_server_auth(b2, n2, shu, shun, sa2);
+        transcript_hash_client_auth(b2, n2, shb, shn, ca2);
+        transcript_handshake_id(b2, n2, shb, shn, hid2);
+        ek_binds = ek_binds && memcmp(sa2, base_sa, 32) != 0 && memcmp(ca2, base_ca, 32) != 0 &&
+                   memcmp(hid2, base_hid, 16) != 0;
+    }
+    CHECK(ek_binds, "v2-4 W4: flipping mlkem_ek[0] or mlkem_ek[1183] changes TH_server_auth, TH_client_auth and "
+                    "handshake_id");
+
+    int ct_binds = 1;
+    const size_t ct_probe[2] = {0u, WIRE_MLKEM_CT_LEN - 1u};
+    for (size_t p = 0; p < 2; p++) {
+        server_hello_t sh2 = sh;
+        sh2.mlkem_ct[ct_probe[p]] ^= 0x01;
+        uint8_t u2[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN], f2[SERVER_HELLO_MAX_ENCODED_LEN];
+        size_t un2 = 0, fn2 = 0;
+        uint8_t sa2[32], ca2[32];
+        encode_server_hello_unsigned(&sh2, u2, sizeof u2, &un2);
+        encode_server_hello(&sh2, f2, sizeof f2, &fn2);
+        transcript_hash_server_auth(chb, chn, u2, un2, sa2);
+        transcript_hash_client_auth(chb, chn, f2, fn2, ca2);
+        ct_binds = ct_binds && memcmp(sa2, base_sa, 32) != 0 && memcmp(ca2, base_ca, 32) != 0;
+    }
+    CHECK(ct_binds, "v2-4 W4: flipping mlkem_ct[0] or mlkem_ct[1087] changes TH_server_auth (it is inside "
+                    "ServerHello_unsigned) and TH_client_auth");
+}
+
+static void test_v24_v1_messages_rejected(void) {
+    /* W5 -- spec-v2 6.3.4: a v1 message MUST fail a v2 decoder. Both
+     * messages are built from literal bytes in the v1 layout, not by
+     * any code in this repository, since v1's encoders no longer exist. */
+    client_hello_t ch;
+    server_hello_t sh;
+    size_t consumed = 0;
+
+    /* v1 ClientHello: 01 | 05 | "alice" | 32 | 16 | 32 = 87 bytes. */
+    uint8_t v1_ch[87];
+    memset(v1_ch, 0x5a, sizeof v1_ch);
+    v1_ch[0] = 0x01;
+    v1_ch[1] = 0x05;
+    memcpy(v1_ch + 2, "alice", 5);
+    CHECK(decode_client_hello(v1_ch, sizeof v1_ch, &ch, &consumed) != 0,
+          "v2-4 W5: an 87-byte v1 ClientHello is rejected by the v2 decoder (short by mlkem_ek)");
+
+    /* v1 ServerHello: 02 | 03 | "bob" | 32 | 32 | 16 | 0c ed | 3309
+     * signature bytes = 3396. The v2 decoder reads sig_len at offset
+     * 1173, which lands inside the old signature (0x5a5a = 23130 > 3309),
+     * so the rejection is deterministic rather than length-dependent. */
+    uint8_t v1_sh[3396];
+    memset(v1_sh, 0x5a, sizeof v1_sh);
+    v1_sh[0] = 0x02;
+    v1_sh[1] = 0x03;
+    memcpy(v1_sh + 2, "bob", 3);
+    v1_sh[85] = 0x0c;
+    v1_sh[86] = 0xed;
+    CHECK(v1_sh[1173] == 0x5a && v1_sh[1174] == 0x5a,
+          "v2-4 W5 (precondition): the v2 sig_len offset falls inside the v1 signature");
+    CHECK(decode_server_hello(v1_sh, sizeof v1_sh, &sh, &consumed) != 0,
+          "v2-4 W5: a 3396-byte v1 ServerHello is rejected by the v2 decoder");
+
+    /* The honest boundary of that claim, in this file's usual style: the
+     * v1 ClientHello padded with 1184 bytes has exactly a v2 length and
+     * DOES decode structurally -- a byte layout cannot tell versions
+     * apart, it can only fail on length. What separates the versions
+     * cryptographically is the /v2/ labels in every transcript hash, so
+     * such a message cannot produce a signature either peer accepts. */
+    uint8_t padded[1271];
+    memset(padded, 0, sizeof padded);
+    memcpy(padded, v1_ch, sizeof v1_ch);
+    CHECK(decode_client_hello(padded, sizeof padded, &ch, &consumed) == 0 && consumed == sizeof padded,
+          "v2-4 W5: a v1 ClientHello padded to 1271 bytes decodes structurally -- version separation is the /v2/ "
+          "labels, not the layout (documented, not enforced here)");
 }
 
 /* ---------------------------------------------------------------------
@@ -1971,6 +2221,273 @@ static void test_step4_kdf_info(void) {
           "writing nothing");
 }
 
+/* ---- V2-4 D1-D6: the hybrid key schedule (spec-v2 6.3.7) --------------
+ *
+ * The bug this section exists for is a combiner that drops, reorders or
+ * mis-binds one of the two secrets. Such a bug is SYMMETRIC: both peers
+ * compute the same wrong key, every handshake succeeds, every round-trip
+ * test passes, and the post-quantum protection is silently gone. Only
+ * vectors computed OUTSIDE this codebase can see it, which is what D3 is.
+ */
+
+/* The normative v2 layout rebuilt by hand from literal bytes --
+ * deliberately independent of KEX_KDF_V2_LABEL and of
+ * kex_build_kdf_info_v2(). Note the literal '2'. */
+static size_t hand_kdf_info_v2(uint8_t *out, const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len,
+                               const uint8_t th[32], uint8_t dir) {
+    static const uint8_t label[17] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't',
+                                      'h', '/', 'v', '2', '/', 'k', 'd', 'f'};
+    size_t off = 0;
+    memcpy(out, label, sizeof(label));
+    off += sizeof(label);
+    out[off++] = 0x00;
+    out[off++] = (uint8_t)a_len;
+    memcpy(out + off, a, a_len);
+    off += a_len;
+    out[off++] = (uint8_t)b_len;
+    memcpy(out + off, b, b_len);
+    off += b_len;
+    memcpy(out + off, th, 32);
+    off += 32;
+    out[off++] = dir;
+    return off;
+}
+
+static void derive_v2_or_die(uint8_t key[32], const uint8_t ssx[32], const uint8_t ssk[32], const uint8_t sid[16],
+                             const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len, const uint8_t th[32],
+                             uint8_t dir) {
+    if (kex_derive_session_key_v2(key, ssx, ssk, sid, 16, a, a_len, b, b_len, th, dir) != 0) {
+        fatal("kex_derive_session_key_v2");
+    }
+}
+
+static void test_v24_kdf_v2(void) {
+    uint8_t a[64], b[64], ssx[32], ssk[32], sid[16], th[32];
+    for (size_t i = 0; i < 64; i++) {
+        a[i] = (uint8_t)(0x40 + i);
+        b[i] = (uint8_t)(0x90 + i);
+    }
+    randombytes_buf(ssx, sizeof(ssx));
+    randombytes_buf(ssk, sizeof(ssk));
+    randombytes_buf(sid, sizeof(sid));
+    randombytes_buf(th, sizeof(th));
+    const uint8_t dirs[2] = {KEX_DIR_C2S, KEX_DIR_S2C};
+
+    /* D1 -- byte-exact against the hand-built layout, at both id
+     * boundaries. 55 = 17+1+1+1+1+1+32+1, 181 = the same with 64-byte ids. */
+    const size_t shapes[4][2] = {{1, 1}, {1, 64}, {64, 1}, {64, 64}};
+    int exact = 1;
+    size_t seen_min = SIZE_MAX, seen_max = 0;
+    for (size_t s = 0; s < 4; s++) {
+        for (size_t d = 0; d < 2; d++) {
+            uint8_t expect[KEX_KDF_V2_INFO_MAX_LEN], got[KEX_KDF_V2_INFO_MAX_LEN];
+            size_t got_len = 0;
+            const size_t exp_len = hand_kdf_info_v2(expect, a, shapes[s][0], b, shapes[s][1], th, dirs[d]);
+            if (kex_build_kdf_info_v2(got, sizeof(got), &got_len, a, shapes[s][0], b, shapes[s][1], th, dirs[d]) != 0 ||
+                got_len != exp_len || memcmp(got, expect, exp_len) != 0 ||
+                got_len != 55u + (shapes[s][0] - 1u) + (shapes[s][1] - 1u)) {
+                exact = 0;
+            }
+            seen_min = (exp_len < seen_min) ? exp_len : seen_min;
+            seen_max = (exp_len > seen_max) ? exp_len : seen_max;
+        }
+    }
+    CHECK(exact, "v2-4 D1: kex_build_kdf_info_v2 is byte-exact vs the hand-built v2 layout (1/1,1/64,64/1,64/64 x both "
+                 "dirs)");
+    CHECK(seen_min == KEX_KDF_V2_INFO_MIN_LEN && seen_max == KEX_KDF_V2_INFO_MAX_LEN && seen_min == 55u &&
+              seen_max == 181u,
+          "v2-4 D1: the info length spans exactly 55..181 bytes (spec-v2 6.3.7)");
+
+    /* D2 -- composition: the derive function is HKDF over the hybrid IKM,
+     * with nothing else mixed in. IKM is concatenated here by hand. */
+    int composes = 1;
+    for (size_t d = 0; d < 2; d++) {
+        uint8_t info[KEX_KDF_V2_INFO_MAX_LEN], ikm[64], k1[32], k2[32];
+        const size_t info_len = hand_kdf_info_v2(info, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, dirs[d]);
+        memcpy(ikm, ssx, 32);
+        memcpy(ikm + 32, ssk, 32);
+        derive_v2_or_die(k1, ssx, ssk, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, dirs[d]);
+        if (kex_hkdf_sha256(k2, 32, ikm, 64, sid, 16, info, info_len) != 0 || memcmp(k1, k2, 32) != 0) {
+            composes = 0;
+        }
+    }
+    CHECK(composes, "v2-4 D2: kex_derive_session_key_v2 == HKDF(IKM=ss_x||ss_k, salt=session_id, info=hand-built v2 "
+                    "kdf_info)");
+
+    /* D3 -- THE test for this step. Literal inputs, literal expected
+     * outputs, produced by an independent RFC 5869 implementation
+     * (Python hmac/hashlib, no libsodium) run outside this codebase:
+     *
+     *   import hmac, hashlib
+     *   ssx = bytes(range(32)); ssk = bytes(0xff - i for i in range(32))
+     *   sid = bytes(0xa0 + i for i in range(16))
+     *   th  = bytes(0x80 + i for i in range(32))
+     *   a = b"alice"; b = b"bob"
+     *   for d in (0x43, 0x53):
+     *       info = (b"mldsa-auth/v2/kdf" + b"\0" + bytes([len(a)]) + a +
+     *               bytes([len(b)]) + b + th + bytes([d]))
+     *       prk = hmac.new(sid, ssx + ssk, hashlib.sha256).digest()
+     *       print(hex(d), hmac.new(prk, info + b"\1", hashlib.sha256).digest().hex())
+     *
+     * A combiner that dropped ss_k, swapped the two secrets, omitted the
+     * transcript digest, or kept a /v1/ label produces a DIFFERENT key
+     * here while remaining perfectly self-consistent -- which is exactly
+     * why a round trip between two copies of this code is not evidence. */
+    {
+        uint8_t v_ssx[32], v_ssk[32], v_sid[16], v_th[32];
+        for (size_t i = 0; i < 32; i++) {
+            v_ssx[i] = (uint8_t)i;
+            v_ssk[i] = (uint8_t)(0xff - i);
+            v_th[i] = (uint8_t)(0x80 + i);
+        }
+        for (size_t i = 0; i < 16; i++) {
+            v_sid[i] = (uint8_t)(0xa0 + i);
+        }
+        static const uint8_t V_ID_A[5] = {'a', 'l', 'i', 'c', 'e'};
+        static const uint8_t V_ID_B[3] = {'b', 'o', 'b'};
+        static const uint8_t EXPECT_C2S[32] = {
+            0x79, 0x1e, 0x53, 0xd2, 0xcb, 0xd7, 0x0f, 0x63, 0x27, 0x63, 0x04,
+            0xf9, 0x09, 0xa6, 0x88, 0x34, 0xd5, 0xde, 0x49, 0x61, 0x35, 0xa9,
+            0x90, 0x83, 0xf7, 0x85, 0x8a, 0xed, 0xa5, 0xd9, 0x1c, 0x5a,
+        };
+        static const uint8_t EXPECT_S2C[32] = {
+            0xdd, 0xb6, 0x4a, 0x76, 0xf4, 0x85, 0xbd, 0x11, 0x38, 0x7a, 0x12,
+            0x95, 0x74, 0xf7, 0xb4, 0x25, 0xd9, 0xf6, 0x68, 0x6b, 0x93, 0x6b,
+            0x9e, 0x6b, 0x08, 0x6a, 0xf0, 0xde, 0x69, 0xd7, 0x15, 0xaf,
+        };
+        uint8_t kc[32], ks[32];
+        derive_v2_or_die(kc, v_ssx, v_ssk, v_sid, V_ID_A, sizeof(V_ID_A), V_ID_B, sizeof(V_ID_B), v_th, KEX_DIR_C2S);
+        derive_v2_or_die(ks, v_ssx, v_ssk, v_sid, V_ID_A, sizeof(V_ID_A), V_ID_B, sizeof(V_ID_B), v_th, KEX_DIR_S2C);
+        CHECK(memcmp(kc, EXPECT_C2S, 32) == 0,
+              "v2-4 D3: the c2s key matches the independently computed byte-exact vector");
+        CHECK(memcmp(ks, EXPECT_S2C, 32) == 0,
+              "v2-4 D3: the s2c key matches the independently computed byte-exact vector");
+
+        /* And the same inputs through the info builder, so a builder
+         * defect is attributed to the builder rather than to HKDF. */
+        uint8_t got[KEX_KDF_V2_INFO_MAX_LEN];
+        size_t got_len = 0;
+        CHECK(kex_build_kdf_info_v2(got, sizeof(got), &got_len, V_ID_A, sizeof(V_ID_A), V_ID_B, sizeof(V_ID_B), v_th,
+                                    KEX_DIR_C2S) == 0 &&
+                  got_len == 61u && got[17] == 0x00 && got[18] == 5u && memcmp(got + 19, "alice", 5) == 0 &&
+                  got[24] == 3u && memcmp(got + 25, "bob", 3) == 0 && memcmp(got + 28, v_th, 32) == 0 &&
+                  got[60] == KEX_DIR_C2S,
+              "v2-4 D3: the vector's kdf_info is 61 bytes with the digest at offset 28 and the direction last");
+    }
+
+    /* D4 -- every input changes the key: each secret alone, their order,
+     * the transcript digest, both identities, both lengths, direction. */
+    {
+        uint8_t alt_ssx[32], alt_ssk[32], alt_th[32];
+        memcpy(alt_ssx, ssx, 32);
+        memcpy(alt_ssk, ssk, 32);
+        memcpy(alt_th, th, 32);
+        alt_ssx[0] ^= 0x01;
+        alt_ssk[31] ^= 0x01;
+        alt_th[16] ^= 0x01;
+        const uint8_t la[3] = {'a', 'b', 'c'}, lb[3] = {'x', 'y', 'z'};
+        uint8_t v[9][32];
+        derive_v2_or_die(v[0], ssx, ssk, sid, la, 2, lb, 2, th, KEX_DIR_C2S);     /* baseline */
+        derive_v2_or_die(v[1], alt_ssx, ssk, sid, la, 2, lb, 2, th, KEX_DIR_C2S); /* ss_x byte */
+        derive_v2_or_die(v[2], ssx, alt_ssk, sid, la, 2, lb, 2, th, KEX_DIR_C2S); /* ss_k byte */
+        derive_v2_or_die(v[3], ssk, ssx, sid, la, 2, lb, 2, th, KEX_DIR_C2S);     /* secrets SWAPPED */
+        derive_v2_or_die(v[4], ssx, ssk, sid, la, 2, lb, 2, alt_th, KEX_DIR_C2S); /* TH byte */
+        derive_v2_or_die(v[5], ssx, ssk, sid, lb, 2, lb, 2, th, KEX_DIR_C2S);     /* A_id */
+        derive_v2_or_die(v[6], ssx, ssk, sid, la, 2, la, 2, th, KEX_DIR_C2S);     /* B_id */
+        derive_v2_or_die(v[7], ssx, ssk, sid, la, 3, lb, 2, th, KEX_DIR_C2S);     /* A length */
+        derive_v2_or_die(v[8], ssx, ssk, sid, la, 2, lb, 2, th, KEX_DIR_S2C);     /* direction */
+        int distinct = 1;
+        for (int x = 0; x < 9; x++) {
+            for (int y = x + 1; y < 9; y++) {
+                if (memcmp(v[x], v[y], 32) == 0) {
+                    distinct = 0;
+                }
+            }
+        }
+        CHECK(distinct, "v2-4 D4: changing ss_x, ss_k, their order, TH_client_auth, either id, either length, or the "
+                        "direction each changes the key (all pairwise distinct)");
+    }
+
+    /* D5 -- injectivity survives the added field: the v1 ambiguity case
+     * ("ab","c") vs ("a","bc") still produces different info and keys. */
+    {
+        const uint8_t a1[] = {'a', 'b'}, b1[] = {'c'};
+        const uint8_t a2[] = {'a'}, b2[] = {'b', 'c'};
+        uint8_t i1[KEX_KDF_V2_INFO_MAX_LEN], i2[KEX_KDF_V2_INFO_MAX_LEN], k1[32], k2[32];
+        size_t l1 = 0, l2 = 0;
+        const int built = kex_build_kdf_info_v2(i1, sizeof(i1), &l1, a1, 2, b1, 1, th, KEX_DIR_C2S) == 0 &&
+                          kex_build_kdf_info_v2(i2, sizeof(i2), &l2, a2, 1, b2, 2, th, KEX_DIR_C2S) == 0;
+        derive_v2_or_die(k1, ssx, ssk, sid, a1, 2, b1, 1, th, KEX_DIR_C2S);
+        derive_v2_or_die(k2, ssx, ssk, sid, a2, 1, b2, 2, th, KEX_DIR_C2S);
+        CHECK(built && (l1 != l2 || memcmp(i1, i2, l1) != 0) && memcmp(k1, k2, 32) != 0,
+              "v2-4 D5: A=\"ab\",B=\"c\" and A=\"a\",B=\"bc\" still produce different v2 kdf_info and different keys");
+    }
+
+    /* D6 -- validation, in T28's shape: nothing is written on any
+     * rejected input. */
+    {
+        uint8_t big[128];
+        memset(big, 'q', sizeof(big));
+        const struct {
+            const uint8_t *a;
+            size_t al;
+            const uint8_t *b;
+            size_t bl;
+            const uint8_t *th;
+            uint8_t dir;
+        } bad[] = {
+            {big, 0, big, 3, th, KEX_DIR_C2S},   {big, 65, big, 3, th, KEX_DIR_C2S},
+            {big, 3, big, 0, th, KEX_DIR_C2S},   {big, 3, big, 65, th, KEX_DIR_C2S},
+            {NULL, 3, big, 3, th, KEX_DIR_C2S},  {big, 3, NULL, 3, th, KEX_DIR_C2S},
+            {big, 3, big, 3, NULL, KEX_DIR_C2S}, {big, 3, big, 3, th, 0x00},
+            {big, 3, big, 3, th, 0x44},          {big, 3, big, 3, th, 0xFF},
+        };
+        int rejected = 1;
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            uint8_t out[KEX_KDF_V2_INFO_MAX_LEN + 8], key[32];
+            size_t out_len = 777;
+            memset(out, 0xAA, sizeof(out));
+            memset(key, 0xAA, sizeof(key));
+            const int r1 = kex_build_kdf_info_v2(out, sizeof(out), &out_len, bad[i].a, bad[i].al, bad[i].b, bad[i].bl,
+                                                 bad[i].th, bad[i].dir);
+            const int r2 = kex_derive_session_key_v2(key, ssx, ssk, sid, 16, bad[i].a, bad[i].al, bad[i].b, bad[i].bl,
+                                                     bad[i].th, bad[i].dir);
+            uint8_t untouched_out = 1, untouched_key = 1;
+            for (size_t j = 0; j < sizeof(out); j++) {
+                untouched_out &= (uint8_t)(out[j] == 0xAA);
+            }
+            for (size_t j = 0; j < sizeof(key); j++) {
+                untouched_key &= (uint8_t)(key[j] == 0xAA);
+            }
+            if (r1 == 0 || r2 == 0 || out_len != 777 || !untouched_out || !untouched_key) {
+                rejected = 0;
+                printf("      D6 case %zu not rejected cleanly (r1=%d r2=%d)\n", i, r1, r2);
+            }
+        }
+        {
+            /* NULL secrets, wrong session_id lengths, and out_cap exactly
+             * one byte short (59 = 55 + 2 + 2 for ids of length 3). */
+            uint8_t out[KEX_KDF_V2_INFO_MAX_LEN], key[32];
+            size_t out_len = 777;
+            memset(out, 0xAA, sizeof(out));
+            memset(key, 0xAA, sizeof(key));
+            const size_t need = 55u + 2u + 2u;
+            if (kex_build_kdf_info_v2(out, need - 1u, &out_len, big, 3, big, 3, th, KEX_DIR_C2S) == 0 ||
+                out_len != 777 || out[0] != 0xAA ||
+                kex_derive_session_key_v2(key, NULL, ssk, sid, 16, big, 3, big, 3, th, KEX_DIR_C2S) == 0 ||
+                kex_derive_session_key_v2(key, ssx, NULL, sid, 16, big, 3, big, 3, th, KEX_DIR_C2S) == 0 ||
+                kex_derive_session_key_v2(key, ssx, ssk, sid, 15, big, 3, big, 3, th, KEX_DIR_C2S) == 0 ||
+                kex_derive_session_key_v2(key, ssx, ssk, sid, 17, big, 3, big, 3, th, KEX_DIR_C2S) == 0 ||
+                key[0] != 0xAA) {
+                rejected = 0;
+                printf("      D6 NULL-secret/capacity/session_id case not rejected cleanly\n");
+            }
+        }
+        CHECK(rejected, "v2-4 D6: id len 0/65, NULL ids/digest/secrets, bad direction, short out_cap and "
+                        "session_id_len != 16 are all rejected, writing nothing");
+    }
+}
+
 /* ---- T29 / T32: responder-side low-order X25519 after a valid sig_A --- */
 
 static void test_step4_responder_low_order(int expire_mid_failure) {
@@ -2181,6 +2698,7 @@ static void run_step4_tests(void) {
     test_step4_inspect_expiry();                /* T19 */
     test_step4_commit_fails_after_derivation(); /* T22 */
     test_step4_kdf_info();                      /* T23-T28 */
+    test_v24_kdf_v2();                          /* V2-4 D1-D6 */
     test_step4_responder_low_order(0);          /* T29 */
     test_step4_wipe_cancels();                  /* T30 */
     test_step4_cancel_semantics();              /* T31 */
@@ -2224,6 +2742,12 @@ int main(void) {
 
     /* Test 6: encoder-negative tests */
     test_encoder_negative();
+
+    /* V2-4: the v2 wire format, checked against literal sizes, offsets
+     * and v1 message bytes */
+    test_v24_wire_constants();      /* W1-W3 */
+    test_v24_new_field_binding();   /* W4 */
+    test_v24_v1_messages_rejected(); /* W5 */
 
     /* Step 4 */
     run_step4_tests();

@@ -4,7 +4,7 @@ Five targets cover every attacker-controlled input:
 
 | Target | Code under test | Input |
 |---|---|---|
-| `fuzz_wire` | Step 3 decoders, transcript helpers | one candidate wire message |
+| `fuzz_wire` | v2 wire decoders, transcript helpers | one candidate wire message |
 | `fuzz_handshake` | Step 4 state machine (S0 ClientHello, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
 | `fuzz_session` | Step 5 `session_open` on a valid session | selector (receiver, capacity, limits, clock) + up to 8 records with 4-byte length prefixes |
 | `fuzz_frame` | Step 6 `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
@@ -13,6 +13,20 @@ Five targets cover every attacker-controlled input:
 Each harness checks **properties, not just crashes**. An independent
 reference model predicts the correct status, and any disagreement aborts,
 even without a crash.
+
+`fuzz_wire`'s model is written against v2 (spec-v2 §6.3.1–6.3.4): it
+rebuilds the unsigned-prefix length from literal field sizes including the
+1088-byte ML-KEM ciphertext, and the three transcript digests from literal
+`mldsa-auth/v2/…` label bytes — never from the macros in
+`src/protocol/transcript.h`, so a label or layout left at v1 fails the
+oracle rather than agreeing with it.
+
+**`fuzz_target_max_len` must exceed the largest message the target can
+see** (`fuzz_wire`: 8192, above the 4545-byte v2 `ServerHello`), and
+`run_fuzz.sh`'s `-max_len` matches it. The replay driver **fails** on a
+seed larger than that maximum instead of truncating it, so a stale limit
+left behind after a message grows is a loud error rather than a silently
+shrunken corpus.
 
 ## Two drivers
 
