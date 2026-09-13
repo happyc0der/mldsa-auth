@@ -1261,3 +1261,88 @@ the wire, and it needed `WIRE_MLKEM_EK_LEN`. Without it, four T5/T8/T9
 checks failed. It is the same class as the check names — stale v1
 arithmetic in the test's independent model — but it was not in the
 approved list, so it is recorded here rather than absorbed silently.
+
+## Process hardening after V2-4 (standing rules)
+
+V2-4 produced two verification failures that had nothing to do with the code
+under test: a mutation that could not compile aborted the campaign and had
+to be driven by hand, and two "sanitizer" builds turned out to carry no
+instrumentation at all. Both are closed here as standing rules, mechanically
+enforced rather than remembered.
+
+### A mutation that does not compile is KILLED, automatically
+
+The mutation runner previously treated a mutated tree that fails to build as
+a fatal error: it printed `FATAL mutated tree does not build`, abandoned the
+campaign, and left the remaining mutations unrun. That is backwards. A
+defect caught by the **compiler** — a static assert, a type error — is
+caught earlier and more cheaply than any test could manage; it is the
+strongest possible outcome, not a reason to stop.
+
+The runner now records such a mutation as `KILLED(compile)` and continues.
+Two guards keep that honest:
+
+- **The failure must be attributable.** The first compiler error must name a
+  file in the project's own source region (`src/`, `apps/`, `tests/`,
+  `bench/`) with a line and column. A build that fails for an unrelated
+  reason — a broken toolchain, a full disk, a vendored dependency — is
+  reported as `SURVIVED(BAD: unattributable build failure)`, never
+  laundered into a kill. The error line is saved to `<ID>.killreason`.
+- **The epilogue is shared.** Restore, forced rebuild, full clean-suite run,
+  residue grep and the printed row now come from one `finish_mutation`
+  function used by every verdict, so no path can skip the bookkeeping.
+
+That last point is the real fix. The reason V2-4's M8 had to be driven
+manually is that the runner bailed before its restore/rebuild step; the
+manual run then left stale objects behind, and a byte-exactly restored tree
+reported 12 failures. The same hazard produced a stale `fuzz_wire_replay`
+after a negative control was run by hand. **Corollary, now a rule: no
+temporary edit to a source file is made outside the runner.** If an
+experiment genuinely needs one, it ends with every project object, archive
+and executable deleted and the tree rebuilt — the same `forced_build` the
+runner performs — before any result is reported.
+
+Verified by re-running the full V2-4 campaign unattended: M8 reports
+`compile-fail | KILLED(compile)` with its static-assert error recorded, all
+eight mutations run to completion, and the tree ends with every artifact
+identical to the clean fingerprints.
+
+### A sanitizer build is not trusted until its instrumentation is proven linked
+
+V2-4's first ASan and UBSan trees were configured with
+`-DMLDSA_SANITIZE=address`. This project's options are **`ENABLE_ASAN`** and
+**`ENABLE_UBSAN`**. CMake accepts an unknown `-D` variable silently — it
+appears in the cache as `MLDSA_SANITIZE:UNINITIALIZED=address` and changes
+nothing — so both trees were plain Debug builds. They compiled, they passed
+15/15, and the "0 sanitizer reports" they produced meant nothing. No line of
+build or test output said so. Only the linked binary did.
+
+**Standing rule: every fresh ASan/UBSan build is verified before its results
+are reported.** The check is mechanical (`check_sanitizer_link.sh`, session
+tooling like the mutation runner) and has two parts, because either alone
+can be fooled:
+
+1. **The option is genuinely ON** — `ENABLE_ASAN:BOOL=ON` /
+   `ENABLE_UBSAN:BOOL=ON` in `CMakeCache.txt`. This is what catches a
+   mistyped `-D` flag, which otherwise leaves the real option at its `OFF`
+   default.
+2. **Every project executable carries the instrumentation** — for ASan,
+   `otool -L` shows `libclang_rt.asan_osx_dynamic.dylib` (or `nm -u` shows
+   `__asan_` imports); for UBSan, `nm` finds `__ubsan` symbols. Binaries are
+   **discovered**, never enumerated, and an empty result is a failure, not a
+   pass — the same rule the Req 4.10 symbol check follows. CMake's own
+   compiler-probe binaries under `CMakeFiles/` are excluded by path: they
+   are built during configure, before project flags exist.
+
+Controls, all executed: both V2-4 sanitizer trees pass with 15/15
+executables instrumented; the plain `build` tree is refused; a tree
+reconstructed with the original `-DMLDSA_SANITIZE=address` mistake is
+refused, with the offending cache line printed; and the ASan tree checked
+as UBSan is refused, so the two kinds cannot be confused for each other.
+
+**Why this rule and not "be careful":** the failure was silent in every
+output a human would look at, and it was found only because mutation M6
+reported "survived" under a build that should have caught it. A verification
+tool that cannot itself be verified is not evidence. From V2-5 onward the
+link check runs immediately after each sanitizer build, and its result is
+quoted in the step's exit report alongside the test counts.
