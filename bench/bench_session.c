@@ -1,6 +1,7 @@
 /*
  * Steady-state record-layer throughput at 64 B, 1 KiB and 64 KiB
- * (spec §5.4; 64 KiB is exactly SESSION_MAX_PLAINTEXT_BYTES).
+ * (spec-v2 §5.4; the "64 KiB" row is SESSION_MAX_CONTENT_BYTES = 65534,
+ * the largest content a padded record can carry), at pad buckets 1 and 256.
  *
  * Live sessions are built from real handshakes, so these are the
  * actual protocol paths: sequence numbers, associated data and the 25-byte
@@ -60,12 +61,12 @@ static uint8_t *g_records;  /* OPEN_BATCH records, pre-sealed */
 static size_t g_rec_len[OPEN_BATCH];
 static size_t g_payload;
 
-/* Stride between pre-sealed records: the largest record this bench seals. */
-#define REC_STRIDE (65536u + SESSION_OVERHEAD_BYTES)
+/* Stride between pre-sealed records: the largest record the protocol has. */
+#define REC_STRIDE SESSION_MAX_RECORD_BYTES
 
 /* ---- fixture: one real handshake per pair -------------------------------- */
 
-static void establish(pair_t *pair) {
+static void establish(pair_t *pair, uint32_t pad_bucket) {
     handshake_ctx_t ini;
     handshake_ctx_t res;
     static uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN];
@@ -93,9 +94,13 @@ static void establish(pair_t *pair) {
             handshake_responder_finish(&res) == HANDSHAKE_OK,
         "handshake");
 
+    session_limits_t lim;
+    session_default_limits(&lim);
+    lim.pad_bucket = pad_bucket;
+
     /* session_init_from_handshake consumes (wipes) each context. */
-    BENCH_REQUIRE(session_init_from_handshake(&pair->tx, &ini, NULL, NULL, NULL) == SESSION_OK &&
-                      session_init_from_handshake(&pair->rx, &res, NULL, NULL, NULL) == SESSION_OK,
+    BENCH_REQUIRE(session_init_from_handshake(&pair->tx, &ini, &lim, NULL, NULL) == SESSION_OK &&
+                      session_init_from_handshake(&pair->rx, &res, &lim, NULL, NULL) == SESSION_OK,
                   "session_init_from_handshake");
     BENCH_REQUIRE(session_get_state(&pair->tx) == SESSION_STATE_ACTIVE &&
                       session_get_state(&pair->rx) == SESSION_STATE_ACTIVE,
@@ -172,35 +177,52 @@ int main(int argc, char **argv) {
     BENCH_REQUIRE(handshake_pending_store_init(&g_store, 8u, 60000u, NULL, NULL) == PENDING_OK,
                   "handshake_pending_store_init");
 
-    g_pt = malloc(65536u);
+    g_pt = malloc(SESSION_MAX_CONTENT_BYTES);
     g_out = malloc(REC_STRIDE);
     g_records = malloc((size_t)OPEN_BATCH * REC_STRIDE);
     BENCH_REQUIRE(g_pt != NULL && g_out != NULL && g_records != NULL, "payload buffers");
-    randombytes_buf(g_pt, 65536u);
+    randombytes_buf(g_pt, SESSION_MAX_CONTENT_BYTES);
 
-    establish(&g_seal);
-    establish(&g_open);
-    establish(&g_rt);
-
-    bench_env_line("record overhead", "%u B per record (9 B header + 16 B tag)",
+    bench_env_line("record overhead", "%u B per record (9 B header + 16 B tag + a 2 B length prefix "
+                                      "inside the padded inner)",
                    (unsigned)SESSION_OVERHEAD_BYTES);
+    bench_env_line("pad buckets measured", "1 (no padding) and %u (the default)",
+                   (unsigned)SESSION_PAD_BUCKET_DEFAULT);
 
-    bench_section("Record layer throughput (ChaCha20-Poly1305, per record)");
-    size_rows(64u, "64 B");
-    size_rows(1024u, "1 KiB");
-    size_rows(65536u, "64 KiB");
+    /* Both buckets, so padding's cost is a visible row rather than folded
+     * into one number. A fresh pair per bucket: sequence numbers and the
+     * receiver's strict ordering are per session. */
+    static const uint32_t buckets[2] = {SESSION_PAD_BUCKET_MIN, SESSION_PAD_BUCKET_DEFAULT};
+    static const char *const bucket_note[2] = {"bucket 1", "bucket 256"};
+    for (size_t b = 0; b < 2u; b++) {
+        char title[96];
+        snprintf(title, sizeof(title),
+                 "Record layer throughput (ChaCha20-Poly1305, per record) -- pad %s", bucket_note[b]);
+        bench_section(title);
+        establish(&g_seal, buckets[b]);
+        establish(&g_open, buckets[b]);
+        establish(&g_rt, buckets[b]);
 
-    session_wipe(&g_seal.tx);
-    session_wipe(&g_seal.rx);
-    session_wipe(&g_open.tx);
-    session_wipe(&g_open.rx);
-    session_wipe(&g_rt.tx);
-    session_wipe(&g_rt.rx);
+        char note[32];
+        snprintf(note, sizeof(note), "64 B, %s", bucket_note[b]);
+        size_rows(64u, note);
+        snprintf(note, sizeof(note), "1 KiB, %s", bucket_note[b]);
+        size_rows(1024u, note);
+        snprintf(note, sizeof(note), "64 KiB, %s", bucket_note[b]);
+        size_rows(SESSION_MAX_CONTENT_BYTES, note);
+
+        session_wipe(&g_seal.tx);
+        session_wipe(&g_seal.rx);
+        session_wipe(&g_open.tx);
+        session_wipe(&g_open.rx);
+        session_wipe(&g_rt.tx);
+        session_wipe(&g_rt.rx);
+    }
     handshake_pending_store_wipe(&g_store);
     keystore_wipe(&g_ks);
     mldsa_keypair_free(&g_kp_a);
     mldsa_keypair_free(&g_kp_b);
-    sodium_memzero(g_pt, 65536u);
+    sodium_memzero(g_pt, SESSION_MAX_CONTENT_BYTES);
     free(g_pt);
     free(g_out);
     free(g_records);

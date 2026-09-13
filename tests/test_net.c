@@ -92,7 +92,14 @@ static demo_buffers_t *g_cli_buf;
     (1u + 1u + sizeof(ID_A) + WIRE_X25519_PUB_LEN + WIRE_MLKEM_EK_LEN + WIRE_SESSION_ID_LEN + WIRE_NONCE_LEN)
 #define CH_FRAME (FRAME_HEADER_BYTES + CH_PAYLOAD)
 #define CA_FRAME (FRAME_HEADER_BYTES + CLIENT_AUTH_MAX_ENCODED_LEN)
-#define CONFIRM_FRAME (FRAME_HEADER_BYTES + FRAME_CONFIRM_LEN)
+/* The demo server uses default limits, so its confirmation record is
+ * padded to the default bucket (spec-v2 6.4.1). */
+#define CONFIRM_REC SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_DEFAULT)
+/* session_open decrypts the INNER into the caller's buffer before it can
+ * parse it, so a confirmation buffer must hold the largest padded inner,
+ * not just the (empty) content. */
+#define CONFIRM_INNER (FRAME_CONFIRM_MAX - SESSION_OVERHEAD_BYTES)
+#define CONFIRM_FRAME (FRAME_HEADER_BYTES + CONFIRM_REC)
 static size_t sh_frame_len(void) {
     return FRAME_HEADER_BYTES + transcript_server_hello_unsigned_len((uint8_t)sizeof(ID_B)) + 2u +
            MLDSA_SIGNATURE_MAX_BYTES;
@@ -569,7 +576,7 @@ static int raw_initiator(net_conn_t *c, session_t *s) {
     handshake_ctx_t hs;
     size_t len = 0;
     size_t pt_len = 0;
-    uint8_t pt[1];
+    uint8_t pt[CONFIRM_INNER];
     const uint64_t dl = net_deadline_in(OPS_MS);
     memset(s, 0, sizeof(*s));
     int ok = handshake_initiator_init(&hs, ID_A, sizeof(ID_A), &g_kp_a, &g_cli_pins_ok, ID_B, sizeof(ID_B)) ==
@@ -581,7 +588,7 @@ static int raw_initiator(net_conn_t *c, session_t *s) {
              handshake_initiator_create_client_auth(&hs, g_raw + 4, FRAME_MAX_PAYLOAD, &len) == HANDSHAKE_OK &&
              frame_send(c, g_raw, len, dl) == FRAME_OK && handshake_initiator_finish(&hs) == HANDSHAKE_OK &&
              session_init_from_handshake(s, &hs, NULL, NULL, NULL) == SESSION_OK &&
-             frame_recv(c, g_raw, FRAME_CONFIRM_LEN, FRAME_CONFIRM_LEN, &len, dl) == FRAME_OK &&
+             frame_recv(c, g_raw, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, &len, dl) == FRAME_OK &&
              session_open(s, g_raw + 4, len, pt, sizeof(pt), &pt_len) == SESSION_OK && pt_len == 0 &&
              session_is_peer_confirmed(s);
     handshake_ctx_wipe(&hs);
@@ -671,7 +678,7 @@ static void test_t1_success(void) {
     outcome_t o;
     run_scenario(&sc, &o);
     CHECK(o.cli.status == DEMO_OK && o.cli.stage == DEMO_STAGE_GOODBYE && o.cli.messages_echoed == 3,
-          "T1: client authenticates the server, is confirmed, gets 3 authenticated echoes (1 B, 1 KB, 65535 B) "
+          "T1: client authenticates the server, is confirmed, gets 3 authenticated echoes (1 B, 1 KB, 65533 B) "
           "and exchanges GOODBYE");
     CHECK(server_ok(&o) && g_srv_rep.res.status == DEMO_OK && g_srv_rep.res.stage == DEMO_STAGE_GOODBYE &&
               g_srv_rep.res.messages_echoed == 3,
@@ -907,8 +914,8 @@ static void test_t8_confirmation_gate(void) {
     CHECK(before == DEMO_ERR_NOT_CONFIRMED && readable == 0 && a.stats.send_calls == 0,
           "T8(a): demo_send_app on an unconfirmed initiator session -> NOT_CONFIRMED, 0 bytes written");
 
-    uint8_t rec[SESSION_OVERHEAD_BYTES];
-    uint8_t pt[1];
+    uint8_t rec[CONFIRM_REC];
+    uint8_t pt[CONFIRM_INNER];
     size_t rl = 0;
     size_t pl = 0;
     const int confirmed = session_seal(&sr, NULL, 0, rec, sizeof(rec), &rl) == SESSION_OK &&

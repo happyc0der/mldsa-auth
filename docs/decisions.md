@@ -1497,3 +1497,150 @@ failure path. That is a stronger position than the ordering alone, and it
 is now known rather than assumed. (Same shape as V2-4's M6, where a
 mutation survived the plain suite and ASan caught it — here nothing catches
 it, because there is nothing to catch.)
+
+## V2-6 — record padding
+
+Records now carry a padded inner plaintext (`content_len(2, BE) || content ||
+0x00…` rounded up to a sender-chosen bucket), the receiver enforces the three
+rules of spec-v2 §6.4.1, and `mldsa-auth/v2/record` replaces the last `/v1/`
+label in `src/`. With this step the v2 protocol is complete; V2-7 is
+integration and measurement.
+
+### The empty record stopped being 25 bytes, and that reached into `apps/`
+
+This is the part of the change that is not in `session.c`. With padding the
+smallest record is **27** bytes (a 2-byte inner) and the default-bucket
+confirmation is **281**, so four files outside the session layer became wrong
+the moment `session.c` changed: `apps/frame.h`'s `FRAME_CONFIRM_LEN` and
+`FRAME_MIN_RECORD`, `apps/frame.c`'s assert on them, `apps/demo_app.{h,c}`'s
+message bound and confirmation receive, `tests/test_net.c`'s `CONFIRM_FRAME`
+and raw-initiator receive, and `tests/fuzz/fuzz_frame.c`'s state-3 bounds.
+
+`FRAME_CONFIRM_LEN` became a **range**, `FRAME_CONFIRM_MIN`/`FRAME_CONFIRM_MAX`
+(27..4121): the client cannot know the responder's bucket, exactly as
+spec-v2 §6.5.1 says. The check that the confirmation is *empty* did not
+weaken — it was already on the decrypted content (`pt_len != 0 →
+APP_PROTOCOL`), which is where padding cannot confuse it.
+
+One consequence was not anticipated in the plan and is worth recording:
+`session_open` decrypts the **inner** into the caller's buffer before it can
+parse it, so a confirmation buffer must be sized for the largest padded
+inner, not for the (empty) content. Two `uint8_t pt[1]` buffers in
+`test_net.c` were exactly that mistake, and all three of its failures traced
+to it.
+
+### `pad_bucket` is validated, not defaulted
+
+It joins `session_limits_t` and must be exactly one of
+`{1, 16, 64, 256, 1024, 4096}`. **Zero is rejected**, not silently read as
+"use the default" — the same fail-closed rule the other limits follow, and it
+means a caller that zero-initializes a `session_limits_t` and forgets the
+bucket gets an error instead of a surprise policy. S13 covers all six valid
+values and six invalid ones (0, 2, 32, 255, 8192, 65536).
+
+### The inner is built and encrypted in place, on evidence
+
+`session_seal` assembles the inner directly in the caller's output buffer at
+`out + 9` and encrypts it from there — no scratch buffer, so the
+zero-allocation gates hold unchanged. That is sound because libsodium's IETF
+ChaCha20-Poly1305 encrypts with
+`crypto_stream_chacha20_ietf_xor_ic(c, m, mlen, npub, 1U, k)`, a same-index
+keystream XOR, and writes the tag only afterwards; decryption verifies the
+tag over `c` **before** `crypto_stream_chacha20_ietf_xor_ic(m, c, …)` writes
+`m`. Both directions are therefore safe with `c == m`. This was read out of
+the vendored source rather than assumed from the API contract, which says
+nothing about overlap.
+
+`session_open` decrypts the inner into `pt_out`, validates it, `memmove`s the
+content to offset 0 and **wipes the tail** — otherwise the length prefix and
+the padding would stay in the caller's buffer, which is both a hygiene defect
+and a way for an application to read bytes it did not send.
+
+### The state check moved ahead of the capacity check
+
+Required capacity now depends on the pad bucket, and a non-ACTIVE session has
+no meaningful one (an EMPTY session's limits are all zero). Checking capacity
+first made `session_seal` on a dead session report `INVALID_ARG` instead of
+`UNEXPECTED_STATE`, which is the wrong answer and broke nine `check_dead`
+assertions. State is now checked first; capacity and overlap still come
+before the expiry check and the sequence reservation, so API misuse still
+terminates nothing and consumes no `seq`.
+
+A related test-only correction: `session_limits_t` now has trailing padding
+after its `uint32_t`, so S17's `memcmp` against the defaults was comparing
+uninitialized padding bytes. It compares field by field.
+
+### Fuzzing the receiver's rules required sealing inners
+
+The padding rules sit **behind** the AEAD: a random record fails
+authentication long before its inner is parsed, so no amount of fuzzing raw
+records reaches them. `fuzz_session` gained an **inner mode** (selector bit
+5) in which the chunk *is* the inner plaintext and the harness seals it
+itself — with its own literal `/v2/record` label, nonce and AD — under the
+receiver's key at the expected sequence number. Every input is then authentic
+by construction and the oracle predicts from the inner bytes alone.
+
+Writing that oracle produced one honest correction: the first version
+asserted that *every* `MALFORMED` zeroes the caller's buffer. That is false
+for a record rejected on **length or type**, which never touches the buffer
+at all. The assertion now applies to failures that happen after decryption —
+`AUTH` and the two inner-format rejections.
+
+### AEAD limit review (the review v1 deferred to this step)
+
+v1 required the rekey and expiry limits to be revisited if the maximum
+plaintext, the AEAD, the transport or the rekey policy changed. **v2 changes
+none of them.** The AEAD plaintext bound is still 65 536 bytes — padding
+moved the *content* bound to 65 534, not the record bound; the AEAD is
+unchanged; the transport is unchanged; rekeying is still a full handshake
+(now including a fresh ML-KEM keypair). **The v1 limits therefore carry over
+unchanged**: 2³²/2³³ records per direction and 3 600 000/3 900 000 ms.
+
+Padding does raise the *average* bytes per record, which moves the
+aggregate-data figure toward the bound for small messages. At the hard limit
+one key still protects at most 2³³ records of at most 2¹⁶ bytes — 2⁴⁹ bytes
+per direction — and forgery exposure is still capped at one failed
+verification per key by the terminal-failure policy. The headroom is large
+enough that no change is warranted. This paragraph is the record of that
+decision.
+
+### Mutations
+
+Run against the fresh ASan tree (Q2 and Q7 are memory-hygiene class).
+
+| # | Defect | Killed by |
+|---|---|---|
+| Q1 | receiver skips the zero-padding check | P4(b), P4(c) |
+| Q2 | receiver skips the `content_len` bound | **ASan abort** in P4(a) — see below |
+| Q3 | receiver requires the inner to match its own bucket | P3 (3 checks) |
+| Q4 | `content_len` written little-endian | S1, S2(a) (8 checks) — not P1, see below |
+| Q5 | seal leaves the padding region unwritten | **compile failure** — see below |
+| Q6 | minimum record left at 25 | P4(f), S9 (3 checks) |
+| Q7 | open does not wipe the tail after the move | P5 |
+| Q8 | `limits_valid` accepts any bucket | S13 (3 checks) |
+| Q9 | label left at `/v1/record` | S2(a) and 8 others (literal `'v','2'`) |
+
+All nine were killed, but **three died differently than predicted**, and the
+differences are the interesting part.
+
+**Q2 is caught as a memory fault, not a failed assertion.** Dropping the
+`content_len` bound leaves `pad_len = body - 2 - content_len` to underflow —
+these are `size_t` — so the padding scan is handed a length near `SIZE_MAX`.
+ASan reports `BUS ... in sodium_is_zero` from `session_open`, called from
+P4(a), and the process dies before printing anything. The test does reach the
+defect; there is simply no FAIL line to match. This is exactly the
+memory-hygiene class the plan predicted for Q2, and it is why the campaign
+runs against the sanitizer tree. It also shows the bound check is not
+redundant with the padding check: without it there is no length to scan.
+
+**Q4 never reaches P1.** A little-endian `content_len` breaks the ordinary
+round trip first: S1 fails at every payload size, S2(a) fails, and then
+S2(c)'s fixture calls `fatal()` and exits — so the P-series never runs. Eight
+named checks fail before that point, which is a kill; the prediction that P1
+would be the one to catch it was simply wrong about ordering.
+
+**Q5 does not compile.** Removing the `memset` that writes the padding leaves
+`used` unused, and the project builds with `-Wall -Wextra -Werror`. The
+runner's V2-4 hardening credits that as `KILLED(compile)` automatically —
+the strongest outcome, and the first time that path has fired for a
+non-assert mutation.

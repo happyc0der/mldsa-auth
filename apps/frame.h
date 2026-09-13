@@ -34,8 +34,13 @@
 #define FRAME_MAX_CLIENT_HELLO CLIENT_HELLO_MAX_ENCODED_LEN /* 1330 */
 #define FRAME_MAX_SERVER_HELLO SERVER_HELLO_MAX_ENCODED_LEN /* 4545 */
 #define FRAME_MAX_CLIENT_AUTH CLIENT_AUTH_MAX_ENCODED_LEN   /* 3328 */
-#define FRAME_CONFIRM_LEN SESSION_OVERHEAD_BYTES            /* 25: the empty record */
-#define FRAME_MIN_RECORD SESSION_OVERHEAD_BYTES             /* 25 */
+/* The confirmation record carries EMPTY content, but its length depends on
+ * the responder's pad bucket, which the client does not know (spec-v2
+ * 6.5.1). Its bound is therefore a RANGE; the client still requires the
+ * decrypted content to be exactly empty, which padding cannot confuse. */
+#define FRAME_CONFIRM_MIN SESSION_MIN_RECORD_BYTES /* 27: bucket 1 */
+#define FRAME_CONFIRM_MAX SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MAX) /* 4121: bucket 4096 */
+#define FRAME_MIN_RECORD SESSION_MIN_RECORD_BYTES  /* 27 */
 #define FRAME_MAX_RECORD SESSION_MAX_RECORD_BYTES           /* 65561 */
 
 typedef enum {

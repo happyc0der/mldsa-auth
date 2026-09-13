@@ -8,23 +8,37 @@
 #include "handshake.h"
 
 /*
- * Session record layer (spec §6.4): ChaCha20-Poly1305 IETF records over the
- * per-direction keys of an ESTABLISHED handshake.
+ * Session record layer (spec-v2 §6.4): ChaCha20-Poly1305 IETF records over
+ * the per-direction keys of an ESTABLISHED handshake.
  *
  * ============================================================================
- * CONCURRENCY (v1) -- see spec §6.3.6. session_t is NOT thread-safe; every
+ * CONCURRENCY (v2) -- see spec-v2 §6.3.6. session_t is NOT thread-safe; every
  * call on a given session must be serialized by the caller.
  * ============================================================================
  *
- * RECORD FORMAT (normative, spec §6.4)
- *   record = record_type (1, 0x04) || seq (8, big-endian) || ciphertext || tag (16)
+ * RECORD FORMAT (normative, spec-v2 §6.4.1)
+ *   inner  = content_len (2, big-endian; 0..65534) || content || 0x00 padding
+ *   record = record_type (1, 0x04) || seq (8, big-endian) || AEAD(inner) || tag (16)
  *   nonce  = 0x00 0x00 0x00 0x00 || seq (8, big-endian)
- *   ad     = "mldsa-auth/v1/record" || 0x00 || handshake_id (16)
+ *   ad     = "mldsa-auth/v2/record" || 0x00 || handshake_id (16)
  *            || direction (1) || record_type (1) || seq (8, big-endian)
  *   direction is 0x43 for initiator->responder records, 0x53 for
  *   responder->initiator records.
- *   v1 records are unpadded; record length reveals plaintext length plus the
- *   fixed 25-byte overhead. Padding is deferred to a future protocol version.
+ *
+ * PADDING (spec-v2 §6.4.1). The AEAD plaintext is `inner`, not the content:
+ *   padding sits inside the authenticated, encrypted region. The SENDER
+ *   rounds the inner up to a bucket chosen at session creation
+ *   (session_limits_t.pad_bucket, one of {1, 16, 64, 256, 1024, 4096};
+ *   default 256; 1 means no padding), so 2 <= inner_len <= 65536 and a
+ *   record is 27..65561 bytes. The RECEIVER knows nothing about the sender's
+ *   bucket and requires nothing of inner_len beyond the bounds; after
+ *   successful decryption it MUST reject, terminally, an inner shorter than
+ *   2 bytes, a content_len larger than inner_len - 2, or ANY nonzero padding
+ *   byte (Security Req 4.13).
+ *   What padding hides: an observer sees content length only to within the
+ *   bucket. What it does not hide: timing, message counts, direction, or the
+ *   session's total volume. It is a mitigation for traffic analysis, not a
+ *   solution.
  *
  * SEQUENCE POLICY: each direction counts from 0. A received record must carry
  *   EXACTLY the next expected seq -- lower is a replay, higher is a gap -- and
@@ -52,17 +66,40 @@
  *
  * ZERO ALLOCATION: the only session-owned memory is one 64-byte secure_mem key
  *   block, allocated in session_init_from_handshake() and freed in
- *   session_wipe(). seal/open/rekey_due/is_peer_confirmed never allocate:
- *   nonce and AD are stack buffers and all record buffers are caller-owned.
+ *   session_wipe(). seal/open/rekey_due/is_peer_confirmed never allocate,
+ *   padding included: nonce and AD are stack buffers, the padded inner is
+ *   assembled directly in the caller's output buffer and encrypted in place,
+ *   and all record buffers are caller-owned.
  */
 
 #define SESSION_RECORD_TYPE 0x04u
 #define SESSION_HEADER_BYTES 9u    /* record_type + seq */
 #define SESSION_OVERHEAD_BYTES 25u /* header + AEAD tag */
-#define SESSION_MAX_PLAINTEXT_BYTES 65536u
-#define SESSION_MAX_RECORD_BYTES (SESSION_MAX_PLAINTEXT_BYTES + SESSION_OVERHEAD_BYTES)
 
-#define SESSION_AD_LABEL "mldsa-auth/v1/record"
+/* The AEAD plaintext is the padded INNER, so this is the inner's bound. */
+#define SESSION_MAX_PLAINTEXT_BYTES 65536u
+#define SESSION_CONTENT_LEN_BYTES 2u
+/* The largest content whose 2-byte prefix still fits the inner bound. */
+#define SESSION_MAX_CONTENT_BYTES (SESSION_MAX_PLAINTEXT_BYTES - SESSION_CONTENT_LEN_BYTES) /* 65534 */
+#define SESSION_MAX_RECORD_BYTES (SESSION_MAX_PLAINTEXT_BYTES + SESSION_OVERHEAD_BYTES)     /* 65561 */
+/* Smallest possible record: a 2-byte inner (empty content, bucket 1). */
+#define SESSION_MIN_RECORD_BYTES (SESSION_CONTENT_LEN_BYTES + SESSION_OVERHEAD_BYTES) /* 27 */
+
+/* Sender-side padding policy. Every allowed bucket is a power of two that
+ * divides the inner bound, so rounding up can never exceed it. */
+#define SESSION_PAD_BUCKET_MIN 1u /* no padding */
+#define SESSION_PAD_BUCKET_DEFAULT 256u
+#define SESSION_PAD_BUCKET_MAX 4096u
+
+/* Exact sizes a given (content_len, bucket) produces. Both are pure
+ * arithmetic on constants, so callers can size buffers and CTest checks can
+ * pin the spec's numbers without calling into the session. */
+#define SESSION_INNER_LEN(content_len, bucket) \
+    ((((content_len) + SESSION_CONTENT_LEN_BYTES + (bucket) - 1u) / (bucket)) * (bucket))
+#define SESSION_RECORD_LEN(content_len, bucket) \
+    (SESSION_INNER_LEN((content_len), (bucket)) + SESSION_OVERHEAD_BYTES)
+
+#define SESSION_AD_LABEL "mldsa-auth/v2/record"
 #define SESSION_AD_BYTES 47u /* 20 + 1 + 16 + 1 + 1 + 8 */
 
 /* v1 policy limits (spec §6.4). Soft = rekey due; hard = refuse and expire.
@@ -96,12 +133,19 @@ typedef enum {
 } session_status_t;
 
 /* Limits can only be TIGHTENED: every value must be >= 1 and <= its default,
- * and each soft value <= its hard value. */
+ * and each soft value <= its hard value.
+ *
+ * pad_bucket is the exception in kind, not in strictness: it is a
+ * SENDER-SIDE policy, never negotiated, fixed for the life of the session
+ * (spec-v2 §6.4.6), and it must be exactly one of {1, 16, 64, 256, 1024,
+ * 4096}. Any other value -- including 0 -- is rejected rather than silently
+ * replaced by a default. */
 typedef struct {
     uint64_t rekey_after_messages;
     uint64_t reject_after_messages;
     uint64_t rekey_after_ms;
     uint64_t reject_after_ms;
+    uint32_t pad_bucket;
 } session_limits_t;
 
 /* Storage is caller-provided, so the struct is visible -- but EVERY FIELD IS
@@ -139,16 +183,33 @@ void session_wipe(session_t *s);
 /* SESSION_STATE_EMPTY for a NULL session. */
 session_state_t session_get_state(const session_t *s);
 
-/* Encrypts pt into one record in out (out_cap >= pt_len + 25). pt may be NULL
- * only when pt_len == 0. pt and out must not overlap. Misuse -> INVALID_ARG
- * with no seq consumed. Hard limit reached -> EXPIRED. */
+/* Exact length of the record session_seal() will produce for content_len
+ * bytes of content, given this session's pad bucket. Returns 0 if s is NULL
+ * or content_len > SESSION_MAX_CONTENT_BYTES, so 0 is an unambiguous
+ * "cannot be sealed" (every real record is at least 27 bytes). */
+size_t session_sealed_len(const session_t *s, size_t content_len);
+
+/* Encrypts pt (the CONTENT, 0..65534 bytes) into one padded record in out.
+ * out_cap must be at least session_sealed_len(s, pt_len), which is larger
+ * than pt_len + 25 whenever the bucket pads. pt may be NULL only when
+ * pt_len == 0. pt and out must not overlap. Misuse -> INVALID_ARG with no
+ * seq consumed. Hard limit reached -> EXPIRED. */
 session_status_t session_seal(session_t *s, const uint8_t *pt, size_t pt_len, uint8_t *out,
                               size_t out_cap, size_t *out_len);
 
-/* Authenticates and decrypts one record into pt_out (pt_cap >= rec_len - 25).
+/* Authenticates and decrypts one record, then validates the inner plaintext
+ * and writes the CONTENT to pt_out, setting *pt_len to the content length.
+ *
+ * pt_cap must be at least rec_len - 25 (the inner length), because the inner
+ * is decrypted into pt_out before it can be parsed; the content is then
+ * moved to offset 0 and everything after it is zeroed, so no padding or
+ * length prefix is left in the caller's buffer.
+ *
  * rec and pt_out must not overlap. Every failure except INVALID_ARG and
- * UNEXPECTED_STATE is terminal; on AUTH failure the plaintext region of
- * pt_out is zeroed. */
+ * UNEXPECTED_STATE is terminal -- including an inner whose content_len
+ * exceeds the inner, or whose padding is not all zero. On AUTH failure, and
+ * on either malformed-inner failure, the plaintext region of pt_out is
+ * zeroed. */
 session_status_t session_open(session_t *s, const uint8_t *rec, size_t rec_len, uint8_t *pt_out,
                               size_t pt_cap, size_t *pt_len);
 

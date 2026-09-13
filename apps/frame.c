@@ -4,7 +4,8 @@ _Static_assert(FRAME_MAX_CLIENT_HELLO <= FRAME_MAX_PAYLOAD, "ClientHello fits a 
 _Static_assert(FRAME_MAX_SERVER_HELLO <= FRAME_MAX_PAYLOAD, "ServerHello fits a frame");
 _Static_assert(FRAME_MAX_CLIENT_AUTH <= FRAME_MAX_PAYLOAD, "ClientAuth fits a frame");
 _Static_assert(FRAME_MAX_RECORD == FRAME_MAX_PAYLOAD, "the largest frame is the largest record");
-_Static_assert(FRAME_CONFIRM_LEN == FRAME_MIN_RECORD, "the confirmation is the smallest record");
+_Static_assert(FRAME_CONFIRM_MIN == FRAME_MIN_RECORD, "an unpadded confirmation is the smallest record");
+_Static_assert(FRAME_CONFIRM_MAX <= FRAME_MAX_RECORD, "a padded confirmation is still a record");
 _Static_assert(FRAME_MAX_PAYLOAD <= UINT32_MAX, "length prefix is 32 bits");
 
 void frame_put_header(uint8_t hdr[FRAME_HEADER_BYTES], uint32_t len) {

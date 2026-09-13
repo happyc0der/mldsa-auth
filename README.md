@@ -266,7 +266,7 @@ than a literal verification of that requirement.
 | **No CA, no revocation** (trust on first use) | A key compromised or substituted before you pinned it is undetectable by this protocol. Revoking a key means redistributing pins out of band. |
 | **Endpoint compromise** | Anything that can read the process's memory or its key files has the identity. There is no hardware backing and no attestation. |
 | **Classical key exchange** | X25519 is not post-quantum, so recorded session traffic is exposed to a future quantum adversary ("harvest now, decrypt later"). *Identity authentication is* post-quantum; confidentiality is not. Hybrid ML-KEM-768 is a v2 item. |
-| **Traffic analysis** | v1 records are unpadded: record length reveals plaintext length plus a fixed 25-byte overhead, and timing and message counts are fully visible. |
+| **Traffic analysis** | Partially mitigated. v2 records are padded to a sender-chosen bucket (default 256 bytes), so record length reveals content length only to within that bucket. Timing, message counts, direction and total session volume remain fully visible. |
 | **Denial of service** | A duplicate ClientHello deliberately creates a second pending entry — rejecting repeats would let an off-path attacker deny service to honest clients. Capacity and TTL bound the damage; rate limiting is the integrator's responsibility. |
 | **Concurrent use** | Contexts, the keystore and the pending ledger are not thread-safe. A server must confine each store to one thread or serialize access itself. |
 | **Multi-party or group sessions** | Two parties only. |
@@ -291,8 +291,9 @@ ships; each is a decision to stop somewhere.
 - **Transport rate limiting** — the deferred mitigation for duplicate
   ClientHellos. (§ *Duplicate ClientHello is accepted — an availability
   trade-off*)
-- **Record padding** — deferred to a future protocol version; until then
-  record length leaks plaintext length. (spec §6.4)
+- **Traffic-analysis resistance beyond padding** — v2 pads record lengths,
+  but message timing, counts and direction are unprotected; no cover traffic
+  and no constant-rate sending. (spec-v2 §6.4.1, §9)
 - **Hybrid X25519 + ML-KEM-768** — deferred to a v2 milestone.
   (§ *Key exchange: X25519 only in v1*)
 - **AEAD limit review** — the two-tier rekey and hard limits are conservative

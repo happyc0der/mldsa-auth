@@ -187,7 +187,22 @@ static int xfer_ok(session_t *from, session_t *to, size_t pt_len) {
 /* ---- Independent (hand-built) record layout -------------------------------- */
 
 static const uint8_t HAND_LABEL[20] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't', 'h',
-                                       '/', 'v', '1', '/', 'r', 'e', 'c', 'o', 'r', 'd'};
+                                       '/', 'v', '2', '/', 'r', 'e', 'c', 'o', 'r', 'd'};
+
+/* The inner plaintext, built from the literal spec-v2 6.4.1 layout:
+ * BE16(content_len) || content || zeros to roundup(2 + content_len, bucket).
+ * Deliberately independent of session.c's own arithmetic. */
+static size_t hand_inner(uint8_t *inner, const uint8_t *content, size_t content_len, unsigned bucket) {
+    const size_t need = content_len + 2u;
+    const size_t len = ((need + bucket - 1u) / bucket) * bucket;
+    inner[0] = (uint8_t)(content_len >> 8);
+    inner[1] = (uint8_t)content_len;
+    if (content_len != 0) {
+        memcpy(inner + 2, content, content_len);
+    }
+    memset(inner + need, 0, len - need);
+    return len;
+}
 
 static void hand_be64(uint8_t out[8], uint64_t v) {
     out[0] = (uint8_t)(v >> 56);
@@ -214,17 +229,41 @@ static void hand_ad(uint8_t ad[47], const uint8_t hid[16], uint8_t dir, uint8_t 
     hand_be64(ad + 39, seq);
 }
 
-/* rec = hdr_type || BE(hdr_seq) || AEAD(key, nonce, ad, pt). */
-static void hand_record(uint8_t *rec, size_t *rec_len, const uint8_t key[32], const uint8_t ad[47],
-                        const uint8_t nonce[12], uint8_t hdr_type, uint64_t hdr_seq, const uint8_t *pt,
-                        size_t pt_len) {
+/* rec = hdr_type || BE(hdr_seq) || AEAD(key, nonce, ad, inner), where the
+ * inner is the padded layout above. */
+static void hand_record_bucket(uint8_t *rec, size_t *rec_len, const uint8_t key[32], const uint8_t ad[47],
+                               const uint8_t nonce[12], uint8_t hdr_type, uint64_t hdr_seq,
+                               const uint8_t *content, size_t content_len, unsigned bucket) {
+    static uint8_t inner[SESSION_MAX_PLAINTEXT_BYTES];
     size_t ct_len = 0;
+    const size_t inner_len = hand_inner(inner, content, content_len, bucket);
     rec[0] = hdr_type;
     hand_be64(rec + 1, hdr_seq);
-    if (aead_encrypt(rec + 9, &ct_len, pt, pt_len, ad, 47, nonce, key) != 0) {
+    if (aead_encrypt(rec + 9, &ct_len, inner, inner_len, ad, 47, nonce, key) != 0) {
         fatal("aead_encrypt (hand record)");
     }
     *rec_len = 9 + ct_len;
+}
+
+/* Seals RAW inner bytes, valid or not -- the only way to test the receiver's
+ * inner-format rules, which sit behind a passing AEAD check. */
+static void hand_record_raw_inner(uint8_t *rec, size_t *rec_len, const uint8_t key[32], const uint8_t ad[47],
+                                  const uint8_t nonce[12], uint64_t hdr_seq, const uint8_t *inner,
+                                  size_t inner_len) {
+    size_t ct_len = 0;
+    rec[0] = 0x04;
+    hand_be64(rec + 1, hdr_seq);
+    if (aead_encrypt(rec + 9, &ct_len, inner, inner_len, ad, 47, nonce, key) != 0) {
+        fatal("aead_encrypt (raw inner)");
+    }
+    *rec_len = 9 + ct_len;
+}
+
+static void hand_record(uint8_t *rec, size_t *rec_len, const uint8_t key[32], const uint8_t ad[47],
+                        const uint8_t nonce[12], uint8_t hdr_type, uint64_t hdr_seq, const uint8_t *pt,
+                        size_t pt_len) {
+    hand_record_bucket(rec, rec_len, key, ad, nonce, hdr_type, hdr_seq, pt, pt_len,
+                       SESSION_PAD_BUCKET_DEFAULT);
 }
 
 /* Decrypt a session-produced record with the hand-built layout. */
@@ -238,15 +277,30 @@ static int hand_open_ok(const uint8_t *rec, size_t rec_len, const uint8_t key[32
     if (aead_decrypt(g_pt_out, &got, rec + 9, rec_len - 9, ad, sizeof(ad), nonce, key) != 0) {
         return 0;
     }
-    return got == expect_len && (expect_len == 0 || memcmp(g_pt_out, expect, expect_len) == 0);
+    /* Parse the inner by hand: length prefix, content, all-zero padding. */
+    if (got < 2u) {
+        return 0;
+    }
+    const size_t content_len = ((size_t)g_pt_out[0] << 8) | (size_t)g_pt_out[1];
+    if (content_len != expect_len || content_len > got - 2u) {
+        return 0;
+    }
+    for (size_t i = 2u + content_len; i < got; i++) {
+        if (g_pt_out[i] != 0x00) {
+            return 0;
+        }
+    }
+    return expect_len == 0 || memcmp(g_pt_out + 2, expect, expect_len) == 0;
 }
 
 /* ---- Dead-session hygiene (S18) --------------------------------------------- */
 
 static void check_dead(session_t *s, session_state_t want, const char *path) {
-    uint8_t out[64];
+    /* Large enough for a 1-byte payload at the LARGEST bucket, so the seal
+     * below is refused for the session's state, never for its capacity. */
+    static uint8_t out[SESSION_RECORD_LEN(1, SESSION_PAD_BUCKET_MAX)];
     uint8_t pt[8];
-    uint8_t rec[SESSION_OVERHEAD_BYTES + 1];
+    uint8_t rec[SESSION_MIN_RECORD_BYTES];
     size_t out_len = 777;
     size_t pt_len = 777;
     memset(out, 0x5A, sizeof(out));
@@ -280,7 +334,7 @@ static void check_dead(session_t *s, session_state_t want, const char *path) {
  * =================================================================== */
 
 static void test_s1_round_trip(void) {
-    static const size_t sizes[] = {0, 1, 64, 1024, SESSION_MAX_PLAINTEXT_BYTES};
+    static const size_t sizes[] = {0, 1, 64, 1024, SESSION_MAX_CONTENT_BYTES};
     sp_t p;
     sp_open(&p, NULL, NULL);
     uint64_t sent = 0;
@@ -313,7 +367,7 @@ static void test_s2_s3_exact_layout(void) {
 
     /* (a) records the session produced, opened with the hand-built layout. */
     size_t len[3] = {0, 0, 0};
-    uint8_t recs[3][64 + SESSION_OVERHEAD_BYTES];
+    uint8_t recs[3][SESSION_RECORD_LEN(64, SESSION_PAD_BUCKET_DEFAULT)];
     int a_ok = 1;
     for (uint64_t seq = 0; seq < 3; seq++) {
         if (session_seal(&p.a, g_pt_in, 64, recs[seq], sizeof(recs[seq]), &len[seq]) != SESSION_OK) {
@@ -329,21 +383,23 @@ static void test_s2_s3_exact_layout(void) {
     for (uint64_t seq = 0; seq < 3; seq++) {
         uint8_t be[8];
         hand_be64(be, seq);
-        hdr_ok &= (len[seq] == 64 + 25) && recs[seq][0] == 0x04 && memcmp(recs[seq] + 1, be, 8) == 0;
+        hdr_ok &= (len[seq] == SESSION_RECORD_LEN(64, SESSION_PAD_BUCKET_DEFAULT)) && recs[seq][0] == 0x04 &&
+                  memcmp(recs[seq] + 1, be, 8) == 0;
     }
-    CHECK(hdr_ok, "S3: record = 0x04 || BE64 seq || ciphertext || tag; length = pt_len + 25");
+    CHECK(hdr_ok, "S3: record = 0x04 || BE64 seq || AEAD(inner) || tag; a 64-byte payload at the default bucket is 281 bytes");
 
     size_t e_len = 0;
-    uint8_t e_rec[SESSION_OVERHEAD_BYTES];
-    CHECK(session_seal(&p.a, NULL, 0, e_rec, sizeof(e_rec), &e_len) == SESSION_OK && e_len == 25 &&
+    uint8_t e_rec[SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_DEFAULT)];
+    CHECK(session_seal(&p.a, NULL, 0, e_rec, sizeof(e_rec), &e_len) == SESSION_OK &&
+              e_len == SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_DEFAULT) && e_len == 281u &&
               e_rec[0] == 0x04 && e_rec[8] == 3,
-          "S3: an empty payload yields a 25-byte record carrying the next seq (3)");
+          "S3: an empty payload still yields a full padded record (281 bytes at bucket 256) carrying seq 3");
 
     /* Responder direction. */
     int b_ok = 1;
     for (uint64_t seq = 0; seq < 2; seq++) {
         size_t l = 0;
-        uint8_t r[64 + SESSION_OVERHEAD_BYTES];
+        uint8_t r[SESSION_RECORD_LEN(64, SESSION_PAD_BUCKET_DEFAULT)];
         b_ok &= session_seal(&p.b, g_pt_in, 64, r, sizeof(r), &l) == SESSION_OK &&
                 hand_open_ok(r, l, p.hs.s2c, hid, 0x53, seq, g_pt_in, 64);
     }
@@ -516,7 +572,9 @@ static void test_s9_malformed(void) {
         const char *what;
     } cases[] = {
         {0, 0x04, "S9: empty record -> MALFORMED, FAILED"},
-        {24, 0x04, "S9: 24-byte record (one below the 25-byte minimum) -> MALFORMED"},
+        {24, 0x04, "S9: 24-byte record -> MALFORMED"},
+        {25, 0x04, "S9: 25-byte record (v1's minimum, too short for a 2-byte inner) -> MALFORMED"},
+        {26, 0x04, "S9: 26-byte record (one below the 27-byte minimum) -> MALFORMED"},
         {SESSION_MAX_RECORD_BYTES + 1, 0x04, "S9: record one byte over the maximum -> MALFORMED"},
         {0, 0x01, "S9: record_type 0x01 (ClientHello) -> MALFORMED"},
         {0, 0x03, "S9: record_type 0x03 (ClientAuth) -> MALFORMED"},
@@ -553,7 +611,7 @@ static void test_s10_misuse(void) {
     sp_t p;
     sp_open(&p, NULL, NULL);
     size_t l = 0;
-    const size_t need = 40 + SESSION_OVERHEAD_BYTES;
+    const size_t need = SESSION_RECORD_LEN(40, SESSION_PAD_BUCKET_DEFAULT);
 
     int seal_rejected = 1;
     seal_rejected &= session_seal(NULL, g_pt_in, 40, g_rec, need, &l) == SESSION_ERR_INVALID_ARG;
@@ -561,10 +619,12 @@ static void test_s10_misuse(void) {
     seal_rejected &= session_seal(&p.a, g_pt_in, 40, g_rec, need, NULL) == SESSION_ERR_INVALID_ARG;
     seal_rejected &= session_seal(&p.a, NULL, 40, g_rec, need, &l) == SESSION_ERR_INVALID_ARG;
     seal_rejected &= session_seal(&p.a, g_pt_in, 40, g_rec, need - 1, &l) == SESSION_ERR_INVALID_ARG;
-    seal_rejected &= session_seal(&p.a, g_pt_in, SESSION_MAX_PLAINTEXT_BYTES + 1, g_rec, sizeof(g_rec), &l) ==
+    seal_rejected &= session_seal(&p.a, g_pt_in, SESSION_MAX_CONTENT_BYTES + 1, g_rec, sizeof(g_rec), &l) ==
                      SESSION_ERR_INVALID_ARG;
+    seal_rejected &= session_seal(&p.a, g_pt_in, SESSION_MAX_PLAINTEXT_BYTES, g_rec, sizeof(g_rec), &l) ==
+                     SESSION_ERR_INVALID_ARG; /* 65536: the inner bound, not a content bound */
     seal_rejected &= session_seal(&p.a, g_rec + 5, 40, g_rec, need, &l) == SESSION_ERR_INVALID_ARG; /* overlap */
-    CHECK(seal_rejected, "S10: seal misuse (NULLs, out_cap short by 1, pt_len max+1, overlap) -> INVALID_ARG");
+    CHECK(seal_rejected, "S10: seal misuse (NULLs, out_cap short by 1, content 65535/65536, overlap) -> INVALID_ARG");
     CHECK(session_get_state(&p.a) == SESSION_STATE_ACTIVE && p.a.send_seq == 0,
           "S10: seal misuse changed no state and consumed no seq");
     CHECK(session_seal(&p.a, g_pt_in, 40, g_rec, need, &l) == SESSION_OK && g_rec[8] == 0 && l == need,
@@ -572,16 +632,18 @@ static void test_s10_misuse(void) {
 
     size_t got = 0;
     int open_rejected = 1;
-    open_rejected &= session_open(NULL, g_rec, l, g_pt_out, 40, &got) == SESSION_ERR_INVALID_ARG;
-    open_rejected &= session_open(&p.b, NULL, l, g_pt_out, 40, &got) == SESSION_ERR_INVALID_ARG;
-    open_rejected &= session_open(&p.b, g_rec, l, NULL, 40, &got) == SESSION_ERR_INVALID_ARG;
-    open_rejected &= session_open(&p.b, g_rec, l, g_pt_out, 40, NULL) == SESSION_ERR_INVALID_ARG;
-    open_rejected &= session_open(&p.b, g_rec, l, g_pt_out, 39, &got) == SESSION_ERR_INVALID_ARG;
-    open_rejected &= session_open(&p.b, g_rec, l, g_rec + 3, 40, &got) == SESSION_ERR_INVALID_ARG; /* overlap */
+    open_rejected &= session_open(NULL, g_rec, l, g_pt_out, sizeof(g_pt_out), &got) == SESSION_ERR_INVALID_ARG;
+    open_rejected &= session_open(&p.b, NULL, l, g_pt_out, sizeof(g_pt_out), &got) == SESSION_ERR_INVALID_ARG;
+    open_rejected &= session_open(&p.b, g_rec, l, NULL, sizeof(g_pt_out), &got) == SESSION_ERR_INVALID_ARG;
+    open_rejected &= session_open(&p.b, g_rec, l, g_pt_out, sizeof(g_pt_out), NULL) == SESSION_ERR_INVALID_ARG;
+    open_rejected &= session_open(&p.b, g_rec, l, g_pt_out, l - SESSION_OVERHEAD_BYTES - 1u, &got) ==
+                     SESSION_ERR_INVALID_ARG;
+    open_rejected &= session_open(&p.b, g_rec, l, g_rec + 3, sizeof(g_pt_out), &got) ==
+                     SESSION_ERR_INVALID_ARG; /* overlap */
     CHECK(open_rejected, "S10: open misuse (NULLs, pt_cap short by 1, overlap) -> INVALID_ARG");
     CHECK(session_get_state(&p.b) == SESSION_STATE_ACTIVE && p.b.recv_seq == 0,
           "S10: open misuse changed no state and consumed no seq");
-    CHECK(session_open(&p.b, g_rec, l, g_pt_out, 40, &got) == SESSION_OK && got == 40 &&
+    CHECK(session_open(&p.b, g_rec, l, g_pt_out, sizeof(g_pt_out), &got) == SESSION_OK && got == 40 &&
               memcmp(g_pt_out, g_pt_in, 40) == 0,
           "S10: the same record then opens with a big-enough buffer");
     sp_close(&p);
@@ -697,14 +759,22 @@ static void test_s13_init_preconditions(void) {
 
     hs_establish(&h);
     const session_limits_t bad[] = {
-        {0, 5, 100, 200},
-        {6, 5, 100, 200},
-        {SESSION_REKEY_AFTER_MESSAGES + 1, SESSION_REJECT_AFTER_MESSAGES, 100, 200},
-        {1, SESSION_REJECT_AFTER_MESSAGES + 1, 100, 200},
-        {1, 5, 0, 200},
-        {1, 5, 201, 200},
-        {1, 5, SESSION_REKEY_AFTER_MS + 1, SESSION_REJECT_AFTER_MS},
-        {1, 5, 100, SESSION_REJECT_AFTER_MS + 1},
+        {0, 5, 100, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {6, 5, 100, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {SESSION_REKEY_AFTER_MESSAGES + 1, SESSION_REJECT_AFTER_MESSAGES, 100, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {1, SESSION_REJECT_AFTER_MESSAGES + 1, 100, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {1, 5, 0, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {1, 5, 201, 200, SESSION_PAD_BUCKET_DEFAULT},
+        {1, 5, SESSION_REKEY_AFTER_MS + 1, SESSION_REJECT_AFTER_MS, SESSION_PAD_BUCKET_DEFAULT},
+        {1, 5, 100, SESSION_REJECT_AFTER_MS + 1, SESSION_PAD_BUCKET_DEFAULT},
+        /* Pad buckets outside {1,16,64,256,1024,4096}: 0 is NOT "use the
+         * default", and neither is a stray power of two. */
+        {1, 5, 100, 200, 0u},
+        {1, 5, 100, 200, 2u},
+        {1, 5, 100, 200, 32u},
+        {1, 5, 100, 200, 8192u},
+        {1, 5, 100, 200, 65536u},
+        {1, 5, 100, 200, 255u},
     };
     int all_refused = 1;
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -713,8 +783,28 @@ static void test_s13_init_preconditions(void) {
         all_refused &= session_init_from_handshake(&s, &h.ini, &bad[i], NULL, NULL) == SESSION_ERR_INVALID_ARG &&
                        session_get_state(&s) == SESSION_STATE_EMPTY && s.keys == NULL;
     }
-    CHECK(all_refused, "S13: invalid limits (zero, soft > hard, above any default) -> INVALID_ARG");
+    CHECK(all_refused, "S13: invalid limits (zero, soft > hard, above any default, and any pad bucket outside the six allowed values) -> INVALID_ARG");
     CHECK(hs_keys_intact(&h.ini, &h), "S13: ...and the ESTABLISHED handshake still hands out the same keys");
+
+    {
+        /* ...while every allowed bucket is accepted. */
+        static const uint32_t ok_buckets[6] = {1u, 16u, 64u, 256u, 1024u, 4096u};
+        int all_ok = 1;
+        for (size_t i = 0; i < 6u; i++) {
+            hs_t hb;
+            session_t s2;
+            session_limits_t lim;
+            session_default_limits(&lim);
+            lim.pad_bucket = ok_buckets[i];
+            memset(&s2, 0, sizeof(s2));
+            hs_establish(&hb);
+            all_ok &= session_init_from_handshake(&s2, &hb.ini, &lim, NULL, NULL) == SESSION_OK &&
+                      s2.limits.pad_bucket == ok_buckets[i];
+            session_wipe(&s2);
+            hs_wipe(&hb);
+        }
+        CHECK(all_ok, "S13: all six allowed pad buckets (1, 16, 64, 256, 1024, 4096) are accepted");
+    }
 
     session_t s;
     memset(&s, 0, sizeof(s));
@@ -730,7 +820,7 @@ static void test_s13_init_preconditions(void) {
  * =================================================================== */
 
 static void test_s14_record_limits(void) {
-    const session_limits_t lim = {3, 5, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS};
+    const session_limits_t lim = {3, 5, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS, SESSION_PAD_BUCKET_DEFAULT};
     sp_t p;
     sp_open(&p, &lim, &lim);
     int ok = xfer_ok(&p.a, &p.b, 8) && xfer_ok(&p.a, &p.b, 8);
@@ -746,7 +836,7 @@ static void test_s14_record_limits(void) {
     check_dead(&p.a, SESSION_STATE_EXPIRED, "seal over the hard record limit");
     sp_close(&p);
 
-    const session_limits_t tight = {1, 2, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS};
+    const session_limits_t tight = {1, 2, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS, SESSION_PAD_BUCKET_DEFAULT};
     sp_open(&p, &lim, &tight);
     size_t got = 0;
     size_t l2 = 0;
@@ -760,7 +850,7 @@ static void test_s14_record_limits(void) {
 }
 
 static void test_s15_time_limits(void) {
-    const session_limits_t lim = {SESSION_REKEY_AFTER_MESSAGES, SESSION_REJECT_AFTER_MESSAGES, 100, 200};
+    const session_limits_t lim = {SESSION_REKEY_AFTER_MESSAGES, SESSION_REJECT_AFTER_MESSAGES, 100, 200, SESSION_PAD_BUCKET_DEFAULT};
     sp_t p;
     sp_open(&p, &lim, &lim);
     p.clk.now = T0 + 99;
@@ -776,7 +866,7 @@ static void test_s15_time_limits(void) {
     p.clk.now = T0 + 200;
     CHECK(seal_into(&p.a, 8, g_rec, &l) == SESSION_ERR_EXPIRED, "S15: at the hard time limit seal -> EXPIRED");
     check_dead(&p.a, SESSION_STATE_EXPIRED, "seal at the hard time limit");
-    CHECK(open_from(&p.b, g_rec2, 8 + SESSION_OVERHEAD_BYTES, &got) == SESSION_ERR_EXPIRED,
+    CHECK(open_from(&p.b, g_rec2, SESSION_RECORD_LEN(8, SESSION_PAD_BUCKET_DEFAULT), &got) == SESSION_ERR_EXPIRED,
           "S15: at the hard time limit open -> EXPIRED (even for a record sealed in time)");
     check_dead(&p.b, SESSION_STATE_EXPIRED, "open at the hard time limit");
     sp_close(&p);
@@ -803,7 +893,8 @@ static void test_s16_clock_failure(void) {
     seal_into(&p.a, 8, g_rec2, &l);
     p.clk.now = UINT64_MAX;
     CHECK(session_rekey_due(&p.a) && seal_into(&p.a, 8, g_rec, &l) == SESSION_ERR_EXPIRED &&
-              open_from(&p.b, g_rec2, 8 + SESSION_OVERHEAD_BYTES, &got) == SESSION_ERR_EXPIRED,
+              open_from(&p.b, g_rec2, SESSION_RECORD_LEN(8, SESSION_PAD_BUCKET_DEFAULT), &got) ==
+                  SESSION_ERR_EXPIRED,
           "S16: an unreadable clock (UINT64_MAX) -> due, and seal/open EXPIRED (fail closed)");
     sp_close(&p);
 
@@ -847,11 +938,21 @@ static void test_s17_defaults(void) {
     session_limits_t d;
     session_default_limits(&d);
     CHECK(d.rekey_after_messages == UINT64_C(4294967296) && d.reject_after_messages == UINT64_C(8589934592) &&
-              d.rekey_after_ms == UINT64_C(3600000) && d.reject_after_ms == UINT64_C(3900000),
-          "S17: defaults are 2^32 / 2^33 records and 3,600,000 / 3,900,000 ms");
+              d.rekey_after_ms == UINT64_C(3600000) && d.reject_after_ms == UINT64_C(3900000) &&
+              d.pad_bucket == 256u,
+          "S17: defaults are 2^32 / 2^33 records, 3,600,000 / 3,900,000 ms, and pad bucket 256");
     sp_t p;
     sp_open(&p, NULL, NULL);
-    CHECK(memcmp(&p.a.limits, &d, sizeof(d)) == 0 && memcmp(&p.b.limits, &d, sizeof(d)) == 0,
+    /* Compared field by field: session_limits_t now has trailing padding
+     * after its uint32_t, and padding bytes are not guaranteed equal. */
+    CHECK(p.a.limits.rekey_after_messages == d.rekey_after_messages &&
+              p.a.limits.reject_after_messages == d.reject_after_messages &&
+              p.a.limits.rekey_after_ms == d.rekey_after_ms &&
+              p.a.limits.reject_after_ms == d.reject_after_ms && p.a.limits.pad_bucket == d.pad_bucket &&
+              p.b.limits.rekey_after_messages == d.rekey_after_messages &&
+              p.b.limits.reject_after_messages == d.reject_after_messages &&
+              p.b.limits.rekey_after_ms == d.rekey_after_ms &&
+              p.b.limits.reject_after_ms == d.reject_after_ms && p.b.limits.pad_bucket == d.pad_bucket,
           "S17: NULL limits -> the defaults");
     sp_close(&p);
 }
@@ -978,7 +1079,7 @@ static void test_s25_no_reinit(void) {
     hs_wipe(&h3);
     sp_close(&p);
 
-    const session_limits_t one = {1, 1, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS};
+    const session_limits_t one = {1, 1, SESSION_REKEY_AFTER_MS, SESSION_REJECT_AFTER_MS, SESSION_PAD_BUCKET_DEFAULT};
     sp_open(&p, &one, NULL);
     seal_into(&p.a, 8, g_rec, &l);
     (void)seal_into(&p.a, 8, g_rec, &l);
@@ -994,7 +1095,7 @@ static void test_s25_no_reinit(void) {
 static int is_empty_and_inert(session_t *s) {
     size_t l = 0;
     size_t got = 0;
-    uint8_t rec[SESSION_OVERHEAD_BYTES] = {0x04};
+    uint8_t rec[SESSION_MIN_RECORD_BYTES] = {0x04};
     return session_get_state(s) == SESSION_STATE_EMPTY && s->keys == NULL &&
            session_seal(s, NULL, 0, g_rec, sizeof(g_rec), &l) == SESSION_ERR_UNEXPECTED_STATE &&
            session_open(s, rec, sizeof(rec), g_pt_out, sizeof(g_pt_out), &got) == SESSION_ERR_UNEXPECTED_STATE &&
@@ -1130,6 +1231,245 @@ static void test_s27_kem_disagreement(void) {
     hs_wipe(&h2);
 }
 
+/* =====================================================================
+ * P1-P6 -- record padding (spec-v2 6.4.1)
+ *
+ * Every expected length here is computed by the test's OWN roundup, and
+ * every malformed-inner case is sealed with the hand-built AEAD under the
+ * real key -- the receiver's inner-format rules sit behind a passing AEAD
+ * check, so a random record can never reach them.
+ * =================================================================== */
+
+static const uint32_t P_BUCKETS[6] = {1u, 16u, 64u, 256u, 1024u, 4096u};
+
+/* The test's own arithmetic, independent of SESSION_INNER_LEN. */
+static size_t p_roundup(size_t content_len, uint32_t bucket) {
+    size_t n = content_len + 2u;
+    while (n % bucket != 0u) {
+        n++;
+    }
+    return n;
+}
+
+static void p_open_pair(sp_t *p, uint32_t bucket_a, uint32_t bucket_b) {
+    session_limits_t la;
+    session_limits_t lb;
+    session_default_limits(&la);
+    session_default_limits(&lb);
+    la.pad_bucket = bucket_a;
+    lb.pad_bucket = bucket_b;
+    sp_open(p, &la, &lb);
+}
+
+static void test_p1_exact_lengths(void) {
+    static const size_t sizes[13] = {0, 1, 2, 14, 15, 16, 17, 255, 256, 1024, 4095, 4096,
+                                     SESSION_MAX_CONTENT_BYTES};
+    int all_ok = 1;
+    int inner_ok = 1;
+    for (size_t b = 0; b < 6u; b++) {
+        sp_t p;
+        p_open_pair(&p, P_BUCKETS[b], P_BUCKETS[b]);
+        for (size_t i = 0; i < 13u; i++) {
+            const size_t want = p_roundup(sizes[i], P_BUCKETS[b]) + SESSION_OVERHEAD_BYTES;
+            size_t l = 0;
+            memset(g_rec, 0xAA, want + 1u); /* a seal that skips its padding is visible */
+            const int sealed = seal_into(&p.a, sizes[i], g_rec, &l) == SESSION_OK;
+            all_ok &= sealed && l == want && session_sealed_len(&p.a, sizes[i]) == want &&
+                      want == SESSION_RECORD_LEN(sizes[i], P_BUCKETS[b]);
+            /* The inner really is BE16(len) || content || zeros. */
+            inner_ok &= sealed && hand_open_ok(g_rec, l, p.hs.c2s, p.hs.hid, 0x43, p.b.recv_seq, g_pt_in,
+                                               sizes[i]);
+            size_t got = 0;
+            all_ok &= sealed && open_from(&p.b, g_rec, l, &got) == SESSION_OK && got == sizes[i];
+        }
+        sp_close(&p);
+    }
+    CHECK(all_ok, "v2-6 P1: record length is roundup(2 + content, bucket) + 25 for 13 content sizes x all six "
+                  "buckets, agreeing with session_sealed_len and SESSION_RECORD_LEN");
+    CHECK(inner_ok, "v2-6 P1: ...and each inner is exactly BE16(content_len) || content || zero padding");
+}
+
+static void test_p2_bucket_one(void) {
+    static const size_t sizes[6] = {0, 1, 64, 1024, 65533, SESSION_MAX_CONTENT_BYTES};
+    sp_t p;
+    p_open_pair(&p, 1u, 1u);
+    int ok = 1;
+    for (size_t i = 0; i < 6u; i++) {
+        size_t l = 0;
+        size_t got = 0;
+        ok &= seal_into(&p.a, sizes[i], g_rec, &l) == SESSION_OK &&
+              l == sizes[i] + SESSION_CONTENT_LEN_BYTES + SESSION_OVERHEAD_BYTES &&
+              open_from(&p.b, g_rec, l, &got) == SESSION_OK && got == sizes[i];
+    }
+    CHECK(ok, "v2-6 P2: bucket 1 adds no padding at all -- every record is content + 27 bytes");
+    sp_close(&p);
+}
+
+static void test_p3_bucket_independence(void) {
+    static const size_t sizes[5] = {0, 1, 100, 4095, 5000};
+    int ok = 1;
+    for (size_t i = 0; i < 5u; i++) {
+        sp_t p;
+        size_t l = 0;
+        size_t got = 0;
+        /* A bucket-1 sender talking to a bucket-4096 receiver, and back. */
+        p_open_pair(&p, 1u, SESSION_PAD_BUCKET_MAX);
+        ok &= seal_into(&p.a, sizes[i], g_rec, &l) == SESSION_OK && l == sizes[i] + 27u &&
+              open_from(&p.b, g_rec, l, &got) == SESSION_OK && got == sizes[i];
+        ok &= seal_into(&p.b, sizes[i], g_rec2, &l) == SESSION_OK &&
+              l == p_roundup(sizes[i], SESSION_PAD_BUCKET_MAX) + SESSION_OVERHEAD_BYTES &&
+              open_from(&p.a, g_rec2, l, &got) == SESSION_OK && got == sizes[i];
+        sp_close(&p);
+    }
+    CHECK(ok, "v2-6 P3: a receiver requires nothing of the sender's bucket -- bucket 1 <-> bucket 4096 "
+              "interoperate in both directions at every size");
+}
+
+/* Seals raw inner bytes to p->b under the c2s key at its next expected seq. */
+static void p_seal_inner(sp_t *p, const uint8_t *inner, size_t inner_len, uint8_t *rec, size_t *rec_len) {
+    uint8_t nonce[12];
+    uint8_t ad[47];
+    const uint64_t seq = p->b.recv_seq;
+    hand_nonce(nonce, seq);
+    hand_ad(ad, p->hs.hid, 0x43, 0x04, seq);
+    hand_record_raw_inner(rec, rec_len, p->hs.c2s, ad, nonce, seq, inner, inner_len);
+}
+
+static void test_p4_malformed_inner(void) {
+    static uint8_t inner[512];
+
+    /* (a) content_len one past what the inner can hold. */
+    {
+        sp_t p;
+        size_t l = 0;
+        size_t got = 0;
+        p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+        memset(inner, 0, 64);
+        inner[0] = 0x00;
+        inner[1] = 63; /* 63 > 64 - 2 */
+        p_seal_inner(&p, inner, 64, g_rec, &l);
+        memset(g_pt_out, 0xAA, 64);
+        CHECK(open_from(&p.b, g_rec, l, &got) == SESSION_ERR_MALFORMED &&
+                  session_get_state(&p.b) == SESSION_STATE_FAILED && sodium_is_zero(g_pt_out, 64),
+              "v2-6 P4(a): an authentic inner whose content_len exceeds it -> MALFORMED, FAILED, buffer zeroed");
+        check_dead(&p.b, SESSION_STATE_FAILED, "content_len past the inner");
+        sp_close(&p);
+    }
+
+    /* (b),(c) nonzero padding, first and last byte. */
+    static const struct {
+        int last;
+        const char *what;
+    } pad_cases[2] = {
+        {0, "v2-6 P4(b): the FIRST padding byte nonzero -> MALFORMED, FAILED, buffer zeroed"},
+        {1, "v2-6 P4(c): the LAST padding byte nonzero -> MALFORMED, FAILED, buffer zeroed"},
+    };
+    for (size_t i = 0; i < 2u; i++) {
+        sp_t p;
+        size_t l = 0;
+        size_t got = 0;
+        p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+        memset(inner, 0, 64);
+        inner[1] = 10; /* content_len 10, padding is [12, 64) */
+        memcpy(inner + 2, g_pt_in, 10);
+        inner[pad_cases[i].last ? 63 : 12] = 0x01;
+        p_seal_inner(&p, inner, 64, g_rec, &l);
+        memset(g_pt_out, 0xAA, 64);
+        CHECK(open_from(&p.b, g_rec, l, &got) == SESSION_ERR_MALFORMED &&
+                  session_get_state(&p.b) == SESSION_STATE_FAILED && sodium_is_zero(g_pt_out, 64),
+              pad_cases[i].what);
+        sp_close(&p);
+    }
+
+    /* (d) no padding at all, and (e) the smallest legal inner. */
+    {
+        sp_t p;
+        size_t l = 0;
+        size_t got = 0;
+        p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+        memset(inner, 0, 64);
+        inner[1] = 62; /* content_len == inner - 2: legal, zero padding bytes */
+        memcpy(inner + 2, g_pt_in, 62);
+        p_seal_inner(&p, inner, 64, g_rec, &l);
+        CHECK(open_from(&p.b, g_rec, l, &got) == SESSION_OK && got == 62 &&
+                  memcmp(g_pt_out, g_pt_in, 62) == 0,
+              "v2-6 P4(d): content_len == inner_len - 2 (no padding) is legal");
+        inner[0] = 0;
+        inner[1] = 0;
+        p_seal_inner(&p, inner, 2, g_rec, &l);
+        CHECK(l == SESSION_MIN_RECORD_BYTES && open_from(&p.b, g_rec, l, &got) == SESSION_OK && got == 0,
+              "v2-6 P4(e): a 2-byte inner (empty content) is legal and yields a 27-byte record");
+        sp_close(&p);
+    }
+
+    /* (f) a 26-byte record is rejected on length, before any AEAD work. */
+    {
+        sp_t p;
+        size_t l = 0;
+        size_t got = 0;
+        p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+        seal_into(&p.a, 40, g_rec, &l);
+        const uint64_t before = p.b.recv_seq;
+        CHECK(open_from(&p.b, g_rec, 26u, &got) == SESSION_ERR_MALFORMED && p.b.recv_seq == before,
+              "v2-6 P4(f): a 26-byte record -> MALFORMED (length, not AUTH), recv_seq unchanged");
+        sp_close(&p);
+    }
+}
+
+static void test_p5_buffer_hygiene(void) {
+    sp_t p;
+    size_t l = 0;
+    size_t got = 0;
+    p_open_pair(&p, SESSION_PAD_BUCKET_MAX, SESSION_PAD_BUCKET_MAX);
+    memset(g_pt_out, 0xAA, 4096);
+    seal_into(&p.a, 10, g_rec, &l);
+    const int opened = open_from(&p.b, g_rec, l, &got) == SESSION_OK;
+    const size_t inner = l - SESSION_OVERHEAD_BYTES;
+    CHECK(opened && got == 10 && memcmp(g_pt_out, g_pt_in, 10) == 0,
+          "v2-6 P5: the content lands at offset 0 with the length prefix stripped");
+    CHECK(opened && sodium_is_zero(g_pt_out + 10, inner - 10),
+          "v2-6 P5: ...and everything after it is zeroed -- no stale prefix or padding in the caller's buffer");
+    sp_close(&p);
+}
+
+static void test_p6_bounds(void) {
+    sp_t p;
+    size_t l = 0;
+    size_t got = 0;
+
+    p_open_pair(&p, 1u, 1u);
+    CHECK(seal_into(&p.a, 0, g_rec, &l) == SESSION_OK && l == 27u,
+          "v2-6 P6: empty content at bucket 1 -> a 27-byte record (the frame table's minimum)");
+    sp_close(&p);
+
+    p_open_pair(&p, SESSION_PAD_BUCKET_MAX, SESSION_PAD_BUCKET_MAX);
+    CHECK(seal_into(&p.a, 0, g_rec, &l) == SESSION_OK && l == 4121u,
+          "v2-6 P6: empty content at bucket 4096 -> a 4121-byte record (the frame table's confirmation maximum)");
+    sp_close(&p);
+
+    int max_ok = 1;
+    for (size_t b = 0; b < 6u; b++) {
+        sp_t q;
+        p_open_pair(&q, P_BUCKETS[b], P_BUCKETS[b]);
+        max_ok &= seal_into(&q.a, SESSION_MAX_CONTENT_BYTES, g_rec, &l) == SESSION_OK &&
+                  l == SESSION_MAX_RECORD_BYTES &&
+                  open_from(&q.b, g_rec, l, &got) == SESSION_OK && got == SESSION_MAX_CONTENT_BYTES;
+        sp_close(&q);
+    }
+    CHECK(max_ok, "v2-6 P6: 65534 bytes of content seal to exactly 65561 bytes at EVERY bucket (rounding never "
+                  "exceeds the inner bound)");
+
+    p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+    l = 777;
+    CHECK(session_seal(&p.a, g_pt_in, SESSION_MAX_CONTENT_BYTES + 1u, g_rec, sizeof(g_rec), &l) ==
+              SESSION_ERR_INVALID_ARG &&
+              l == 777 && p.a.send_seq == 0,
+          "v2-6 P6: 65535 bytes of content -> INVALID_ARG, nothing written, no seq consumed");
+    CHECK(session_sealed_len(&p.a, SESSION_MAX_CONTENT_BYTES + 1u) == 0 && session_sealed_len(NULL, 0) == 0,
+          "v2-6 P6: session_sealed_len reports 0 for content it cannot seal");
+    sp_close(&p);
+}
+
 int main(void) {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
      * later check crashes the process. */
@@ -1174,6 +1514,12 @@ int main(void) {
     test_s25_no_reinit();
     test_s26_wipe_idempotent();
     test_s27_kem_disagreement();
+    test_p1_exact_lengths();
+    test_p2_bucket_one();
+    test_p3_bucket_independence();
+    test_p4_malformed_inner();
+    test_p5_buffer_hygiene();
+    test_p6_bounds();
 
     handshake_pending_store_wipe(&g_store);
     keystore_wipe(&g_ks);

@@ -14,8 +14,17 @@
  * Selector bits: 0 receiver (0 = responder receives c2s, 1 = initiator
  * receives s2c); 1 plaintext capacity one byte short; 2 tightened limits
  * (reject after 2 records); 3-4 clock (0 normal, 1 at the hard age limit,
- * 2 unreadable UINT64_MAX, 3 normal). Payload: up to 8 records, each with a
- * 4-byte big-endian length prefix.
+ * 2 unreadable UINT64_MAX, 3 normal); 5 INNER MODE. Payload: up to 8
+ * records, each with a 4-byte big-endian length prefix.
+ *
+ * INNER MODE (bit 5) is what makes the receiver's padding rules reachable
+ * at all: a random record fails the AEAD long before its inner is parsed.
+ * In this mode each chunk IS the inner plaintext, which the harness seals
+ * itself under the receiver's key at the expected seq, so every input is
+ * authentic and the oracle predicts purely from the inner bytes:
+ * inner < 2, content_len > inner - 2, or any nonzero padding byte must be
+ * MALFORMED and terminal; anything else must be OK with exactly that
+ * content.
  *
  * Oracle: a reference model predicts every status, the resulting state,
  * recv_seq, confirmation and key-block wiping. "OK iff the record is the
@@ -24,6 +33,7 @@
 
 #include "fuzz_common.h"
 
+#include "aead.h"
 #include "secure_mem.h"
 
 #include <sodium.h>
@@ -37,13 +47,14 @@ const size_t fuzz_target_max_len = 140000;
 #define N_REC 4
 enum { RX_RESPONDER = 0, RX_INITIATOR = 1 };
 
-static const size_t PT_LEN[N_REC] = {0, 1, 64, 65536};
+static const size_t PT_LEN[N_REC] = {0, 1, 64, SESSION_MAX_CONTENT_BYTES};
 static uint8_t *g_pt[N_REC];
 static uint8_t *g_rec[2][N_REC]; /* g_rec[rx][i]: genuine record i arriving at receiver rx */
 static size_t g_rec_len[2][N_REC];
 static session_t g_tpl[2];
 static uint8_t g_tpl_keys[2][2 * KEX_SESSION_KEY_BYTES];
 static uint8_t *g_keyblock; /* secure_mem, the clone's key block */
+static uint8_t *g_inner_rec; /* inner mode: one harness-sealed record */
 static uint8_t *g_out;      /* plaintext output buffer */
 
 int fuzz_target_command(int argc, char **argv) {
@@ -68,6 +79,7 @@ static void cleanup(void) {
     sodium_memzero(g_tpl, sizeof(g_tpl));
     secure_mem_free(g_keyblock, 2 * KEX_SESSION_KEY_BYTES);
     free(g_out);
+    free(g_inner_rec);
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
@@ -118,17 +130,17 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 
     for (int i = 0; i < N_REC; i++) {
         g_pt[i] = malloc(PT_LEN[i] ? PT_LEN[i] : 1);
-        g_rec[0][i] = malloc(PT_LEN[i] + SESSION_OVERHEAD_BYTES);
-        g_rec[1][i] = malloc(PT_LEN[i] + SESSION_OVERHEAD_BYTES);
+        g_rec[0][i] = malloc(SESSION_MAX_RECORD_BYTES);
+        g_rec[1][i] = malloc(SESSION_MAX_RECORD_BYTES);
         FUZZ_ASSERT(g_pt[i] && g_rec[0][i] && g_rec[1][i], "fixture: allocation");
         for (size_t j = 0; j < PT_LEN[i]; j++) {
             g_pt[i][j] = (uint8_t)(i * 31 + j);
         }
         /* c2s records (sealed by the initiator) arrive at the responder. */
         FUZZ_ASSERT(session_seal(&si, PT_LEN[i] ? g_pt[i] : NULL, PT_LEN[i], g_rec[RX_RESPONDER][i],
-                                 PT_LEN[i] + SESSION_OVERHEAD_BYTES, &g_rec_len[RX_RESPONDER][i]) == SESSION_OK &&
+                                 SESSION_MAX_RECORD_BYTES, &g_rec_len[RX_RESPONDER][i]) == SESSION_OK &&
                         session_seal(&sr, PT_LEN[i] ? g_pt[i] : NULL, PT_LEN[i], g_rec[RX_INITIATOR][i],
-                                     PT_LEN[i] + SESSION_OVERHEAD_BYTES, &g_rec_len[RX_INITIATOR][i]) == SESSION_OK,
+                                     SESSION_MAX_RECORD_BYTES, &g_rec_len[RX_INITIATOR][i]) == SESSION_OK,
                     "fixture: genuine records");
     }
     session_wipe(&si);
@@ -139,7 +151,8 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 
     g_keyblock = secure_mem_alloc(2 * KEX_SESSION_KEY_BYTES);
     g_out = malloc(SESSION_MAX_PLAINTEXT_BYTES);
-    FUZZ_ASSERT(g_keyblock != NULL && g_out != NULL, "fixture: buffers");
+    g_inner_rec = malloc(SESSION_MAX_RECORD_BYTES);
+    FUZZ_ASSERT(g_keyblock != NULL && g_out != NULL && g_inner_rec != NULL, "fixture: buffers");
     (void)atexit(cleanup);
 
     /* Start-up check: a clone accepts the genuine records like the real session. */
@@ -159,6 +172,41 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
     return 0;
 }
 
+/* ---- inner mode: seal arbitrary inner bytes under the receiver's key ----
+ *
+ * Built from the literal spec-v2 6.4.2 layout, not from session.c, so the
+ * harness can produce AUTHENTIC records carrying deliberately malformed
+ * inners -- the only way to reach the receiver's padding rules. */
+
+static void hb64(uint8_t *out, uint64_t v) {
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)(v >> (56 - 8 * i));
+    }
+}
+
+static size_t seal_inner(const session_t *s, uint64_t seq, const uint8_t *inner, size_t inner_len,
+                         uint8_t *rec) {
+    static const uint8_t label[20] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't', 'h',
+                                      '/', 'v', '2', '/', 'r', 'e', 'c', 'o', 'r', 'd'};
+    uint8_t nonce[AEAD_NONCE_BYTES];
+    uint8_t ad[SESSION_AD_BYTES];
+    size_t ct_len = 0;
+    memset(nonce, 0, 4);
+    hb64(nonce + 4, seq);
+    memcpy(ad, label, 20);
+    ad[20] = 0x00;
+    memcpy(ad + 21, s->handshake_id, WIRE_HANDSHAKE_ID_LEN);
+    ad[37] = s->recv_dir;
+    ad[38] = (uint8_t)SESSION_RECORD_TYPE;
+    hb64(ad + 39, seq);
+    rec[0] = (uint8_t)SESSION_RECORD_TYPE;
+    hb64(rec + 1, seq);
+    FUZZ_ASSERT(aead_encrypt(rec + SESSION_HEADER_BYTES, &ct_len, inner, inner_len, ad, sizeof(ad), nonce,
+                             s->keys + KEX_SESSION_KEY_BYTES) == 0,
+                "inner mode: sealing must succeed");
+    return SESSION_HEADER_BYTES + ct_len;
+}
+
 static uint64_t be64(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; i++) {
@@ -176,6 +224,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const int short_cap = (sel >> 1) & 1u;
     const int tight = (sel >> 2) & 1u;
     const unsigned clock_mode = (sel >> 3) & 3u;
+    const int inner_mode = (sel >> 5) & 1u;
     const uint8_t *p = NULL;
     size_t n = 0;
     fuzz_payload(data, size, &p, &n);
@@ -200,13 +249,24 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const uint8_t *c = NULL;
     size_t len = 0;
     while (fuzz_chunks_next(&chunks, &c, &len)) {
-        const size_t body = (len >= SESSION_OVERHEAD_BYTES) ? len - SESSION_OVERHEAD_BYTES : 0;
-        const size_t cap = (short_cap && len >= SESSION_OVERHEAD_BYTES && body > 0) ? body - 1u
-                                                                                    : SESSION_MAX_PLAINTEXT_BYTES;
+        /* In inner mode the chunk IS the inner plaintext: the harness seals
+         * it authentically at the seq the receiver expects, so the record
+         * always passes the AEAD and the inner rules are what decide. */
+        const uint8_t *inner = NULL;
+        size_t inner_len = 0;
+        if (inner_mode && m_state == SESSION_STATE_ACTIVE && len <= SESSION_MAX_PLAINTEXT_BYTES) {
+            inner = c;
+            inner_len = len;
+            len = seal_inner(&s, m_recv, inner, inner_len, g_inner_rec);
+            c = g_inner_rec;
+        }
+        const size_t body = (len >= SESSION_MIN_RECORD_BYTES) ? len - SESSION_OVERHEAD_BYTES : 0;
+        const size_t cap = (short_cap && body > 0) ? body - 1u : SESSION_MAX_PLAINTEXT_BYTES;
         if (body <= SESSION_MAX_PLAINTEXT_BYTES) {
             memset(g_out, 0xA5, body);
         }
         size_t pt_len = 777;
+        size_t inner_content_len = 0;
         const session_status_t st = session_open(&s, c, len, g_out, cap, &pt_len);
 
         /* ---- reference model ---- */
@@ -217,7 +277,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         } else if (expired) {
             want = SESSION_ERR_EXPIRED;
             m_state = SESSION_STATE_EXPIRED;
-        } else if (len < SESSION_OVERHEAD_BYTES || len > SESSION_MAX_RECORD_BYTES || c[0] != SESSION_RECORD_TYPE) {
+        } else if (len < SESSION_MIN_RECORD_BYTES || len > SESSION_MAX_RECORD_BYTES ||
+                   c[0] != SESSION_RECORD_TYPE) {
             want = SESSION_ERR_MALFORMED;
             m_state = SESSION_STATE_FAILED;
         } else if (cap < body) {
@@ -233,6 +294,27 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             } else if (seq >= s.limits.reject_after_messages) {
                 want = SESSION_ERR_LIMIT;
                 m_state = SESSION_STATE_FAILED;
+            } else if (inner != NULL) {
+                /* Authentic by construction: the verdict is the inner's. */
+                if (inner_len < SESSION_CONTENT_LEN_BYTES) {
+                    /* Unreachable: such a record is 25 or 26 bytes and was
+                     * already rejected on length above. */
+                    want = SESSION_ERR_MALFORMED;
+                    m_state = SESSION_STATE_FAILED;
+                } else {
+                    const size_t clen = ((size_t)inner[0] << 8) | (size_t)inner[1];
+                    int pad_ok = clen <= inner_len - SESSION_CONTENT_LEN_BYTES;
+                    for (size_t i = SESSION_CONTENT_LEN_BYTES + clen; pad_ok && i < inner_len; i++) {
+                        pad_ok = (inner[i] == 0x00);
+                    }
+                    if (pad_ok) {
+                        want = SESSION_OK;
+                        inner_content_len = clen;
+                    } else {
+                        want = SESSION_ERR_MALFORMED;
+                        m_state = SESSION_STATE_FAILED;
+                    }
+                }
             } else {
                 genuine = m_recv < N_REC && len == g_rec_len[rx][m_recv] && memcmp(c, g_rec[rx][m_recv], len) == 0;
                 if (genuine) {
@@ -245,13 +327,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         FUZZ_ASSERT(st == want, "session_open status disagrees with the reference model");
         if (want == SESSION_OK) {
-            FUZZ_ASSERT(pt_len == PT_LEN[m_recv] && (pt_len == 0 || memcmp(g_out, g_pt[m_recv], pt_len) == 0),
-                        "OK must yield exactly the genuine plaintext");
+            if (inner != NULL) {
+                FUZZ_ASSERT(pt_len == inner_content_len &&
+                                (pt_len == 0 ||
+                                 memcmp(g_out, inner + SESSION_CONTENT_LEN_BYTES, pt_len) == 0),
+                            "inner mode: OK must yield exactly the content the inner declared");
+                FUZZ_ASSERT(sodium_is_zero(g_out + pt_len, body - pt_len),
+                            "inner mode: nothing after the content may be left in the caller's buffer");
+            } else {
+                FUZZ_ASSERT(pt_len == PT_LEN[m_recv] && (pt_len == 0 || memcmp(g_out, g_pt[m_recv], pt_len) == 0),
+                            "OK must yield exactly the genuine plaintext");
+            }
             m_recv++;
             m_confirmed = 1;
         }
-        if (want == SESSION_ERR_AUTH) {
-            FUZZ_ASSERT(sodium_is_zero(g_out, body), "AUTH failure must zero the plaintext region");
+        /* Only failures that happen AFTER decryption have written anything
+         * to zero: a record rejected on length or type never touches the
+         * caller's buffer. */
+        if (want == SESSION_ERR_AUTH || (want == SESSION_ERR_MALFORMED && inner != NULL)) {
+            FUZZ_ASSERT(body == 0 || sodium_is_zero(g_out, body),
+                        "a record rejected after decryption must zero the plaintext region");
         }
         FUZZ_ASSERT(s.state == m_state && s.recv_seq == m_recv, "state and recv_seq (white-box)");
         if (m_state != SESSION_STATE_ACTIVE) {
@@ -326,4 +421,46 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     memset(tmp + 1, 0, 8);
     tmp[4] = 0x02; /* seq = 2^33 */
     emit_recs(emit, ctx, "seq-2pow33", 0, t1, &l[0], 1);
+
+    /* Inner mode (selector bit 5 = 32): the chunk is the inner plaintext,
+     * so these pin the receiver's padding rules at their boundaries. */
+    {
+        static uint8_t in[300];
+        const uint8_t *i1[1] = {in};
+        size_t il = 0;
+
+        memset(in, 0, sizeof(in));
+        in[1] = 10; /* content_len 10, the rest zero padding */
+        il = 64;
+        emit_recs(emit, ctx, "inner-padded-ok", 32, i1, &il, 1);
+
+        in[1] = 63; /* 63 > 64 - 2 */
+        emit_recs(emit, ctx, "inner-content-len-over", 32, i1, &il, 1);
+
+        memset(in, 0, sizeof(in));
+        in[1] = 10;
+        in[12] = 0x01; /* first padding byte */
+        emit_recs(emit, ctx, "inner-pad-first-nonzero", 32, i1, &il, 1);
+
+        memset(in, 0, sizeof(in));
+        in[1] = 10;
+        in[63] = 0x01; /* last padding byte */
+        emit_recs(emit, ctx, "inner-pad-last-nonzero", 32, i1, &il, 1);
+
+        memset(in, 0, sizeof(in));
+        il = 2; /* the smallest legal inner: empty content */
+        emit_recs(emit, ctx, "inner-empty", 32, i1, &il, 1);
+
+        il = 1; /* one byte: the record is 26 bytes, rejected on length */
+        emit_recs(emit, ctx, "inner-len-1", 32, i1, &il, 1);
+
+        memset(in, 0, sizeof(in));
+        in[1] = 62; /* content_len == inner - 2: legal, no padding */
+        il = 64;
+        emit_recs(emit, ctx, "inner-no-padding", 32, i1, &il, 1);
+    }
+
+    /* A 26-byte record: one below the new minimum. */
+    size_t l26 = 26;
+    emit_recs(emit, ctx, "length-26", 0, &r[0], &l26, 1);
 }

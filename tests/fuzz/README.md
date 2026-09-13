@@ -6,8 +6,8 @@ Five targets cover every attacker-controlled input:
 |---|---|---|
 | `fuzz_wire` | v2 wire decoders, transcript helpers | one candidate wire message |
 | `fuzz_handshake` | v2 state machine (S0 ClientHello **and encapsulation**, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
-| `fuzz_session` | Step 5 `session_open` on a valid session | selector (receiver, capacity, limits, clock) + up to 8 records with 4-byte length prefixes |
-| `fuzz_frame` | Step 6 `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
+| `fuzz_session` | v2 `session_open` on a valid session, padding included | selector (receiver, capacity, limits, clock, **inner mode**) + up to 8 records with 4-byte length prefixes |
+| `fuzz_frame` | `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
 | `fuzz_keys` | Step 6 demo key-file loaders | selector (mode, expected id) + public-key file bytes or an identity-mode mutation program |
 
 Each harness checks **properties, not just crashes**. An independent
@@ -29,6 +29,21 @@ trust. Seeds pin the boundary at 3328 (must pass) and 3329 (must fail).
 Every scenario also asserts that a terminal failure leaves no hybrid secret
 behind, and that a *retryable* ClientAuth failure keeps `ss_kem` — the
 handshake is still live and the next message needs it.
+
+`fuzz_session`'s **inner mode** (selector bit 5) exists because the
+receiver's padding rules sit *behind* the AEAD: a random record fails
+authentication long before its inner plaintext is parsed, so those rules
+would never be reached by fuzzing raw records. In inner mode the chunk **is**
+the inner plaintext, and the harness seals it itself — with its own literal
+`mldsa-auth/v2/record` label, nonce and AD — under the receiver's key at the
+sequence number the receiver expects. Every such record is authentic by
+construction, so the oracle predicts purely from the inner bytes: an inner
+under 2 bytes, a `content_len` larger than the inner allows, or any nonzero
+padding byte must be terminal, and anything else must yield exactly the
+declared content with a zeroed tail. Seeds pin each boundary.
+
+`fuzz_frame`'s confirmation state is a **range** (27..4121), not a fixed
+length: the client cannot know the responder's pad bucket (spec-v2 §6.5.1).
 
 **`fuzz_target_max_len` must exceed the largest message the target can
 see** (`fuzz_wire`: 8192, above the 4545-byte v2 `ServerHello`), and

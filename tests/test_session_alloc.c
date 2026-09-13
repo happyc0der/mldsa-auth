@@ -126,12 +126,22 @@ static uint8_t g_pt_in[SESSION_MAX_PLAINTEXT_BYTES];
 static uint8_t g_pt_out[SESSION_MAX_PLAINTEXT_BYTES];
 static uint8_t g_rec[SESSION_MAX_RECORD_BYTES];
 
+/* The padded paths are the ones that must be proven allocation-free, so the
+ * measured window runs on two pairs: no padding at all, and the largest
+ * bucket (which pads every record below 4096 bytes). */
+static session_limits_t limits_with_bucket(uint32_t bucket) {
+    session_limits_t l;
+    session_default_limits(&l);
+    l.pad_bucket = bucket;
+    return l;
+}
+
 #define ROUNDS 1000
 
 /* The steady state: seal/open in both directions at every benchmark size,
  * plus the two queries. Returns 1 iff every record round-tripped. */
 static int steady_state(session_t *a, session_t *b) {
-    static const size_t sizes[] = {0, 64, 1024, SESSION_MAX_PLAINTEXT_BYTES};
+    static const size_t sizes[] = {0, 64, 1024, SESSION_MAX_CONTENT_BYTES};
     int ok = 1;
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
         for (int r = 0; r < ROUNDS; r++) {
@@ -222,11 +232,13 @@ int main(void) {
     session_t b;
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
+    const session_limits_t lim_nopad = limits_with_bucket(SESSION_PAD_BUCKET_MIN);
+    const session_limits_t lim_maxpad = limits_with_bucket(SESSION_PAD_BUCKET_MAX);
     size_t a0 = counting_secure_mem_allocs;
-    const session_status_t st_a = session_init_from_handshake(&a, &h1.ini, NULL, NULL, NULL);
+    const session_status_t st_a = session_init_from_handshake(&a, &h1.ini, &lim_nopad, NULL, NULL);
     const size_t init_a_allocs = counting_secure_mem_allocs - a0;
     a0 = counting_secure_mem_allocs;
-    const session_status_t st_b = session_init_from_handshake(&b, &h1.res, NULL, NULL, NULL);
+    const session_status_t st_b = session_init_from_handshake(&b, &h1.res, &lim_nopad, NULL, NULL);
     const size_t init_b_allocs = counting_secure_mem_allocs - a0;
     CHECK(st_a == SESSION_OK && init_a_allocs == 1 && st_b == SESSION_OK && init_b_allocs == 1,
           "S23: session_init_from_handshake performs exactly one secure allocation per session "
@@ -241,9 +253,26 @@ int main(void) {
     }
 
     /* --- Measured window: steady state plus one terminal failure path. */
+    /* A second pair at the largest bucket: its records are padded, so the
+     * padding paths are inside the measured window too. */
+    hs_t hp;
+    hs_establish(&hp);
+    session_t pa;
+    session_t pb;
+    memset(&pa, 0, sizeof(pa));
+    memset(&pb, 0, sizeof(pb));
+    if (session_init_from_handshake(&pa, &hp.ini, &lim_maxpad, NULL, NULL) != SESSION_OK ||
+        session_init_from_handshake(&pb, &hp.res, &lim_maxpad, NULL, NULL) != SESSION_OK) {
+        fatal("padded session pair");
+    }
+    if (session_seal(&pb, NULL, 0, g_rec, sizeof(g_rec), &l) != SESSION_OK ||
+        session_open(&pa, g_rec, l, g_pt_out, sizeof(g_pt_out), &got) != SESSION_OK) {
+        fatal("padded confirmation record");
+    }
+
     a0 = counting_secure_mem_allocs;
     size_t f0 = counting_secure_mem_frees;
-    const int round_trips_ok = steady_state(&a, &b);
+    const int round_trips_ok = steady_state(&a, &b) && steady_state(&pa, &pb);
     session_status_t st_fail = SESSION_ERR_INTERNAL;
     if (session_seal(&a, g_pt_in, 64, g_rec, sizeof(g_rec), &l) == SESSION_OK) {
         g_rec[l - 1] ^= 0x01;
@@ -252,14 +281,19 @@ int main(void) {
     const size_t window_allocs = counting_secure_mem_allocs - a0;
     const size_t window_frees = counting_secure_mem_frees - f0;
 
-    CHECK(round_trips_ok, "S23: 8000 seal/open pairs (1000 x {0, 64, 1024, 65536} B, both directions) "
-                          "all round-tripped, with rekey_due/is_peer_confirmed queried every round");
+    CHECK(round_trips_ok, "S23: 16000 seal/open pairs (1000 x {0, 64, 1024, 65534} B, both directions, at pad "
+                          "buckets 1 and 4096) all round-tripped, with rekey_due/is_peer_confirmed queried "
+                          "every round");
     CHECK(st_fail == SESSION_ERR_AUTH, "S23: the measured window includes one terminal AUTH failure");
     CHECK(window_allocs == 0 && window_frees == 0,
           "S23: steady-state seal/open/rekey_due/is_peer_confirmed and a terminal failure: "
           "0 secure allocations, 0 secure frees");
 
     /* --- Teardown counts. */
+    session_wipe(&pa);
+    session_wipe(&pb);
+    hs_wipe(&hp);
+
     f0 = counting_secure_mem_frees;
     session_wipe(&a);
     const size_t wipe1 = counting_secure_mem_frees - f0;

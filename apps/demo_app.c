@@ -14,8 +14,8 @@
 #include <string.h>
 #include <unistd.h>
 
-_Static_assert(DEMO_MAX_MESSAGE_BYTES + 1u == SESSION_MAX_PLAINTEXT_BYTES,
-               "op byte + largest message = largest record plaintext");
+_Static_assert(DEMO_MAX_MESSAGE_BYTES + 1u == SESSION_MAX_CONTENT_BYTES,
+               "op byte + largest message = largest record content");
 
 #define ID_TEXT_MAX (4u * WIRE_ID_MAX_LEN + 1u)
 
@@ -451,7 +451,7 @@ demo_status_t demo_client_run(const demo_config_t *cfg, net_conn_t *conn, const 
     /* 4. Exactly one empty record must arrive and authenticate before the
      *    peer is treated as confirmed and before any application data. */
     r.stage = DEMO_STAGE_CONFIRM;
-    if (recv_record(&sess, conn, buf, FRAME_CONFIRM_LEN, FRAME_CONFIRM_LEN, hs_deadline, &pt_len, &r) != DEMO_OK) {
+    if (recv_record(&sess, conn, buf, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, hs_deadline, &pt_len, &r) != DEMO_OK) {
         goto done;
     }
     if (pt_len != 0) {

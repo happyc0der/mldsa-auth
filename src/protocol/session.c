@@ -27,6 +27,24 @@ _Static_assert(SESSION_REKEY_AFTER_MESSAGES <= SESSION_REJECT_AFTER_MESSAGES &&
                "soft limits must not exceed hard limits");
 _Static_assert(SESSION_REJECT_AFTER_MESSAGES < UINT64_MAX, "seq + 1 can never wrap");
 
+/* The padded record bounds of spec-v2 6.4.1 and the frame table of 6.5.1,
+ * pinned to the sizing macros rather than restated as literals elsewhere. */
+_Static_assert(SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MIN) == 27u, "smallest record: empty, bucket 1");
+_Static_assert(SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MIN) == SESSION_MIN_RECORD_BYTES, "min record");
+_Static_assert(SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MAX) == 4121u,
+               "largest confirmation record: empty content, bucket 4096 (spec-v2 6.5.1)");
+_Static_assert(SESSION_RECORD_LEN(SESSION_MAX_CONTENT_BYTES, SESSION_PAD_BUCKET_MIN) ==
+                   SESSION_MAX_RECORD_BYTES,
+               "largest content fills the record bound exactly");
+_Static_assert(SESSION_RECORD_LEN(SESSION_MAX_CONTENT_BYTES, SESSION_PAD_BUCKET_MAX) ==
+                   SESSION_MAX_RECORD_BYTES,
+               "...at every bucket: rounding never exceeds the inner bound");
+_Static_assert(SESSION_MAX_PLAINTEXT_BYTES % SESSION_PAD_BUCKET_MAX == 0u &&
+                   SESSION_MAX_PLAINTEXT_BYTES % 1024u == 0u && SESSION_MAX_PLAINTEXT_BYTES % 256u == 0u &&
+                   SESSION_MAX_PLAINTEXT_BYTES % 64u == 0u && SESSION_MAX_PLAINTEXT_BYTES % 16u == 0u,
+               "every allowed bucket divides the inner bound");
+_Static_assert(SESSION_MAX_CONTENT_BYTES <= UINT16_MAX, "content_len is a 2-byte field");
+
 /* ============================================================================
  * Setup and teardown -- the ONLY place the session allocates or frees.
  * ========================================================================= */
@@ -39,15 +57,24 @@ void session_default_limits(session_limits_t *out) {
     out->reject_after_messages = SESSION_REJECT_AFTER_MESSAGES;
     out->rekey_after_ms = SESSION_REKEY_AFTER_MS;
     out->reject_after_ms = SESSION_REJECT_AFTER_MS;
+    out->pad_bucket = SESSION_PAD_BUCKET_DEFAULT;
 }
 
-/* Tighten-only: 1 <= soft <= hard <= default, for both counters. */
+/* Exactly the set spec-v2 6.4.1 permits: no other value, 0 included, is
+ * treated as "use the default". */
+static bool pad_bucket_valid(uint32_t bucket) {
+    return bucket == 1u || bucket == 16u || bucket == 64u || bucket == 256u || bucket == 1024u ||
+           bucket == 4096u;
+}
+
+/* Tighten-only: 1 <= soft <= hard <= default, for both counters. The pad
+ * bucket is not an ordered limit -- it is validated against its set. */
 static bool limits_valid(const session_limits_t *l) {
     return l->rekey_after_messages >= 1u && l->rekey_after_messages <= l->reject_after_messages &&
            l->reject_after_messages <= SESSION_REJECT_AFTER_MESSAGES &&
            l->rekey_after_messages <= SESSION_REKEY_AFTER_MESSAGES && l->rekey_after_ms >= 1u &&
            l->rekey_after_ms <= l->reject_after_ms && l->reject_after_ms <= SESSION_REJECT_AFTER_MS &&
-           l->rekey_after_ms <= SESSION_REKEY_AFTER_MS;
+           l->rekey_after_ms <= SESSION_REKEY_AFTER_MS && pad_bucket_valid(l->pad_bucket);
 }
 
 session_status_t session_init_from_handshake(session_t *s, handshake_ctx_t *hs,
@@ -190,6 +217,28 @@ static void build_ad(uint8_t ad[SESSION_AD_BYTES], const session_t *s, uint8_t d
     store_be64(ad + off, seq);
 }
 
+static void store_be16(uint8_t out[2], uint16_t v) {
+    out[0] = (uint8_t)(v >> 8);
+    out[1] = (uint8_t)v;
+}
+
+static uint16_t load_be16(const uint8_t in[2]) {
+    return (uint16_t)(((uint16_t)in[0] << 8) | (uint16_t)in[1]);
+}
+
+/* Padded inner length for a content length under a given bucket. */
+static size_t inner_len_for(size_t content_len, uint32_t bucket) {
+    const size_t b = (size_t)bucket;
+    return ((content_len + SESSION_CONTENT_LEN_BYTES + b - 1u) / b) * b;
+}
+
+size_t session_sealed_len(const session_t *s, size_t content_len) {
+    if (s == NULL || content_len > SESSION_MAX_CONTENT_BYTES || !pad_bucket_valid(s->limits.pad_bucket)) {
+        return 0;
+    }
+    return inner_len_for(content_len, s->limits.pad_bucket) + SESSION_OVERHEAD_BYTES;
+}
+
 static bool ranges_overlap(const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len) {
     if (a_len == 0 || b_len == 0) {
         return false;
@@ -202,15 +251,25 @@ static bool ranges_overlap(const uint8_t *a, size_t a_len, const uint8_t *b, siz
 session_status_t session_seal(session_t *s, const uint8_t *pt, size_t pt_len, uint8_t *out,
                               size_t out_cap, size_t *out_len) {
     if (s == NULL || out == NULL || out_len == NULL || (pt == NULL && pt_len != 0) ||
-        pt_len > SESSION_MAX_PLAINTEXT_BYTES) {
+        pt_len > SESSION_MAX_CONTENT_BYTES) {
         return SESSION_ERR_INVALID_ARG;
     }
-    const size_t need = pt_len + SESSION_OVERHEAD_BYTES;
-    if (out_cap < need || ranges_overlap(pt, pt_len, out, need)) {
-        return SESSION_ERR_INVALID_ARG;
-    }
+    /* State is checked BEFORE the capacity, because the required capacity now
+     * depends on the pad bucket, and a non-ACTIVE session has no meaningful
+     * one (an EMPTY session's limits are all zero). "Not ACTIVE" is the
+     * honest answer there, not "bad argument". */
     if (s->state != SESSION_STATE_ACTIVE) {
         return SESSION_ERR_UNEXPECTED_STATE;
+    }
+    if (!pad_bucket_valid(s->limits.pad_bucket)) {
+        return SESSION_ERR_INTERNAL; /* unreachable: limits_valid ran at init */
+    }
+    const size_t inner_len = inner_len_for(pt_len, s->limits.pad_bucket);
+    const size_t need = inner_len + SESSION_OVERHEAD_BYTES;
+    /* Still before the expiry check and the seq reservation: misuse never
+     * terminates a session and never consumes a sequence number. */
+    if (out_cap < need || ranges_overlap(pt, pt_len, out, need)) {
+        return SESSION_ERR_INVALID_ARG;
     }
     if (session_age_ms(s) >= s->limits.reject_after_ms ||
         s->send_seq >= s->limits.reject_after_messages) {
@@ -228,10 +287,24 @@ session_status_t session_seal(session_t *s, const uint8_t *pt, size_t pt_len, ui
 
     out[0] = (uint8_t)SESSION_RECORD_TYPE;
     store_be64(out + 1u, seq);
+
+    /* The padded inner is assembled IN PLACE, in the caller's buffer, and
+     * encrypted from there -- no scratch buffer, so no allocation. This is
+     * sound because libsodium's IETF ChaCha20-Poly1305 encrypts with
+     * crypto_stream_chacha20_ietf_xor_ic(c, m, ...), a same-index keystream
+     * XOR, and writes the tag only after the message: c == m is safe. */
+    uint8_t *inner = out + SESSION_HEADER_BYTES;
+    store_be16(inner, (uint16_t)pt_len);
+    if (pt_len != 0) {
+        memcpy(inner + SESSION_CONTENT_LEN_BYTES, pt, pt_len);
+    }
+    const size_t used = SESSION_CONTENT_LEN_BYTES + pt_len;
+    memset(inner + used, 0, inner_len - used); /* padding: zero by definition */
+
     size_t ct_len = 0;
-    if (aead_encrypt(out + SESSION_HEADER_BYTES, &ct_len, pt, pt_len, ad, sizeof(ad), nonce,
+    if (aead_encrypt(inner, &ct_len, inner, inner_len, ad, sizeof(ad), nonce,
                      s->keys + SEND_KEY_OFFSET) != 0 ||
-        ct_len != pt_len + AEAD_TAG_BYTES) {
+        ct_len != inner_len + AEAD_TAG_BYTES) {
         sodium_memzero(out, need);
         return terminate(s, SESSION_STATE_FAILED, SESSION_ERR_INTERNAL);
     }
@@ -256,11 +329,13 @@ session_status_t session_open(session_t *s, const uint8_t *rec, size_t rec_len, 
     if (session_age_ms(s) >= s->limits.reject_after_ms) {
         return terminate(s, SESSION_STATE_EXPIRED, SESSION_ERR_EXPIRED);
     }
-    if (rec_len < SESSION_OVERHEAD_BYTES || rec_len > SESSION_MAX_RECORD_BYTES ||
+    /* The minimum is now 27: a record too short to hold even a 2-byte inner
+     * is malformed before any AEAD work. */
+    if (rec_len < SESSION_MIN_RECORD_BYTES || rec_len > SESSION_MAX_RECORD_BYTES ||
         rec[0] != SESSION_RECORD_TYPE) {
         return terminate(s, SESSION_STATE_FAILED, SESSION_ERR_MALFORMED);
     }
-    const size_t body = rec_len - SESSION_OVERHEAD_BYTES;
+    const size_t body = rec_len - SESSION_OVERHEAD_BYTES; /* the inner length */
     if (pt_cap < body) {
         return SESSION_ERR_INVALID_ARG; /* nothing consumed: retry with a bigger buffer */
     }
@@ -292,13 +367,35 @@ session_status_t session_open(session_t *s, const uint8_t *rec, size_t rec_len, 
         return terminate(s, SESSION_STATE_FAILED, SESSION_ERR_AUTH);
     }
 
+    /* The inner is authentic; now it must be well formed (spec-v2 6.4.1).
+     * The receiver requires NOTHING of the inner length beyond its bounds --
+     * it does not know, and must not assume, the sender's bucket. */
+    const size_t content_len = load_be16(pt_out);
+    if (content_len > body - SESSION_CONTENT_LEN_BYTES) {
+        sodium_memzero(pt_out, body);
+        return terminate(s, SESSION_STATE_FAILED, SESSION_ERR_MALFORMED);
+    }
+    const size_t pad_len = body - SESSION_CONTENT_LEN_BYTES - content_len;
+    if (pad_len != 0 &&
+        sodium_is_zero(pt_out + SESSION_CONTENT_LEN_BYTES + content_len, pad_len) != 1) {
+        sodium_memzero(pt_out, body);
+        return terminate(s, SESSION_STATE_FAILED, SESSION_ERR_MALFORMED);
+    }
+
+    /* Hand back the content at offset 0 and leave nothing behind it: the
+     * length prefix and the padding must not linger in the caller's buffer. */
+    if (content_len != 0) {
+        memmove(pt_out, pt_out + SESSION_CONTENT_LEN_BYTES, content_len);
+    }
+    sodium_memzero(pt_out + content_len, body - content_len);
+
     s->recv_seq = seq + 1u;
     if (s->role == HANDSHAKE_ROLE_INITIATOR) {
         /* A valid responder->initiator record: the responder verified
          * ClientAuth and committed its keys. */
         s->peer_confirmed = true;
     }
-    *pt_len = got;
+    *pt_len = content_len;
     return SESSION_OK;
 }
 

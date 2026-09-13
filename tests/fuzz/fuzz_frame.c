@@ -38,7 +38,7 @@ static const struct {
     {1, FRAME_MAX_CLIENT_HELLO},
     {1, FRAME_MAX_SERVER_HELLO},
     {1, FRAME_MAX_CLIENT_AUTH},
-    {FRAME_CONFIRM_LEN, FRAME_CONFIRM_LEN},
+    {FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX},
     {FRAME_MIN_RECORD, FRAME_MAX_RECORD},
 };
 
@@ -182,7 +182,8 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_frame(emit, ctx, "client-hello", 0, (uint32_t)g->ch_len, g->ch, g->ch_len);
     emit_frame(emit, ctx, "server-hello", 1, (uint32_t)g->sh_len, g->sh, g->sh_len);
     emit_frame(emit, ctx, "client-auth", 2, (uint32_t)g->ca_len, g->ca, g->ca_len);
-    emit_frame(emit, ctx, "confirmation", 3, FRAME_CONFIRM_LEN, rec, FRAME_CONFIRM_LEN);
+    emit_frame(emit, ctx, "confirmation", 3, FRAME_CONFIRM_MIN, rec, FRAME_CONFIRM_MIN);
+    emit_frame(emit, ctx, "confirmation-padded", 3, FRAME_CONFIRM_MAX, rec, FRAME_CONFIRM_MAX);
     emit_frame(emit, ctx, "record", 4, 100, rec, 100);
     emit_frame(emit, ctx, "record-max", 4, FRAME_MAX_RECORD, rec, FRAME_MAX_RECORD);
     emit_frame(emit, ctx, "header-only", 1, (uint32_t)g->sh_len, NULL, 0);
@@ -190,8 +191,8 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_frame(emit, ctx, "ch-147", 0, FRAME_MAX_CLIENT_HELLO + 1u, rec, 8);
     emit_frame(emit, ctx, "sh-3458", 1, FRAME_MAX_SERVER_HELLO + 1u, rec, 8);
     emit_frame(emit, ctx, "ca-3329", 2, FRAME_MAX_CLIENT_AUTH + 1u, rec, 8);
-    emit_frame(emit, ctx, "confirm-24", 3, FRAME_CONFIRM_LEN - 1u, rec, 24);
-    emit_frame(emit, ctx, "confirm-26", 3, FRAME_CONFIRM_LEN + 1u, rec, 26);
+    emit_frame(emit, ctx, "confirm-26", 3, FRAME_CONFIRM_MIN - 1u, rec, 26);
+    emit_frame(emit, ctx, "confirm-4122", 3, FRAME_CONFIRM_MAX + 1u, rec, 32);
     emit_frame(emit, ctx, "record-65562", 4, FRAME_MAX_RECORD + 1u, rec, 8);
     emit_frame(emit, ctx, "length-ffffffff", 4, 0xFFFFFFFFu, rec, 8);
 
