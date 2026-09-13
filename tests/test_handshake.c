@@ -28,6 +28,7 @@
 #include "kex.h"
 #include "keystore.h"
 #include "mldsa_wrap.h"
+#include "mlkem_wrap.h"
 #include "transcript.h"
 
 static int g_failures = 0;
@@ -199,7 +200,7 @@ static void test_transcript_hashes(void) {
     /* The labels are spelled out here, NOT taken from TRANSCRIPT_LABEL_*:
      * passing the macro would make this test agree with any label the
      * header happens to contain, including a v1 one left behind. Same
-     * discipline hand_kdf_info() applies to the KDF label. */
+     * discipline hand_kdf_info_v2() applies to the KDF label. */
     hand_hash("mldsa-auth/v2/server-auth", ch_bytes, ch_len, sh_unsigned_bytes, sh_unsigned_len,
               th_server_auth_expected);
     CHECK(memcmp(th_server_auth, th_server_auth_expected, 32) == 0,
@@ -1136,24 +1137,93 @@ static int pre_established_ok(const handshake_ctx_t *ctx) {
 
 /* ---- Message builders for a test-driven ("manual") peer ---------------- */
 
+/* mlkem_ek may be NULL, which builds a ClientHello whose encapsulation key
+ * is all zeros -- structurally valid, and rejected by encapsulation's
+ * FIPS 203 7.2 check, which several tests rely on. */
 static int build_client_hello(const uint8_t *id, size_t id_len, const uint8_t eph_pub[32],
-                              uint8_t *out, size_t cap, size_t *len) {
+                              const uint8_t *mlkem_ek, uint8_t *out, size_t cap, size_t *len) {
     client_hello_t ch;
     memset(&ch, 0, sizeof(ch));
     memcpy(ch.id, id, id_len);
     ch.id_len = (uint8_t)id_len;
     memcpy(ch.ephemeral_pub, eph_pub, 32);
+    if (mlkem_ek != NULL) {
+        memcpy(ch.mlkem_ek, mlkem_ek, WIRE_MLKEM_EK_LEN);
+    }
     randombytes_buf(ch.session_id, WIRE_SESSION_ID_LEN);
     randombytes_buf(ch.nonce, WIRE_NONCE_LEN);
     return encode_client_hello(&ch, out, cap, len);
 }
 
+/* Encapsulates to the encapsulation key carried by a ClientHello, the way
+ * a responder would: the test then HOLDS ss_k and can predict the keys. */
+static int encaps_for(const uint8_t *ch, size_t ch_len, uint8_t ct_out[WIRE_MLKEM_CT_LEN],
+                      uint8_t ss_out[32]) {
+    client_hello_t msg;
+    size_t consumed = 0;
+    if (decode_client_hello(ch, ch_len, &msg, &consumed) != 0) {
+        return -1;
+    }
+    return mlkem_encaps(ct_out, ss_out, msg.mlkem_ek);
+}
+
+/* The v2 traffic keys, built from the literal spec-v2 6.3.7 layout with
+ * kex_hkdf_sha256 -- deliberately independent of kex_derive_session_key_v2
+ * AND of handshake.c, so a symmetric bug in either (dropping ss_k,
+ * swapping the secrets, omitting the transcript digest) is caught rather
+ * than reproduced. a_id is always the initiator. */
+static void expected_keys(const uint8_t ss_x[32], const uint8_t ss_k[32], const uint8_t sid[16],
+                          const uint8_t *a_id, size_t a_len, const uint8_t *b_id, size_t b_len,
+                          const uint8_t th[32], uint8_t c2s[32], uint8_t s2c[32]) {
+    static const uint8_t label[17] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't',
+                                      'h', '/', 'v', '2', '/', 'k', 'd', 'f'};
+    const uint8_t dirs[2] = {KEX_DIR_C2S, KEX_DIR_S2C};
+    uint8_t *outs[2] = {c2s, s2c};
+    uint8_t ikm[64];
+    memcpy(ikm, ss_x, 32);
+    memcpy(ikm + 32, ss_k, 32);
+    for (size_t d = 0; d < 2; d++) {
+        uint8_t info[KEX_KDF_V2_INFO_MAX_LEN];
+        size_t off = 0;
+        memcpy(info, label, sizeof(label));
+        off += sizeof(label);
+        info[off++] = 0x00;
+        info[off++] = (uint8_t)a_len;
+        memcpy(info + off, a_id, a_len);
+        off += a_len;
+        info[off++] = (uint8_t)b_len;
+        memcpy(info + off, b_id, b_len);
+        off += b_len;
+        memcpy(info + off, th, 32);
+        off += 32;
+        info[off++] = dirs[d];
+        if (kex_hkdf_sha256(outs[d], 32, ikm, sizeof(ikm), sid, 16, info, off) != 0) {
+            fatal("expected_keys: kex_hkdf_sha256");
+        }
+    }
+    sodium_memzero(ikm, sizeof(ikm));
+}
+
+/* The exit criterion of V2-5: every per-handshake hybrid secret is gone.
+ * Reads context internals deliberately -- there is no public accessor for
+ * "is this wiped", and a wipe that only the implementation can see is
+ * exactly what a mutation would remove. */
+static int hybrid_secrets_wiped(const handshake_ctx_t *ctx) {
+    return ctx->kem.secret_key == NULL && ctx->ss_kem == NULL &&
+           sodium_is_zero(ctx->peer_mlkem_ct, sizeof(ctx->peer_mlkem_ct));
+}
+
 /* A VALIDLY SIGNED ServerHello answering `ch`, with every field chosen by
  * the test -- so the one field under test is the only thing that can fail.
  * sig_B is computed over the exact CH bytes || SH_unsigned. */
+/* mlkem_ct may be NULL for an all-zero ciphertext. The signature is
+ * computed over whatever ct is passed, so a caller that tampers with the
+ * ciphertext BEFORE calling gets a validly-signed tampered message -- the
+ * only way to reach implicit rejection without forging sig_B. */
 static int build_signed_server_hello(const uint8_t *ch, size_t ch_len,
                                      const uint8_t *id, size_t id_len, const mldsa_keypair_t *kp,
-                                     const uint8_t eph_pub[32], const uint8_t echo[16],
+                                     const uint8_t eph_pub[32], const uint8_t *mlkem_ct,
+                                     const uint8_t echo[16],
                                      uint8_t *out, size_t cap, size_t *len) {
     server_hello_t sh;
     uint8_t shu[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN];
@@ -1164,6 +1234,9 @@ static int build_signed_server_hello(const uint8_t *ch, size_t ch_len,
     memcpy(sh.id, id, id_len);
     sh.id_len = (uint8_t)id_len;
     memcpy(sh.ephemeral_pub, eph_pub, 32);
+    if (mlkem_ct != NULL) {
+        memcpy(sh.mlkem_ct, mlkem_ct, WIRE_MLKEM_CT_LEN);
+    }
     randombytes_buf(sh.nonce, WIRE_NONCE_LEN);
     memcpy(sh.session_id_echo, echo, WIRE_SESSION_ID_LEN);
     if (encode_server_hello_unsigned(&sh, shu, sizeof(shu), &shu_len) != 0 ||
@@ -1280,6 +1353,8 @@ static void test_step4_happy_path(void) {
         CHECK(p.ini.eph.private_key == NULL,
               "step4 T21: initiator retained no shared secret, recomputed it in finish(), keys match, "
               "and its ephemeral scalar is now wiped");
+        CHECK(hybrid_secrets_wiped(&p.ini) && hybrid_secrets_wiped(&p.res),
+              "v2-5 T21: ...and both hybrid secrets (dk, ss_kem) and the retained ciphertext are wiped too");
     }
     CHECK(!handshake_is_peer_confirmed(&p.ini),
           "step4 T20: initiator ESTABLISHED is NOT peer-confirmed (optimistic)");
@@ -1317,6 +1392,8 @@ static void test_step4_session_id_echo_mismatch(void) {
     static pair_t p;
     kex_keypair_t eph;
     uint8_t sid[16];
+    uint8_t ct[WIRE_MLKEM_CT_LEN];
+    uint8_t ss_k[32];
     uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
     size_t sh_len = 0;
     clock_reset();
@@ -1327,8 +1404,8 @@ static void test_step4_session_id_echo_mismatch(void) {
           "step4 T3: fixture ClientHello created");
     session_id_of(p.ch, p.ch_len, sid);
     sid[0] ^= 0x01; /* the ONLY wrong field */
-    if (kex_keypair_generate(&eph) != 0 ||
-        build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, eph.public_key, sid,
+    if (encaps_for(p.ch, p.ch_len, ct, ss_k) != 0 || kex_keypair_generate(&eph) != 0 ||
+        build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, eph.public_key, ct, sid,
                                   sh, sizeof(sh), &sh_len) != 0) {
         fatal("T3 fixture");
     }
@@ -1372,6 +1449,8 @@ static void test_step4_peer_identity_mismatch(void) {
     static pair_t p;
     kex_keypair_t eph;
     uint8_t sid[16];
+    uint8_t ct[WIRE_MLKEM_CT_LEN];
+    uint8_t ss_k[32];
     uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
     size_t sh_len = 0;
     clock_reset();
@@ -1382,8 +1461,8 @@ static void test_step4_peer_identity_mismatch(void) {
           "step4 T5: fixture ClientHello created");
     session_id_of(p.ch, p.ch_len, sid); /* correct echo */
     /* C is pinned and signs correctly: without identity binding this passes. */
-    if (kex_keypair_generate(&eph) != 0 ||
-        build_signed_server_hello(p.ch, p.ch_len, ID_C, sizeof(ID_C), &g_kp_c, eph.public_key, sid,
+    if (encaps_for(p.ch, p.ch_len, ct, ss_k) != 0 || kex_keypair_generate(&eph) != 0 ||
+        build_signed_server_hello(p.ch, p.ch_len, ID_C, sizeof(ID_C), &g_kp_c, eph.public_key, ct, sid,
                                   sh, sizeof(sh), &sh_len) != 0) {
         fatal("T5 fixture");
     }
@@ -1549,23 +1628,31 @@ static void test_step4_replay_after_success(void) {
 
 /* ---- T10: duplicate ClientHello, two responders, one shared store ----- */
 
-static int expected_responder_keys(const kex_keypair_t *ini_eph, const uint8_t *ch, size_t ch_len,
+static int expected_responder_keys(const kex_keypair_t *ini_eph, const mlkem_keypair_t *ini_kem,
+                                   const uint8_t *ch, size_t ch_len,
                                    const uint8_t *sh, size_t sh_len, uint8_t c2s[32], uint8_t s2c[32]) {
     server_hello_t msg;
     size_t consumed = 0;
     uint8_t sid[16];
-    uint8_t ss[32];
+    uint8_t ss_x[32];
+    uint8_t ss_k[32];
+    uint8_t th[32];
     if (decode_server_hello(sh, sh_len, &msg, &consumed) != 0) {
         return -1;
     }
     session_id_of(ch, ch_len, sid);
-    if (kex_shared_secret(ss, ini_eph, msg.ephemeral_pub) != 0 ||
-        kex_derive_session_key(c2s, ss, sid, 16, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_C2S) != 0 ||
-        kex_derive_session_key(s2c, ss, sid, 16, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_S2C) != 0) {
-        sodium_memzero(ss, sizeof(ss));
+    /* Both halves, computed the way the initiator would: X25519 against
+     * B's ephemeral key, and decapsulation of the ciphertext B returned. */
+    if (kex_shared_secret(ss_x, ini_eph, msg.ephemeral_pub) != 0 ||
+        mlkem_decaps(ss_k, msg.mlkem_ct, ini_kem) != 0 ||
+        transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) != 0) {
+        sodium_memzero(ss_x, sizeof(ss_x));
+        sodium_memzero(ss_k, sizeof(ss_k));
         return -1;
     }
-    sodium_memzero(ss, sizeof(ss));
+    expected_keys(ss_x, ss_k, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, c2s, s2c);
+    sodium_memzero(ss_x, sizeof(ss_x));
+    sodium_memzero(ss_k, sizeof(ss_k));
     return 0;
 }
 
@@ -1580,11 +1667,13 @@ static void test_step4_duplicate_client_hello(void) {
     pending_slot_state_t st1s, st2s;
     uint8_t n1 = 0xFF, n2 = 0xFF;
     kex_keypair_t ini_eph; /* a test-driven initiator, so BOTH sessions' keys can be checked */
+    mlkem_keypair_t ini_kem;
     clock_reset();
     store_fresh(&store, 16);
 
-    if (kex_keypair_generate(&ini_eph) != 0 ||
-        build_client_hello(ID_A, sizeof(ID_A), ini_eph.public_key, ch, sizeof(ch), &ch_len) != 0 ||
+    if (kex_keypair_generate(&ini_eph) != 0 || mlkem_keypair_generate(&ini_kem) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), ini_eph.public_key, ini_kem.public_key, ch, sizeof(ch),
+                           &ch_len) != 0 ||
         handshake_responder_init(&r1, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK ||
         handshake_responder_init(&r2, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
         fatal("T10 fixture");
@@ -1640,8 +1729,8 @@ static void test_step4_duplicate_client_hello(void) {
     /* (f) independent, and each matches its own (test-driven) initiator */
     const uint8_t *r1c2s = NULL, *r1s2c = NULL, *r2c2s = NULL, *r2s2c = NULL;
     const int f_ok = e_ok &&
-                     expected_responder_keys(&ini_eph, ch, ch_len, sh1, sh1_len, e1c2s, e1s2c) == 0 &&
-                     expected_responder_keys(&ini_eph, ch, ch_len, sh2, sh2_len, e2c2s, e2s2c) == 0 &&
+                     expected_responder_keys(&ini_eph, &ini_kem, ch, ch_len, sh1, sh1_len, e1c2s, e1s2c) == 0 &&
+                     expected_responder_keys(&ini_eph, &ini_kem, ch, ch_len, sh2, sh2_len, e2c2s, e2s2c) == 0 &&
                      handshake_session_key_c2s(&r1, &r1c2s) == HANDSHAKE_OK &&
                      handshake_session_key_s2c(&r1, &r1s2c) == HANDSHAKE_OK &&
                      handshake_session_key_c2s(&r2, &r2c2s) == HANDSHAKE_OK &&
@@ -1652,6 +1741,7 @@ static void test_step4_duplicate_client_hello(void) {
           "step4 T10(f): R1/R2 keys differ from each other and each matches its own initiator");
 
     kex_keypair_free(&ini_eph);
+    mlkem_keypair_free(&ini_kem);
     handshake_ctx_wipe(&r1);
     handshake_ctx_wipe(&r2);
     handshake_pending_store_wipe(&store);
@@ -1846,6 +1936,8 @@ static void test_step4_initiator_low_order(void) {
     static handshake_pending_store_t store;
     static pair_t p;
     uint8_t sid[16];
+    uint8_t ct[WIRE_MLKEM_CT_LEN];
+    uint8_t ss_k[32];
     uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
     size_t sh_len = 0;
     clock_reset();
@@ -1855,7 +1947,8 @@ static void test_step4_initiator_low_order(void) {
     CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK,
           "step4 T14: fixture ClientHello created");
     session_id_of(p.ch, p.ch_len, sid);
-    if (build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, SMALL_ORDER_POINT, sid,
+    if (encaps_for(p.ch, p.ch_len, ct, ss_k) != 0 ||
+        build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, SMALL_ORDER_POINT, ct, sid,
                                   sh, sizeof(sh), &sh_len) != 0) {
         fatal("T14 fixture");
     }
@@ -2050,175 +2143,6 @@ static void test_step4_commit_fails_after_derivation(void) {
 
     pair_wipe(&p);
     handshake_pending_store_wipe(&store);
-}
-
-/* ---- T23-T28: KDF info (spec §6.3) ----------------------------------- */
-
-/* The normative layout rebuilt by hand from literal bytes -- deliberately
- * independent of KEX_KDF_LABEL and of kex_build_kdf_info(). */
-static size_t hand_kdf_info(uint8_t *out, const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len,
-                            uint8_t dir) {
-    static const uint8_t label[17] = {'m', 'l', 'd', 's', 'a', '-', 'a', 'u', 't',
-                                      'h', '/', 'v', '1', '/', 'k', 'd', 'f'};
-    size_t off = 0;
-    memcpy(out, label, sizeof(label));
-    off += sizeof(label);
-    out[off++] = 0x00;
-    out[off++] = (uint8_t)a_len;
-    memcpy(out + off, a, a_len);
-    off += a_len;
-    out[off++] = (uint8_t)b_len;
-    memcpy(out + off, b, b_len);
-    off += b_len;
-    out[off++] = dir;
-    return off;
-}
-
-static void derive_or_die(uint8_t key[32], const uint8_t ss[32], const uint8_t sid[16], const uint8_t *a,
-                          size_t a_len, const uint8_t *b, size_t b_len, uint8_t dir) {
-    if (kex_derive_session_key(key, ss, sid, 16, a, a_len, b, b_len, dir) != 0) {
-        fatal("kex_derive_session_key");
-    }
-}
-
-static void test_step4_kdf_info(void) {
-    uint8_t a[64], b[64], ss[32], sid[16];
-    for (size_t i = 0; i < 64; i++) {
-        a[i] = (uint8_t)(0x40 + i);
-        b[i] = (uint8_t)(0x90 + i);
-    }
-    randombytes_buf(ss, sizeof(ss));
-    randombytes_buf(sid, sizeof(sid));
-
-    /* T23 */
-    const size_t shapes[4][2] = {{1, 1}, {1, 64}, {64, 1}, {64, 64}};
-    const uint8_t dirs[2] = {KEX_DIR_C2S, KEX_DIR_S2C};
-    int exact = 1;
-    for (size_t s = 0; s < 4; s++) {
-        for (size_t d = 0; d < 2; d++) {
-            uint8_t expect[KEX_KDF_INFO_MAX_LEN], got[KEX_KDF_INFO_MAX_LEN];
-            size_t got_len = 0;
-            const size_t exp_len = hand_kdf_info(expect, a, shapes[s][0], b, shapes[s][1], dirs[d]);
-            if (kex_build_kdf_info(got, sizeof(got), &got_len, a, shapes[s][0], b, shapes[s][1], dirs[d]) != 0 ||
-                got_len != exp_len || memcmp(got, expect, exp_len) != 0 ||
-                got_len != 23u + (shapes[s][0] - 1u) + (shapes[s][1] - 1u)) {
-                exact = 0;
-            }
-        }
-    }
-    CHECK(exact, "step4 T23: kex_build_kdf_info is byte-exact vs the hand-built layout (1/1,1/64,64/1,64/64 x both dirs)");
-
-    /* T24 */
-    int composes = 1;
-    for (size_t d = 0; d < 2; d++) {
-        uint8_t info[KEX_KDF_INFO_MAX_LEN], k1[32], k2[32];
-        const size_t info_len = hand_kdf_info(info, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), dirs[d]);
-        derive_or_die(k1, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), dirs[d]);
-        if (kex_hkdf_sha256(k2, 32, ss, 32, sid, 16, info, info_len) != 0 || memcmp(k1, k2, 32) != 0) {
-            composes = 0;
-        }
-    }
-    CHECK(composes, "step4 T24: kex_derive_session_key == HKDF(IKM=ss, salt=session_id, info=hand-built kdf_info)");
-
-    /* T25 */
-    uint8_t kc[32], ks[32];
-    derive_or_die(kc, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_C2S);
-    derive_or_die(ks, ss, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), KEX_DIR_S2C);
-    CHECK(memcmp(kc, ks, 32) != 0, "step4 T25: c2s != s2c for identical secret/salt/ids");
-
-    /* T26 -- the flaw found in review */
-    const uint8_t a1[] = {'a', 'b'}, b1[] = {'c'};
-    const uint8_t a2[] = {'a'}, b2[] = {'b', 'c'};
-    uint8_t cat1[3], cat2[3];
-    memcpy(cat1, a1, 2);
-    memcpy(cat1 + 2, b1, 1);
-    memcpy(cat2, a2, 1);
-    memcpy(cat2 + 1, b2, 2);
-    CHECK(memcmp(cat1, cat2, 3) == 0,
-          "step4 T26 (precondition): the fixtures really are ambiguous under raw concatenation");
-    uint8_t i1[KEX_KDF_INFO_MAX_LEN], i2[KEX_KDF_INFO_MAX_LEN], k1[32], k2[32];
-    size_t l1 = 0, l2 = 0;
-    const int built = kex_build_kdf_info(i1, sizeof(i1), &l1, a1, 2, b1, 1, KEX_DIR_C2S) == 0 &&
-                      kex_build_kdf_info(i2, sizeof(i2), &l2, a2, 1, b2, 2, KEX_DIR_C2S) == 0;
-    CHECK(built && (l1 != l2 || memcmp(i1, i2, l1) != 0),
-          "step4 T26: A=\"ab\",B=\"c\" and A=\"a\",B=\"bc\" produce DIFFERENT kdf_info");
-    derive_or_die(k1, ss, sid, a1, 2, b1, 1, KEX_DIR_C2S);
-    derive_or_die(k2, ss, sid, a2, 1, b2, 2, KEX_DIR_C2S);
-    CHECK(memcmp(k1, k2, 32) != 0,
-          "step4 T26: ...and DIFFERENT derived keys, with identical shared secret and salt");
-
-    /* T27 */
-    const uint8_t base_a[] = {'a', 'b'}, base_b[] = {'c', 'd'};
-    const uint8_t alt_a[] = {'a', 'x'}, alt_b[] = {'c', 'x'};
-    const uint8_t long_a[] = {'a', 'b', 'c'}, long_b[] = {'c', 'd', 'e'};
-    uint8_t v[6][32];
-    derive_or_die(v[0], ss, sid, base_a, 2, base_b, 2, KEX_DIR_C2S); /* baseline */
-    derive_or_die(v[1], ss, sid, alt_a, 2, base_b, 2, KEX_DIR_C2S);  /* A byte */
-    derive_or_die(v[2], ss, sid, base_a, 2, alt_b, 2, KEX_DIR_C2S);  /* B byte */
-    derive_or_die(v[3], ss, sid, long_a, 3, base_b, 2, KEX_DIR_C2S); /* A length */
-    derive_or_die(v[4], ss, sid, base_a, 2, long_b, 3, KEX_DIR_C2S); /* B length */
-    derive_or_die(v[5], ss, sid, base_a, 2, base_b, 2, KEX_DIR_S2C); /* direction */
-    int distinct = 1;
-    for (int x = 0; x < 6; x++) {
-        for (int y = x + 1; y < 6; y++) {
-            if (memcmp(v[x], v[y], 32) == 0) {
-                distinct = 0;
-            }
-        }
-    }
-    CHECK(distinct, "step4 T27: changing A_id, B_id, either length, or direction each changes the key (all pairwise distinct)");
-
-    /* T28 -- validation (committed defects #2/#3) */
-    uint8_t big[128];
-    memset(big, 'q', sizeof(big));
-    const struct {
-        const uint8_t *a;
-        size_t al;
-        const uint8_t *b;
-        size_t bl;
-        uint8_t dir;
-    } bad[] = {
-        {big, 0, big, 3, KEX_DIR_C2S},  {big, 65, big, 3, KEX_DIR_C2S}, {big, 3, big, 0, KEX_DIR_C2S},
-        {big, 3, big, 65, KEX_DIR_C2S}, {NULL, 3, big, 3, KEX_DIR_C2S}, {big, 3, NULL, 3, KEX_DIR_C2S},
-        {big, 3, big, 3, 0x00},         {big, 3, big, 3, 0x44},         {big, 3, big, 3, 0xFF},
-    };
-    int rejected = 1;
-    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        uint8_t out[KEX_KDF_INFO_MAX_LEN + 8], key[32];
-        size_t out_len = 777;
-        memset(out, 0xAA, sizeof(out));
-        memset(key, 0xAA, sizeof(key));
-        const int r1 = kex_build_kdf_info(out, sizeof(out), &out_len, bad[i].a, bad[i].al, bad[i].b, bad[i].bl, bad[i].dir);
-        const int r2 = kex_derive_session_key(key, ss, sid, 16, bad[i].a, bad[i].al, bad[i].b, bad[i].bl, bad[i].dir);
-        uint8_t untouched_out = 1, untouched_key = 1;
-        for (size_t j = 0; j < sizeof(out); j++) {
-            untouched_out &= (uint8_t)(out[j] == 0xAA);
-        }
-        for (size_t j = 0; j < sizeof(key); j++) {
-            untouched_key &= (uint8_t)(key[j] == 0xAA);
-        }
-        if (r1 == 0 || r2 == 0 || out_len != 777 || !untouched_out || !untouched_key) {
-            rejected = 0;
-            printf("      T28 case %zu not rejected cleanly (r1=%d r2=%d)\n", i, r1, r2);
-        }
-    }
-    {
-        /* out_cap exactly one byte short, and wrong session_id lengths. */
-        uint8_t out[KEX_KDF_INFO_MAX_LEN], key[32];
-        size_t out_len = 777;
-        memset(out, 0xAA, sizeof(out));
-        memset(key, 0xAA, sizeof(key));
-        const size_t need = 23u + 2u + 2u; /* ids of length 3 */
-        if (kex_build_kdf_info(out, need - 1u, &out_len, big, 3, big, 3, KEX_DIR_C2S) == 0 || out_len != 777 ||
-            out[0] != 0xAA || kex_derive_session_key(key, ss, sid, 15, big, 3, big, 3, KEX_DIR_C2S) == 0 ||
-            kex_derive_session_key(key, ss, sid, 17, big, 3, big, 3, KEX_DIR_C2S) == 0 || key[0] != 0xAA) {
-            rejected = 0;
-            printf("      T28 capacity/session_id case not rejected cleanly\n");
-        }
-    }
-    CHECK(rejected,
-          "step4 T28: id len 0/65, NULL ids, bad direction, short out_cap, session_id_len != 16 all rejected, "
-          "writing nothing");
 }
 
 /* ---- V2-4 D1-D6: the hybrid key schedule (spec-v2 6.3.7) --------------
@@ -2488,6 +2412,426 @@ static void test_v24_kdf_v2(void) {
     }
 }
 
+/* ---- V2-5 H1-H7: the hybrid handshake (spec-v2 6.3) -------------------
+ *
+ * H1 and H2 are MANUAL-PEER oracles: one side is the real implementation,
+ * the other is played by the test, which therefore holds the KEM secret
+ * itself and can predict the traffic keys with expected_keys() -- built
+ * from the literal spec layout, not from the code under test. A
+ * real-vs-real handshake cannot do this: a combiner that drops ss_k or
+ * swaps the two secrets makes BOTH peers agree on the same wrong key, so
+ * every interop assertion still passes.
+ */
+
+/* Field offsets in the encoded messages, from the spec-v2 6.3.1 layout.
+ * Used to splice one handshake's KEM contribution into another's message. */
+#define CH_EK_OFFSET(id_len) (2u + (size_t)(id_len) + WIRE_X25519_PUB_LEN)
+#define SH_CT_OFFSET(id_len) (2u + (size_t)(id_len) + WIRE_X25519_PUB_LEN)
+
+static void test_v25_h1_manual_responder(void) {
+    static handshake_ctx_t ini;
+    kex_keypair_t b_eph;
+    client_hello_t chm;
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN],
+        ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 0, ca_len = 0, consumed = 0;
+    uint8_t ct[WIRE_MLKEM_CT_LEN], ss_k[32], ss_x[32], sid[16], th[32];
+    uint8_t want_c2s[32], want_s2c[32];
+
+    if (handshake_initiator_init(&ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK ||
+        handshake_initiator_create_client_hello(&ini, ch, sizeof(ch), &ch_len) != HANDSHAKE_OK ||
+        kex_keypair_generate(&b_eph) != 0 || encaps_for(ch, ch_len, ct, ss_k) != 0) {
+        fatal("H1 fixture");
+    }
+    session_id_of(ch, ch_len, sid);
+    if (build_signed_server_hello(ch, ch_len, ID_B, sizeof(ID_B), &g_kp_b, b_eph.public_key, ct, sid, sh,
+                                  sizeof(sh), &sh_len) != 0) {
+        fatal("H1 ServerHello");
+    }
+
+    const int ran = handshake_initiator_verify_server_hello(&ini, sh, sh_len) == HANDSHAKE_OK &&
+                    handshake_initiator_create_client_auth(&ini, ca, sizeof(ca), &ca_len) == HANDSHAKE_OK;
+    CHECK(ran, "v2-5 H1: the initiator completes against a hand-built responder");
+
+    /* The test verifies sig_A itself: the initiator signed a transcript
+     * covering the ciphertext it was sent. */
+    client_auth_t cam;
+    CHECK(ran && decode_client_auth(ca, ca_len, &cam, &consumed) == 0 &&
+              transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) == 0 &&
+              mldsa_verify(th, sizeof(th), cam.sig, cam.sig_len, g_kp_a.public_key) == 0,
+          "v2-5 H1: sig_A verifies against the transcript covering mlkem_ct");
+
+    CHECK(ran && handshake_initiator_finish(&ini) == HANDSHAKE_OK &&
+              handshake_get_state(&ini) == HANDSHAKE_STATE_ESTABLISHED,
+          "v2-5 H1: initiator finish -> ESTABLISHED");
+
+    /* The keys the test predicts from ITS OWN ss_k and ss_x. */
+    if (decode_client_hello(ch, ch_len, &chm, &consumed) != 0 ||
+        kex_shared_secret(ss_x, &b_eph, chm.ephemeral_pub) != 0) {
+        fatal("H1 secrets");
+    }
+    expected_keys(ss_x, ss_k, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, want_c2s, want_s2c);
+
+    const uint8_t *c2s = NULL;
+    const uint8_t *s2c = NULL;
+    const int got = handshake_session_key_c2s(&ini, &c2s) == HANDSHAKE_OK &&
+                    handshake_session_key_s2c(&ini, &s2c) == HANDSHAKE_OK;
+    CHECK(got && sodium_memcmp(c2s, want_c2s, 32) == 0 && sodium_memcmp(s2c, want_s2c, 32) == 0,
+          "v2-5 H1: the initiator's keys equal the INDEPENDENTLY computed hybrid keys (ss_x || ss_k, TH bound)");
+    CHECK(hybrid_secrets_wiped(&ini), "v2-5 H1: dk and the retained ciphertext are wiped after finish");
+
+    kex_keypair_free(&b_eph);
+    handshake_ctx_wipe(&ini);
+}
+
+static void test_v25_h2_manual_initiator(void) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t res;
+    kex_keypair_t a_eph;
+    mlkem_keypair_t a_kem;
+    server_hello_t shm;
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN],
+        ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 0, ca_len = 0, consumed = 0;
+    uint8_t ss_x[32], ss_k[32], sid[16], th[32], th_sb[32];
+    uint8_t want_c2s[32], want_s2c[32];
+    clock_reset();
+    store_fresh(&store, 16);
+
+    if (kex_keypair_generate(&a_eph) != 0 || mlkem_keypair_generate(&a_kem) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), a_eph.public_key, a_kem.public_key, ch, sizeof(ch), &ch_len) != 0 ||
+        handshake_responder_init(&res, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
+        fatal("H2 fixture");
+    }
+    const int made = handshake_responder_accept_client_hello(&res, ch, ch_len) == HANDSHAKE_OK &&
+                     handshake_responder_create_server_hello(&res, sh, sizeof(sh), &sh_len) == HANDSHAKE_OK;
+    CHECK(made, "v2-5 H2: the responder encapsulates and creates a ServerHello");
+    CHECK(made && res.ss_kem != NULL, "v2-5 H2: the responder RETAINS ss_kem in SERVER_HELLO_CREATED");
+
+    /* The test decapsulates with its own dk and checks sig_B itself. */
+    const size_t ulen = transcript_server_hello_unsigned_len((uint8_t)sizeof(ID_B));
+    if (!made || decode_server_hello(sh, sh_len, &shm, &consumed) != 0 ||
+        kex_shared_secret(ss_x, &a_eph, shm.ephemeral_pub) != 0 ||
+        mlkem_decaps(ss_k, shm.mlkem_ct, &a_kem) != 0 ||
+        transcript_hash_server_auth(ch, ch_len, sh, ulen, th_sb) != 0) {
+        fatal("H2 secrets");
+    }
+    CHECK(mldsa_verify(th_sb, sizeof(th_sb), shm.sig, shm.sig_len, g_kp_b.public_key) == 0,
+          "v2-5 H2: sig_B verifies against the transcript covering mlkem_ct");
+
+    if (build_signed_client_auth(ch, ch_len, sh, sh_len, &g_kp_a, ca, sizeof(ca), &ca_len) != 0) {
+        fatal("H2 ClientAuth");
+    }
+    const int done = handshake_responder_verify_client_auth(&res, ca, ca_len) == HANDSHAKE_OK &&
+                     handshake_responder_finish(&res) == HANDSHAKE_OK;
+    CHECK(done && handshake_get_state(&res) == HANDSHAKE_STATE_ESTABLISHED,
+          "v2-5 H2: the responder verifies the hand-built ClientAuth -> ESTABLISHED");
+
+    session_id_of(ch, ch_len, sid);
+    if (transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) != 0) {
+        fatal("H2 transcript");
+    }
+    expected_keys(ss_x, ss_k, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, want_c2s, want_s2c);
+
+    const uint8_t *c2s = NULL;
+    const uint8_t *s2c = NULL;
+    const int got = handshake_session_key_c2s(&res, &c2s) == HANDSHAKE_OK &&
+                    handshake_session_key_s2c(&res, &s2c) == HANDSHAKE_OK;
+    CHECK(got && sodium_memcmp(c2s, want_c2s, 32) == 0 && sodium_memcmp(s2c, want_s2c, 32) == 0,
+          "v2-5 H2: the responder's keys equal the INDEPENDENTLY computed hybrid keys");
+    CHECK(hybrid_secrets_wiped(&res), "v2-5 H2: ss_kem is wiped once the keys are derived");
+
+    kex_keypair_free(&a_eph);
+    mlkem_keypair_free(&a_kem);
+    handshake_ctx_wipe(&res);
+    handshake_pending_store_wipe(&store);
+}
+
+static void test_v25_h3_tampered_ciphertext(void) {
+    static handshake_ctx_t ini;
+    kex_keypair_t b_eph;
+    client_hello_t chm;
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN],
+        ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 0, ca_len = 0, consumed = 0;
+    uint8_t ct[WIRE_MLKEM_CT_LEN], ss_k[32], ss_x[32], sid[16], th[32];
+    uint8_t want_real[32], want_real_s2c[32], want_zero[32], want_zero_s2c[32];
+    uint8_t zeros[32];
+    memset(zeros, 0, sizeof(zeros));
+
+    if (handshake_initiator_init(&ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK ||
+        handshake_initiator_create_client_hello(&ini, ch, sizeof(ch), &ch_len) != HANDSHAKE_OK ||
+        kex_keypair_generate(&b_eph) != 0 || encaps_for(ch, ch_len, ct, ss_k) != 0) {
+        fatal("H3 fixture");
+    }
+    /* Tamper BEFORE signing: the ServerHello is validly signed over the
+     * altered ciphertext, which is the only way to reach implicit
+     * rejection without forging sig_B. */
+    ct[0] ^= 0x01;
+    session_id_of(ch, ch_len, sid);
+    if (build_signed_server_hello(ch, ch_len, ID_B, sizeof(ID_B), &g_kp_b, b_eph.public_key, ct, sid, sh,
+                                  sizeof(sh), &sh_len) != 0) {
+        fatal("H3 ServerHello");
+    }
+
+    const int ok = handshake_initiator_verify_server_hello(&ini, sh, sh_len) == HANDSHAKE_OK &&
+                   handshake_initiator_create_client_auth(&ini, ca, sizeof(ca), &ca_len) == HANDSHAKE_OK &&
+                   handshake_initiator_finish(&ini) == HANDSHAKE_OK;
+    CHECK(ok && handshake_get_state(&ini) == HANDSHAKE_STATE_ESTABLISHED,
+          "v2-5 H3: a tampered-but-signed ciphertext still reaches ESTABLISHED -- decapsulation is NOT a "
+          "validation signal (Req 4.11)");
+
+    if (decode_client_hello(ch, ch_len, &chm, &consumed) != 0 ||
+        kex_shared_secret(ss_x, &b_eph, chm.ephemeral_pub) != 0 ||
+        transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) != 0) {
+        fatal("H3 secrets");
+    }
+    expected_keys(ss_x, ss_k, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, want_real, want_real_s2c);
+    expected_keys(ss_x, zeros, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, want_zero, want_zero_s2c);
+
+    const uint8_t *c2s = NULL;
+    const int got = handshake_session_key_c2s(&ini, &c2s) == HANDSHAKE_OK;
+    CHECK(got && sodium_memcmp(c2s, want_real, 32) != 0,
+          "v2-5 H3: the initiator's key does NOT match the encapsulator's -- the sides disagree, as designed");
+    CHECK(got && sodium_memcmp(c2s, want_zero, 32) != 0,
+          "v2-5 H3: ...and it is not the all-zero-ss_k key either (decapsulation really ran)");
+    CHECK(hybrid_secrets_wiped(&ini), "v2-5 H3: secrets wiped even on the implicit-rejection path");
+
+    kex_keypair_free(&b_eph);
+    handshake_ctx_wipe(&ini);
+}
+
+static void test_v25_h4_substitution(void) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t ini1, ini2, res;
+    kex_keypair_t b_eph;
+    uint8_t ch1[CLIENT_HELLO_MAX_ENCODED_LEN], ch2[CLIENT_HELLO_MAX_ENCODED_LEN];
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t ch1_len = 0, ch2_len = 0, sh_len = 0;
+    uint8_t ct1[WIRE_MLKEM_CT_LEN], ct2[WIRE_MLKEM_CT_LEN], ss1[32], ss2[32], sid[16];
+    clock_reset();
+    store_fresh(&store, 16);
+
+    if (handshake_initiator_init(&ini1, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK ||
+        handshake_initiator_init(&ini2, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK ||
+        handshake_initiator_create_client_hello(&ini1, ch1, sizeof(ch1), &ch1_len) != HANDSHAKE_OK ||
+        handshake_initiator_create_client_hello(&ini2, ch2, sizeof(ch2), &ch2_len) != HANDSHAKE_OK ||
+        kex_keypair_generate(&b_eph) != 0 || encaps_for(ch1, ch1_len, ct1, ss1) != 0 ||
+        encaps_for(ch2, ch2_len, ct2, ss2) != 0) {
+        fatal("H4 fixture");
+    }
+
+    /* (a) A genuine ServerHello for handshake 1, with handshake 2's
+     *     ciphertext spliced in afterwards: sig_B no longer matches. */
+    session_id_of(ch1, ch1_len, sid);
+    if (build_signed_server_hello(ch1, ch1_len, ID_B, sizeof(ID_B), &g_kp_b, b_eph.public_key, ct1, sid, sh,
+                                  sizeof(sh), &sh_len) != 0) {
+        fatal("H4 ServerHello");
+    }
+    memcpy(sh + SH_CT_OFFSET(sizeof(ID_B)), ct2, WIRE_MLKEM_CT_LEN);
+    const handshake_status_t a = handshake_initiator_verify_server_hello(&ini1, sh, sh_len);
+    CHECK(a == HANDSHAKE_ERR_SIGNATURE && handshake_get_state(&ini1) == HANDSHAKE_STATE_FAILED,
+          "v2-5 H4: another handshake's mlkem_ct spliced into a signed ServerHello -> SIGNATURE, FAILED");
+    CHECK(hybrid_secrets_wiped(&ini1), "v2-5 H4: initiator secrets wiped after the substitution failure");
+
+    /* (b) The other direction: handshake 2's encapsulation key spliced
+     *     into initiator 2's OWN ClientHello in flight. The responder
+     *     accepts it and signs over the SPLICED bytes; the reply is
+     *     returned to initiator 2, so session_id_echo matches and the
+     *     check that fires is the one under test -- sig_B, because that
+     *     initiator's transcript contains its own ek, not the spliced one.
+     *     (ini2's internal copy of its ClientHello is untouched; only the
+     *     bytes handed to the responder are altered.) */
+    uint8_t ch2_spliced[CLIENT_HELLO_MAX_ENCODED_LEN];
+    memcpy(ch2_spliced, ch2, ch2_len);
+    memcpy(ch2_spliced + CH_EK_OFFSET(sizeof(ID_A)), ch1 + CH_EK_OFFSET(sizeof(ID_A)), WIRE_MLKEM_EK_LEN);
+    CHECK(memcmp(ch2_spliced, ch2, ch2_len) != 0, "v2-5 H4 (precondition): the spliced ClientHello really differs");
+    size_t sh2_len = 0;
+    const int b_made = handshake_responder_init(&res, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) == HANDSHAKE_OK &&
+                       handshake_responder_accept_client_hello(&res, ch2_spliced, ch2_len) == HANDSHAKE_OK &&
+                       handshake_responder_create_server_hello(&res, sh, sizeof(sh), &sh2_len) == HANDSHAKE_OK;
+    CHECK(b_made, "v2-5 H4: the responder accepts a ClientHello with a substituted ek (it cannot tell)");
+    const handshake_status_t b = handshake_initiator_verify_server_hello(&ini2, sh, sh2_len);
+    CHECK(b_made && b == HANDSHAKE_ERR_SIGNATURE && handshake_get_state(&ini2) == HANDSHAKE_STATE_FAILED,
+          "v2-5 H4: ...and the reply fails sig_B at the initiator, whose transcript has its own ek");
+    CHECK(hybrid_secrets_wiped(&ini2), "v2-5 H4: initiator secrets wiped in the ek-substitution case too");
+
+    kex_keypair_free(&b_eph);
+    handshake_ctx_wipe(&ini1);
+    handshake_ctx_wipe(&ini2);
+    handshake_ctx_wipe(&res);
+    handshake_pending_store_wipe(&store);
+}
+
+static void test_v25_h5_malformed_ek(void) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t res;
+    kex_keypair_t a_eph;
+    uint8_t bad_ek[WIRE_MLKEM_EK_LEN];
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 777;
+    clock_reset();
+    store_fresh(&store, 16);
+    memset(bad_ek, 0xFF, sizeof(bad_ek)); /* every coefficient >= q */
+    memset(sh, 0xAA, sizeof(sh));
+
+    if (kex_keypair_generate(&a_eph) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), a_eph.public_key, bad_ek, ch, sizeof(ch), &ch_len) != 0 ||
+        handshake_responder_init(&res, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
+        fatal("H5 fixture");
+    }
+    CHECK(handshake_responder_accept_client_hello(&res, ch, ch_len) == HANDSHAKE_OK,
+          "v2-5 H5: a malformed encapsulation key passes the wire decoder and identity check");
+
+    const handshake_status_t st = handshake_responder_create_server_hello(&res, sh, sizeof(sh), &sh_len);
+    CHECK(st == HANDSHAKE_ERR_KEX && handshake_get_state(&res) == HANDSHAKE_STATE_FAILED,
+          "v2-5 H5: encapsulation rejects it (FIPS 203 7.2) -> KEX, FAILED");
+    CHECK(sh[0] == 0xAA && sh_len == 777, "v2-5 H5: nothing was written to the output buffer");
+    CHECK(handshake_pending_active_count(&store) == 0, "v2-5 H5: no ledger entry was created");
+    CHECK(no_keys_exposed(&res) && hybrid_secrets_wiped(&res), "v2-5 H5: no keys, secrets wiped");
+
+    kex_keypair_free(&a_eph);
+    handshake_ctx_wipe(&res);
+    handshake_pending_store_wipe(&store);
+}
+
+static void test_v25_h6_wipe_matrix(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    kex_keypair_t eph;
+    uint8_t ct[WIRE_MLKEM_CT_LEN], ss_k[32], sid[16];
+    uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN], ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t sh_len = 0, ca_len = 0;
+
+    /* --- presence: the secrets must EXIST while the handshake is live,
+     *     or every "wiped" assertion below could pass vacuously. --- */
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK &&
+              p.ini.kem.secret_key != NULL,
+          "v2-5 H6: the initiator HOLDS dk from CLIENT_HELLO_CREATED");
+    CHECK(handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len) == HANDSHAKE_OK &&
+              handshake_responder_create_server_hello(&p.res, p.sh, sizeof(p.sh), &p.sh_len) == HANDSHAKE_OK &&
+              p.res.ss_kem != NULL,
+          "v2-5 H6: the responder HOLDS ss_kem from SERVER_HELLO_CREATED");
+    CHECK(handshake_initiator_verify_server_hello(&p.ini, p.sh, p.sh_len) == HANDSHAKE_OK &&
+              handshake_initiator_create_client_auth(&p.ini, p.ca, sizeof(p.ca), &p.ca_len) == HANDSHAKE_OK &&
+              p.ini.kem.secret_key != NULL,
+          "v2-5 H6: the initiator still holds dk at CLIENT_AUTH_CREATED (it decapsulates at finish)");
+
+    /* A below-limit sig_A failure is RETRYABLE, so ss_kem must SURVIVE. */
+    memcpy(ca, p.ca, p.ca_len);
+    ca_len = p.ca_len;
+    ca[ca_len - 1u] ^= 0x01;
+    CHECK(handshake_responder_verify_client_auth(&p.res, ca, ca_len) == HANDSHAKE_ERR_SIGNATURE &&
+              p.res.ss_kem != NULL,
+          "v2-5 H6: ss_kem SURVIVES a retryable sig_A failure -- the next ClientAuth needs it");
+    CHECK(handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len) == HANDSHAKE_OK &&
+              p.res.ss_kem == NULL,
+          "v2-5 H6: ...and is wiped as soon as the keys are derived");
+    CHECK(handshake_responder_finish(&p.res) == HANDSHAKE_OK && handshake_initiator_finish(&p.ini) == HANDSHAKE_OK &&
+              hybrid_secrets_wiped(&p.ini) && hybrid_secrets_wiped(&p.res),
+          "v2-5 H6: both contexts hold no hybrid secret in ESTABLISHED");
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+
+    /* --- wiped on representative TERMINAL failures --- */
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+    if (handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) != HANDSHAKE_OK ||
+        encaps_for(p.ch, p.ch_len, ct, ss_k) != 0 || kex_keypair_generate(&eph) != 0) {
+        fatal("H6 fixture");
+    }
+    session_id_of(p.ch, p.ch_len, sid);
+    sid[0] ^= 0x01;
+    if (build_signed_server_hello(p.ch, p.ch_len, ID_B, sizeof(ID_B), &g_kp_b, eph.public_key, ct, sid, sh,
+                                  sizeof(sh), &sh_len) != 0) {
+        fatal("H6 ServerHello");
+    }
+    CHECK(handshake_initiator_verify_server_hello(&p.ini, sh, sh_len) == HANDSHAKE_ERR_SESSION_ID_MISMATCH &&
+              hybrid_secrets_wiped(&p.ini),
+          "v2-5 H6: initiator secrets wiped after SESSION_ID_MISMATCH");
+    kex_keypair_free(&eph);
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+
+    /* Responder: unknown identity, then the auth-failure limit. */
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks_b_only); /* A is not pinned */
+    if (handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) != HANDSHAKE_OK) {
+        fatal("H6 unknown-id fixture");
+    }
+    CHECK(handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len) == HANDSHAKE_ERR_UNKNOWN_IDENTITY &&
+              hybrid_secrets_wiped(&p.res),
+          "v2-5 H6: responder secrets wiped after UNKNOWN_IDENTITY");
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+    if (pair_to_client_auth(&p) != HANDSHAKE_OK) {
+        fatal("H6 auth-limit fixture");
+    }
+    memcpy(ca, p.ca, p.ca_len);
+    ca_len = p.ca_len;
+    ca[ca_len - 1u] ^= 0x01;
+    handshake_status_t last = HANDSHAKE_OK;
+    for (unsigned i = 0; i < HANDSHAKE_AUTH_FAILURE_LIMIT; i++) {
+        last = handshake_responder_verify_client_auth(&p.res, ca, ca_len);
+    }
+    CHECK(last == HANDSHAKE_ERR_AUTH_FAILURE_LIMIT && handshake_get_state(&p.res) == HANDSHAKE_STATE_FAILED &&
+              hybrid_secrets_wiped(&p.res),
+          "v2-5 H6: responder secrets wiped after AUTH_FAILURE_LIMIT");
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
+static void test_v25_h7_out_cap_rollback(void) {
+    static handshake_pending_store_t store;
+    static pair_t p;
+    uint8_t tiny[8];
+    size_t n = 777;
+    clock_reset();
+    store_fresh(&store, 16);
+    pair_init(&p, &store, &g_ks);
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, tiny, sizeof(tiny), &n) == HANDSHAKE_ERR_INVALID_ARG &&
+              handshake_get_state(&p.ini) == HANDSHAKE_STATE_NEW && p.ini.eph.private_key == NULL &&
+              p.ini.kem.secret_key == NULL && n == 777,
+          "v2-5 H7: a short ClientHello buffer rolls back BOTH keypairs, state stays NEW");
+
+    CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof(p.ch), &p.ch_len) == HANDSHAKE_OK &&
+              handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len) == HANDSHAKE_OK,
+          "v2-5 H7: the retried ClientHello is accepted");
+    CHECK(handshake_responder_create_server_hello(&p.res, tiny, sizeof(tiny), &n) == HANDSHAKE_ERR_INVALID_ARG &&
+              handshake_get_state(&p.res) == HANDSHAKE_STATE_CLIENT_HELLO_ACCEPTED &&
+              p.res.eph.private_key == NULL && p.res.ss_kem == NULL &&
+              handshake_pending_active_count(&store) == 0,
+          "v2-5 H7: a short ServerHello buffer rolls back the ephemeral key AND ss_kem, nothing inserted");
+
+    /* The rolled-back contexts must still complete a normal handshake. */
+    CHECK(handshake_responder_create_server_hello(&p.res, p.sh, sizeof(p.sh), &p.sh_len) == HANDSHAKE_OK &&
+              handshake_initiator_verify_server_hello(&p.ini, p.sh, p.sh_len) == HANDSHAKE_OK &&
+              handshake_initiator_create_client_auth(&p.ini, p.ca, sizeof(p.ca), &p.ca_len) == HANDSHAKE_OK &&
+              handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len) == HANDSHAKE_OK &&
+              handshake_responder_finish(&p.res) == HANDSHAKE_OK &&
+              handshake_initiator_finish(&p.ini) == HANDSHAKE_OK,
+          "v2-5 H7: both contexts complete normally after the rollbacks");
+
+    const uint8_t *a = NULL;
+    const uint8_t *b = NULL;
+    CHECK(handshake_session_key_c2s(&p.ini, &a) == HANDSHAKE_OK &&
+              handshake_session_key_c2s(&p.res, &b) == HANDSHAKE_OK && sodium_memcmp(a, b, 32) == 0,
+          "v2-5 H7: ...and agree on the same key");
+
+    pair_wipe(&p);
+    handshake_pending_store_wipe(&store);
+}
+
 /* ---- T29 / T32: responder-side low-order X25519 after a valid sig_A --- */
 
 static void test_step4_responder_low_order(int expire_mid_failure) {
@@ -2502,11 +2846,14 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
     uint8_t count = 0;
     const char *t = expire_mid_failure ? "T32" : "T29";
     char name[200];
+    mlkem_keypair_t ini_kem; /* valid ek: the X25519 half is the defect under test */
     clock_reset();
     store_fresh(&store, 1); /* capacity 1: reclamation proven by behaviour */
 
     /* (a) malicious-but-authentic initiator: real A identity, low-order ephemeral */
-    if (build_client_hello(ID_A, sizeof(ID_A), SMALL_ORDER_POINT, ch, sizeof(ch), &ch_len) != 0 ||
+    if (mlkem_keypair_generate(&ini_kem) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), SMALL_ORDER_POINT, ini_kem.public_key, ch, sizeof(ch),
+                           &ch_len) != 0 ||
         handshake_responder_init(&r, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
         fatal("T29 fixture");
     }
@@ -2549,6 +2896,7 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
 
     pair_wipe(&fresh);
     handshake_ctx_wipe(&r);
+    mlkem_keypair_free(&ini_kem);
     handshake_pending_store_wipe(&store);
 }
 
@@ -2697,8 +3045,14 @@ static void run_step4_tests(void) {
     test_step4_get_digest_copy_out();           /* T18 */
     test_step4_inspect_expiry();                /* T19 */
     test_step4_commit_fails_after_derivation(); /* T22 */
-    test_step4_kdf_info();                      /* T23-T28 */
     test_v24_kdf_v2();                          /* V2-4 D1-D6 */
+    test_v25_h1_manual_responder();             /* V2-5 H1 */
+    test_v25_h2_manual_initiator();             /* V2-5 H2 */
+    test_v25_h3_tampered_ciphertext();          /* V2-5 H3 */
+    test_v25_h4_substitution();                 /* V2-5 H4 */
+    test_v25_h5_malformed_ek();                 /* V2-5 H5 */
+    test_v25_h6_wipe_matrix();                  /* V2-5 H6 */
+    test_v25_h7_out_cap_rollback();             /* V2-5 H7 */
     test_step4_responder_low_order(0);          /* T29 */
     test_step4_wipe_cancels();                  /* T30 */
     test_step4_cancel_semantics();              /* T31 */

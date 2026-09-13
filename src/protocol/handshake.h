@@ -8,23 +8,35 @@
 #include "kex.h"
 #include "keystore.h"
 #include "mldsa_wrap.h"
+#include "mlkem_wrap.h"
 #include "transcript.h"
 
 /*
  * In-process ML-DSA-65 mutual-authentication handshake state machine
- * (spec §6.3). Step 4 scope: no transport, no session-layer traffic.
+ * (spec-v2 §6.3): no transport, no session-layer traffic.
+ *
+ * v2 key exchange is HYBRID. Alongside the X25519 ephemeral exchange the
+ * initiator generates a per-handshake ML-KEM-768 keypair and sends the
+ * encapsulation key in ClientHello; the responder encapsulates when it
+ * creates ServerHello, sends the ciphertext, and RETAINS the KEM shared
+ * secret until ClientAuth verifies; the initiator decapsulates at finish.
+ * Traffic keys come from both secrets and the transcript digest
+ * (spec-v2 §6.3.7), so the session survives the failure of either
+ * assumption, and neither secret is ever used alone.
  *
  * ============================================================================
- * CONCURRENCY CONTRACT (v1) -- see spec §6.3.6.
+ * CONCURRENCY CONTRACT (v2) -- see spec-v2 §6.3.6.
  * handshake_ctx_t, keystore_t and handshake_pending_store_t are
  * NOT thread-safe. "Atomic" anywhere in this API means logically indivisible
  * ONLY when all calls into a given pending store are serialized by the
- * caller. A future transport/server integration must either:
+ * caller. A transport/server integration must either:
  *   1. confine each pending store, and every responder context associated
  *      with it, to a single thread/event loop; or
  *   2. make lookup + expiry check + signature-result handling +
  *      consume_success one critical section per store.
- * No locking of any kind is implemented in v1.
+ * The responder's retained KEM secret lives in its context between
+ * ServerHello and ClientAuth and is subject to the same confinement rule.
+ * No locking of any kind is implemented.
  * ============================================================================
  *
  * FAIL-CLOSED SEMANTICS
@@ -32,8 +44,12 @@
  *   marked valid, or retrievable unless the full check sequence for that
  *   role succeeded. It does NOT mean every error is terminal:
  *   - Terminal (-> HANDSHAKE_STATE_FAILED, no recovery): identity errors,
- *     session-ID echo mismatch, sig_B failure, X25519 failure, expiry,
+ *     session-ID echo mismatch, sig_B failure, X25519 failure, ML-KEM
+ *     encapsulation failure (a malformed encapsulation key), expiry,
  *     replay, auth-failure limit, resource exhaustion, internal errors.
+ *     Every terminal failure wipes the per-handshake secrets: the X25519
+ *     scalar, the ML-KEM decapsulation key (initiator) and the retained
+ *     KEM shared secret (responder).
  *   - Retryable (state and ledger entry unchanged), responder awaiting
  *     ClientAuth only: malformed ClientAuth, handshake_id mismatch, and a
  *     sig_A failure below HANDSHAKE_AUTH_FAILURE_LIMIT.
@@ -221,7 +237,9 @@ typedef enum {
     HANDSHAKE_ERR_EXPIRED,
     HANDSHAKE_ERR_SIGNATURE,          /* retryable on the responder, below the limit */
     HANDSHAKE_ERR_AUTH_FAILURE_LIMIT, /* terminal: N = 3 reached */
-    HANDSHAKE_ERR_KEX,                /* X25519 failure, incl. low-order point */
+    HANDSHAKE_ERR_KEX,                /* X25519 failure (incl. low-order point), or
+                                       * ML-KEM encapsulation refusing a malformed
+                                       * encapsulation key (FIPS 203 7.2) */
     HANDSHAKE_ERR_RESOURCE_EXHAUSTED,
     HANDSHAKE_ERR_INTERNAL
 } handshake_status_t;
@@ -230,10 +248,16 @@ typedef enum {
  * visible here -- but EVERY FIELD IS PRIVATE to handshake.c. Do not read
  * or write fields directly. Identity keypairs, the keystore and the
  * pending store are BORROWED and must outlive the context. The context
- * owns exactly what it allocates: the ephemeral X25519 private scalar and
- * the session-key slots (both secure_mem). There is deliberately NO
- * shared-secret member: shared secrets exist only inside the call that
- * computes them, in a temporary secure_mem buffer wiped before return. */
+ * owns exactly what it allocates: the ephemeral X25519 private scalar,
+ * the ML-KEM decapsulation key, the responder's retained KEM shared
+ * secret and the session-key slots (all secure_mem).
+ *
+ * v2 retains exactly ONE shared secret across calls: the responder's
+ * ss_kem, from ServerHello until ClientAuth verifies (spec-v2 §6.3.6 --
+ * encapsulation happens when the ciphertext is produced, so the secret
+ * cannot be recomputed later). The X25519 secret is still never retained:
+ * it exists only inside the call that computes it, in a temporary
+ * secure_mem buffer wiped before return. */
 typedef struct {
     handshake_role_t role;
     handshake_state_t state;
@@ -255,7 +279,21 @@ typedef struct {
     uint8_t handshake_id[WIRE_HANDSHAKE_ID_LEN];
     uint8_t th_client_auth[HANDSHAKE_TRANSCRIPT_HASH_BYTES]; /* initiator only */
 
-    kex_keypair_t eph;     /* private_key is secure_mem; NULL when absent */
+    kex_keypair_t eph; /* private_key is secure_mem; NULL when absent */
+
+    /* INITIATOR: the per-handshake ML-KEM keypair. secret_key is the
+     * 2400-byte decapsulation key in secure_mem, held from ClientHello
+     * until finish() decapsulates, then wiped. NULL when absent. */
+    mlkem_keypair_t kem;
+    /* INITIATOR: the ciphertext received in ServerHello, public, kept
+     * because spec-v2 §6.3 decapsulates at finish (decapsulation is not a
+     * validation signal, so there is nothing to gain by doing it early). */
+    uint8_t peer_mlkem_ct[WIRE_MLKEM_CT_LEN];
+    /* RESPONDER: the KEM shared secret produced when it encapsulated,
+     * secure_mem, MLKEM_SHARED_SECRET_BYTES. Held across messages; wiped
+     * once the traffic keys are derived, and on every failure path. */
+    uint8_t *ss_kem;
+
     uint8_t *session_keys; /* secure_mem, 2*KEX_SESSION_KEY_BYTES: [c2s | s2c] */
     bool keys_committed;
 } handshake_ctx_t;
@@ -298,15 +336,18 @@ handshake_status_t handshake_get_handshake_id(const handshake_ctx_t *ctx,
 
 /* --- Initiator ----------------------------------------------------------- */
 
-/* NEW -> CLIENT_HELLO_CREATED. Writes the ClientHello into out. Output
- * buffer too small -> HANDSHAKE_ERR_INVALID_ARG, state stays NEW, no side
- * effects. Internal failure -> FAILED. */
+/* NEW -> CLIENT_HELLO_CREATED. Generates the ephemeral X25519 keypair AND
+ * the per-handshake ML-KEM-768 keypair, and writes the ClientHello
+ * (carrying the encapsulation key) into out. Output buffer too small ->
+ * HANDSHAKE_ERR_INVALID_ARG, state stays NEW, and BOTH keypairs are rolled
+ * back. Internal failure -> FAILED. */
 handshake_status_t handshake_initiator_create_client_hello(handshake_ctx_t *ctx, uint8_t *out,
                                                            size_t out_cap, size_t *out_len);
 
 /* CLIENT_HELLO_CREATED -> SERVER_HELLO_VERIFIED. Every failure is terminal
- * (-> FAILED). Authenticates B and B's ephemeral key; derives NO traffic
- * keys and retains NO shared secret. */
+ * (-> FAILED). Authenticates B, B's ephemeral key and the KEM ciphertext
+ * (both are covered by sig_B); retains the ciphertext for finish(). Derives
+ * NO traffic keys, decapsulates nothing and retains no shared secret. */
 handshake_status_t handshake_initiator_verify_server_hello(handshake_ctx_t *ctx,
                                                            const uint8_t *sh, size_t sh_len);
 
@@ -316,7 +357,15 @@ handshake_status_t handshake_initiator_create_client_auth(handshake_ctx_t *ctx, 
                                                           size_t out_cap, size_t *out_len);
 
 /* CLIENT_AUTH_CREATED -> ESTABLISHED. Recomputes the X25519 shared secret,
- * derives c2s/s2c, wipes the temporary secret and the ephemeral scalar.
+ * DECAPSULATES the retained ciphertext for the ML-KEM secret, derives
+ * c2s/s2c from both plus TH_client_auth, then wipes the temporaries, the
+ * ephemeral scalar and the decapsulation key.
+ *
+ * Decapsulation CANNOT detect a tampered ciphertext (Security Req 4.11):
+ * it succeeds and yields a different secret, so this call still returns
+ * HANDSHAKE_OK and the disagreement surfaces as the first record failing
+ * to authenticate. That is the designed failure mode (spec-v2 §6.3).
+ *
  * OPTIMISTIC -- see "INITIATOR ESTABLISHED IS OPTIMISTIC" above;
  * handshake_is_peer_confirmed() stays false. */
 handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx);
@@ -328,10 +377,20 @@ handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx);
 handshake_status_t handshake_responder_accept_client_hello(handshake_ctx_t *ctx,
                                                            const uint8_t *ch, size_t ch_len);
 
-/* CLIENT_HELLO_ACCEPTED -> SERVER_HELLO_CREATED. Signs sig_B, computes
- * TH_client_auth and handshake_id from the exact wire bytes, and inserts
- * the pending entry. Store full -> RESOURCE_EXHAUSTED, FAILED. Output
- * buffer too small -> INVALID_ARG, state unchanged, nothing inserted. */
+/* CLIENT_HELLO_ACCEPTED -> SERVER_HELLO_CREATED. ENCAPSULATES to the
+ * initiator's encapsulation key (retaining ss_kem until ClientAuth
+ * verifies), signs sig_B over a transcript covering the ciphertext,
+ * computes TH_client_auth and handshake_id from the exact wire bytes, and
+ * inserts the pending entry.
+ *
+ * Encapsulation runs BEFORE sig_B, so a malformed encapsulation key costs
+ * no ML-DSA signature: it fails here with HANDSHAKE_ERR_KEX (terminal),
+ * which is the first point at which such a key can be detected -- the
+ * wire decoder validates length only (spec-v2 §6.3.5).
+ *
+ * Store full -> RESOURCE_EXHAUSTED, FAILED. Output buffer too small ->
+ * INVALID_ARG, state unchanged, nothing inserted, and the ephemeral
+ * keypair and ss_kem are rolled back. */
 handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx, uint8_t *out,
                                                            size_t out_cap, size_t *out_len);
 
@@ -340,10 +399,15 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
  *   Retryable (state + entry unchanged): MALFORMED, HANDSHAKE_ID_MISMATCH,
  *     and SIGNATURE below the failure limit (which does count a failure).
  *   Terminal: EXPIRED, REPLAY, AUTH_FAILURE_LIMIT, KEX, INTERNAL.
- * Order after a valid sig_A: X25519 and KDF into temporary buffers, THEN
- * consume_success, THEN commit keys -- so a local failure never spends the
- * peer's entry (it cancels it instead) and no key is committed for a
- * handshake that was not committed exactly once. */
+ * Order after a valid sig_A: X25519 and the hybrid KDF (over ss_x, the
+ * retained ss_kem and the ledger's TH_client_auth) into temporary buffers,
+ * THEN consume_success, THEN commit keys -- so a local failure never
+ * spends the peer's entry (it cancels it instead) and no key is committed
+ * for a handshake that was not committed exactly once.
+ *
+ * ss_kem is wiped once the keys are derived, and on every terminal path.
+ * A RETRYABLE failure deliberately KEEPS it: the handshake is still live
+ * and the next ClientAuth needs it. */
 handshake_status_t handshake_responder_verify_client_auth(handshake_ctx_t *ctx,
                                                           const uint8_t *ca, size_t ca_len);
 

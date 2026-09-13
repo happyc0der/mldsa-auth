@@ -1351,3 +1351,149 @@ reported "survived" under a build that should have caught it. A verification
 tool that cannot itself be verified is not evidence. From V2-5 onward the
 link check runs immediately after each sanitizer build, and its result is
 quoted in the step's exit report alongside the test counts.
+
+## V2-5 — the hybrid handshake
+
+The state machine now implements spec-v2 §6.3: the initiator generates a
+per-handshake ML-KEM-768 keypair and sends `ek`, the responder encapsulates
+when it creates `ServerHello` and retains `ss_kem`, the initiator
+decapsulates at `finish`, and both derive from `(ss_x, ss_kem,
+TH_client_auth)`. V2-4's debt is paid here too: `KEX_KDF_LABEL`,
+`KEX_KDF_INFO_MAX_LEN`, `kex_build_kdf_info` and `kex_derive_session_key`
+are deleted, exactly as `kex.h` promised they would be.
+
+### Where a malformed encapsulation key fails, and why it fails there
+
+Encapsulation is the *first* place a bad `ek` can be detected: the wire
+decoder validates length only (§6.3.5), and `accept_client_hello` does
+structure and identity. So `create_server_hello` returns
+`HANDSHAKE_ERR_KEX` — terminal, nothing written to the output buffer,
+nothing inserted into the ledger.
+
+It runs **before** `sig_B`, which is a deliberate ordering choice: a peer
+that sends a malformed key should not be able to make the responder spend
+an ML-DSA signature (~65 µs) first. `HANDSHAKE_ERR_KEX` now covers both
+halves of the hybrid, and its comment says so rather than leaving "X25519
+failure" to be read as exhaustive.
+
+The responder does **not** keep a copy of `ek`. It re-decodes
+`ctx->ch_bytes` — the exact bytes it accepted — at the moment it
+encapsulates. That avoids 1 184 bytes in every responder context, and it
+keeps the "use the exact wire bytes, never a re-serialized struct" rule
+that the transcript code already follows.
+
+### Where the initiator decapsulates, and why not earlier
+
+At `finish`, as the spec requires. The context therefore holds the received
+`mlkem_ct` (public, 1 088 bytes) from `verify_server_hello` until then.
+
+There is no decapsulation "probe" mirroring the X25519 low-order probe,
+because there is nothing to probe for: decapsulation cannot fail on a
+tampered ciphertext (Security Req 4.11) — it succeeds and returns a
+different secret. A probe would prove only that the local `dk` is intact.
+A nonzero return from `mlkem_decaps` at `finish` therefore means a missing
+or corrupted decapsulation key, which is a local defect, and is reported as
+`HANDSHAKE_ERR_INTERNAL` rather than `KEX`.
+
+### A retryable failure must KEEP ss_kem
+
+`verify_client_auth` has three retryable outcomes — malformed, wrong
+`handshake_id`, and a `sig_A` failure below the limit — after which the
+handshake is still live and the ledger entry still ACTIVE. Wiping `ss_kem`
+there would make the *next* ClientAuth fail with no way to recover, because
+the secret exists only from the encapsulation that produced the ciphertext
+already sent. So the retryable paths deliberately leave it alone, and only
+the terminal paths (through `fail_ctx`) and the success path wipe it. This
+is the one place where "wipe secrets as early as possible" is wrong, so it
+is stated in `handshake.h`, asserted in H6, and mutated by N8.
+
+One consequence worth recording: `TH_client_auth` is now a KDF input as
+well as the signed message, so its `sodium_memzero` moved from immediately
+after `sig_A` verification to after key derivation. A mutation that leaves
+the old wipe in place (N2) derives from a zeroed digest — and because only
+the responder does that, the two sides disagree and T1 catches it.
+
+### Manual-peer oracles: why real-vs-real proves nothing here
+
+A combiner bug — dropping `ss_k`, swapping the two secrets, omitting the
+transcript digest — is **symmetric**. Both peers compute the same wrong key
+and every interop assertion in the suite still passes. The v1 tests, which
+run a real initiator against a real responder, are structurally blind to
+it.
+
+H1 and H2 fix that by playing one side **by hand**: the test generates the
+keypairs, encapsulates or decapsulates itself, and therefore *holds* the
+KEM secret. It then predicts the traffic keys with `expected_keys()`, built
+from the literal spec-v2 §6.3.7 layout over `kex_hkdf_sha256` —
+independent of `kex_derive_session_key_v2` and of `handshake.c` — and
+requires the real side's keys to equal them byte for byte. N1 (both secrets
+= `ss_x`) and N6 (decapsulation ignored) are killed by these and by nothing
+else in the suite.
+
+### The tampered-ciphertext test is white-box, deliberately
+
+Spec-v2 §6.3 promises that a tampered `ct` "surfaces as the initiator's
+first record failing to authenticate". Asserting that end-to-end is
+awkward, because `ct` is *signed*: altering it on the wire produces
+`HANDSHAKE_ERR_SIGNATURE` long before any key exists (H4 proves exactly
+that). The only way to reach implicit rejection with two genuine contexts
+is to alter the ciphertext the initiator has **already accepted**, so
+`test_session.c`'s S27 flips one byte of `h.ini.peer_mlkem_ct` — a public
+field — and then runs both sides normally. Both reach ESTABLISHED, the keys
+differ, and the first record fails `SESSION_ERR_AUTH` in each direction, so
+the initiator is never confirmed. The test says in its own comment that it
+reaches into the context and why; the precedent is the existing tests that
+read `eph.private_key` and `keys_committed`.
+
+H3 covers the same property black-box, from the other side: the *test*
+plays the responder, tampers with the ciphertext **before** signing, and
+checks the initiator's key matches neither the encapsulator's key nor the
+all-zero-`ss_k` key — the second half of which is what proves decapsulation
+actually ran.
+
+### The fuzz harness models FIPS 203's modulus check itself
+
+`fuzz_handshake` S0 now drives `create_server_hello` and predicts its
+result from an *independent* implementation of FIPS 203 §7.2: every 12-bit
+coefficient of the encapsulation key's first 1 152 bytes must be < 3329.
+Neither liboqs nor this project's wrapper is taken on trust — a
+disagreement aborts. Seeds pin the boundary at 3328 (must pass) and 3329
+(must fail), plus an all-`0xFF` key. Every scenario also asserts the wipe
+rule, including the retryable exception above.
+
+### Mutations
+
+Run against the **fresh ASan tree**, because several of these are
+wipe/leak-class defects a plain build cannot see (the V2-4 standing rule).
+
+| # | Defect | Killed by |
+|---|---|---|
+| N1 | both KDF secrets = `ss_x` (symmetric: T1 still passes) | H1, H2 |
+| N2 | responder derives with the digest already zeroed | T1, H2 |
+| N3 | `fail_ctx` does not free `ss_kem` | H5, H6 |
+| N4 | `finish` does not free `dk` | T21, H1 |
+| N5 | encapsulation status ignored | H5 |
+| N6 | decapsulation ignored (`ss_k` left zero) | T1, H1 |
+| N7 | keys committed before `consume_success` | **survived — equivalent mutant, see below** |
+| N8 | `ss_kem` freed on a retryable `sig_A` failure | H6 |
+
+Seven of eight were killed. **N7 survived, and the reason is worth
+recording rather than papering over.** It swaps the commit of the traffic
+keys with `consume_success`, which is exactly the ordering the code
+documents as load-bearing. But the only way out of that function after the
+commit point is `goto fail_no_cancel` → `fail_ctx()`, and `fail_ctx()`
+wipes `session_keys` and clears `keys_committed`. So the reordered version
+produces **no difference observable through the public API**: T22 still sees
+no key, the same status, the same ledger state. It is an equivalent mutant,
+not a hole in the suite — no test can distinguish it without a white-box
+hook into the middle of a single call, and adding one would test the
+implementation's internal sequencing rather than any property of the
+protocol.
+
+The ordering stays as written. What N7 actually demonstrates is that the
+commit ordering is **defence in depth**: correctness here does not *depend*
+on it, because `fail_ctx()` is a reliable backstop on every post-commit
+failure path. That is a stronger position than the ordering alone, and it
+is now known rather than assumed. (Same shape as V2-4's M6, where a
+mutation survived the plain suite and ASan caught it — here nothing catches
+it, because there is nothing to catch.)

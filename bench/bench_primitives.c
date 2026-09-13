@@ -43,7 +43,7 @@ typedef struct {
 
     uint8_t shared[KEX_SHARED_SECRET_BYTES];
     uint8_t session_key[KEX_SESSION_KEY_BYTES];
-    uint8_t kdf_info[KEX_KDF_INFO_MAX_LEN];
+    uint8_t kdf_info[KEX_KDF_V2_INFO_MAX_LEN];
     size_t kdf_info_len;
     uint8_t session_id[KEX_SESSION_ID_LEN];
 
@@ -233,20 +233,20 @@ static void w_kex_shared(void *ctx, size_t k) {
 static void w_kdf_info(void *ctx, size_t k) {
     (void)ctx;
     for (size_t i = 0; i < k; i++) {
-        BENCH_REQUIRE(kex_build_kdf_info(g.kdf_info, sizeof(g.kdf_info), &g.kdf_info_len, ID_A,
-                                         sizeof(ID_A) - 1u, ID_B, sizeof(ID_B) - 1u,
-                                         KEX_DIR_C2S) == 0,
-                      "kex_build_kdf_info");
+        BENCH_REQUIRE(kex_build_kdf_info_v2(g.kdf_info, sizeof(g.kdf_info), &g.kdf_info_len, ID_A,
+                                            sizeof(ID_A) - 1u, ID_B, sizeof(ID_B) - 1u, g.th,
+                                            KEX_DIR_C2S) == 0,
+                      "kex_build_kdf_info_v2");
     }
 }
 
 static void w_derive_key(void *ctx, size_t k) {
     (void)ctx;
     for (size_t i = 0; i < k; i++) {
-        BENCH_REQUIRE(kex_derive_session_key(g.session_key, g.shared, g.session_id,
-                                             sizeof(g.session_id), ID_A, sizeof(ID_A) - 1u, ID_B,
-                                             sizeof(ID_B) - 1u, KEX_DIR_C2S) == 0,
-                      "kex_derive_session_key");
+        BENCH_REQUIRE(kex_derive_session_key_v2(g.session_key, g.shared, g.kem_ss, g.session_id,
+                                                sizeof(g.session_id), ID_A, sizeof(ID_A) - 1u, ID_B,
+                                                sizeof(ID_B) - 1u, g.th, KEX_DIR_C2S) == 0,
+                      "kex_derive_session_key_v2");
     }
 }
 
@@ -397,9 +397,9 @@ int main(int argc, char **argv) {
     bench_report(&r);
     r = bench_run("kex_shared_secret", "", NULL, w_kex_shared, NULL, 0, 0.0);
     bench_report(&r);
-    r = bench_run("kex_build_kdf_info", "", NULL, w_kdf_info, NULL, 0, 0.0);
+    r = bench_run("kex_build_kdf_info_v2", "", NULL, w_kdf_info, NULL, 0, 0.0);
     bench_report(&r);
-    r = bench_run("kex_derive_session_key", "", NULL, w_derive_key, NULL, 0, 0.0);
+    r = bench_run("kex_derive_session_key_v2 (hybrid HKDF)", "", NULL, w_derive_key, NULL, 0, 0.0);
     bench_report(&r);
 
     bench_section("Transcript hashing (SHA-256)");

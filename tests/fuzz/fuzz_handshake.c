@@ -6,7 +6,9 @@
  * each with a 2-byte big-endian length prefix. fuzz_rng_reset() runs first,
  * so every locally generated message equals the canonical transcript.
  *
- *   S0 responder receives ClientHello   OK iff it strictly decodes with id "alice"
+ *   S0 responder receives ClientHello   OK iff it strictly decodes with id "alice";
+ *      then, if accepted, create_server_hello: OK iff the encapsulation key
+ *      passes FIPS 203 7.2, modelled here independently of liboqs
  *   S1 initiator receives ServerHello   OK iff it is the genuine ServerHello
  *   S2 responder receives <=4 ClientAuth, after a genuine CH/SH exchange:
  *      exact status per message (MALFORMED / HANDSHAKE_ID_MISMATCH /
@@ -40,6 +42,30 @@ int fuzz_target_command(int argc, char **argv) {
     (void)argc;
     (void)argv;
     return -1;
+}
+
+/* FIPS 203 7.2's modulus check, modelled WITHOUT liboqs: the first 1152
+ * bytes of an ML-KEM-768 encapsulation key are 12-bit coefficients, two per
+ * 3 bytes, and every one must be < q. (The trailing 32 bytes are rho and
+ * are unconstrained.) If this disagrees with what encapsulation does, one
+ * of the two is wrong -- which is the point of a reference model. */
+#define MLKEM_Q 3329u
+#define MLKEM_T_BYTES 1152u
+
+static int ek_passes_modulus_check(const uint8_t ek[WIRE_MLKEM_EK_LEN]) {
+    for (size_t i = 0; i + 3u <= MLKEM_T_BYTES; i += 3u) {
+        const unsigned d0 = (unsigned)ek[i] | (((unsigned)ek[i + 1u] & 0x0Fu) << 8);
+        const unsigned d1 = ((unsigned)ek[i + 1u] >> 4) | ((unsigned)ek[i + 2u] << 4);
+        if (d0 >= MLKEM_Q || d1 >= MLKEM_Q) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Every per-handshake hybrid secret released (Security Req 4.12). */
+static int hybrid_wiped(const handshake_ctx_t *ctx) {
+    return ctx->kem.secret_key == NULL && ctx->ss_kem == NULL;
 }
 
 static int keys_hidden(const handshake_ctx_t *ctx) {
@@ -90,6 +116,26 @@ static void scenario_client_hello(fuzz_chunks_t *chunks) {
                 "S0: resulting state");
     FUZZ_ASSERT(handshake_pending_active_count(&g_store) == 0, "S0: accepting a ClientHello never inserts");
     FUZZ_ASSERT(keys_hidden(&res), "S0: no key is ever exposed");
+
+    if (st == HANDSHAKE_OK) {
+        /* Encapsulation is the first place a malformed encapsulation key
+         * can be detected, so the ServerHello step is part of S0's oracle. */
+        uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
+        size_t shn = 0;
+        const int want_ok = ek_passes_modulus_check(m.mlkem_ek);
+        const handshake_status_t s2 = handshake_responder_create_server_hello(&res, sh, sizeof(sh), &shn);
+        FUZZ_ASSERT((s2 == HANDSHAKE_OK) == (want_ok != 0),
+                    "S0: ServerHello succeeds iff the encapsulation key passes the modulus check");
+        FUZZ_ASSERT(want_ok || s2 == HANDSHAKE_ERR_KEX, "S0: a malformed encapsulation key -> KEX");
+        FUZZ_ASSERT(handshake_get_state(&res) ==
+                        (want_ok ? HANDSHAKE_STATE_SERVER_HELLO_CREATED : HANDSHAKE_STATE_FAILED),
+                    "S0: resulting state after the ServerHello step");
+        FUZZ_ASSERT(handshake_pending_active_count(&g_store) == (want_ok ? 1u : 0u),
+                    "S0: a ledger entry exists iff the ServerHello was produced");
+        FUZZ_ASSERT(want_ok ? (res.ss_kem != NULL) : hybrid_wiped(&res),
+                    "S0: ss_kem is retained on success and wiped on failure");
+        FUZZ_ASSERT(keys_hidden(&res), "S0: still no key after the ServerHello step");
+    }
     handshake_ctx_wipe(&res);
 }
 
@@ -107,6 +153,7 @@ static void scenario_server_hello(fuzz_chunks_t *chunks) {
                     (genuine ? HANDSHAKE_STATE_SERVER_HELLO_VERIFIED : HANDSHAKE_STATE_FAILED),
                 "S1: resulting state");
     FUZZ_ASSERT(keys_hidden(&ini), "S1: no traffic key before ESTABLISHED");
+    FUZZ_ASSERT(genuine || hybrid_wiped(&ini), "S1: a rejected ServerHello leaves no hybrid secret");
     handshake_ctx_wipe(&ini);
 }
 
@@ -187,6 +234,12 @@ static void scenario_client_auth(fuzz_chunks_t *chunks) {
                         "S2: after the genuine ClientAuth, finish yields exactly the canonical keys");
         } else {
             FUZZ_ASSERT(keys_hidden(&res), "S2: no key after a rejected ClientAuth");
+            /* Terminal -> wiped; retryable -> ss_kem must SURVIVE, because
+             * the next ClientAuth still needs it. */
+            FUZZ_ASSERT(handshake_get_state(&res) != HANDSHAKE_STATE_FAILED || hybrid_wiped(&res),
+                        "S2: a terminal ClientAuth failure wipes the hybrid secret");
+            FUZZ_ASSERT(handshake_get_state(&res) != HANDSHAKE_STATE_SERVER_HELLO_CREATED || res.ss_kem != NULL,
+                        "S2: a retryable failure keeps ss_kem");
         }
     }
     handshake_ctx_wipe(&ini);
@@ -262,6 +315,31 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
             l1[0] = an;
             emit_msgs(emit, ctx, "s0-id64", 0, m1, l1, 1);
         }
+    }
+
+    /* S0: encapsulation-key boundary seeds for the modulus check. The ek
+     * starts after type|id_len|id|x25519_pub, and its first coefficient is
+     * the low 12 bits of the first two bytes. 3328 must pass, 3329 (= q)
+     * must fail, and an all-0xFF key fails everywhere. */
+    {
+        const size_t ek_off = 2u + FUZZ_ID_A_LEN + WIRE_X25519_PUB_LEN;
+        const struct {
+            const char *name;
+            unsigned coeff;
+        } cases[2] = {{"s0-ek-coefficient-3328", 3328u}, {"s0-ek-coefficient-3329", 3329u}};
+        for (size_t i = 0; i < 2; i++) {
+            memcpy(a, g->ch, g->ch_len);
+            a[ek_off] = (uint8_t)(cases[i].coeff & 0xFFu);
+            a[ek_off + 1u] = (uint8_t)((a[ek_off + 1u] & 0xF0u) | ((cases[i].coeff >> 8) & 0x0Fu));
+            m1[0] = a;
+            l1[0] = g->ch_len;
+            emit_msgs(emit, ctx, cases[i].name, 0, m1, l1, 1);
+        }
+        memcpy(a, g->ch, g->ch_len);
+        memset(a + ek_off, 0xFF, WIRE_MLKEM_EK_LEN);
+        m1[0] = a;
+        l1[0] = g->ch_len;
+        emit_msgs(emit, ctx, "s0-malformed-ek", 0, m1, l1, 1);
     }
 
     /* S1 */

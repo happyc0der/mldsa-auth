@@ -1025,6 +1025,111 @@ static void test_s26_wipe_idempotent(void) {
     sp_close(&p);
 }
 
+/* =====================================================================
+ * S27 -- the designed failure mode of a KEM key disagreement (V2-5)
+ *
+ * spec-v2 6.3: a tampered mlkem_ct is implicitly rejected, both sides
+ * complete the handshake, and "the disagreement surfaces as the initiator's
+ * first record failing to authenticate". That sentence is asserted here
+ * with REAL code on both sides.
+ *
+ * WHITE-BOX BY NECESSITY: ek and ct are both covered by the signatures, so
+ * a ciphertext altered on the wire is rejected as SIGNATURE long before any
+ * key is derived (test_handshake H4). The only way to reach implicit
+ * rejection with two genuine contexts is to alter the ciphertext the
+ * initiator has already accepted -- a public field of its context, touched
+ * here the way other tests read eph.private_key and keys_committed.
+ * =================================================================== */
+
+static void test_s27_kem_disagreement(void) {
+    hs_t h;
+    session_t a;
+    session_t b;
+    fake_clock_t clk;
+    size_t rec_len = 0;
+    size_t got = 0;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    memset(&clk, 0, sizeof(clk));
+    clk.now = T0;
+
+    hs_init(&h);
+    const int upto_sh =
+        handshake_initiator_create_client_hello(&h.ini, h.ch, sizeof(h.ch), &h.ch_len) == HANDSHAKE_OK &&
+        handshake_responder_accept_client_hello(&h.res, h.ch, h.ch_len) == HANDSHAKE_OK &&
+        handshake_responder_create_server_hello(&h.res, h.sh, sizeof(h.sh), &h.sh_len) == HANDSHAKE_OK &&
+        handshake_initiator_verify_server_hello(&h.ini, h.sh, h.sh_len) == HANDSHAKE_OK;
+    CHECK(upto_sh, "S27: the handshake reaches SERVER_HELLO_VERIFIED normally");
+
+    /* One byte of the ACCEPTED ciphertext: sig_B has already been checked,
+     * so nothing downstream can notice. */
+    h.ini.peer_mlkem_ct[0] ^= 0x01;
+
+    const int established =
+        upto_sh &&
+        handshake_initiator_create_client_auth(&h.ini, h.ca, sizeof(h.ca), &h.ca_len) == HANDSHAKE_OK &&
+        handshake_responder_verify_client_auth(&h.res, h.ca, h.ca_len) == HANDSHAKE_OK &&
+        handshake_responder_finish(&h.res) == HANDSHAKE_OK &&
+        handshake_initiator_finish(&h.ini) == HANDSHAKE_OK;
+    CHECK(established, "S27: BOTH sides still reach ESTABLISHED -- decapsulation reports no error (Req 4.11)");
+
+    const uint8_t *ik = NULL;
+    const uint8_t *rk = NULL;
+    CHECK(established && handshake_session_key_c2s(&h.ini, &ik) == HANDSHAKE_OK &&
+              handshake_session_key_c2s(&h.res, &rk) == HANDSHAKE_OK &&
+              sodium_memcmp(ik, rk, AEAD_KEY_BYTES) != 0,
+          "S27: ...but they derived DIFFERENT keys");
+
+    if (!established || session_init_from_handshake(&a, &h.ini, NULL, fake_clock_fn, &clk) != SESSION_OK ||
+        session_init_from_handshake(&b, &h.res, NULL, fake_clock_fn, &clk) != SESSION_OK) {
+        fatal("S27 sessions");
+    }
+
+    /* The initiator's first record cannot be opened by the responder. */
+    CHECK(seal_into(&a, 32, g_rec, &rec_len) == SESSION_OK &&
+              open_from(&b, g_rec, rec_len, &got) == SESSION_ERR_AUTH &&
+              session_get_state(&b) == SESSION_STATE_FAILED,
+          "S27: the initiator's first record fails AUTH at the responder, terminally");
+
+    /* And in the other direction the initiator is never confirmed -- which
+     * is what applications gate irreversible actions on (6.4.4). */
+    session_wipe(&b);
+    memset(&b, 0, sizeof(b));
+    hs_t h2;
+    session_t a2;
+    session_t b2;
+    memset(&a2, 0, sizeof(a2));
+    memset(&b2, 0, sizeof(b2));
+    hs_init(&h2);
+    const int ok2 = handshake_initiator_create_client_hello(&h2.ini, h2.ch, sizeof(h2.ch), &h2.ch_len) ==
+                        HANDSHAKE_OK &&
+                    handshake_responder_accept_client_hello(&h2.res, h2.ch, h2.ch_len) == HANDSHAKE_OK &&
+                    handshake_responder_create_server_hello(&h2.res, h2.sh, sizeof(h2.sh), &h2.sh_len) ==
+                        HANDSHAKE_OK &&
+                    handshake_initiator_verify_server_hello(&h2.ini, h2.sh, h2.sh_len) == HANDSHAKE_OK;
+    if (!ok2) {
+        fatal("S27 second fixture");
+    }
+    h2.ini.peer_mlkem_ct[WIRE_MLKEM_CT_LEN - 1u] ^= 0x01;
+    if (handshake_initiator_create_client_auth(&h2.ini, h2.ca, sizeof(h2.ca), &h2.ca_len) != HANDSHAKE_OK ||
+        handshake_responder_verify_client_auth(&h2.res, h2.ca, h2.ca_len) != HANDSHAKE_OK ||
+        handshake_responder_finish(&h2.res) != HANDSHAKE_OK ||
+        handshake_initiator_finish(&h2.ini) != HANDSHAKE_OK ||
+        session_init_from_handshake(&a2, &h2.ini, NULL, fake_clock_fn, &clk) != SESSION_OK ||
+        session_init_from_handshake(&b2, &h2.res, NULL, fake_clock_fn, &clk) != SESSION_OK) {
+        fatal("S27 second sessions");
+    }
+    CHECK(seal_into(&b2, 0, g_rec, &rec_len) == SESSION_OK &&
+              open_from(&a2, g_rec, rec_len, &got) == SESSION_ERR_AUTH && !session_is_peer_confirmed(&a2),
+          "S27: the responder's confirmation record fails AUTH, so the initiator is never confirmed");
+
+    session_wipe(&a);
+    session_wipe(&a2);
+    session_wipe(&b2);
+    hs_wipe(&h);
+    hs_wipe(&h2);
+}
+
 int main(void) {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
      * later check crashes the process. */
@@ -1068,6 +1173,7 @@ int main(void) {
     test_s21_accessors();
     test_s25_no_reinit();
     test_s26_wipe_idempotent();
+    test_s27_kem_disagreement();
 
     handshake_pending_store_wipe(&g_store);
     keystore_wipe(&g_ks);

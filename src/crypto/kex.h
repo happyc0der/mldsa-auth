@@ -40,20 +40,6 @@
  * layer, exactly like the KEX_ID and KEX_SESSION_ID_LEN constants above. */
 #define KEX_TRANSCRIPT_HASH_BYTES 32u
 
-/* --- v1 key schedule (RETAINED FOR ONE STEP) ---------------------------
- * KEX_KDF_LABEL, KEX_KDF_INFO_MAX_LEN, kex_build_kdf_info() and
- * kex_derive_session_key() below are the v1 (X25519-only) schedule. They
- * survive V2-4 only because protocol/handshake.c still calls them; V2-5
- * rewrites that caller for the hybrid handshake and DELETES all four.
- * No new caller may use them.
- * --------------------------------------------------------------------- */
-
-/* Literal domain-separation label for the KDF info (17 bytes, no NUL). */
-#define KEX_KDF_LABEL "mldsa-auth/v1/kdf"
-
-/* 17 label + 1 separator + 1 len + 64 id + 1 len + 64 id + 1 direction */
-#define KEX_KDF_INFO_MAX_LEN 149u
-
 /* Literal domain-separation label for the v2 KDF info (17 bytes, no NUL). */
 #define KEX_KDF_V2_LABEL "mldsa-auth/v2/kdf"
 
@@ -96,7 +82,7 @@ int kex_shared_secret(uint8_t shared_secret[KEX_SHARED_SECRET_BYTES],
 /* Generic HKDF-SHA256 (RFC 5869): extract-then-expand `okm_len` bytes of
  * output keying material from `ikm`, salted with `salt`, bound to `info`.
  * Exposed at this granularity (rather than only via
- * kex_derive_session_key() below) so it can be tested directly against
+ * kex_derive_session_key_v2() below) so it can be tested directly against
  * RFC 5869's own published test vectors, independent of this project's
  * specific info-string construction.
  *
@@ -107,45 +93,6 @@ int kex_hkdf_sha256(uint8_t *okm, size_t okm_len,
                      const uint8_t *ikm, size_t ikm_len,
                      const uint8_t *salt, size_t salt_len,
                      const uint8_t *info, size_t info_len);
-
-/* Builds the exact normative KDF info bytes (spec §6.3) into
- * caller-provided storage:
- *
- *   kdf_info = "mldsa-auth/v1/kdf" || 0x00 ||
- *              a_id_len_u8 || a_id || b_id_len_u8 || b_id || direction_u8
- *
- * a_id is ALWAYS the initiator's id and b_id ALWAYS the responder's,
- * regardless of which side computes. Each variable-length id is preceded
- * by its own length byte, which makes the encoding injective: an earlier
- * unprefixed "label || a_id || b_id || direction" form let
- * (a="ab", b="c") and (a="a", b="bc") produce identical bytes.
- *
- * Validates -- all before writing a single byte -- that out/out_len/a_id/
- * b_id are non-NULL, 1 <= a_id_len <= 64, 1 <= b_id_len <= 64, direction
- * is exactly KEX_DIR_C2S or KEX_DIR_S2C, and out_cap holds the full
- * result. On failure returns nonzero, writes nothing to out, and leaves
- * *out_len untouched. Exposed (not static) so tests can check the exact
- * bytes against an independently hand-built expected buffer. */
-int kex_build_kdf_info(uint8_t *out, size_t out_cap, size_t *out_len,
-                       const uint8_t *a_id, size_t a_id_len,
-                       const uint8_t *b_id, size_t b_id_len,
-                       uint8_t direction);
-
-/* Derives one direction's session key per spec §6.3:
- *   HKDF-SHA256(IKM = shared_secret, salt = session_id (exactly 16 bytes),
- *               info = kex_build_kdf_info(a_id, b_id, direction), L = 32)
- * Callers pass identities with explicit lengths and never concatenate
- * anything themselves -- the info layout is owned entirely by
- * kex_build_kdf_info(), with the same validation. Call once per
- * direction to get independent c2s/s2c keys that are never reused
- * bidirectionally. Returns 0 on success; on failure session_key is left
- * untouched. */
-int kex_derive_session_key(uint8_t session_key[KEX_SESSION_KEY_BYTES],
-                            const uint8_t shared_secret[KEX_SHARED_SECRET_BYTES],
-                            const uint8_t *session_id, size_t session_id_len,
-                            const uint8_t *a_id, size_t a_id_len,
-                            const uint8_t *b_id, size_t b_id_len,
-                            uint8_t direction);
 
 /* --- v2 hybrid key schedule (spec-v2 6.3.7) ---------------------------- */
 

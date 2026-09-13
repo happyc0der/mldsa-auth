@@ -16,6 +16,15 @@ _Static_assert(HANDSHAKE_TRANSCRIPT_HASH_BYTES == crypto_hash_sha256_BYTES,
                "transcript digests are SHA-256");
 _Static_assert(HANDSHAKE_AUTH_FAILURE_LIMIT >= 1u && HANDSHAKE_AUTH_FAILURE_LIMIT <= 255u,
                "failure_count is a uint8_t");
+/* The hybrid halves must agree with the wire format and with each other:
+ * the KDF binds a 32-byte transcript digest, and both shared secrets are
+ * the same length because HKDF's IKM is their concatenation. */
+_Static_assert(KEX_TRANSCRIPT_HASH_BYTES == HANDSHAKE_TRANSCRIPT_HASH_BYTES,
+               "the KDF binds the transcript digest this module computes");
+_Static_assert(MLKEM_PUBLIC_KEY_BYTES == WIRE_MLKEM_EK_LEN, "ML-KEM ek size vs the wire");
+_Static_assert(MLKEM_CIPHERTEXT_BYTES == WIRE_MLKEM_CT_LEN, "ML-KEM ciphertext size vs the wire");
+_Static_assert(MLKEM_SHARED_SECRET_BYTES == KEX_SHARED_SECRET_BYTES,
+               "both hybrid secrets are the same length");
 
 #define SESSION_KEYS_LEN (2u * KEX_SESSION_KEY_BYTES)
 #define C2S_OFFSET 0u
@@ -338,6 +347,13 @@ static handshake_status_t check_call(const handshake_ctx_t *ctx, handshake_role_
  * consequences), and must happen before this wipes handshake_id. */
 static handshake_status_t fail_ctx(handshake_ctx_t *ctx, handshake_status_t why) {
     kex_keypair_free(&ctx->eph);
+    /* Both hybrid secrets go here too: the initiator's decapsulation key
+     * and the responder's retained KEM secret (Security Req 4.12). */
+    mlkem_keypair_free(&ctx->kem);
+    if (ctx->ss_kem != NULL) {
+        secure_mem_free(ctx->ss_kem, MLKEM_SHARED_SECRET_BYTES);
+        ctx->ss_kem = NULL;
+    }
     if (ctx->session_keys != NULL) {
         secure_mem_wipe(ctx->session_keys, SESSION_KEYS_LEN);
     }
@@ -347,6 +363,7 @@ static handshake_status_t fail_ctx(handshake_ctx_t *ctx, handshake_status_t why)
     sodium_memzero(ctx->th_client_auth, sizeof(ctx->th_client_auth));
     sodium_memzero(ctx->handshake_id, sizeof(ctx->handshake_id));
     sodium_memzero(ctx->peer_eph_pub, sizeof(ctx->peer_eph_pub));
+    sodium_memzero(ctx->peer_mlkem_ct, sizeof(ctx->peer_mlkem_ct));
     ctx->state = HANDSHAKE_STATE_FAILED;
     return why;
 }
@@ -368,20 +385,24 @@ static handshake_status_t map_pending_failure(pending_status_t p) {
     }
 }
 
-/* c2s then s2c. a_id is ALWAYS the initiator, b_id ALWAYS the responder. */
+/* c2s then s2c, from BOTH hybrid secrets and the transcript digest
+ * (spec-v2 §6.3.7). a_id is ALWAYS the initiator, b_id ALWAYS the
+ * responder, so both peers build byte-identical KDF info. */
 static int derive_traffic_keys(uint8_t out[SESSION_KEYS_LEN],
-                               const uint8_t shared_secret[KEX_SHARED_SECRET_BYTES],
+                               const uint8_t ss_x[KEX_SHARED_SECRET_BYTES],
+                               const uint8_t ss_k[KEX_SHARED_SECRET_BYTES],
                                const uint8_t session_id[WIRE_SESSION_ID_LEN],
                                const uint8_t *initiator_id, size_t initiator_id_len,
-                               const uint8_t *responder_id, size_t responder_id_len) {
-    if (kex_derive_session_key(out + C2S_OFFSET, shared_secret, session_id, WIRE_SESSION_ID_LEN,
-                               initiator_id, initiator_id_len, responder_id, responder_id_len,
-                               HANDSHAKE_DIR_C2S) != 0) {
+                               const uint8_t *responder_id, size_t responder_id_len,
+                               const uint8_t th_client_auth[HANDSHAKE_TRANSCRIPT_HASH_BYTES]) {
+    if (kex_derive_session_key_v2(out + C2S_OFFSET, ss_x, ss_k, session_id, WIRE_SESSION_ID_LEN,
+                                  initiator_id, initiator_id_len, responder_id, responder_id_len,
+                                  th_client_auth, HANDSHAKE_DIR_C2S) != 0) {
         return -1;
     }
-    if (kex_derive_session_key(out + S2C_OFFSET, shared_secret, session_id, WIRE_SESSION_ID_LEN,
-                               initiator_id, initiator_id_len, responder_id, responder_id_len,
-                               HANDSHAKE_DIR_S2C) != 0) {
+    if (kex_derive_session_key_v2(out + S2C_OFFSET, ss_x, ss_k, session_id, WIRE_SESSION_ID_LEN,
+                                  initiator_id, initiator_id_len, responder_id, responder_id_len,
+                                  th_client_auth, HANDSHAKE_DIR_S2C) != 0) {
         return -1;
     }
     return 0;
@@ -474,6 +495,11 @@ void handshake_ctx_wipe(handshake_ctx_t *ctx) {
         (void)handshake_pending_cancel(ctx->pending, ctx->handshake_id);
     }
     kex_keypair_free(&ctx->eph);
+    mlkem_keypair_free(&ctx->kem);
+    if (ctx->ss_kem != NULL) {
+        secure_mem_free(ctx->ss_kem, MLKEM_SHARED_SECRET_BYTES);
+        ctx->ss_kem = NULL;
+    }
     if (ctx->session_keys != NULL) {
         secure_mem_free(ctx->session_keys, SESSION_KEYS_LEN);
     }
@@ -533,10 +559,16 @@ handshake_status_t handshake_initiator_create_client_hello(handshake_ctx_t *ctx,
     if (kex_keypair_generate(&ctx->eph) != 0) {
         return fail_ctx(ctx, HANDSHAKE_ERR_INTERNAL);
     }
+    /* The post-quantum half: a fresh ML-KEM-768 keypair per handshake. The
+     * decapsulation key stays in secure_mem until finish(). */
+    if (mlkem_keypair_generate(&ctx->kem) != 0) {
+        return fail_ctx(ctx, HANDSHAKE_ERR_INTERNAL);
+    }
 
     memcpy(ch.id, ctx->local_id, ctx->local_id_len);
     ch.id_len = ctx->local_id_len;
     memcpy(ch.ephemeral_pub, ctx->eph.public_key, KEX_PUBLIC_KEY_BYTES);
+    memcpy(ch.mlkem_ek, ctx->kem.public_key, WIRE_MLKEM_EK_LEN);
     randombytes_buf(ch.session_id, WIRE_SESSION_ID_LEN);
     randombytes_buf(ch.nonce, WIRE_NONCE_LEN);
 
@@ -547,8 +579,10 @@ handshake_status_t handshake_initiator_create_client_hello(handshake_ctx_t *ctx,
         return fail_ctx(ctx, HANDSHAKE_ERR_INTERNAL);
     }
     if (out_cap < ch_len) {
-        /* API misuse: roll back every side effect; state stays NEW. */
+        /* API misuse: roll back every side effect, BOTH keypairs included;
+         * state stays NEW and the call can be retried. */
         kex_keypair_free(&ctx->eph);
+        mlkem_keypair_free(&ctx->kem);
         sodium_memzero(ctx->ch_bytes, sizeof(ctx->ch_bytes));
         sodium_memzero(&ch, sizeof(ch));
         return HANDSHAKE_ERR_INVALID_ARG;
@@ -644,9 +678,13 @@ handshake_status_t handshake_initiator_verify_server_hello(handshake_ctx_t *ctx,
         goto fail;
     }
 
-    /* 9. Retain the authenticated peer PUBLIC key and the transcript
-     *    digests; both computed from the exact wire bytes. */
+    /* 9. Retain the authenticated peer PUBLIC values and the transcript
+     *    digests; all computed from the exact wire bytes. The KEM
+     *    ciphertext is public and is decapsulated at finish (spec-v2
+     *    §6.3): decapsulation cannot validate it, so doing it earlier
+     *    would prove nothing. */
     memcpy(ctx->peer_eph_pub, msg.ephemeral_pub, KEX_PUBLIC_KEY_BYTES);
+    memcpy(ctx->peer_mlkem_ct, msg.mlkem_ct, WIRE_MLKEM_CT_LEN);
     if (transcript_hash_client_auth(ctx->ch_bytes, ctx->ch_len, sh, sh_len,
                                     ctx->th_client_auth) != 0 ||
         transcript_handshake_id(ctx->ch_bytes, ctx->ch_len, sh, sh_len, ctx->handshake_id) != 0) {
@@ -723,11 +761,12 @@ handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx) {
     }
 
     uint8_t *shared = NULL;
+    uint8_t *ss_kem = NULL;
     uint8_t *keys = NULL;
     handshake_status_t result = HANDSHAKE_ERR_INTERNAL;
 
-    /* 1. RECOMPUTE the shared secret: nothing was carried over from the
-     *    validation probe in verify_server_hello. */
+    /* 1. RECOMPUTE the X25519 shared secret: nothing was carried over from
+     *    the validation probe in verify_server_hello. */
     shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
     if (shared == NULL) {
         result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
@@ -738,14 +777,30 @@ handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx) {
         goto fail;
     }
 
-    /* 2. Derive c2s/s2c into temporaries (initiator = A, responder = B). */
+    /* 2. Decapsulate for the post-quantum secret. This CANNOT detect a
+     *    tampered ciphertext -- that is implicit rejection, which returns
+     *    success and a different secret (Security Req 4.11) -- so a
+     *    nonzero return here means only a missing or corrupt
+     *    decapsulation key, which is a local defect. */
+    ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
+    if (ss_kem == NULL) {
+        result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
+        goto fail;
+    }
+    if (mlkem_decaps(ss_kem, ctx->peer_mlkem_ct, &ctx->kem) != 0) {
+        result = HANDSHAKE_ERR_INTERNAL;
+        goto fail;
+    }
+
+    /* 3. Derive c2s/s2c into temporaries (initiator = A, responder = B),
+     *    binding both secrets and the transcript digest. */
     keys = secure_mem_alloc(SESSION_KEYS_LEN);
     if (keys == NULL) {
         result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
         goto fail;
     }
-    if (derive_traffic_keys(keys, shared, ctx->session_id, ctx->local_id, ctx->local_id_len,
-                            ctx->peer_id, ctx->peer_id_len) != 0) {
+    if (derive_traffic_keys(keys, shared, ss_kem, ctx->session_id, ctx->local_id, ctx->local_id_len,
+                            ctx->peer_id, ctx->peer_id_len, ctx->th_client_auth) != 0) {
         goto fail;
     }
 
@@ -753,20 +808,27 @@ handshake_status_t handshake_initiator_finish(handshake_ctx_t *ctx) {
     memcpy(ctx->session_keys, keys, SESSION_KEYS_LEN);
     ctx->keys_committed = true;
 
-    /* 3. Wipe the temporary secret, the ephemeral scalar and TH_client_auth.
-     *    handshake_id is KEPT: it is public (ClientAuth carries it in the
-     *    clear) and the session layer binds it into every record's AD. */
+    /* 4. Wipe the temporary secrets, both ephemeral keys and
+     *    TH_client_auth. handshake_id is KEPT: it is public (ClientAuth
+     *    carries it in the clear) and the session layer binds it into
+     *    every record's AD. */
     secure_mem_free(shared, KEX_SHARED_SECRET_BYTES);
+    secure_mem_free(ss_kem, MLKEM_SHARED_SECRET_BYTES);
     secure_mem_free(keys, SESSION_KEYS_LEN);
     kex_keypair_free(&ctx->eph);
+    mlkem_keypair_free(&ctx->kem);
     sodium_memzero(ctx->th_client_auth, sizeof(ctx->th_client_auth));
     sodium_memzero(ctx->peer_eph_pub, sizeof(ctx->peer_eph_pub));
+    sodium_memzero(ctx->peer_mlkem_ct, sizeof(ctx->peer_mlkem_ct));
     ctx->state = HANDSHAKE_STATE_ESTABLISHED;
     return HANDSHAKE_OK;
 
 fail:
     if (shared != NULL) {
         secure_mem_free(shared, KEX_SHARED_SECRET_BYTES);
+    }
+    if (ss_kem != NULL) {
+        secure_mem_free(ss_kem, MLKEM_SHARED_SECRET_BYTES);
     }
     if (keys != NULL) {
         secure_mem_free(keys, SESSION_KEYS_LEN);
@@ -833,17 +895,20 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
     }
 
     server_hello_t sh;
+    client_hello_t ch;
     uint8_t sh_unsigned[SERVER_HELLO_UNSIGNED_MAX_ENCODED_LEN];
     uint8_t sh_full[SERVER_HELLO_MAX_ENCODED_LEN];
     uint8_t th_server_auth[HANDSHAKE_TRANSCRIPT_HASH_BYTES];
     uint8_t th_client_auth[HANDSHAKE_TRANSCRIPT_HASH_BYTES];
     uint8_t handshake_id[WIRE_HANDSHAKE_ID_LEN];
+    size_t consumed = 0;
     size_t unsigned_len = 0;
     size_t full_len = 0;
     size_t sig_len = 0;
     pending_status_t ps = PENDING_OK;
     handshake_status_t result = HANDSHAKE_ERR_INTERNAL;
     memset(&sh, 0, sizeof(sh));
+    memset(&ch, 0, sizeof(ch));
     memset(th_server_auth, 0, sizeof(th_server_auth));
     memset(th_client_auth, 0, sizeof(th_client_auth));
     memset(handshake_id, 0, sizeof(handshake_id));
@@ -857,6 +922,26 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
     memcpy(sh.ephemeral_pub, ctx->eph.public_key, KEX_PUBLIC_KEY_BYTES);
     randombytes_buf(sh.nonce, WIRE_NONCE_LEN);
     memcpy(sh.session_id_echo, ctx->session_id, WIRE_SESSION_ID_LEN);
+
+    /* Encapsulate to the initiator's key, taken from the EXACT ClientHello
+     * bytes this context accepted rather than from a second copy kept in
+     * the context. Those bytes already passed a strict decode, so a
+     * failure here is a local defect, not peer input. */
+    if (decode_client_hello(ctx->ch_bytes, ctx->ch_len, &ch, &consumed) != 0) {
+        goto fail;
+    }
+    ctx->ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
+    if (ctx->ss_kem == NULL) {
+        result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
+        goto fail;
+    }
+    /* BEFORE sig_B, so a malformed encapsulation key (FIPS 203 7.2) costs
+     * no ML-DSA signature. This is the first point at which such a key can
+     * be detected: the wire decoder validates length only. */
+    if (mlkem_encaps(sh.mlkem_ct, ctx->ss_kem, ch.mlkem_ek) != 0) {
+        result = HANDSHAKE_ERR_KEX;
+        goto fail;
+    }
 
     /* sig_B covers the ClientHello AND this ServerHello's own unsigned
      * fields (spec §6.3.2). */
@@ -881,9 +966,15 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
 
     if (out_cap < full_len) {
         /* API misuse: roll back; state stays CLIENT_HELLO_ACCEPTED and
-         * nothing has been inserted into the ledger. */
+         * nothing has been inserted into the ledger. The retained KEM
+         * secret is discarded too -- a retry encapsulates afresh. */
         kex_keypair_free(&ctx->eph);
+        if (ctx->ss_kem != NULL) {
+            secure_mem_free(ctx->ss_kem, MLKEM_SHARED_SECRET_BYTES);
+            ctx->ss_kem = NULL;
+        }
         sodium_memzero(&sh, sizeof(sh));
+        sodium_memzero(&ch, sizeof(ch));
         sodium_memzero(sh_unsigned, sizeof(sh_unsigned));
         sodium_memzero(sh_full, sizeof(sh_full));
         sodium_memzero(th_server_auth, sizeof(th_server_auth));
@@ -912,6 +1003,7 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
     sodium_memzero(ctx->ch_bytes, sizeof(ctx->ch_bytes)); /* no longer needed */
     ctx->ch_len = 0;
     sodium_memzero(&sh, sizeof(sh));
+    sodium_memzero(&ch, sizeof(ch));
     sodium_memzero(sh_unsigned, sizeof(sh_unsigned));
     sodium_memzero(sh_full, sizeof(sh_full));
     sodium_memzero(th_server_auth, sizeof(th_server_auth));
@@ -922,6 +1014,7 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
 
 fail:
     sodium_memzero(&sh, sizeof(sh));
+    sodium_memzero(&ch, sizeof(ch));
     sodium_memzero(sh_unsigned, sizeof(sh_unsigned));
     sodium_memzero(sh_full, sizeof(sh_full));
     sodium_memzero(th_server_auth, sizeof(th_server_auth));
@@ -982,11 +1075,14 @@ handshake_status_t handshake_responder_verify_client_auth(handshake_ctx_t *ctx,
         sodium_memzero(&msg, sizeof(msg));
         ps = handshake_pending_record_failure(ctx->pending, ctx->handshake_id);
         if (ps == PENDING_OK) {
+            /* RETRYABLE: the handshake is still live, so ss_kem is
+             * deliberately KEPT -- the next ClientAuth needs it. */
             return HANDSHAKE_ERR_SIGNATURE;
         }
         return fail_ctx(ctx, map_pending_failure(ps));
     }
-    sodium_memzero(digest, sizeof(digest));
+    /* `digest` is TH_client_auth and is now a KDF input as well as the
+     * signed message, so it is wiped after derivation rather than here. */
 
     /* 6. X25519 into a TEMPORARY buffer -- A's ephemeral key is only used
      *    now that sig_A has authenticated it. */
@@ -1000,14 +1096,20 @@ handshake_status_t handshake_responder_verify_client_auth(handshake_ctx_t *ctx,
         goto cancel_and_fail;
     }
 
-    /* 7. Traffic keys into TEMPORARY buffers (initiator = A, responder = B). */
+    /* 7. Traffic keys into TEMPORARY buffers (initiator = A, responder =
+     *    B), from both hybrid secrets and this handshake's transcript
+     *    digest. ss_kem was produced when this context encapsulated. */
+    if (ctx->ss_kem == NULL) {
+        result = HANDSHAKE_ERR_INTERNAL; /* unreachable: set at ServerHello */
+        goto cancel_and_fail;
+    }
     keys = secure_mem_alloc(SESSION_KEYS_LEN);
     if (keys == NULL) {
         result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
         goto cancel_and_fail;
     }
-    if (derive_traffic_keys(keys, shared, ctx->session_id, ctx->peer_id, ctx->peer_id_len,
-                            ctx->local_id, ctx->local_id_len) != 0) {
+    if (derive_traffic_keys(keys, shared, ctx->ss_kem, ctx->session_id, ctx->peer_id,
+                            ctx->peer_id_len, ctx->local_id, ctx->local_id_len, digest) != 0) {
         result = HANDSHAKE_ERR_INTERNAL;
         goto cancel_and_fail;
     }
@@ -1024,9 +1126,13 @@ handshake_status_t handshake_responder_verify_client_auth(handshake_ctx_t *ctx,
     memcpy(ctx->session_keys, keys, SESSION_KEYS_LEN);
     ctx->keys_committed = true;
 
-    /* 10. */
+    /* 10. The KEM secret has done its job: wipe it here rather than
+     *     waiting for teardown (Security Req 4.12). */
     secure_mem_free(shared, KEX_SHARED_SECRET_BYTES);
     secure_mem_free(keys, SESSION_KEYS_LEN);
+    secure_mem_free(ctx->ss_kem, MLKEM_SHARED_SECRET_BYTES);
+    ctx->ss_kem = NULL;
+    sodium_memzero(digest, sizeof(digest));
     sodium_memzero(&msg, sizeof(msg));
     ctx->state = HANDSHAKE_STATE_CLIENT_AUTH_VERIFIED;
     return HANDSHAKE_OK;
@@ -1043,8 +1149,9 @@ fail_no_cancel:
     if (keys != NULL) {
         secure_mem_free(keys, SESSION_KEYS_LEN);
     }
+    sodium_memzero(digest, sizeof(digest));
     sodium_memzero(&msg, sizeof(msg));
-    return fail_ctx(ctx, result);
+    return fail_ctx(ctx, result); /* frees ss_kem */
 }
 
 handshake_status_t handshake_responder_finish(handshake_ctx_t *ctx) {

@@ -100,8 +100,8 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | Test | Covers |
 |---|---|
 | `test_vectors` | Known-answer tests for ML-DSA-65, **ML-KEM-768**, HKDF-SHA256 and ChaCha20-Poly1305, transcribed from RFCs and liboqs's own KAT files, plus ML-KEM implicit rejection and FIPS 203 input validation |
-| `test_handshake` | Wire format plus the handshake state machine: happy path, tampered signatures, wrong ids, replay, transcript substitution, the pending ledger, and the v2 additions — ML-KEM field layout at literal offsets, v1 messages rejected, and byte-exact hybrid-KDF vectors |
-| `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff |
+| `test_handshake` | Wire format plus the handshake state machine: happy path, tampered signatures, wrong ids, replay, transcript substitution, the pending ledger, and the v2 additions — ML-KEM field layout at literal offsets, v1 messages rejected, byte-exact hybrid-KDF vectors, and hand-built-peer oracles that pin the hybrid keys independently |
+| `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff, and the KEM-disagreement failure mode end to end |
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
 | `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, and demo key files |

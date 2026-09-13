@@ -91,92 +91,6 @@ int kex_hkdf_sha256(uint8_t *okm, size_t okm_len,
     return (rc == 0) ? 0 : -1;
 }
 
-/* The label is a literal with no NUL in the hashed bytes; its length is
- * computed at compile time, never with strlen(). */
-_Static_assert(sizeof(KEX_KDF_LABEL) - 1 == 17u,
-               "KDF label must be exactly 17 bytes");
-_Static_assert(KEX_KDF_INFO_MAX_LEN ==
-                   (sizeof(KEX_KDF_LABEL) - 1) + 1u + 1u + KEX_ID_MAX_LEN + 1u + KEX_ID_MAX_LEN + 1u,
-               "KEX_KDF_INFO_MAX_LEN must match the normative layout");
-
-int kex_build_kdf_info(uint8_t *out, size_t out_cap, size_t *out_len,
-                       const uint8_t *a_id, size_t a_id_len,
-                       const uint8_t *b_id, size_t b_id_len,
-                       uint8_t direction) {
-    static const char kLabel[] = KEX_KDF_LABEL;
-    const size_t label_len = sizeof(kLabel) - 1; /* the NUL is not part of the info */
-
-    if (out == NULL || out_len == NULL || a_id == NULL || b_id == NULL) {
-        return -1;
-    }
-    if (a_id_len < KEX_ID_MIN_LEN || a_id_len > KEX_ID_MAX_LEN) {
-        return -1;
-    }
-    if (b_id_len < KEX_ID_MIN_LEN || b_id_len > KEX_ID_MAX_LEN) {
-        return -1;
-    }
-    if (direction != KEX_DIR_C2S && direction != KEX_DIR_S2C) {
-        return -1;
-    }
-
-    const size_t needed = label_len + 1u + 1u + a_id_len + 1u + b_id_len + 1u;
-    if (out_cap < needed) {
-        return -1;
-    }
-
-    size_t off = 0;
-    memcpy(out + off, kLabel, label_len);
-    off += label_len;
-    out[off++] = 0x00;
-    out[off++] = (uint8_t)a_id_len;
-    memcpy(out + off, a_id, a_id_len);
-    off += a_id_len;
-    out[off++] = (uint8_t)b_id_len;
-    memcpy(out + off, b_id, b_id_len);
-    off += b_id_len;
-    out[off++] = direction;
-
-    *out_len = off;
-    return 0;
-}
-
-int kex_derive_session_key(uint8_t session_key[KEX_SESSION_KEY_BYTES],
-                            const uint8_t shared_secret[KEX_SHARED_SECRET_BYTES],
-                            const uint8_t *session_id, size_t session_id_len,
-                            const uint8_t *a_id, size_t a_id_len,
-                            const uint8_t *b_id, size_t b_id_len,
-                            uint8_t direction) {
-    if (session_key == NULL || shared_secret == NULL || session_id == NULL) {
-        return -1;
-    }
-    if (session_id_len != KEX_SESSION_ID_LEN) {
-        return -1;
-    }
-
-    uint8_t info[KEX_KDF_INFO_MAX_LEN];
-    size_t info_len = 0;
-    if (kex_build_kdf_info(info, sizeof info, &info_len,
-                           a_id, a_id_len, b_id, b_id_len, direction) != 0) {
-        return -1;
-    }
-
-    /* Derive into scratch so session_key is untouched on failure. */
-    uint8_t okm[KEX_SESSION_KEY_BYTES];
-    int rc = kex_hkdf_sha256(okm, sizeof okm,
-                             shared_secret, KEX_SHARED_SECRET_BYTES,
-                             session_id, session_id_len,
-                             info, info_len);
-    sodium_memzero(info, sizeof info);
-    if (rc != 0) {
-        sodium_memzero(okm, sizeof okm);
-        return -1;
-    }
-
-    memcpy(session_key, okm, sizeof okm);
-    sodium_memzero(okm, sizeof okm);
-    return 0;
-}
-
 /* --- v2 hybrid key schedule (spec-v2 6.3.7) ---------------------------- */
 
 _Static_assert(sizeof(KEX_KDF_V2_LABEL) - 1 == 17u,
@@ -187,8 +101,11 @@ _Static_assert(KEX_KDF_V2_INFO_MAX_LEN == (sizeof(KEX_KDF_V2_LABEL) - 1) + 1u + 
 _Static_assert(KEX_KDF_V2_INFO_MIN_LEN == (sizeof(KEX_KDF_V2_LABEL) - 1) + 1u + 1u + KEX_ID_MIN_LEN + 1u +
                                               KEX_ID_MIN_LEN + 1u + KEX_TRANSCRIPT_HASH_BYTES,
                "KEX_KDF_V2_INFO_MIN_LEN must match the normative layout");
-_Static_assert(KEX_KDF_V2_INFO_MAX_LEN == KEX_KDF_INFO_MAX_LEN + KEX_TRANSCRIPT_HASH_BYTES,
-               "the v2 info is the v1 info plus the transcript digest");
+/* The bounds spec-v2 6.3.7 states in words, pinned as numbers. (This
+ * previously derived the maximum from the v1 macro; v1's key schedule was
+ * deleted in V2-5, so the spec's literals are the reference.) */
+_Static_assert(KEX_KDF_V2_INFO_MIN_LEN == 55u, "spec-v2 6.3.7: kdf_info minimum");
+_Static_assert(KEX_KDF_V2_INFO_MAX_LEN == 181u, "spec-v2 6.3.7: kdf_info maximum");
 
 int kex_build_kdf_info_v2(uint8_t *out, size_t out_cap, size_t *out_len,
                           const uint8_t *a_id, size_t a_id_len,

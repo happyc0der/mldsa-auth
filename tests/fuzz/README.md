@@ -5,7 +5,7 @@ Five targets cover every attacker-controlled input:
 | Target | Code under test | Input |
 |---|---|---|
 | `fuzz_wire` | v2 wire decoders, transcript helpers | one candidate wire message |
-| `fuzz_handshake` | Step 4 state machine (S0 ClientHello, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
+| `fuzz_handshake` | v2 state machine (S0 ClientHello **and encapsulation**, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
 | `fuzz_session` | Step 5 `session_open` on a valid session | selector (receiver, capacity, limits, clock) + up to 8 records with 4-byte length prefixes |
 | `fuzz_frame` | Step 6 `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
 | `fuzz_keys` | Step 6 demo key-file loaders | selector (mode, expected id) + public-key file bytes or an identity-mode mutation program |
@@ -20,6 +20,15 @@ rebuilds the unsigned-prefix length from literal field sizes including the
 `mldsa-auth/v2/…` label bytes — never from the macros in
 `src/protocol/transcript.h`, so a label or layout left at v1 fails the
 oracle rather than agreeing with it.
+
+`fuzz_handshake`'s S0 models FIPS 203 §7.2's modulus check itself — every
+12-bit coefficient of the encapsulation key must be < 3329 — and requires
+`create_server_hello` to succeed exactly when that model says the key is
+well formed, so neither liboqs nor this project's wrapper is taken on
+trust. Seeds pin the boundary at 3328 (must pass) and 3329 (must fail).
+Every scenario also asserts that a terminal failure leaves no hybrid secret
+behind, and that a *retryable* ClientAuth failure keeps `ss_kem` — the
+handshake is still live and the next message needs it.
 
 **`fuzz_target_max_len` must exceed the largest message the target can
 see** (`fuzz_wire`: 8192, above the 4545-byte v2 `ServerHello`), and
