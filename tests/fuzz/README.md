@@ -45,6 +45,16 @@ declared content with a zeroed tail. Seeds pin each boundary.
 `fuzz_frame`'s confirmation state is a **range** (27..4121), not a fixed
 length: the client cannot know the responder's pad bucket (spec-v2 §6.5.1).
 
+**Dictionaries carry sizes, not labels.** Every token in `dict/` is a
+length or a type byte that can actually appear in fuzzer-supplied input.
+Domain-separation labels (`mldsa-auth/v2/...`) are deliberately absent: they
+live in the associated data and the transcript hashes, neither of which is
+attacker-supplied, so a label token could never help libFuzzer build a
+better input. The lengths were refreshed for v2 in V2-7 — message maxima
+1330/4545, the padded-record minimum 27, the default-bucket confirmation
+281, the bucket-4096 confirmation 4121, and the 2-byte `content_len` values
+that `fuzz_session`'s inner mode consumes directly.
+
 **`fuzz_target_max_len` must exceed the largest message the target can
 see** (`fuzz_wire`: 8192, above the 4545-byte v2 `ServerHello`), and
 `run_fuzz.sh`'s `-max_len` matches it. The replay driver **fails** on a

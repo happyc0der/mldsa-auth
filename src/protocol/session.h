@@ -99,6 +99,16 @@
 #define SESSION_RECORD_LEN(content_len, bucket) \
     (SESSION_INNER_LEN((content_len), (bucket)) + SESSION_OVERHEAD_BYTES)
 
+/* The receive-buffer capacity session_open() needs for a record of at most
+ * max_record_len bytes. The SENDER picks the pad bucket, so this is the only
+ * safe way to size pt_cap -- see the contract on session_open() below. The
+ * two standard uses:
+ *
+ *   session phase:      SESSION_OPEN_CAP_FOR(SESSION_MAX_RECORD_BYTES)  65536
+ *   confirmation phase: SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX)          4096
+ */
+#define SESSION_OPEN_CAP_FOR(max_record_len) ((max_record_len) - SESSION_OVERHEAD_BYTES)
+
 #define SESSION_AD_LABEL "mldsa-auth/v2/record"
 #define SESSION_AD_BYTES 47u /* 20 + 1 + 16 + 1 + 1 + 8 */
 
@@ -209,7 +219,30 @@ session_status_t session_seal(session_t *s, const uint8_t *pt, size_t pt_len, ui
  * UNEXPECTED_STATE is terminal -- including an inner whose content_len
  * exceeds the inner, or whose padding is not all zero. On AUTH failure, and
  * on either malformed-inner failure, the plaintext region of pt_out is
- * zeroed. */
+ * zeroed.
+ *
+ * ======================================================================
+ * SIZING pt_cap -- THE ONE WAY TO GET THIS WRONG
+ *
+ *   Size pt_cap from the largest RECORD you are willing to accept:
+ *       SESSION_OPEN_CAP_FOR(<that record bound>)
+ *   NEVER from the content length you expect.
+ *
+ *     session phase:      SESSION_OPEN_CAP_FOR(SESSION_MAX_RECORD_BYTES)
+ *     confirmation phase: SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX)
+ *
+ * The pad bucket is the SENDER's policy. The receiver neither controls it
+ * nor learns it in advance, so an "empty" message is not a small record: at
+ * bucket 4096 an empty content arrives as a 4121-byte record with a
+ * 4096-byte inner. A 1-byte buffer for an "empty" message is WRONG, and
+ * session_open() will return INVALID_ARG for a record it could otherwise
+ * have opened.
+ *
+ * This is not hypothetical. In V2-6 tests/test_net.c opened the (empty)
+ * confirmation record into `uint8_t pt[1]` -- correct under v1, where the
+ * confirmation was always 25 bytes, and wrong the moment records could be
+ * padded. All three of that file's failures traced to those two buffers.
+ * ====================================================================== */
 session_status_t session_open(session_t *s, const uint8_t *rec, size_t rec_len, uint8_t *pt_out,
                               size_t pt_cap, size_t *pt_len);
 

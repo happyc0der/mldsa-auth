@@ -1,19 +1,22 @@
 # mldsa-auth
 
 Mutual authentication and an encrypted session protocol in C11: **ML-DSA-65**
-(FIPS 204) identity signatures over an **X25519** key exchange, with
-**HKDF-SHA256** key derivation and a **ChaCha20-Poly1305** record layer. Ships
-with a reference TCP client and server, a deterministic test suite, libFuzzer
-targets, and measured benchmarks.
+(FIPS 204) identity signatures over a **hybrid X25519 + ML-KEM-768**
+(FIPS 203) key exchange, with **HKDF-SHA256** key derivation and a padded
+**ChaCha20-Poly1305** record layer. Ships with a reference TCP client and
+server, a deterministic test suite, libFuzzer targets, and measured
+benchmarks.
 
 The engineering specifications live here, beside the implementation they
 specify: [v1](docs/ml-dsa-auth-protocol-spec.md) (frozen) and
 [v2](docs/ml-dsa-auth-protocol-spec-v2.md) (current). Every design decision
 and its rationale is recorded in [docs/decisions.md](docs/decisions.md).
 
-**Status: v1.0.0 released; v2 in progress on `main`.** v1 is feature-complete
-(spec Steps 3–9): wire format, handshake state machine, record layer,
-reference transport, fuzzing, benchmarks and documentation, all verified.
+**Status: v1.0.0 released; v2 protocol-complete on `main`.** Every normative
+element of the v2 specification is implemented and verified — hybrid
+X25519 + ML-KEM-768 key exchange, the v2 wire format and labels, the hybrid
+key schedule, the hybrid handshake, and padded records. What remains before
+`v2.0.0` is engineering cleanup, not protocol work.
 
 > **v1 is frozen at the [`v1.0.0`](https://github.com/happyc0der/mldsa-auth/releases/tag/v1.0.0)
 > tag and receives no patches — upgrade or fork.** v2 is a deliberate clean
@@ -24,8 +27,8 @@ reference transport, fuzzing, benchmarks and documentation, all verified.
 > padding**. It is specified in
 > [docs/ml-dsa-auth-protocol-spec-v2.md](docs/ml-dsa-auth-protocol-spec-v2.md);
 > the reasoning for the break and the freeze is in
-> [docs/decisions.md](docs/decisions.md). The code on `main` below `v1.0.0`
-> still implements v1 until the v2 steps land.
+> [docs/decisions.md](docs/decisions.md). `main` now speaks v2 only; a v2
+> peer and a v1 peer cannot interoperate, by design.
 
 > **Not production-ready.** The trust model is manual key pinning with no CA
 > or revocation, the reference server is loopback-only, demo key files are
@@ -101,11 +104,11 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 |---|---|
 | `test_vectors` | Known-answer tests for ML-DSA-65, **ML-KEM-768**, HKDF-SHA256 and ChaCha20-Poly1305, transcribed from RFCs and liboqs's own KAT files, plus ML-KEM implicit rejection and FIPS 203 input validation |
 | `test_handshake` | Wire format plus the handshake state machine: happy path, tampered signatures, wrong ids, replay, transcript substitution, the pending ledger, and the v2 additions — ML-KEM field layout at literal offsets, v1 messages rejected, byte-exact hybrid-KDF vectors, and hand-built-peer oracles that pin the hybrid keys independently |
-| `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff, and the KEM-disagreement failure mode end to end |
+| `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff, the KEM-disagreement failure mode end to end, padded-inner sizes and receiver rules at every bucket, and the `pt_cap` sizing rule |
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
-| `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, and demo key files |
-| `demo_e2e` | The full client/server demo end to end, including a check that no key material reaches any log |
+| `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, and asymmetric pad buckets on the wire (27/281/4121-byte confirmation records) |
+| `demo_e2e` | The full client/server demo end to end — twice, once with default padding and once with mismatched `--pad-bucket` policies — including a check that no key material reaches any log |
 | `fuzz_replay_*` (5) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
 | `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
@@ -181,6 +184,32 @@ ends with an authenticated GOODBYE so truncation is distinguishable from an
 orderly close. Nothing secret or decrypted is logged. Framing, limits and
 timeouts are specified in spec §6.5.
 
+**Record padding.** Both binaries accept `--pad-bucket 1|16|64|256|1024|4096`,
+which sets *that peer's* sending policy only (default 256; 1 means no
+padding). Nothing is negotiated and the receiver is not told: it accepts any
+bucket the sender chose, so the two sides may differ.
+
+```sh
+# Server pads every record it sends to a multiple of 4096; client sends unpadded.
+./build/apps/auth_server serve --id demo-server --key demo-data/demo-server.sk \
+    --pin demo-client=demo-data/demo-client.pub --once --pad-bucket 4096
+./build/apps/auth_client connect --id demo-client --key demo-data/demo-client.sk \
+    --peer demo-server=demo-data/demo-server.pub --message "hello" --pad-bucket 1
+```
+
+Each side logs the bucket it is using (`record padding: bucket 4096`).
+
+> **Sizing your receive buffer.** Because the *sender* picks the bucket, an
+> "empty" record is not a small record: with `--pad-bucket 4096` the empty
+> confirmation is 4121 bytes on the wire. Size the `pt_cap` you pass to
+> `session_open()` from the largest **record** you are willing to accept —
+> `SESSION_OPEN_CAP_FOR(SESSION_MAX_RECORD_BYTES)` (65536) in the session
+> phase, `SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX)` (4096) for the
+> confirmation — never from the content length you expect. Sizing it from the
+> content is the one way to get this contract wrong, and it is not
+> hypothetical: it is the mistake V2-6 made in `tests/test_net.c`, where a
+> one-byte buffer for an empty message caused every failure in that file.
+
 **Key files.** `<id>.pub` is `"MLDSAPK1" || id_len || id || public_key`.
 `<id>.sk` is `"MLDSASK2" || id_len || id || public_key || secret_key ||
 SHA-256(label || 0x00 || id_len || id || public_key || secret_key)`, created
@@ -222,14 +251,21 @@ Measured, not estimated. Full tables, method and caveats:
 
 | | |
 |---|---|
-| Full mutual handshake, in process | **0.372 ms** median (spec §5.1 target: < 15 ms) |
-| Same handshake over TCP loopback with framing | 0.494 ms median |
-| Record layer, 64 KiB payloads | 722 MiB/s sealing, 721 MiB/s opening |
-| Record layer, 64 B payloads | 4.19 M records/s (239 ns per record) |
+| Full hybrid mutual handshake, in process | **0.450 ms** median (spec-v2 §5.1 target: < 15 ms) |
+| Same handshake over TCP loopback with framing | 0.598 ms median |
+| Record layer, 64 KiB payloads, default bucket | 736 MiB/s sealing, 723 MiB/s opening |
+| Record layer, 64 B payloads | 301 ns to seal unpadded, 480 ns at the default bucket 256 |
 
-Two signatures and two verifications are 81% of the handshake; parsing,
-encoding and transcript hashing together are under 2%. This is a
-signature-bound protocol.
+Two ML-DSA signatures and two verifications still dominate: the four phases
+containing them are 342 µs of the 450 µs median (76%). The hybrid costs
++86 µs against v1: 33 µs of it is ML-KEM itself (keygen 14.2 µs, encaps
+8.7 µs, decaps 10.3 µs) and the rest is hashing and signing the 2.3 kB the
+two new fields add to the transcript. Encoding and decoding all six messages
+costs 258 ns together. **This is still a signature-bound protocol.**
+
+Padding is a sender-side choice with a measurable price on small messages: a
+64-byte round trip costs 605 ns unpadded and 1.29 µs at the default bucket,
+and nothing at 64 KiB, where there is nothing left to pad.
 
 Measured on an Apple M4 Pro (arm64), Release build, median of three runs. The
 spec's target names "a modern x86_64 core" and no x86_64 hardware was
@@ -243,6 +279,10 @@ than a literal verification of that requirement.
 - **Impersonation of either peer.** Both sides sign a transcript with
   ML-DSA-65 and verify it against an explicitly pinned public key. A peer
   whose key is not pinned cannot authenticate.
+- **Harvest-now-decrypt-later.** Session keys are derived from an X25519 and
+  an ML-KEM-768 shared secret *together*, both ephemeral and both bound to the
+  transcript, so traffic recorded today stays confidential against a future
+  quantum adversary as long as either half holds.
 - **Transcript substitution and downgrade.** Each signature covers the full
   preceding transcript, so mixing messages from different handshakes, or
   altering any negotiated field, invalidates it.
@@ -265,7 +305,7 @@ than a literal verification of that requirement.
 |---|---|
 | **No CA, no revocation** (trust on first use) | A key compromised or substituted before you pinned it is undetectable by this protocol. Revoking a key means redistributing pins out of band. |
 | **Endpoint compromise** | Anything that can read the process's memory or its key files has the identity. There is no hardware backing and no attestation. |
-| **Classical key exchange** | X25519 is not post-quantum, so recorded session traffic is exposed to a future quantum adversary ("harvest now, decrypt later"). *Identity authentication is* post-quantum; confidentiality is not. Hybrid ML-KEM-768 is a v2 item. |
+| **A break of *both* key-exchange halves** | Session keys come from X25519 **and** ML-KEM-768 together, so confidentiality survives the failure of either one. It does not survive the failure of both, and the post-quantum half rests on ML-KEM-768's own security — newer and less studied than X25519's. The hybrid is there precisely because that assumption might not hold. |
 | **Traffic analysis** | Partially mitigated. v2 records are padded to a sender-chosen bucket (default 256 bytes), so record length reveals content length only to within that bucket. Timing, message counts, direction and total session volume remain fully visible. |
 | **Denial of service** | A duplicate ClientHello deliberately creates a second pending entry — rejecting repeats would let an off-path attacker deny service to honest clients. Capacity and TTL bound the damage; rate limiting is the integrator's responsibility. |
 | **Concurrent use** | Contexts, the keystore and the pending ledger are not thread-safe. A server must confine each store to one thread or serialize access itself. |
@@ -294,20 +334,15 @@ ships; each is a decision to stop somewhere.
 - **Traffic-analysis resistance beyond padding** — v2 pads record lengths,
   but message timing, counts and direction are unprotected; no cover traffic
   and no constant-rate sending. (spec-v2 §6.4.1, §9)
-- **Hybrid X25519 + ML-KEM-768** — deferred to a v2 milestone.
-  (§ *Key exchange: X25519 only in v1*)
-- **AEAD limit review** — the two-tier rekey and hard limits are conservative
-  policy values, not derived bounds, and must be revisited if the maximum
-  plaintext size, the AEAD, the transport or the rekey policy changes.
-  (§ *Two-tier limits*)
 - **Fuzz scanner precision** — the secret scanner's 16-byte window rule also
   matches public-key prefixes, so it would refuse a legitimate public-mode
-  fuzz regression. It over-rejects, never under-rejects.
+  fuzz regression. It over-rejects, never under-rejects. Scheduled as V2-8.
   (§ *OPEN issue: the secret scanner's 16-byte window rule also matches
   public-key prefixes*)
 - **Legacy key migration** — `MLDSASK1` files are rejected rather than
   migrated, because migrating would mean trusting an unverifiable file.
-  Regenerate demo keys instead. (§ *Legacy files and the public-key format*)
+  Regenerate demo keys instead; a `migrate-key` command is scheduled as V2-9.
+  (§ *Legacy files and the public-key format*)
 
 ## Repository layout
 

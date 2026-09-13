@@ -1,6 +1,7 @@
 #ifndef MLDSA_AUTH_APPS_DEMO_APP_H
 #define MLDSA_AUTH_APPS_DEMO_APP_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -58,6 +59,16 @@ typedef struct {
     size_t peer_id_len;
     uint64_t handshake_timeout_ms;   /* absolute, until established (client: until confirmed) */
     uint64_t idle_timeout_ms;        /* per session-phase frame */
+    /* Sender-side record padding (spec-v2 6.4.1): one of
+     * {1, 16, 64, 256, 1024, 4096}, affecting only what THIS peer sends.
+     * Never negotiated; the far side needs no knowledge of it.
+     *
+     * DEMO-LAYER CONVENTION: 0 means "unset -- use the library default",
+     * because every caller zero-initializes this struct. The library
+     * itself does NOT accept 0 (session.h: a bucket outside the six is an
+     * error, never a silent default); demo_app.c translates 0 into "pass
+     * NULL limits" rather than passing a zero through. */
+    uint32_t pad_bucket;
     demo_log_t log;
 } demo_config_t;
 
@@ -135,6 +146,10 @@ const char *demo_stage_name(demo_stage_t st);
 
 /* Decimal only, full consumption, min <= value <= max. 0 on success. */
 int demo_parse_u64(const char *s, uint64_t min, uint64_t max, uint64_t *out);
+
+/* True for one of the six pad buckets spec-v2 6.4.1 permits. The CLIs use
+ * it to reject --pad-bucket values a range check would admit (32, say). */
+bool demo_pad_bucket_valid(uint32_t bucket);
 
 /* Demo identity: 1..64 bytes of [A-Za-z0-9._-], not starting with '.'
  * (they also name key files). 0 on success. */

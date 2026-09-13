@@ -1470,6 +1470,62 @@ static void test_p6_bounds(void) {
     sp_close(&p);
 }
 
+/* =====================================================================
+ * P7 (V2-7) -- pt_cap is sized by the SENDER's padding, not by the content
+ *
+ * The rule session.h states, made executable. The V2-6 regression this
+ * guards against is tests/test_net.c's `uint8_t pt[1]` for the empty
+ * confirmation record: correct under v1, wrong the moment padding existed.
+ * =================================================================== */
+
+static void test_p7_open_cap_rule(void) {
+    sp_t p;
+    size_t l = 0;
+    size_t got = 777;
+
+    /* The macro's own arithmetic, against literals. */
+    CHECK(SESSION_OPEN_CAP_FOR(SESSION_MAX_RECORD_BYTES) == 65536u &&
+              SESSION_OPEN_CAP_FOR(SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MAX)) == 4096u &&
+              SESSION_OPEN_CAP_FOR(SESSION_MIN_RECORD_BYTES) == 2u,
+          "v2-7 P7: SESSION_OPEN_CAP_FOR is 65536 for the record maximum, 4096 for a bucket-4096 "
+          "confirmation and 2 for the smallest record");
+
+    /* An EMPTY message from a bucket-4096 sender: 4121 bytes on the wire,
+     * a 4096-byte inner, and zero bytes of content. */
+    p_open_pair(&p, SESSION_PAD_BUCKET_MAX, SESSION_PAD_BUCKET_MAX);
+    CHECK(seal_into(&p.a, 0, g_rec, &l) == SESSION_OK && l == 4121u,
+          "v2-7 P7: an empty message at bucket 4096 is a 4121-byte record");
+
+    /* (b) Sized from the content -- the mistake. Nothing is consumed, so
+     * the very same record still opens afterwards. */
+    const uint64_t seq_before = p.b.recv_seq;
+    int refused = session_open(&p.b, g_rec, l, g_pt_out, 1u, &got) == SESSION_ERR_INVALID_ARG &&
+                  session_open(&p.b, g_rec, l, g_pt_out, 0u, &got) == SESSION_ERR_INVALID_ARG &&
+                  session_open(&p.b, g_rec, l, g_pt_out, l - SESSION_OVERHEAD_BYTES - 1u, &got) ==
+                      SESSION_ERR_INVALID_ARG;
+    CHECK(refused && got == 777 && p.b.recv_seq == seq_before &&
+              session_get_state(&p.b) == SESSION_STATE_ACTIVE,
+          "v2-7 P7: a content-sized pt_cap (0, 1, or one byte short of the inner) -> INVALID_ARG, "
+          "state ACTIVE, no seq consumed");
+
+    /* (a) Sized by the rule -- the same record opens. */
+    CHECK(session_open(&p.b, g_rec, l, g_pt_out, SESSION_OPEN_CAP_FOR(SESSION_MAX_RECORD_BYTES), &got) ==
+              SESSION_OK && got == 0,
+          "v2-7 P7: ...and the SAME record opens once pt_cap is sized by the record bound");
+    sp_close(&p);
+
+    /* The confirmation-phase sizing, at the bucket that makes it tightest:
+     * SESSION_OPEN_CAP_FOR(4121) is exactly enough, one byte less is not. */
+    p_open_pair(&p, SESSION_PAD_BUCKET_MAX, SESSION_PAD_BUCKET_MAX);
+    seal_into(&p.a, 0, g_rec, &l);
+    const size_t confirm_cap = SESSION_OPEN_CAP_FOR(SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MAX));
+    CHECK(session_open(&p.b, g_rec, l, g_pt_out, confirm_cap - 1u, &got) == SESSION_ERR_INVALID_ARG &&
+              session_open(&p.b, g_rec, l, g_pt_out, confirm_cap, &got) == SESSION_OK && got == 0,
+          "v2-7 P7: SESSION_OPEN_CAP_FOR(4121) is exactly sufficient for a padded confirmation; "
+          "one byte less is not");
+    sp_close(&p);
+}
+
 int main(void) {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
      * later check crashes the process. */
@@ -1520,6 +1576,7 @@ int main(void) {
     test_p4_malformed_inner();
     test_p5_buffer_hygiene();
     test_p6_bounds();
+    test_p7_open_cap_rule();
 
     handshake_pending_store_wipe(&g_store);
     keystore_wipe(&g_ks);

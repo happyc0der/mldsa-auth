@@ -1644,3 +1644,181 @@ would be the one to catch it was simply wrong about ordering.
 runner's V2-4 hardening credits that as `KILLED(compile)` automatically —
 the strongest outcome, and the first time that path has fired for a
 non-assert mutation.
+
+## V2-7 — integration and measurement
+
+Nothing in this step changes a byte on the wire: `src/protocol/session.c` is
+byte-identical throughout, and the two zero-allocation gates are quoted in the
+exit report to prove that rather than assert it. What changes is everything
+around the protocol — the pad bucket becomes a configurable policy instead of
+a hardcoded default, the demo exercises a padded path over real sockets, the
+fuzz dictionaries stop naming v1 sizes, `bench/results.md` is re-measured on
+v2, and the README stops describing confidentiality as classical. The step
+also carries the directed `pt_cap` deliverable.
+
+### `--pad-bucket` belongs on both binaries, not only the client
+
+The roadmap said `auth_client --pad-bucket`. That would have left the
+interesting path untested: the **confirmation record is the server's**, and
+its size is exactly what exercises V2-6's new `FRAME_CONFIRM_MIN..MAX`
+receive range. A client-only flag can never produce a 4121-byte confirmation,
+so the range would have stayed a compile-time constant nothing on the wire
+ever reached. Both binaries take the flag; each controls only what that peer
+sends; nothing is negotiated, and the demo's second end-to-end run uses
+*asymmetric* buckets (server 4096, client 1) precisely so the
+receiver-knows-nothing-about-the-sender's-bucket property is what is being
+tested.
+
+### `demo_config_t.pad_bucket == 0` means "use the library default"
+
+Every caller of `demo_config_t` `memset`s it to zero — `make_cfg()` in
+`test_net.c`, `cmd_connect`, `cmd_serve` — so a zero field must not become an
+invalid-limits error. `demo_app.c` translates instead: `limits_for()` returns
+`NULL` when the bucket is 0 (library defaults), and a `session_limits_t` built
+from `session_default_limits()` with that bucket otherwise.
+
+This is a **demo-layer convention and nothing more**. It does not weaken
+`session.h`, where V2-6 decided 0 is an invalid bucket and `limits_valid()`
+still rejects it; the demo layer never passes 0 down. `config_valid()` rejects
+a *nonzero* bucket that is not one of the six, so a value like 32 fails at
+configuration rather than at `session_init_from_handshake`. Two mutations
+(R2, R3) exist because both halves of that translation are silent when wrong:
+passing a literal 0 down breaks every default connection, and accepting any
+nonzero bucket moves a CLI error into the session layer.
+
+### Dictionaries carry sizes, not labels
+
+The roadmap sketch said the dictionaries "get v2 labels". Following that would
+have been cargo cult. **No fuzzed input contains a domain-separation label**:
+labels live in the AEAD associated data and in the transcript hashes, neither
+of which is attacker-supplied, so a `"mldsa-auth/v2/record"` token could never
+help libFuzzer construct a more interesting input — it would only add a string
+that never appears in any byte the target reads.
+
+What the dictionaries actually carry is **lengths**, and those were stale v1
+values: `len_146`, `len_3457`, `len_25`, `chunk_ch_87`, `chunk_sh_3396`. Those
+are now the v2 message maxima (1330/1331, 4545/4546), the v2 record bounds
+(26/27, 281, 4121/4122) and the v2 transcript chunk sizes (1271, 4484), plus
+`eklen_1184`/`ctlen_1088` for the ML-KEM fields and four big-endian
+`content_len` tokens (`0000`, `0001`, `003e`, `fffe`) that V2-6's inner mode
+made fuzzable input for the first time. `keys.dict` is untouched.
+
+The dictionaries get **no mutation campaign**, and the reason is worth
+stating: a dictionary has no oracle. Removing a token does not make any test
+fail — it makes coverage arrive more slowly, which no assertion can observe.
+Claiming a kill there would be theatre.
+
+### The one way to size `pt_cap` wrong
+
+Directed deliverable, approved 2026-09-13. `session_open`'s contract now
+states the rule in `session.h`, with `SESSION_OPEN_CAP_FOR(max_record_len)`
+as the arithmetic and both standard values spelled out — 65536 for the
+session phase, 4096 for the confirmation phase.
+
+The rule is: **size `pt_cap` from the largest record you are willing to
+accept, never from the content length you expect.** The sender picks the pad
+bucket; the receiver neither controls nor learns it in advance, so an "empty"
+message is not a small record — at bucket 4096 it is 4121 bytes on the wire.
+
+The contract comment cites the real mistake rather than a hypothetical one:
+in V2-6 `tests/test_net.c` opened the empty confirmation record into
+`uint8_t pt[1]`, which was correct under v1's fixed 25-byte confirmation and
+became an `INVALID_ARG` the moment records could be padded. All three of that
+file's failures traced to those two buffers. `test_net.c` now sizes them
+`SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX)`, so the file that made the mistake
+demonstrates the rule, and `test_session.c`'s P7 makes it executable: the same
+record opens under a rule-sized cap and fails `INVALID_ARG` — non-terminally,
+with the session still ACTIVE and no sequence number consumed — under a
+content-sized one.
+
+### The v1 column is recorded history, not a measurement
+
+`bench/results.md`'s v1 → v2 table is the one place in this project where a
+number is reported that **cannot be reproduced from this tree**: V2-4 and
+V2-5 deleted v1's key schedule, wire format and handshake from `main`, so
+there is no v1 to run. The v1 column is therefore the recorded V2-2 figures —
+same machine, same liboqs configuration, same method, measured 2026-09-12 —
+and the table says so above the table, not in a footnote someone can miss.
+Every v2 figure in that section is the median of three run medians from
+`build-bench/bench-results/run-{1,2,3}.csv` of the run performed during this
+step, and the section names those files, because the failure mode of a step
+whose deliverable is numbers in a document is a stale or mis-transcribed
+figure that no test catches.
+
+### What padding costs, stated plainly
+
+Measured, both buckets, same payloads: a 64-byte seal+open round trip costs
+605 ns unpadded and 1.29 µs at the default bucket 256 — **2.1×** — while at
+64 KiB the two columns agree within noise, because the content already fills
+the inner and there is nothing to pad. `session_open` pays more than
+`session_seal` (+505 ns against +179 ns) because it additionally scans the
+padding for nonzero bytes and wipes the tail.
+
+That is the trade the bucket exists to let an integrator make, and it is
+recorded here so the default is a choice rather than an accident: ~500 ns per
+small record against an observer learning message length only to within 256
+bytes. An application dominated by small records should measure bucket 1
+before accepting the default.
+
+### A dry run outside the runner destroyed work, and the rule that forbids it
+
+Recorded because the standing rule it violates already existed, and because
+the exit report would otherwise be the only place this appears.
+
+Before launching the R1-R6 campaign I checked that each mutation's
+search string still matched, by applying it and then reverting with
+`git checkout -- apps/demo_app.c src/protocol/session.h tests/test_net.c`.
+Those three files held **uncommitted V2-7 work**, so the revert discarded it:
+`SESSION_OPEN_CAP_FOR` and the `pt_cap` contract block, the `--pad-bucket`
+wiring in `demo_app.c`, and T17 in `test_net.c`. All three were reconstructed
+by hand and re-verified (full suite green, T17's eight checks passing), and
+every gate that had already run against the lost text was re-run against the
+reconstructed text rather than carried over — a build whose sources no longer
+exist proves nothing about the sources that do.
+
+The V2-4 standing rule says it plainly: **no temporary source edit is made
+outside the runner.** The runner snapshots every source file before it
+touches one, restores byte-exactly, verifies the restore with `cmp`, and
+rebuilds — precisely so an edit cannot outlive its purpose. A "quick check"
+that bypasses it gives up all of that. The dry run was not necessary either:
+the runner's own `mutate.py` contract already fails loudly when a search
+string does not match exactly once, so the campaign itself is the check.
+
+The follow-on rule, now used for the rest of this step: when a scratch copy
+of a working file is needed, it goes to the scratch directory and comes back
+with `cp`. `git checkout --` is never a restore mechanism for a dirty tree,
+because git cannot restore what it has never been told about.
+
+### Mutations
+
+Run through `tools/run_mutations_v2.sh` against the fresh ASan tree
+(`build-asan`, `tools/check_sanitizer_link.sh` passing), each killed by a
+named check:
+
+| # | Defect | Killed by |
+|---|---|---|
+| R1 | `limits_for()` ignores `cfg->pad_bucket` and always passes NULL | T17 (2 checks: the 4121-byte confirmation, the bucket-1 byte count) |
+| R2 | the 0-means-default translation removed, so a literal 0 reaches `session_init_from_handshake` | T1 and 19 more (20) — every default connection |
+| R3 | `config_valid()` degraded to a range check, admitting 32 | T17's invalid-bucket check |
+| R4 | `SESSION_OPEN_CAP_FOR` subtracts `SESSION_HEADER_BYTES`, not the overhead | P7 (2 checks) |
+| R5 | the client's confirmation reader keeps a single-size expectation (`FRAME_CONFIRM_MIN` as its maximum) | T17 and 14 more (15) |
+| R6 | `test_net`'s confirmation buffer sized from the content again — the V2-6 regression | T8(a) and 2 more (3) |
+
+Two things are worth recording beyond the verdicts.
+
+**R2 and R5 are loud, and that is the point.** Twenty and fifteen named
+checks respectively — because both defects break *every* connection, not
+only the padded ones. A wiring bug in the demo layer cannot hide in a corner
+of the test matrix; it takes the happy path down with it. R1, R3, R4 and R6
+are the narrow ones, and each is caught by the check written for it.
+
+**R3 needed a second run, for a reason that belongs in the runner's
+history.** Its expected-failure string began with `--pad-bucket`, and the
+runner passes those strings to `grep -qF "$w"` without a `--` guard, so grep
+read it as an option and errored. The first campaign therefore printed
+`SURVIVED(BAD)` while `R3.test` contained exactly the FAIL line the spec
+asked for. Requeued with the leading dashes trimmed, it reported
+`KILLED(1 named)`. The harness was wrong, not the mutation — but the
+distinction is only visible because the runner keeps every per-mutation log,
+so the verdict could be checked against the evidence instead of being
+believed.

@@ -14,3 +14,8 @@ siglen_1="\x00\x01"
 siglen_max="\xff\xff"
 id_alice="alice"
 id_bob="bob"
+# v2 field sizes (spec-v2 6.3.1), as 2-byte big-endian tokens
+eklen_1184="\x04\xa0"
+ctlen_1088="\x04\x40"
+chlen_1330="\x05\x32"
+shlen_4545="\x11\xc1"

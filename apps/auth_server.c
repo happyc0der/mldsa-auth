@@ -5,6 +5,7 @@
  *   auth_server serve  --id ID --key SKFILE --pin CLIENT_ID=PUBFILE [--pin ...]
  *                      [--port N] [--port-file PATH] [--once]
  *                      [--handshake-timeout-ms N] [--idle-timeout-ms N]
+ *                      [--pad-bucket N]    record padding this peer applies (default 256)
  *
  * Listens on 127.0.0.1 only and handles one connection at a time with fresh
  * per-connection handshake and session state; the pending-handshake ledger
@@ -47,6 +48,7 @@ static void usage(void) {
             "  auth_server serve  --id ID --key SKFILE --pin CLIENT_ID=PUBFILE [--pin ...]\n"
             "                     [--port N] [--port-file PATH] [--once]\n"
             "                     [--handshake-timeout-ms N] [--idle-timeout-ms N]\n"
+            "                     [--pad-bucket 1|16|64|256|1024|4096]\n"
             "DEMO ONLY: listens on 127.0.0.1; demo key files are unencrypted.\n");
 }
 
@@ -59,6 +61,7 @@ static int cmd_serve(int argc, char **argv) {
     uint64_t port = DEMO_DEFAULT_PORT;
     uint64_t hs_timeout = DEMO_HANDSHAKE_TIMEOUT_MS_DEFAULT;
     uint64_t idle_timeout = DEMO_IDLE_TIMEOUT_MS_DEFAULT;
+    uint64_t pad_bucket = 0; /* 0 = library default (256) */
     int once = 0;
 
     for (int i = 2; i < argc; i++) {
@@ -91,6 +94,12 @@ static int cmd_serve(int argc, char **argv) {
         } else if (strcmp(a, "--idle-timeout-ms") == 0 && has_val) {
             if (demo_parse_u64(argv[++i], 1, 3600000u, &idle_timeout) != 0) {
                 usage();
+                return 2;
+            }
+        } else if (strcmp(a, "--pad-bucket") == 0 && has_val) {
+            if (demo_parse_u64(argv[++i], 1, SESSION_PAD_BUCKET_MAX, &pad_bucket) != 0 ||
+                !demo_pad_bucket_valid((uint32_t)pad_bucket)) {
+                fprintf(stderr, "server: --pad-bucket must be one of 1, 16, 64, 256, 1024, 4096\n");
                 return 2;
             }
         } else {
@@ -191,6 +200,7 @@ static int cmd_serve(int argc, char **argv) {
     cfg.pins = &g_pins;
     cfg.handshake_timeout_ms = hs_timeout;
     cfg.idle_timeout_ms = idle_timeout;
+    cfg.pad_bucket = (uint32_t)pad_bucket;
 
     rc = once ? 1 : 0;
     while (!g_stop) {

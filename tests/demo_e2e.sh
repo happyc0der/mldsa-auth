@@ -84,4 +84,46 @@ for who in e2e-server e2e-client; do
 done
 echo "PASS: E2E: no plaintext canary and no secret-key bytes in either log"
 
+# --- Second run: asymmetric record padding (V2-7) --------------------------
+# The server pads to 4096 and the client not at all, so the client accepts a
+# 4121-byte confirmation record while its own records stay unpadded. Neither
+# peer is told the other's bucket; this is that property over real sockets.
+"$SERVER" serve --id e2e-server --key "$TMP/keys/e2e-server.sk" \
+    --pin "e2e-client=$TMP/keys/e2e-client.pub" \
+    --port 0 --port-file "$TMP/port2" --once --pad-bucket 4096 \
+    > "$TMP/server2.log" 2>&1 &
+SPID=$!
+
+i=0
+while [ ! -s "$TMP/port2" ]; do
+    i=$((i + 1))
+    [ "$i" -gt 200 ] && fail "padded server did not publish its port"
+    sleep 0.05
+done
+PORT2=$(cat "$TMP/port2")
+
+"$CLIENT" connect --id e2e-client --key "$TMP/keys/e2e-client.sk" \
+    --peer "e2e-server=$TMP/keys/e2e-server.pub" --port "$PORT2" --pad-bucket 1 \
+    --message "E2E-CANARY-PADDED-RUN" \
+    > "$TMP/client2.log" 2>&1 || fail "padded client exited nonzero"
+if wait "$SPID"; then SPID=""; else SPID=""; fail "padded server exited nonzero"; fi
+echo "PASS: E2E: padded run (server bucket 4096, client bucket 1) -- both exited 0"
+
+grep -q 'record padding: bucket 4096' "$TMP/server2.log" || fail "server did not apply --pad-bucket 4096"
+grep -q 'record padding: bucket 1' "$TMP/client2.log" || fail "client did not apply --pad-bucket 1"
+echo "PASS: E2E: each side reports the bucket it was given (the flag reached the session)"
+
+[ "$(grep -c 'authenticated echo verified' "$TMP/client2.log")" -eq 1 ] || fail "padded run: expected 1 echo"
+grep -q 'GOODBYE exchanged' "$TMP/client2.log" || fail "padded run: client saw no GOODBYE"
+grep -q 'GOODBYE exchanged' "$TMP/server2.log" || fail "padded run: server saw no GOODBYE"
+echo "PASS: E2E: padded run completed an authenticated echo and GOODBYE"
+
+if grep -q 'E2E-CANARY' "$TMP/server2.log" "$TMP/client2.log"; then fail "padded run: plaintext canary in a log"; fi
+for who in e2e-server e2e-client; do
+    off=$((8 + 1 + ${#who} + 1952))
+    hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
+    if grep -qi "$hex" "$TMP/server2.log" "$TMP/client2.log"; then fail "padded run: $who secret key bytes in a log"; fi
+done
+echo "PASS: E2E: padded run leaked no canary and no secret-key bytes"
+
 echo "All checks passed"

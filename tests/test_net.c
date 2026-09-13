@@ -96,9 +96,11 @@ static demo_buffers_t *g_cli_buf;
  * padded to the default bucket (spec-v2 6.4.1). */
 #define CONFIRM_REC SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_DEFAULT)
 /* session_open decrypts the INNER into the caller's buffer before it can
- * parse it, so a confirmation buffer must hold the largest padded inner,
- * not just the (empty) content. */
-#define CONFIRM_INNER (FRAME_CONFIRM_MAX - SESSION_OVERHEAD_BYTES)
+ * parse it, so a confirmation buffer is sized by the largest RECORD this
+ * phase accepts, never by the (empty) content -- session.h's rule, spelled
+ * with session.h's own macro. Sizing it from the content is the mistake
+ * this file made in V2-6. */
+#define CONFIRM_INNER SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX)
 #define CONFIRM_FRAME (FRAME_HEADER_BYTES + CONFIRM_REC)
 static size_t sh_frame_len(void) {
     return FRAME_HEADER_BYTES + transcript_server_hello_unsigned_len((uint8_t)sizeof(ID_B)) + 2u +
@@ -123,7 +125,15 @@ static void logcap_fn(void *ctx, const char *line) {
     }
 }
 
+static demo_config_t make_cfg_pad(int client, const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms,
+                                  logcap_t *log, uint32_t pad_bucket);
+
 static demo_config_t make_cfg(int client, const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms, logcap_t *log) {
+    return make_cfg_pad(client, pins, hs_ms, idle_ms, log, 0u); /* 0 = the demo default */
+}
+
+static demo_config_t make_cfg_pad(int client, const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms,
+                                  logcap_t *log, uint32_t pad_bucket) {
     demo_config_t c;
     memset(&c, 0, sizeof(c));
     c.local_id = client ? ID_A : ID_B;
@@ -138,6 +148,7 @@ static demo_config_t make_cfg(int client, const keystore_t *pins, uint64_t hs_ms
     c.idle_timeout_ms = idle_ms;
     c.log.fn = logcap_fn; /* every test captures its logs (T10 inspects them) */
     c.log.ctx = log;
+    c.pad_bucket = pad_bucket;
     return c;
 }
 
@@ -263,6 +274,7 @@ typedef struct {
     uint64_t hs_ms;
     uint64_t idle_ms;
     int storm;
+    uint32_t pad_bucket; /* 0 = demo default */
 } server_opts_t;
 
 typedef struct {
@@ -283,7 +295,7 @@ static void server_body(int wfd, const void *arg) {
         handshake_pending_store_init(&g_child_store, 8, HANDSHAKE_PENDING_TTL_MS_DEFAULT, NULL, NULL) != PENDING_OK) {
         _exit(4);
     }
-    demo_config_t cfg = make_cfg(0, o->pins, o->hs_ms, o->idle_ms, &rep->log);
+    demo_config_t cfg = make_cfg_pad(0, o->pins, o->hs_ms, o->idle_ms, &rep->log, o->pad_bucket);
     if (o->storm) {
         storm_start();
     }
@@ -300,15 +312,20 @@ static void server_body(int wfd, const void *arg) {
 }
 
 /* Listens on an ephemeral loopback port and forks the server child. */
-static child_t start_server(const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms, int storm, uint16_t *port) {
+static child_t start_server_pad(const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms, int storm,
+                                uint32_t pad_bucket, uint16_t *port) {
     int lfd = -1;
     if (net_listen_loopback(0, 4, &lfd, port) != NET_OK) {
         fatal("listen (server)");
     }
-    server_opts_t o = {lfd, pins, hs_ms, idle_ms, storm};
+    server_opts_t o = {lfd, pins, hs_ms, idle_ms, storm, pad_bucket};
     child_t c = spawn(server_body, &o);
     net_close_fd(&lfd);
     return c;
+}
+
+static child_t start_server(const keystore_t *pins, uint64_t hs_ms, uint64_t idle_ms, int storm, uint16_t *port) {
+    return start_server_pad(pins, hs_ms, idle_ms, storm, 0u, port); /* 0 = the demo default */
 }
 
 /* ---- proxy child (fault injector) --------------------------------------------- */
@@ -479,6 +496,8 @@ typedef struct {
     size_t n_msgs;
     int storm;
     logcap_t *cli_log;
+    uint32_t srv_pad_bucket; /* 0 = demo default on that side */
+    uint32_t cli_pad_bucket;
 } scenario_t;
 
 typedef struct {
@@ -505,7 +524,8 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
     memset(&g_srv_rep, 0, sizeof(g_srv_rep));
     memset(&g_prx_rep, 0, sizeof(g_prx_rep));
     uint16_t srv_port = 0;
-    child_t srv = start_server(sc->srv_pins, sc->srv_hs_ms, TEST_IDLE_MS, sc->storm, &srv_port);
+    child_t srv = start_server_pad(sc->srv_pins, sc->srv_hs_ms, TEST_IDLE_MS, sc->storm, sc->srv_pad_bucket,
+                                   &srv_port);
     child_t prx = {-1, -1};
     uint16_t port = srv_port;
     if (sc->use_proxy) {
@@ -520,7 +540,8 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
 
     logcap_t quiet;
     memset(&quiet, 0, sizeof(quiet));
-    demo_config_t cfg = make_cfg(1, sc->cli_pins, sc->cli_hs_ms, TEST_IDLE_MS, sc->cli_log ? sc->cli_log : &quiet);
+    demo_config_t cfg = make_cfg_pad(1, sc->cli_pins, sc->cli_hs_ms, TEST_IDLE_MS,
+                                     sc->cli_log ? sc->cli_log : &quiet, sc->cli_pad_bucket);
     if (sc->storm) {
         storm_start();
     }
@@ -1585,6 +1606,99 @@ static void test_t15_orderly_close(void) {
           "T15: EOF after confirmation without GOODBYE -> PEER_CLOSED, never success");
 }
 
+/* =====================================================================
+ * T17 -- the pad bucket reaches the wire (V2-7)
+ *
+ * Proves the --pad-bucket wiring end to end over real sockets: the bytes
+ * the server actually writes change with its bucket, asymmetric buckets
+ * interoperate (a receiver knows nothing about the sender's), and the
+ * client's confirmation reader accepts a 4121-byte padded confirmation
+ * that v1's fixed 25-byte expectation would have rejected.
+ * =================================================================== */
+
+static void test_t17_pad_bucket(void) {
+    const size_t SH = sh_frame_len();
+    static const struct {
+        uint32_t srv;
+        uint32_t cli;
+        size_t confirm_rec;
+    } cases[3] = {
+        {1u, 1u, SESSION_RECORD_LEN(0, 1)},                          /* 27 */
+        {0u, 0u, SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_DEFAULT)}, /* 281, the default */
+        {SESSION_PAD_BUCKET_MAX, 1u, SESSION_RECORD_LEN(0, SESSION_PAD_BUCKET_MAX)}, /* 4121 */
+    };
+    const demo_message_t msg = {g_one, sizeof(g_one)};
+
+    for (size_t i = 0; i < 3u; i++) {
+        scenario_t sc = default_scenario();
+        sc.msgs = &msg;
+        sc.n_msgs = 1;
+        sc.use_proxy = 1; /* the proxy counts the bytes each direction carries */
+        sc.srv_pad_bucket = cases[i].srv;
+        sc.cli_pad_bucket = cases[i].cli;
+        outcome_t o;
+        run_scenario(&sc, &o);
+
+        char name[220];
+        snprintf(name, sizeof(name),
+                 "T17: server bucket %u / client bucket %u -- handshake completes, 1 echo, GOODBYE",
+                 (unsigned)(cases[i].srv ? cases[i].srv : SESSION_PAD_BUCKET_DEFAULT),
+                 (unsigned)(cases[i].cli ? cases[i].cli : SESSION_PAD_BUCKET_DEFAULT));
+        CHECK(o.cli.status == DEMO_OK && o.cli.messages_echoed == 1 && server_ok(&o) &&
+                  g_srv_rep.res.status == DEMO_OK,
+              name);
+
+        /* The server's first S2C bytes after its ServerHello are the
+         * confirmation record; its size is the bucket's, and the proxy saw
+         * every byte. SH is fixed, so the difference between buckets is
+         * exactly the padding. */
+        snprintf(name, sizeof(name),
+                 "T17: ...and the server's confirmation record is %zu bytes on the wire (bucket %u)",
+                 cases[i].confirm_rec,
+                 (unsigned)(cases[i].srv ? cases[i].srv : SESSION_PAD_BUCKET_DEFAULT));
+        CHECK(o.prx_ok && g_prx_rep.bytes_seen[S2C] >=
+                              SH + FRAME_HEADER_BYTES + cases[i].confirm_rec,
+              name);
+    }
+
+    /* The asymmetric case again, this time asserting the client's own
+     * records stayed unpadded while it accepted a 4121-byte confirmation:
+     * C2S = ClientHello + ClientAuth + one 1-byte MSG + one GOODBYE, each
+     * at bucket 1. */
+    scenario_t sc = default_scenario();
+    sc.msgs = &msg;
+    sc.n_msgs = 1;
+    sc.use_proxy = 1;
+    sc.srv_pad_bucket = SESSION_PAD_BUCKET_MAX;
+    sc.cli_pad_bucket = 1u;
+    outcome_t o;
+    run_scenario(&sc, &o);
+    const size_t c2s_expect = CH_FRAME + CA_FRAME +
+                              (FRAME_HEADER_BYTES + SESSION_RECORD_LEN(2, 1)) +  /* op + 1 byte */
+                              (FRAME_HEADER_BYTES + SESSION_RECORD_LEN(1, 1));   /* GOODBYE: op only */
+    CHECK(o.cli.status == DEMO_OK && o.prx_ok && g_prx_rep.bytes_seen[C2S] == c2s_expect,
+          "T17: a bucket-1 client sends exactly unpadded records while accepting the server's "
+          "4121-byte padded confirmation -- neither peer knows the other's bucket");
+
+    /* An invalid bucket is a CONFIGURATION error, refused before the first
+     * byte is written. 32 is a power of two and inside 1..4096, so a range
+     * check alone would admit it; only the six-value check rejects it. If
+     * config_valid() let it through, session_init_from_handshake would
+     * reject the limits instead and this would surface as DEMO_ERR_SESSION
+     * after a completed handshake -- one layer too late, and after the peer
+     * has spent two signatures on it. */
+    scenario_t badcfg = default_scenario();
+    badcfg.msgs = &msg;
+    badcfg.n_msgs = 1;
+    badcfg.cli_pad_bucket = 32u;
+    outcome_t ob;
+    run_scenario(&badcfg, &ob);
+    CHECK(ob.cli.status == DEMO_ERR_CONFIG && ob.cli.stage == DEMO_STAGE_CLIENT_HELLO &&
+              ob.cli.messages_echoed == 0 && ob.cli.net.send_calls == 0,
+          "T17: --pad-bucket 32 is a config error refused before the handshake starts "
+          "(a power of two inside the range, but not one of the six)");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) {
@@ -1629,6 +1743,7 @@ int main(void) {
     test_t11_timeout();
     test_t12_eintr();
     test_t15_orderly_close();
+    test_t17_pad_bucket();
 
     free(g_cli_buf);
     handshake_pending_store_wipe(&g_parent_store);

@@ -244,7 +244,7 @@ Req 4.10 conformance, not performance.
 
 These numbers still describe **v1 protocol code**; ML-KEM-768 is compiled in
 but not yet called by any code path. The full v1→v2 comparison, including
-the hybrid handshake and padding, is measured in V2-7.
+the hybrid handshake and padding, is [measured below](#v2-re-measured-v2-7).
 
 ## ML-KEM-768 primitives (V2-3)
 
@@ -266,8 +266,123 @@ about a sixth of one ML-DSA signature, and roughly what one X25519 keypair
 plus one shared secret costs. Every ML-KEM row is also far tighter than
 `mldsa_sign`, which has no rejection-sampling loop to vary.
 
-**No protocol path calls these yet.** The handshake becomes hybrid in V2-5;
-the measured v1 → v2 handshake comparison is V2-7's. On these figures the
+**No protocol path calls these yet at the time of this measurement.** The
+handshake became hybrid in V2-5; the measured v1 → v2 comparison is
+[below](#v2-re-measured-v2-7). On these figures the
 hybrid handshake should gain roughly 34 µs (one keypair + one encaps
 + one decaps, split across the two peers), which would put it near 0.40 ms
 against the 15 ms target — an arithmetic expectation, not a measurement.
+
+
+## v2, re-measured (V2-7)
+
+Measured 2026-09-13 on the V2-2 configuration, three repetitions:
+`bench/run_bench.sh build-bench 3`. **Every figure in this section is the
+median of the three run medians**, computed from
+`build-bench/bench-results/run-{1,2,3}.csv` of that run; the per-run tables
+are the matching `run-N.txt`. Those files are regenerated, not committed —
+the provenance is recorded here so a number can be traced to the run that
+produced it.
+
+Environment block from `run-1.txt`, verbatim in the parts that changed:
+
+```
+  ml-dsa backend             NEON-optimized (aarch64), selected at build time (OQS_DIST_BUILD=OFF: no per-call branch)
+  ml-kem backend             NEON-optimized (aarch64), selected at build time (OQS_DIST_BUILD=OFF: no per-call branch)
+  record overhead            25 B per record (9 B header + 16 B tag + a 2 B length prefix inside the padded inner)
+  pad buckets measured       1 (no padding) and 256 (the default)
+  clock                      CLOCK_MONOTONIC_RAW, measured resolution 41.0 ns
+```
+
+### Headline
+
+| | |
+|---|---|
+| **Full hybrid mutual handshake, in process** | **0.450 ms median** (min 0.366 ms, p99 0.794 ms) |
+| **Spec-v2 §5.1 target** | < 15 ms on a modern x86_64 core |
+| **Result** | **PASS with ~33× margin** — on arm64; the *Platform caveat* above still applies |
+| Same handshake over TCP loopback + framing | 0.598 ms median (transport adds ~0.149 ms) |
+| Record layer, 64 KiB, bucket 256 | 736 MiB/s sealing, 723 MiB/s opening |
+| Record layer, 64 B, bucket 1 → 256 | 301 ns → 480 ns to seal; the cost of padding |
+
+### v1 → v2
+
+**The v1 column is not a fresh measurement and must not be read as one.**
+v1's key schedule, wire format and handshake were deleted from `main` by
+V2-4 and V2-5, so v1 cannot be re-run from this tree. Those numbers are the
+**recorded V2-2 figures** (section *Re-measured after V2-2*) — same machine,
+same liboqs configuration, same method, measured 2026-09-12. The v2 column
+is this run.
+
+| | v1 (V2-2, recorded) | v2 (this run) | Change |
+|---|---|---|---|
+| Handshake, in process | 0.364 ms | **0.450 ms** | +0.086 ms (+24%) |
+| `ClientHello` on the wire | 146 B | **1 330 B** | +1 184 B (ML-KEM ek) |
+| `ServerHello` on the wire | 3 457 B | **4 545 B** | +1 088 B (ML-KEM ct) |
+| Empty record (default bucket) | 25 B | **281 B** | padding |
+| `session_seal`, 64 KiB | 727 MiB/s | 736 MiB/s (bucket 256) | within noise |
+| `session_open`, 64 KiB | 727 MiB/s | 723 MiB/s (bucket 256) | within noise |
+| `mldsa_sign` | 63.4 µs | 62.8 µs | within noise |
+| `mldsa_verify` | 31.5 µs | 31.1 µs | within noise |
+
+**The handshake's +86 µs is the ML-KEM work, and it accounts for itself.**
+V2-3 measured the three primitives in isolation; this run agrees:
+`mlkem_keypair_generate` 14.2 µs, `mlkem_encaps` 8.7 µs, `mlkem_decaps`
+10.3 µs — 33.2 µs of KEM work, split across the two peers. The rest is the
+larger messages: `ClientHello` grew 9×, so both transcript hashes and both
+signatures cover ~2.3 kB more than before. Nothing regressed in the
+symmetric layer; ML-DSA and the record layer are unchanged within noise.
+
+### Handshake phases (v2)
+
+| Phase | Median | Min | p99 |
+|---|---|---|---|
+| initiator: create ClientHello (X25519 + **ML-KEM keygen**) | 26.33 µs | 24.21 µs | 50.17 µs |
+| responder: accept ClientHello | 125 ns | 83 ns | 209 ns |
+| responder: create ServerHello (**encaps** + sign) | 120.75 µs | 90.50 µs | 293.21 µs |
+| initiator: verify ServerHello (verify + X25519 probe) | 84.58 µs | 79.46 µs | 107.12 µs |
+| initiator: create ClientAuth (sign) | 64.04 µs | 38.46 µs | 218.42 µs |
+| responder: verify ClientAuth (verify + X25519 + **hybrid KDF**) | 72.46 µs | 64.79 µs | 105.58 µs |
+| initiator: finish (X25519 + **decaps** + hybrid KDF) | 57.50 µs | 49.08 µs | 83.58 µs |
+| responder: finish | 3.17 µs | 1.92 µs | 20.83 µs |
+
+The two signatures (185 µs) and two verifications (157 µs) still dominate;
+the KEM adds about 33 µs across all four phases that touch it.
+
+### What padding costs
+
+Both buckets, same payloads, same sessions — this is the whole point of
+measuring bucket 1 alongside the default.
+
+| Payload | Operation | bucket 1 | bucket 256 | Cost of padding |
+|---|---|---|---|---|
+| 64 B | `session_seal` | 301.0 ns | 480.2 ns | +179 ns |
+| 64 B | `session_open` | 308.6 ns | 813.8 ns | +505 ns |
+| 64 B | seal + open | 605.4 ns | 1.29 µs | **+2.1×** |
+| 1 KiB | seal + open | 3.13 µs | 4.04 µs | +29% |
+| 64 KiB | seal + open | 173.92 µs | 175.96 µs | within noise |
+
+**Padding is not free on small messages, and it is free on large ones.** A
+64-byte message at the default bucket moves 256 bytes of inner instead of
+66 — four times the AEAD work — and `session_open` pays more than
+`session_seal` because it also scans the padding for nonzero bytes and
+wipes the tail. At 64 KiB the content already fills the inner, so there is
+nothing to pad and the two columns agree within run-to-run spread.
+
+This is the trade the bucket exists to let an integrator make: 500 ns per
+small record against an observer learning message length to within 256
+bytes instead of exactly. `pad_bucket` is a per-session choice
+(`--pad-bucket` on both demo binaries); 1 disables padding entirely.
+
+### Reading these numbers
+
+Everything the Step 8 section says about method, distribution and what
+benchmarks do not establish still applies. Two v2-specific cautions:
+
+- The handshake's run-to-run spread widened: the three repetition medians
+  were 0.450, 0.464 and 0.442 ms (±2.5%), against ±1% for v1. ML-KEM
+  keygen has its own rejection sampling, on top of ML-DSA's.
+- `session_open` at bucket 256 has the largest padding penalty of any row
+  here, and it is the one an application feels per received message. If
+  small records dominate your traffic, measure bucket 1 before assuming
+  the default.

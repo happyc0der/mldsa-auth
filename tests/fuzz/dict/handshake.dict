@@ -1,4 +1,5 @@
-# fuzz_wire: message types, id lengths, signature-length fields, identities
+# fuzz_handshake: message types, id lengths, signature-length fields,
+# identities, ML-KEM field sizes and v2 chunk lengths
 type_client_hello="\x01"
 type_server_hello="\x02"
 type_client_auth="\x03"
@@ -16,5 +17,7 @@ id_alice="alice"
 id_bob="bob"
 # fuzz_handshake extras: 2-byte chunk lengths of whole messages
 chunk_ca_3328="\x0d\x00"
-chunk_sh_3396="\x0d\x44"
-chunk_ch_87="\x00\x57"
+chunk_sh_4484="\x11\x84"
+chunk_ch_1271="\x04\xf7"
+eklen_1184="\x04\xa0"
+ctlen_1088="\x04\x40"

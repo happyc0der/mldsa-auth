@@ -112,12 +112,37 @@ static void sess_fail(demo_result_t *r, session_status_t st) {
     r->status = DEMO_ERR_SESSION;
 }
 
+/* The six buckets spec-v2 6.4.1 permits, plus the demo's 0 = "unset". */
+bool demo_pad_bucket_valid(uint32_t bucket) {
+    return bucket == 1u || bucket == 16u || bucket == 64u || bucket == 256u || bucket == 1024u ||
+           bucket == 4096u;
+}
+
 static bool config_valid(const demo_config_t *c, bool client) {
     return c != NULL && c->local_id != NULL && c->local_id_len >= WIRE_ID_MIN_LEN &&
            c->local_id_len <= WIRE_ID_MAX_LEN && c->local_kp != NULL && c->local_kp->secret_key != NULL &&
            c->pins != NULL && c->handshake_timeout_ms >= 1u && c->idle_timeout_ms >= 1u &&
+           (c->pad_bucket == 0u || demo_pad_bucket_valid(c->pad_bucket)) &&
            (!client || (c->peer_id != NULL && c->peer_id_len >= WIRE_ID_MIN_LEN &&
                         c->peer_id_len <= WIRE_ID_MAX_LEN));
+}
+
+/* Translates the demo's 0-means-default convention into the library's
+ * stricter contract: NULL limits (the library default) when unset, and a
+ * full limits struct carrying the chosen bucket otherwise. A zero is never
+ * passed through to session_init_from_handshake(), which would reject it. */
+static const session_limits_t *limits_for(const demo_config_t *cfg, session_limits_t *scratch) {
+    if (cfg->pad_bucket == 0u) {
+        return NULL;
+    }
+    session_default_limits(scratch);
+    scratch->pad_bucket = cfg->pad_bucket;
+    return scratch;
+}
+
+/* The effective bucket, for logging only. */
+static unsigned effective_bucket(const demo_config_t *cfg) {
+    return (cfg->pad_bucket != 0u) ? (unsigned)cfg->pad_bucket : (unsigned)SESSION_PAD_BUCKET_DEFAULT;
 }
 
 /* ---- application records -------------------------------------------------- */
@@ -271,13 +296,15 @@ demo_status_t demo_server_handle_connection(const demo_config_t *cfg, handshake_
         hs_fail(&r, hst);
         goto done;
     }
-    sst = session_init_from_handshake(&sess, &hs, NULL, NULL, NULL);
+    session_limits_t lim;
+    sst = session_init_from_handshake(&sess, &hs, limits_for(cfg, &lim), NULL, NULL);
     if (sst != SESSION_OK) {
         sess_fail(&r, sst);
         goto done;
     }
     emit(cfg, role, "client authenticated (ML-DSA-65 signature verified against the pinned key); "
                     "session established");
+    emit(cfg, role, "record padding: bucket %u", effective_bucket(cfg));
 
     /* 4. Immediate empty confirmation record (spec §6.4.4). */
     r.stage = DEMO_STAGE_CONFIRM;
@@ -441,11 +468,13 @@ demo_status_t demo_client_run(const demo_config_t *cfg, net_conn_t *conn, const 
         hs_fail(&r, hst);
         goto done;
     }
-    sst = session_init_from_handshake(&sess, &hs, NULL, NULL, NULL);
+    session_limits_t lim;
+    sst = session_init_from_handshake(&sess, &hs, limits_for(cfg, &lim), NULL, NULL);
     if (sst != SESSION_OK) {
         sess_fail(&r, sst);
         goto done;
     }
+    emit(cfg, role, "record padding: bucket %u", effective_bucket(cfg));
     emit(cfg, role, "ClientAuth sent; waiting for the responder's confirmation record");
 
     /* 4. Exactly one empty record must arrive and authenticate before the

@@ -4,6 +4,7 @@
  *   auth_client keygen  --id ID --dir DIR
  *   auth_client connect --id ID --key SKFILE --peer SERVER_ID=PUBFILE
  *                       [--port N] [--message TEXT]... [--timeout-ms N] [--idle-timeout-ms N]
+ *                       [--pad-bucket N]   record padding this peer applies (default 256)
  *
  * Dials 127.0.0.1 only, authenticates the server by ML-DSA-65 against the
  * single explicitly pinned key, and sends application data only after the
@@ -33,6 +34,7 @@ static void usage(void) {
             "  auth_client keygen  --id ID --dir DIR\n"
             "  auth_client connect --id ID --key SKFILE --peer SERVER_ID=PUBFILE\n"
             "                      [--port N] [--message TEXT]... [--timeout-ms N] [--idle-timeout-ms N]\n"
+            "                      [--pad-bucket 1|16|64|256|1024|4096]\n"
             "DEMO ONLY: connects to 127.0.0.1; demo key files are unencrypted.\n");
 }
 
@@ -45,6 +47,7 @@ static int cmd_connect(int argc, char **argv) {
     uint64_t port = DEMO_DEFAULT_PORT;
     uint64_t hs_timeout = DEMO_HANDSHAKE_TIMEOUT_MS_DEFAULT;
     uint64_t idle_timeout = DEMO_IDLE_TIMEOUT_MS_DEFAULT;
+    uint64_t pad_bucket = 0; /* 0 = library default (256) */
 
     for (int i = 2; i < argc; i++) {
         const char *a = argv[i];
@@ -74,6 +77,12 @@ static int cmd_connect(int argc, char **argv) {
         } else if (strcmp(a, "--idle-timeout-ms") == 0 && has_val) {
             if (demo_parse_u64(argv[++i], 1, 3600000u, &idle_timeout) != 0) {
                 usage();
+                return 2;
+            }
+        } else if (strcmp(a, "--pad-bucket") == 0 && has_val) {
+            if (demo_parse_u64(argv[++i], 1, SESSION_PAD_BUCKET_MAX, &pad_bucket) != 0 ||
+                !demo_pad_bucket_valid((uint32_t)pad_bucket)) {
+                fprintf(stderr, "client: --pad-bucket must be one of 1, 16, 64, 256, 1024, 4096\n");
                 return 2;
             }
         } else {
@@ -152,6 +161,7 @@ static int cmd_connect(int argc, char **argv) {
     cfg.peer_id_len = peer_len;
     cfg.handshake_timeout_ms = hs_timeout;
     cfg.idle_timeout_ms = idle_timeout;
+    cfg.pad_bucket = (uint32_t)pad_bucket;
 
     demo_result_t res;
     rc = (demo_client_run(&cfg, &conn, msgs, n_msgs, buf, &res) == DEMO_OK) ? 0 : 1;

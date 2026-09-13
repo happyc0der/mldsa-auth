@@ -1,4 +1,6 @@
-# fuzz_session: record type, sequence numbers, record lengths (4-byte big-endian)
+# fuzz_session: record type, sequence numbers, record lengths (4-byte
+# big-endian), and 2-byte big-endian inner content_len values -- the last
+# are real fuzzer input in inner mode (selector bit 5).
 type_record="\x04"
 type_bad="\x05"
 seq_0="\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -6,7 +8,13 @@ seq_1="\x00\x00\x00\x00\x00\x00\x00\x01"
 seq_2pow32="\x00\x00\x00\x01\x00\x00\x00\x00"
 seq_2pow33="\x00\x00\x00\x02\x00\x00\x00\x00"
 seq_max="\xff\xff\xff\xff\xff\xff\xff\xff"
-len_24="\x00\x00\x00\x18"
-len_25="\x00\x00\x00\x19"
+len_26="\x00\x00\x00\x1a"
+len_27="\x00\x00\x00\x1b"
+len_281="\x00\x00\x01\x19"
+len_4121="\x00\x00\x10\x19"
 len_65561="\x00\x01\x00\x19"
 len_65562="\x00\x01\x00\x1a"
+inner_len_0="\x00\x00"
+inner_len_1="\x00\x01"
+inner_len_62="\x00\x3e"
+inner_len_65534="\xff\xfe"
