@@ -320,6 +320,7 @@ ships; each is a decision to stop somewhere.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
+| `tools/` | Verification scripts (mutation campaigns, sanitizer-link checking); not part of the build |
 
 ## License
 

@@ -1098,10 +1098,15 @@ expensive part is never repeated. That cost buys the guarantee that a
 "clean suite" result was produced by clean code, which is the entire point
 of the exercise.
 
-**Mutation runners are project tooling, not repository content** — as in
-every prior step, they live in the session scratchpad and are not committed.
-V2-4 and V2-5 reuse this generalized runner unchanged, supplying only their
-own mutation script and spec file.
+**Mutation runners were session tooling at the time of V2-3** — like every
+prior step's, they lived in the scratchpad and were not committed. V2-4 and
+V2-5 reuse this generalized runner unchanged, supplying only their own
+mutation script and spec file.
+
+*Superseded after V2-4:* because the runner is genuinely step-agnostic, it
+is now committed as `tools/run_mutations_v2.sh`. The **per-step** mutation
+scripts and spec files are still not repository content — they encode one
+step's defects and have no life beyond it.
 
 ## V2-4 — wire format v2 and the hybrid key schedule
 
@@ -1318,8 +1323,8 @@ nothing — so both trees were plain Debug builds. They compiled, they passed
 build or test output said so. Only the linked binary did.
 
 **Standing rule: every fresh ASan/UBSan build is verified before its results
-are reported.** The check is mechanical (`check_sanitizer_link.sh`, session
-tooling like the mutation runner) and has two parts, because either alone
+are reported.** The check is mechanical
+(`tools/check_sanitizer_link.sh`) and has two parts, because either alone
 can be fooled:
 
 1. **The option is genuinely ON** — `ENABLE_ASAN:BOOL=ON` /
