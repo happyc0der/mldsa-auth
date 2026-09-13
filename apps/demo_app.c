@@ -626,6 +626,47 @@ int demo_cli_keygen(int argc, char **argv, int first, const char *prog) {
     return 0;
 }
 
+int demo_cli_migrate_key(int argc, char **argv, int first, const char *prog) {
+    const char *id_s = NULL;
+    const char *in_path = NULL;
+    const char *out_path = NULL;
+    for (int i = first; i < argc; i++) {
+        if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
+            id_s = argv[++i];
+        } else if (strcmp(argv[i], "--in") == 0 && i + 1 < argc) {
+            in_path = argv[++i];
+        } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            out_path = argv[++i];
+        } else {
+            fprintf(stderr, "%s migrate-key: unexpected argument '%s'\n", prog, argv[i]);
+            return 2;
+        }
+    }
+    const uint8_t *id = NULL;
+    size_t id_len = 0;
+    if (id_s == NULL || in_path == NULL || out_path == NULL || demo_parse_id(id_s, &id, &id_len) != 0) {
+        fprintf(stderr, "usage: %s migrate-key --id ID --in OLD.sk --out NEW.sk   (ID: 1-64 of [A-Za-z0-9._-])\n",
+                prog);
+        return 2;
+    }
+    const demo_keys_status_t st = demo_keys_migrate_legacy(in_path, out_path, id, id_len);
+    if (st != DEMO_KEYS_OK) {
+        fprintf(stderr, "%s migrate-key: failed: %s\n", prog, demo_keys_status_name(st));
+        return 1;
+    }
+    /* Printed on EVERY success: the one thing this command cannot do. */
+    fprintf(stderr,
+            "WARNING: the source is a legacy MLDSASK1 file, which carries no integrity digest. Its integrity "
+            "CANNOT be verified: the digest in the new file certifies these key bytes as they are now, not as "
+            "keygen originally wrote them. The sign/verify self-test passed, but Step 7 measured that test "
+            "accepting a corrupted t0 component in 11 of 20 cases. If this identity matters, regenerate it with "
+            "keygen and re-pin the new public key instead.\n");
+    printf("%s migrate-key: wrote %s (MLDSASK2, mode 0600); %s was not modified -- delete it once %s is "
+           "verified\n",
+           prog, out_path, in_path, out_path);
+    return 0;
+}
+
 int demo_publish_port_file(const char *path, uint16_t port) {
     char tmp[PATH_MAX];
     char line[16];

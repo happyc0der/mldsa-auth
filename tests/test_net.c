@@ -1399,6 +1399,40 @@ static void t14_digest(uint8_t out[32], const uint8_t *file, size_t body_end) {
     crypto_hash_sha256_final(&st, out);
 }
 
+/* ---- V2-9 migrate-key helpers --------------------------------------------- */
+
+static int t14_absent(const char *path) {
+    struct stat st;
+    return lstat(path, &st) != 0;
+}
+
+static void t14_file_sha(const char *path, uint8_t out[32]) {
+    static uint8_t buf[16384];
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        fatal("T14 sha");
+    }
+    const size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    crypto_hash_sha256(out, buf, n);
+}
+
+/* Builds the Step 6 layout from an MLDSASK2 file: same bytes, legacy magic,
+ * digest stripped. Leaves the source untouched. Returns the legacy size. */
+static size_t t14_make_legacy(const char *from_sk2, const char *to_legacy) {
+    const size_t n = t14_read(from_sk2);
+    memcpy(g_kf, "MLDSASK1", 8);
+    t14_write(to_legacy, g_kf, n - 32u);
+    return n - 32u;
+}
+
+/* A refused migration must also leave NO output file behind. */
+static int t14_migrate_refused(const char *in, const char *out, const uint8_t *id, size_t idl,
+                               demo_keys_status_t want) {
+    const demo_keys_status_t st = demo_keys_migrate_legacy(in, out, id, idl);
+    return st == want && t14_absent(out);
+}
+
 static int t14_rejected_cleanly(const char *path, const uint8_t *id, size_t idl, demo_keys_status_t want) {
     mldsa_keypair_t kp;
     memset(&kp, 0xA5, sizeof(kp.public_key));
@@ -1559,6 +1593,224 @@ static void test_t14_demo_keys(void) {
         CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_KEY_MISMATCH && kp.secret_key == NULL,
               "T14: secret key paired with the wrong public key (valid digest) -> KEY_MISMATCH (sign/verify self-test)");
     }
+    /* =================================================================
+     * V2-9: migrate-key. The legacy fixture is alice's own file in the
+     * Step 6 layout, so a correct migration must reproduce alice.sk byte
+     * for byte -- the strongest available oracle.
+     * ================================================================= */
+    {
+        char legacy[512];
+        char mout[512];
+        char mout2[512];
+        uint8_t legacy_sha_before[32];
+        uint8_t legacy_sha_after[32];
+        snprintf(legacy, sizeof(legacy), "%s/m-alice.legacy", dir);
+        snprintf(mout, sizeof(mout), "%s/m-alice.sk", dir);
+        snprintf(mout2, sizeof(mout2), "%s/m-alice2.sk", dir);
+        const size_t legacy_len = t14_make_legacy(path, legacy);
+        t14_file_sha(legacy, legacy_sha_before);
+
+        CHECK(legacy_len == T14_BODY(5) && legacy_len == 5998u,
+              "T14.2: the legacy fixture is 5993 + id_len bytes (no digest)");
+
+        /* (a) The happy path, checked four ways. */
+        const demo_keys_status_t mst = demo_keys_migrate_legacy(legacy, mout, alice, 5);
+        struct stat mst_st;
+        const int mode_ok = stat(mout, &mst_st) == 0 && (mst_st.st_mode & 0777) == 0600;
+        uint8_t want_digest[32];
+        const size_t mn = t14_read(mout);
+        t14_digest(want_digest, g_kf, T14_BODY(5));
+        const int digest_ok = mn == T14_FILE(5) && memcmp(g_kf, "MLDSASK2", 8) == 0 &&
+                              memcmp(g_kf + T14_BODY(5), want_digest, 32) == 0;
+        CHECK(mst == DEMO_KEYS_OK && mode_ok && digest_ok,
+              "T14.2: migrate-key writes an MLDSASK2 file (mode 0600) whose digest matches one computed "
+              "independently with the literal label");
+        {
+            mldsa_keypair_t mkp;
+            const demo_keys_status_t lst = demo_keys_load_identity(mout, alice, 5, &mkp);
+            const int loads = lst == DEMO_KEYS_OK && mkp.secret_key != NULL;
+            if (lst == DEMO_KEYS_OK) {
+                mldsa_keypair_free(&mkp);
+            }
+            CHECK(loads, "T14.2: the migrated identity loads through the normal loader");
+        }
+        {
+            /* The migrated file must equal what keygen originally wrote. */
+            static uint8_t orig[16384];
+            const size_t on = t14_read(path);
+            memcpy(orig, g_kf, on);
+            const size_t nn = t14_read(mout);
+            CHECK(on == nn && memcmp(orig, g_kf, on) == 0,
+                  "T14.2: the migrated file is byte-identical to the MLDSASK2 file keygen wrote for this identity");
+            sodium_memzero(orig, sizeof(orig));
+        }
+        {
+            int hidden = 0;
+            DIR *d = opendir(dir);
+            struct dirent *e;
+            while (d != NULL && (e = readdir(d)) != NULL) {
+                hidden += (strstr(e->d_name, ".tmp.") != NULL);
+            }
+            if (d != NULL) {
+                closedir(d);
+            }
+            CHECK(hidden == 0, "T14.2: migrate-key leaves no temporary file behind");
+        }
+
+        /* (b) Never clobbers, never in place. */
+        uint8_t out_sha_before[32];
+        uint8_t out_sha_after[32];
+        t14_file_sha(mout, out_sha_before);
+        const demo_keys_status_t again = demo_keys_migrate_legacy(legacy, mout, alice, 5);
+        t14_file_sha(mout, out_sha_after);
+        CHECK(again == DEMO_KEYS_ERR_EXISTS && memcmp(out_sha_before, out_sha_after, 32) == 0,
+              "T14.2: migrating onto an existing --out -> EXISTS, and that file is untouched");
+        CHECK(demo_keys_migrate_legacy(legacy, legacy, alice, 5) == DEMO_KEYS_ERR_EXISTS,
+              "T14.2: --out equal to --in -> EXISTS (in-place migration is impossible by construction)");
+
+        /* (c) Identity and version. */
+        CHECK(t14_migrate_refused(legacy, mout2, bob, 3, DEMO_KEYS_ERR_ID_MISMATCH),
+              "T14.2: a legacy file migrated under the wrong --id -> ID_MISMATCH, no output written");
+        CHECK(t14_migrate_refused(path, mout2, alice, 5, DEMO_KEYS_ERR_NOT_LEGACY),
+              "T14.2: an MLDSASK2 input -> NOT_LEGACY (nothing to migrate), no output written");
+
+        /* (d) The strict reader: every malformation refuses and writes nothing. */
+        {
+            char bad[512];
+            snprintf(bad, sizeof(bad), "%s/m-bad.legacy", dir);
+            (void)t14_read(legacy);
+            t14_write(bad, g_kf, legacy_len - 1u);
+            const int trunc = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_FORMAT);
+            (void)t14_read(legacy);
+            g_kf[legacy_len] = 0x00;
+            t14_write(bad, g_kf, legacy_len + 1u);
+            const int ext = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_FORMAT);
+            (void)t14_read(legacy);
+            g_kf[8] = 6;
+            t14_write(bad, g_kf, legacy_len);
+            const int idlen = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_FORMAT);
+            (void)t14_read(legacy);
+            g_kf[0] ^= 0x01;
+            t14_write(bad, g_kf, legacy_len);
+            const int magic = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_FORMAT);
+            CHECK(trunc && ext && idlen && magic,
+                  "T14.2: truncated, extended, wrong id_len and wrong magic legacy files -> FORMAT, no output");
+
+            (void)t14_read(legacy);
+            t14_write(bad, g_kf, legacy_len);
+            (void)chmod(bad, 0644);
+            const int perms = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_PERMISSIONS);
+            (void)chmod(bad, 0600);
+            char blink[512];
+            snprintf(blink, sizeof(blink), "%s/m-link.legacy", dir);
+            (void)symlink(legacy, blink);
+            const int sym = t14_migrate_refused(blink, mout2, alice, 5, DEMO_KEYS_ERR_IO);
+            (void)unlink(blink);
+            CHECK(perms && sym,
+                  "T14.2: a group/other-readable legacy file -> PERMISSIONS and a symlinked one -> IO, no output");
+
+            /* (e) The self-test is live: a pk or s1 edit is caught. */
+            (void)t14_read(legacy);
+            g_kf[9u + 5u + 100u] ^= 0x01;
+            t14_write(bad, g_kf, legacy_len);
+            const int pkflip = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_KEY_MISMATCH);
+            (void)t14_read(legacy);
+            g_kf[T14_SK_OFF(5) + 200u] ^= 0x01; /* s1 lives at sk offsets 128..768 */
+            t14_write(bad, g_kf, legacy_len);
+            const int s1flip = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_KEY_MISMATCH);
+            CHECK(pkflip && s1flip,
+                  "T14.2: a flipped public-key byte and a flipped s1 byte are both caught by the sign/verify "
+                  "self-test -> KEY_MISMATCH, no output");
+            (void)unlink(bad);
+        }
+
+        /* (f) THE LIMITATION THE WARNING DESCRIBES, asserted rather than
+         * claimed. The recorded t0 corruption is exactly the case the
+         * self-test cannot reliably see (Step 7: 11 of 20 accepted).
+         *
+         * ML-DSA signing is randomized, so that self-test is PROBABILISTIC:
+         * the same corrupted key can pass it during migration and fail it
+         * moments later in the loader. What migration can therefore promise
+         * is not "the migrated file will load" but "the migrated file is a
+         * correct MLDSASK2 file for these bytes" -- so each migrated file is
+         * checked against an INDEPENDENTLY computed digest (deterministic),
+         * and its load status is required to be OK or KEY_MISMATCH: never
+         * INTEGRITY, never FORMAT. The counts vary per run and are printed,
+         * not asserted. */
+        {
+            int caught = 0;
+            int migrated_corrupt = 0;
+            int reloaded_ok = 0;
+            int shape_ok = 1;
+            for (int k = 0; k < 5; k++) {
+                char kid[8];
+                char ksk[600];
+                char kleg[600];
+                char kout[600];
+                snprintf(kid, sizeof(kid), "m0k%d", k);
+                snprintf(ksk, sizeof(ksk), "%s/%s.sk", dir, kid);
+                snprintf(kleg, sizeof(kleg), "%s/%s.legacy", dir, kid);
+                snprintf(kout, sizeof(kout), "%s/%s.migrated", dir, kid);
+                if (demo_keys_generate_files(dir, (const uint8_t *)kid, 4) != DEMO_KEYS_OK) {
+                    fatal("T14.2 t0 keygen");
+                }
+                const size_t kn = t14_make_legacy(ksk, kleg);
+                (void)t14_read(kleg);
+                const uint8_t t0bytes[3] = {0x70, 0x3c, 0x8d};
+                memcpy(g_kf + T14_SK_OFF(4) + 2642u, t0bytes, sizeof(t0bytes));
+                t14_write(kleg, g_kf, kn);
+                const demo_keys_status_t ms = demo_keys_migrate_legacy(kleg, kout, (const uint8_t *)kid, 4);
+                if (ms == DEMO_KEYS_ERR_KEY_MISMATCH) {
+                    caught++;
+                    shape_ok = shape_ok && t14_absent(kout);
+                } else if (ms == DEMO_KEYS_OK) {
+                    migrated_corrupt++;
+                    /* Deterministic: the corrupted bytes now carry a digest
+                     * this test computes itself. That is what migration
+                     * promises -- and precisely what the warning says is not
+                     * a statement about the key's provenance. */
+                    uint8_t cwant[32];
+                    const size_t cn = t14_read(kout);
+                    t14_digest(cwant, g_kf, T14_BODY(4));
+                    const int digest_matches = cn == T14_FILE(4) && memcmp(g_kf + T14_BODY(4), cwant, 32) == 0 &&
+                                               g_kf[T14_SK_OFF(4) + 2642u] == 0x70;
+                    mldsa_keypair_t ckp;
+                    const demo_keys_status_t cl = demo_keys_load_identity(kout, (const uint8_t *)kid, 4, &ckp);
+                    /* Probabilistic, because ML-DSA signing is randomized. */
+                    shape_ok = shape_ok && digest_matches &&
+                               (cl == DEMO_KEYS_OK || cl == DEMO_KEYS_ERR_KEY_MISMATCH);
+                    if (cl == DEMO_KEYS_OK) {
+                        reloaded_ok++;
+                        mldsa_keypair_free(&ckp);
+                    }
+                } else {
+                    shape_ok = 0;
+                }
+                (void)unlink(kout);
+                (void)unlink(kleg);
+                (void)unlink(ksk);
+                snprintf(ksk, sizeof(ksk), "%s/%s.pub", dir, kid);
+                (void)unlink(ksk);
+            }
+            printf("       [T14.2] t0-corrupted legacy files: %d/5 refused by the self-test, %d/5 migrated "
+                   "(of those, %d re-load OK and %d are caught by the loader's own randomized self-test); "
+                   "every migrated file carries a correct, independently recomputed digest\n",
+                   caught, migrated_corrupt, reloaded_ok, migrated_corrupt - reloaded_ok);
+            CHECK(shape_ok && caught + migrated_corrupt == 5,
+                  "T14.2: a t0-corrupted legacy file is either refused (KEY_MISMATCH, no output) or migrated into "
+                  "a correctly digested MLDSASK2 file -- the digest certifies the bytes, never their provenance, "
+                  "which is exactly what the WARNING says");
+        }
+
+        /* (g) Through all of that, the source was never written. */
+        t14_file_sha(legacy, legacy_sha_after);
+        CHECK(memcmp(legacy_sha_before, legacy_sha_after, 32) == 0,
+              "T14.2: the legacy input is byte-identical after every migration attempt (never modified, never "
+              "deleted)");
+        (void)unlink(legacy);
+        (void)unlink(mout);
+    }
+
     sodium_memzero(g_kf, sizeof(g_kf));
     snprintf(p2, sizeof(p2), "%s/link.sk", dir);
     (void)symlink(path, p2);

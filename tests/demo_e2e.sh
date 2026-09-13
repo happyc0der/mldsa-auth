@@ -126,4 +126,72 @@ for who in e2e-server e2e-client; do
 done
 echo "PASS: E2E: padded run leaked no canary and no secret-key bytes"
 
+# --- Third run: legacy key migration (V2-9) --------------------------------
+# A Step 6 MLDSASK1 file is the MLDSASK2 file without its 32-byte digest and
+# with the legacy magic. migrate-key converts it to a NEW file; the identity
+# survives, so the client's ORIGINAL pinned public key still authenticates.
+SK="$TMP/keys/e2e-server.sk"
+LEG="$TMP/keys/legacy-server.sk"
+MIG="$TMP/keys/migrated-server.sk"
+N=$(wc -c < "$SK" | tr -d ' ')
+BODY=$((N - 32))
+printf 'MLDSASK1' > "$LEG"
+dd if="$SK" bs=1 skip=8 count=$((BODY - 8)) >> "$LEG" 2>/dev/null
+chmod 600 "$LEG"
+[ "$(wc -c < "$LEG" | tr -d ' ')" -eq "$BODY" ] || fail "legacy fixture is not 5993 + id_len bytes"
+LEG_BEFORE=$(shasum -a 256 < "$LEG")
+
+"$SERVER" migrate-key --id e2e-server --in "$LEG" --out "$MIG" > "$TMP/migrate.log" 2> "$TMP/migrate.err" \
+    || fail "migrate-key exited nonzero"
+grep -q 'integrity CANNOT be verified' "$TMP/migrate.err" || fail "migrate-key printed no integrity warning"
+grep -q 'no integrity digest' "$TMP/migrate.err" || fail "migrate-key did not say the source has no digest"
+echo "PASS: E2E: migrate-key converted a legacy file and warned that its integrity cannot be verified"
+
+[ "$(head -c 8 "$MIG")" = "MLDSASK2" ] || fail "migrated file is not MLDSASK2"
+[ "$(wc -c < "$MIG" | tr -d ' ')" -eq "$N" ] || fail "migrated file size is not 6025 + id_len"
+case "$(ls -l "$MIG")" in -rw-------*) : ;; *) fail "migrated file mode is not 0600" ;; esac
+[ "$(shasum -a 256 < "$LEG")" = "$LEG_BEFORE" ] || fail "migrate-key modified its input"
+echo "PASS: E2E: the migrated file is MLDSASK2 (0600, 6025 + id_len) and the source is unmodified"
+
+"$SERVER" migrate-key --id e2e-server --in "$LEG" --out "$MIG" > /dev/null 2>&1 \
+    && fail "migrate-key overwrote an existing --out"
+"$SERVER" migrate-key --id e2e-client --in "$LEG" --out "$TMP/keys/wrong.sk" > /dev/null 2>&1 \
+    && fail "migrate-key accepted the wrong --id"
+[ ! -e "$TMP/keys/wrong.sk" ] || fail "a refused migration left an output file"
+echo "PASS: E2E: migrate-key refuses to clobber --out and refuses the wrong --id"
+
+# The identity survived: serve with the MIGRATED key, pin the ORIGINAL public key.
+"$SERVER" serve --id e2e-server --key "$MIG" \
+    --pin "e2e-client=$TMP/keys/e2e-client.pub" \
+    --port 0 --port-file "$TMP/port3" --once > "$TMP/server3.log" 2>&1 &
+SPID=$!
+
+i=0
+while [ ! -s "$TMP/port3" ]; do
+    i=$((i + 1))
+    [ "$i" -gt 200 ] && fail "migrated-key server did not publish its port"
+    sleep 0.05
+done
+PORT3=$(cat "$TMP/port3")
+
+"$CLIENT" connect --id e2e-client --key "$TMP/keys/e2e-client.sk" \
+    --peer "e2e-server=$TMP/keys/e2e-server.pub" --port "$PORT3" \
+    --message "E2E-CANARY-MIGRATED-RUN" \
+    > "$TMP/client3.log" 2>&1 || fail "client against the migrated key exited nonzero"
+if wait "$SPID"; then SPID=""; else SPID=""; fail "migrated-key server exited nonzero"; fi
+
+[ "$(grep -c 'authenticated echo verified' "$TMP/client3.log")" -eq 1 ] || fail "migrated run: expected 1 echo"
+grep -q 'GOODBYE exchanged' "$TMP/client3.log" || fail "migrated run: client saw no GOODBYE"
+echo "PASS: E2E: the migrated key authenticates against the ORIGINAL pinned public key (identity preserved)"
+
+if grep -q 'E2E-CANARY' "$TMP/server3.log" "$TMP/client3.log"; then fail "migrated run: plaintext canary in a log"; fi
+for who in e2e-server e2e-client; do
+    off=$((8 + 1 + ${#who} + 1952))
+    hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
+    if grep -qi "$hex" "$TMP/server3.log" "$TMP/client3.log" "$TMP/migrate.log" "$TMP/migrate.err"; then
+        fail "migrated run: $who secret key bytes in a log"
+    fi
+done
+echo "PASS: E2E: migrated run leaked no canary and no secret-key bytes"
+
 echo "All checks passed"

@@ -1,7 +1,8 @@
 /*
  * Reference TCP client (spec §7, Step 6). DEMO ONLY.
  *
- *   auth_client keygen  --id ID --dir DIR
+ *   auth_client keygen      --id ID --dir DIR
+ *   auth_client migrate-key --id ID --in OLD.sk --out NEW.sk   (legacy MLDSASK1 -> MLDSASK2)
  *   auth_client connect --id ID --key SKFILE --peer SERVER_ID=PUBFILE
  *                       [--port N] [--message TEXT]... [--timeout-ms N] [--idle-timeout-ms N]
  *                       [--pad-bucket N]   record padding this peer applies (default 256)
@@ -31,7 +32,8 @@ static keystore_t g_pins;
 static void usage(void) {
     fprintf(stderr,
             "usage:\n"
-            "  auth_client keygen  --id ID --dir DIR\n"
+            "  auth_client keygen      --id ID --dir DIR\n"
+            "  auth_client migrate-key --id ID --in OLD.sk --out NEW.sk\n"
             "  auth_client connect --id ID --key SKFILE --peer SERVER_ID=PUBFILE\n"
             "                      [--port N] [--message TEXT]... [--timeout-ms N] [--idle-timeout-ms N]\n"
             "                      [--pad-bucket 1|16|64|256|1024|4096]\n"
@@ -183,6 +185,9 @@ int main(int argc, char **argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "keygen") == 0) {
         return demo_cli_keygen(argc, argv, 2, "auth_client");
+    }
+    if (argc >= 2 && strcmp(argv[1], "migrate-key") == 0) {
+        return demo_cli_migrate_key(argc, argv, 2, "auth_client");
     }
     if (argc >= 2 && strcmp(argv[1], "connect") == 0) {
         return cmd_connect(argc, argv);

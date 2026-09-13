@@ -107,8 +107,8 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff, the KEM-disagreement failure mode end to end, padded-inner sizes and receiver rules at every bucket, and the `pt_cap` sizing rule |
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
-| `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, and asymmetric pad buckets on the wire (27/281/4121-byte confirmation records) |
-| `demo_e2e` | The full client/server demo end to end — twice, once with default padding and once with mismatched `--pad-bucket` policies — including a check that no key material reaches any log |
+| `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, asymmetric pad buckets on the wire (27/281/4121-byte confirmation records), and legacy-key migration |
+| `demo_e2e` | The full client/server demo end to end — three times: default padding, mismatched `--pad-bucket` policies, and a migrated legacy key authenticating against the original pin — including a check that no key material reaches any log |
 | `fuzz_replay_*` (5) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
 | `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on sixteen built-in controls before every scan |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
@@ -210,13 +210,32 @@ Each side logs the bucket it is using (`record padding: bucket 4096`).
 > hypothetical: it is the mistake V2-6 made in `tests/test_net.c`, where a
 > one-byte buffer for an empty message caused every failure in that file.
 
+**Migrating a legacy key.** A Step 6 `MLDSASK1` file has no integrity digest,
+so the loaders refuse it. `migrate-key` converts one — into a **new** file,
+never in place, never overwriting:
+
+```sh
+./build/apps/auth_server migrate-key --id demo-server \
+    --in demo-data/old-demo-server.sk --out demo-data/demo-server-v2.sk
+```
+
+The identity is preserved, so peers' existing pins keep working. What the
+command cannot do is verify the source: a legacy file carries no digest, and
+the only available check is a sign/verify self-test that Step 7 measured
+accepting a corrupted `t0` component in 11 of 20 cases. It therefore prints,
+on every success, that **the digest in the new file certifies the key bytes as
+they are now, not as `keygen` wrote them**. If the identity matters, regenerate
+it and re-pin instead.
+
 **Key files.** `<id>.pub` is `"MLDSAPK1" || id_len || id || public_key`.
 `<id>.sk` is `"MLDSASK2" || id_len || id || public_key || secret_key ||
 SHA-256(label || 0x00 || id_len || id || public_key || secret_key)`, created
 `0600` and published atomically. The digest is checked in constant time before
 the key is used, so a corrupted or truncated key file is rejected at load
 time — but it is **unkeyed**: it detects corruption, not tampering. Legacy
-`MLDSASK1` files (Step 6) are rejected; regenerate them with `keygen`.
+`MLDSASK1` files (Step 6) are rejected by the loaders; regenerate them with
+`keygen`, or convert one with `migrate-key` (below) when the identity's public
+key is already pinned by peers.
 
 ## Dependencies
 
@@ -334,10 +353,6 @@ ships; each is a decision to stop somewhere.
 - **Traffic-analysis resistance beyond padding** — v2 pads record lengths,
   but message timing, counts and direction are unprotected; no cover traffic
   and no constant-rate sending. (spec-v2 §6.4.1, §9)
-- **Legacy key migration** — `MLDSASK1` files are rejected rather than
-  migrated, because migrating would mean trusting an unverifiable file.
-  Regenerate demo keys instead; a `migrate-key` command is scheduled as V2-9.
-  (§ *Legacy files and the public-key format*)
 
 ## Repository layout
 

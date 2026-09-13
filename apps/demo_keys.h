@@ -28,8 +28,18 @@
  * UNKEYED: it detects accidental corruption, not tampering -- anyone able to
  * write the 0600 file can recompute it, or simply replace the key.
  *
- * Legacy "MLDSASK1" secret-key files (no digest) are REJECTED with
- * DEMO_KEYS_ERR_UNSUPPORTED_VERSION; regenerate them with keygen.
+ * Legacy "MLDSASK1" secret-key files (no digest) are REJECTED by the loader
+ * with DEMO_KEYS_ERR_UNSUPPORTED_VERSION; regenerate them with keygen.
+ *
+ * demo_keys_migrate_legacy() converts one to MLDSASK2 when regenerating is
+ * not free -- an identity whose public key peers have already pinned. It
+ * writes a NEW file and never modifies or deletes the source. What it
+ * cannot do is verify that source: a legacy file carries no digest, so the
+ * only available check is the sign/verify self-test, and Step 7 measured
+ * that test accepting a key with a corrupted t0 component in 11 of 20
+ * cases. The digest in the migrated file therefore certifies the key bytes
+ * AS THEY ARE NOW, not as keygen originally wrote them. The CLI prints that
+ * in those words on every successful migration.
  *
  * Generated files go to a directory the caller names -- by convention the
  * git-ignored demo-data/ -- and are never committed. Pinning is explicit:
@@ -53,8 +63,9 @@ typedef enum {
     DEMO_KEYS_ERR_ID_MISMATCH,  /* embedded id != expected id */
     DEMO_KEYS_ERR_KEY_MISMATCH, /* public key does not match the secret key (self-test) */
     DEMO_KEYS_ERR_CRYPTO,
-    DEMO_KEYS_ERR_INTEGRITY,          /* secret-key file digest mismatch (Step 7.1) */
-    DEMO_KEYS_ERR_UNSUPPORTED_VERSION /* legacy MLDSASK1 secret-key file (Step 7.1) */
+    DEMO_KEYS_ERR_INTEGRITY,           /* secret-key file digest mismatch (Step 7.1) */
+    DEMO_KEYS_ERR_UNSUPPORTED_VERSION, /* legacy MLDSASK1 secret-key file (Step 7.1) */
+    DEMO_KEYS_ERR_NOT_LEGACY           /* migrate-key input is already MLDSASK2 (V2-9) */
 } demo_keys_status_t;
 
 /* 1 iff id is 1..64 bytes of [A-Za-z0-9._-] not starting with '.' -- demo
@@ -77,6 +88,21 @@ demo_keys_status_t demo_keys_generate_files(const char *dir, const uint8_t *id, 
  * *kp holds nothing (NULL secret key, zeroed public key). */
 demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *expect_id, size_t id_len,
                                            mldsa_keypair_t *kp);
+
+/* Converts a legacy MLDSASK1 file at in_path into a new MLDSASK2 file at
+ * out_path, published atomically (temp + link) with mode 0600. Order:
+ * permissions -> size bounds -> magic (MLDSASK2 -> NOT_LEGACY, anything
+ * else -> FORMAT) -> exact size -> read (secret key into secure memory) ->
+ * id (ID_MISMATCH) -> sign/verify self-test (KEY_MISMATCH) -> refuse an
+ * existing out_path (EXISTS) -> write.
+ *
+ * in_path is opened read-only and is NEVER modified or removed, and
+ * out_path is never overwritten -- passing the same path for both fails
+ * with EXISTS, so in-place migration is impossible by construction. On any
+ * failure no output file is left behind. See the limitation above: success
+ * does not mean the source was intact. */
+demo_keys_status_t demo_keys_migrate_legacy(const char *in_path, const char *out_path, const uint8_t *expect_id,
+                                            size_t id_len);
 
 /* Loads a pinned public key; the embedded id must equal expect_id. */
 demo_keys_status_t demo_keys_load_public(const char *pub_path, const uint8_t *expect_id, size_t id_len,

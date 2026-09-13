@@ -167,4 +167,11 @@ int demo_publish_port_file(const char *path, uint16_t port);
  * Returns a process exit status (0 ok, 1 failure, 2 usage). */
 int demo_cli_keygen(int argc, char **argv, int first, const char *prog);
 
+/* "<prog> migrate-key --id ID --in OLD.sk --out NEW.sk" (V2-9): converts a
+ * legacy MLDSASK1 file to MLDSASK2. Writes a NEW file, never in place, and
+ * prints on stderr -- on every success -- that the source's integrity
+ * cannot be verified, because a legacy file carries no digest. Same exit
+ * statuses as demo_cli_keygen. */
+int demo_cli_migrate_key(int argc, char **argv, int first, const char *prog);
+
 #endif /* MLDSA_AUTH_APPS_DEMO_APP_H */

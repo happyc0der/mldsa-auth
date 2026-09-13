@@ -18,6 +18,9 @@
 /* MLDSASK2: everything the digest covers ends at SK2_BODY_LEN; the digest follows. */
 #define SK2_BODY_LEN(idl) (PUB_FILE_LEN(idl) + MLDSA_SECRET_KEY_BYTES)
 #define SK2_FILE_LEN(idl) (SK2_BODY_LEN(idl) + DEMO_KEY_DIGEST_BYTES)
+/* A legacy MLDSASK1 file is exactly the MLDSASK2 body with no digest: the
+ * same header, id, public key and secret key, at the same offsets. */
+#define LEGACY_FILE_LEN(idl) SK2_BODY_LEN(idl)
 #define INTEGRITY_LABEL_LEN (sizeof(DEMO_KEY_INTEGRITY_LABEL) - 1u) /* never hard-coded */
 
 static const uint8_t SELFTEST_MSG[] = "mldsa-auth/v1/demo-key-selftest";
@@ -27,6 +30,7 @@ _Static_assert(sizeof(DEMO_KEY_MAGIC_SECRET) - 1u == DEMO_KEY_MAGIC_LEN, "magic 
 _Static_assert(sizeof(DEMO_KEY_MAGIC_SECRET_LEGACY) - 1u == DEMO_KEY_MAGIC_LEN, "magic length");
 _Static_assert(DEMO_KEY_DIGEST_BYTES == crypto_hash_sha256_BYTES, "digest is SHA-256");
 _Static_assert(SK2_FILE_LEN(1) == 6026u && SK2_FILE_LEN(64) == 6089u, "SK2_LEN(idl) = 6025 + idl");
+_Static_assert(LEGACY_FILE_LEN(1) == 5994u && LEGACY_FILE_LEN(64) == 6057u, "MLDSASK1_LEN(idl) = 5993 + idl");
 
 const char *demo_keys_status_name(demo_keys_status_t st) {
     switch (st) {
@@ -41,7 +45,9 @@ const char *demo_keys_status_name(demo_keys_status_t st) {
     case DEMO_KEYS_ERR_CRYPTO: return "crypto-error";
     case DEMO_KEYS_ERR_INTEGRITY: return "integrity-check-failed";
     case DEMO_KEYS_ERR_UNSUPPORTED_VERSION:
-        return "unsupported-format-version (legacy MLDSASK1 key file: regenerate it with keygen)";
+        return "unsupported-format-version (legacy MLDSASK1 key file: regenerate it with keygen, or convert it "
+               "with migrate-key)";
+    case DEMO_KEYS_ERR_NOT_LEGACY: return "not-a-legacy-file (already MLDSASK2: nothing to migrate)";
     }
     return "unknown";
 }
@@ -408,6 +414,164 @@ fail:
     (void)close(fd);
     sodium_memzero(stored, sizeof(stored));
     mldsa_keypair_free(kp); /* no-op if nothing was allocated; always leaves pk zeroed */
+    return r;
+}
+
+/* ---- migrate (V2-9) ---------------------------------------------------------- */
+
+/* fsync the directory holding `path`, so the new link is durable. */
+static void fsync_parent_dir(const char *path) {
+    char dir[PATH_MAX];
+    const size_t n = strnlen(path, PATH_MAX);
+    if (n == 0 || n >= PATH_MAX) {
+        return;
+    }
+    memcpy(dir, path, n + 1u);
+    char *slash = strrchr(dir, '/');
+    if (slash == NULL) {
+        fsync_dir("."); /* a bare filename: the current directory */
+        return;
+    }
+    if (slash == dir) {
+        fsync_dir("/");
+        return;
+    }
+    *slash = '\0';
+    fsync_dir(dir);
+}
+
+demo_keys_status_t demo_keys_migrate_legacy(const char *in_path, const char *out_path, const uint8_t *expect_id,
+                                            size_t id_len) {
+    uint8_t hdr[HDR_LEN];
+    uint8_t id[64];
+    char tmp_path[PATH_MAX];
+    struct stat st;
+    mldsa_keypair_t kp;
+    uint8_t *img = NULL;
+    size_t img_len = 0;
+    int tmp_made = 0;
+    int fd = -1;
+
+    memset(&kp, 0, sizeof(kp));
+    if (in_path == NULL || out_path == NULL || expect_id == NULL || id_len < 1u || id_len > 64u) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    const int tn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%ld", out_path, (long)getpid());
+    if (tn < 0 || (size_t)tn >= sizeof(tmp_path)) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+
+    /* 1. Same custody rules as the loader: no symlink, regular file, ours,
+     *    no group/other access. Migration must not launder a leaked secret. */
+    fd = open(in_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return DEMO_KEYS_ERR_IO;
+    }
+    demo_keys_status_t r = DEMO_KEYS_ERR_FORMAT;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        r = DEMO_KEYS_ERR_IO;
+        goto done;
+    }
+    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {
+        r = DEMO_KEYS_ERR_PERMISSIONS;
+        goto done;
+    }
+    /* 2. Bounded size; admits MLDSASK2 sizes so step 3 can name that case. */
+    if (st.st_size < 0 || (size_t)st.st_size < HDR_LEN || (size_t)st.st_size > SK2_FILE_LEN(64)) {
+        goto done;
+    }
+    /* 3. Version: a current file is not an error to fix by migrating. */
+    if (read_all_fd(fd, hdr, sizeof(hdr)) != 0) {
+        goto done;
+    }
+    if (memcmp(hdr, DEMO_KEY_MAGIC_SECRET, DEMO_KEY_MAGIC_LEN) == 0) {
+        r = DEMO_KEYS_ERR_NOT_LEGACY;
+        goto done;
+    }
+    if (memcmp(hdr, DEMO_KEY_MAGIC_SECRET_LEGACY, DEMO_KEY_MAGIC_LEN) != 0) {
+        goto done;
+    }
+    /* 4. Exact legacy size for the declared id length. */
+    const size_t idl = hdr[DEMO_KEY_MAGIC_LEN];
+    if (idl < 1u || idl > 64u || (size_t)st.st_size != LEGACY_FILE_LEN(idl)) {
+        goto done;
+    }
+    /* 5. Read; the secret key goes straight from the file into secure memory. */
+    kp.secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
+    if (kp.secret_key == NULL) {
+        r = DEMO_KEYS_ERR_CRYPTO;
+        goto done;
+    }
+    if (read_all_fd(fd, id, idl) != 0 || read_all_fd(fd, kp.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 ||
+        read_all_fd(fd, kp.secret_key, MLDSA_SECRET_KEY_BYTES) != 0) {
+        goto done;
+    }
+    (void)close(fd);
+    fd = -1;
+
+    /* 6. Identity. */
+    if (idl != id_len || memcmp(id, expect_id, idl) != 0) {
+        r = DEMO_KEYS_ERR_ID_MISMATCH;
+        goto done;
+    }
+    /* 7. The ONLY integrity signal a legacy file offers -- and a weak one:
+     *    Step 7 measured it accepting a corrupted t0 component 11 times in
+     *    20. The CLI prints that; here it is simply the best check there is. */
+    {
+        uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES];
+        size_t sig_len = 0;
+        if (mldsa_sign(sig, &sig_len, SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, &kp) != 0) {
+            r = DEMO_KEYS_ERR_CRYPTO;
+            goto done;
+        }
+        if (mldsa_verify(SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, sig, sig_len, kp.public_key) != 0) {
+            r = DEMO_KEYS_ERR_KEY_MISMATCH;
+            goto done;
+        }
+    }
+    /* 8. Refuse an existing output early and clearly; link() below is the
+     *    atomic guarantee, and it is what makes --out == --in impossible. */
+    if (lstat(out_path, &st) == 0) {
+        r = DEMO_KEYS_ERR_EXISTS;
+        goto done;
+    }
+    /* 9. Assemble and publish exactly as keygen does. */
+    img_len = SK2_FILE_LEN(idl);
+    img = secure_mem_alloc(img_len);
+    if (img == NULL) {
+        r = DEMO_KEYS_ERR_CRYPTO;
+        goto done;
+    }
+    put_header(img, DEMO_KEY_MAGIC_SECRET, id, idl);
+    memcpy(img + HDR_LEN + idl, kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+    memcpy(img + HDR_LEN + idl + MLDSA_PUBLIC_KEY_BYTES, kp.secret_key, MLDSA_SECRET_KEY_BYTES);
+    integrity_digest(img + SK2_BODY_LEN(idl), (uint8_t)idl, id, kp.public_key, kp.secret_key);
+
+    if (write_new_file(tmp_path, img, img_len, 0600, &tmp_made) != 0) {
+        r = DEMO_KEYS_ERR_IO;
+        goto done;
+    }
+    if (link(tmp_path, out_path) != 0) {
+        r = (errno == EEXIST) ? DEMO_KEYS_ERR_EXISTS : DEMO_KEYS_ERR_IO;
+        goto done;
+    }
+    fsync_parent_dir(out_path);
+    r = DEMO_KEYS_OK;
+    /* The temp file is unlinked by the epilogue below -- on THIS path too,
+     * so the one cleanup site is exercised by every successful migration
+     * rather than only by unreachable I/O failures. (V2-9 mutation Y8.) */
+
+done:
+    if (fd >= 0) {
+        (void)close(fd);
+    }
+    if (tmp_made) {
+        (void)unlink(tmp_path); /* success or failure: never leave a 0600 secret behind */
+    }
+    if (img != NULL) {
+        secure_mem_free(img, img_len);
+    }
+    mldsa_keypair_free(&kp);
     return r;
 }
 

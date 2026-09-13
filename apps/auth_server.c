@@ -1,7 +1,8 @@
 /*
  * Reference TCP server (spec §7, Step 6). DEMO ONLY.
  *
- *   auth_server keygen --id ID --dir DIR
+ *   auth_server keygen      --id ID --dir DIR
+ *   auth_server migrate-key --id ID --in OLD.sk --out NEW.sk   (legacy MLDSASK1 -> MLDSASK2)
  *   auth_server serve  --id ID --key SKFILE --pin CLIENT_ID=PUBFILE [--pin ...]
  *                      [--port N] [--port-file PATH] [--once]
  *                      [--handshake-timeout-ms N] [--idle-timeout-ms N]
@@ -44,7 +45,8 @@ static handshake_pending_store_t g_store;
 static void usage(void) {
     fprintf(stderr,
             "usage:\n"
-            "  auth_server keygen --id ID --dir DIR\n"
+            "  auth_server keygen      --id ID --dir DIR\n"
+            "  auth_server migrate-key --id ID --in OLD.sk --out NEW.sk\n"
             "  auth_server serve  --id ID --key SKFILE --pin CLIENT_ID=PUBFILE [--pin ...]\n"
             "                     [--port N] [--port-file PATH] [--once]\n"
             "                     [--handshake-timeout-ms N] [--idle-timeout-ms N]\n"
@@ -244,6 +246,9 @@ int main(int argc, char **argv) {
     }
     if (argc >= 2 && strcmp(argv[1], "keygen") == 0) {
         return demo_cli_keygen(argc, argv, 2, "auth_server");
+    }
+    if (argc >= 2 && strcmp(argv[1], "migrate-key") == 0) {
+        return demo_cli_migrate_key(argc, argv, 2, "auth_server");
     }
     if (argc >= 2 && strcmp(argv[1], "serve") == 0) {
         return cmd_serve(argc, argv);

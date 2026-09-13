@@ -575,7 +575,11 @@ replace the key. Production key storage remains out of scope (spec §9).
 - **`MLDSASK1` is rejected, not migrated.** A migration would have to trust
   an unverifiable legacy file, which is exactly the input this step stops
   accepting, and demo keys are cheap to regenerate. The status message says
-  "regenerate it with keygen".
+  "regenerate it with keygen". *(V2-9 adds an opt-in `migrate-key` command
+  for the one case where regenerating is not free — an identity whose public
+  key peers have already pinned. The reasoning here is unchanged: the
+  loaders still refuse legacy files, and migration is a separate, explicit
+  act that prints what it cannot verify. See § V2-9.)*
 - **`MLDSAPK1` is unchanged.** Public files hold no secret, trust comes from
   out-of-band pinning, and a corrupted pinned key fails deterministically:
   every signature from that peer is rejected. The intermittent failure mode
@@ -1967,3 +1971,154 @@ in the suite can tell a 32-byte exclusion from a 33-byte one.
 proof must stop the gate before it decides anything, so its expected failure
 text is empty ("must fail somehow") and the evidence is the `SCANNER ABORT`
 line in its log.
+
+## V2-9 — legacy key migration
+
+Step 7.1 refused to migrate `MLDSASK1` files, on the grounds that migration
+means trusting a file with no integrity digest. That reasoning is intact, and
+the loaders still refuse legacy files. What it omitted is the one case where
+"just regenerate it" has a real cost: **an identity whose public key peers
+have already pinned.** Regenerating means redistributing pins out of band —
+the one operation this trust model makes expensive. `migrate-key` preserves
+the identity, and makes the thing Step 7.1 was protecting against explicit
+instead of silent.
+
+### The command states what it cannot do, every time
+
+A legacy file offers exactly one integrity signal: the sign/verify self-test.
+Step 7 measured that test **accepting a key with a corrupted `t0` component
+in 11 of 20 cases** — the finding that motivated the digest in the first
+place. So the migration prints, on stderr, on every success:
+
+> the digest in the new file certifies these key bytes **as they are now**,
+> not as keygen originally wrote them
+
+with the 11-of-20 figure and the advice to regenerate and re-pin if the
+identity matters. This is the honest framing: migration converts a *format*,
+it does not recover *provenance*.
+
+That is asserted, not merely claimed. T14.2 writes the recorded `t0`
+corruption into five freshly generated legacy files and requires every
+outcome to be either `KEY_MISMATCH` with no output, or a migrated file
+carrying a **correct, independently recomputed digest** over the corrupted
+bytes.
+
+**Writing that check found something the plan had wrong.** The first version
+required each migrated file to *load* afterwards, and it failed: ML-DSA
+signing is randomized, so the sign/verify self-test is **probabilistic** —
+the same corrupted key can pass it during migration and fail it moments later
+in the loader. (That is also why Step 7's figure was 11 of 20 rather than
+all-or-nothing.) Three consecutive runs of the corrected check measured 1/5,
+0/5 and 2/5 refused at migration, and of those migrated, 2 of 4, 4 of 5 and
+2 of 3 re-loaded — all passing.
+
+So the guarantee migration can offer is narrower than "the migrated file
+works", and the check now states the narrow one: the output is a correct
+`MLDSASK2` file **for the bytes it was given**, its load status is `OK` or
+`KEY_MISMATCH` (never `INTEGRITY`, never `FORMAT`), and the counts are
+printed rather than asserted. A migrated file that fails to load is not a
+migration bug — it is the self-test doing its job on the second roll.
+
+### In-place migration is impossible by construction
+
+The output goes through the same publish path as `keygen`: a temp file
+created `O_EXCL` 0600, fsync'ed, then `link()`ed to its final name, which
+fails with `EEXIST` rather than clobbering. Passing the same path for `--in`
+and `--out` therefore fails with `EXISTS` — not because a check forbids it,
+but because the only way to create the output is one that cannot overwrite.
+The input is opened read-only and is never modified or deleted; T14.2 hashes
+it before and after the entire block and requires the digests to match, and
+the CLI tells the user to delete it themselves once the new file is verified.
+
+### `--id` is required
+
+Every loader in this project checks the id inside a file against an id the
+caller names. Migration must not be the one path that trusts a file's own
+label — a mistyped `--in` should not silently produce a correctly-formatted
+file for the wrong identity. The id is compared after the layout checks and
+before the self-test, so the statuses mean the same thing they mean in
+`demo_keys_load_identity`.
+
+### A new status rather than an overloaded one
+
+An `MLDSASK2` input is not a malformed file; it is a user pointing the
+command at the wrong thing. `DEMO_KEYS_ERR_NOT_LEGACY` ("already MLDSASK2:
+nothing to migrate") says which mistake was made. Overloading `FORMAT` would
+have been cheaper and less useful.
+
+### Loose permissions are refused, not laundered
+
+`migrate-key` applies the loader's custody rules to its input: no symlink, a
+regular file, owned by the caller, no group or other access. A migration that
+accepted a world-readable secret and produced a tidy 0600 file would be
+laundering, not converting.
+
+### The fuzzer found the same thing, independently
+
+The 600-second `fuzz_keys` run on the new mode **crashed** — on the harness's
+own oracle, not on `demo_keys.c`. The migrate-mode assertion required a
+migrated file to load, and a mutation program that flips one bit in the key
+region produced a file that migration accepted and the loader then refused.
+
+It is the same phenomenon T14.2 had already surfaced, reached from the other
+direction and with a 12-byte input: the self-test is randomized, so "migration
+succeeded" does not imply "the result loads". Two independent oracles, written
+days apart in different styles, disagreed with the same wrong assumption — and
+both were wrong in the same direction, which is the useful signal. The harness
+now asserts what is actually guaranteed: the output carries the input's keys
+under a correct digest (checked byte for byte, deterministic), and its load
+status is `OK`, `KEY_MISMATCH` or `CRYPTO` — **never** `INTEGRITY` or
+`FORMAT`, which would mean migration wrote a file disagreeing with its own
+digest or layout. The artifact replays clean against the corrected oracle.
+
+The artifact itself is *not* committed as a regression. The documented crash
+workflow says to admit one, but `tests/fuzz/regressions/` is outside V2-9's
+declared file scope, and quietly widening a scope to file a trophy is the
+wrong trade. The property it found is pinned twice over without it — by
+T14.2's deterministic digest check and by the migrate-mode seeds.
+
+### The new parser is fuzzed
+
+Every file parser in this project has a fuzz mode with an independent model,
+and the legacy reader is not the first exception. `fuzz_keys` gains a migrate
+mode on selector bit 3, reusing the identity-mode template and mutation
+grammar unchanged: the same programs that fuzz the loader now also fuzz the
+migration. Its model is written separately from `model_secret` (there is no
+digest to predict), and every input additionally asserts that the source is
+byte-identical afterwards and that an output exists **only** on success —
+carrying the input's own keys under a digest the harness recomputes with its
+own copy of the label.
+
+### Mutations
+
+Nine mutations through `tools/run_mutations_v2.sh` against the fresh ASan
+tree; every restore verified clean with a passing suite and zero residue.
+
+| # | Defect | Killed by |
+|---|---|---|
+| Y1 | migration ignores the self-test's verdict | T14.2 pk-flip and s1-flip (2) |
+| Y2 | the migrated digest omits the id from its body | T14.2 digest-vs-independent and 3 more (4) |
+| Y3 | an `MLDSASK2` input is treated as legacy | T14.2 NOT_LEGACY |
+| Y4 | migration does not check the caller's `--id` | T14.2 ID_MISMATCH and 5 more (6) |
+| Y5 | the output is written with `O_TRUNC` instead of `O_EXCL` + `link()` | T14.2 no-clobber and 5 more (6) |
+| Y6 | the exact legacy-size check is dropped | T14.2 truncated/extended/id_len and 3 more (4) |
+| Y7 | the CLI prints no integrity warning | `demo_e2e`'s stderr grep |
+| Y8 | a failed `link()` leaves the 0600 temp file behind | see below |
+| Y9 | test-side: the fuzz model predicts OK for a short legacy file | `fuzz_replay_keys` (abort) |
+
+**Y8 survived the first campaign, and it was right to.** The temp file was
+being unlinked in *two* places: inline on the success path, and in the
+epilogue for failures. The test checks for leftovers after a **successful**
+migration, so disabling the epilogue changed nothing it could see — and the
+failure path that needs the epilogue (a `write_new_file` I/O error, or a
+`link()` losing a race against a file appearing between the `lstat` and the
+`link`) cannot be forced by a portable test.
+
+Rather than write a test for an unreachable branch or wave the mutation
+through as equivalent, the code now has **one** cleanup site: the epilogue
+unlinks the temp file on every exit, success included. That is simpler — it
+matches `demo_keys_generate_files`, which already cleans up its temporaries
+unconditionally — and it means the line is exercised by every successful
+migration in the suite, so Y8 is now killed by the check that was written for
+it. A cleanup path only reachable by accident is a cleanup path nobody has
+tested.

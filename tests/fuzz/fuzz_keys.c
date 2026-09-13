@@ -3,7 +3,10 @@
  * file-based API (candidate files go to a 0600 temp file under $TMPDIR).
  *
  * Selector: bit 0 mode (0 public, 1 identity); bits 1-2 expected id
- * (0 "alice", 1 "a", 2 a fixed 64-character id, 3 "alice").
+ * (0 "alice", 1 "a", 2 a fixed 64-character id, 3 "alice"); bit 3, in
+ * identity mode only, calls demo_keys_migrate_legacy() instead of the loader
+ * (V2-9), so the legacy MLDSASK1 reader is fuzzed by the same programs
+ * against its own independent model.
  *
  *   PUBLIC MODE: the payload IS the candidate public-key file (public data).
  *   IDENTITY MODE: the payload is an edit program, never file bytes. The
@@ -98,6 +101,7 @@ static const uint8_t MAGICS[4][8] = {
 
 static char g_dir[PATH_MAX];
 static char g_path[PATH_MAX];
+static char g_out[PATH_MAX]; /* migrate-mode output; unlinked after every input */
 static uint8_t *g_work; /* secure_mem, CAP bytes */
 static uint8_t g_pubfile[PUB_LEN(64)];
 
@@ -126,6 +130,9 @@ static void clear_candidate(void) {
 }
 
 static void cleanup(void) {
+    if (g_out[0] != '\0') {
+        (void)unlink(g_out);
+    }
     if (g_path[0] != '\0') {
         (void)unlink(g_path);
     }
@@ -145,6 +152,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
     snprintf(g_dir, sizeof(g_dir), "%s/mldsa-fuzz-keys-XXXXXX", (tmp != NULL && tmp[0] != '\0') ? tmp : "/tmp");
     FUZZ_ASSERT(mkdtemp(g_dir) != NULL, "mkdtemp");
     snprintf(g_path, sizeof(g_path), "%s/input", g_dir);
+    snprintf(g_out, sizeof(g_out), "%s/migrated", g_dir);
     g_work = secure_mem_alloc(CAP);
     FUZZ_ASSERT(g_work != NULL, "secure buffer");
     (void)atexit(cleanup);
@@ -304,7 +312,7 @@ static size_t apply_program(uint8_t *buf, size_t L, const uint8_t *p, size_t n, 
 
 /* ---- reference model ------------------------------------------------------------ */
 
-enum { M_FORMAT, M_ID_MISMATCH, M_VALID, M_UNSUPPORTED, M_INTEGRITY };
+enum { M_FORMAT, M_ID_MISMATCH, M_VALID, M_UNSUPPORTED, M_INTEGRITY, M_NOT_LEGACY };
 
 /* Public files: MLDSAPK1, unchanged by Step 7.1. */
 static int model_public(const uint8_t *b, size_t L, const uint8_t *eid, size_t elen) {
@@ -354,12 +362,38 @@ static int model_secret(const uint8_t *b, size_t L, const uint8_t *eid, size_t e
     return M_VALID;
 }
 
+/* Migration model (V2-9), first failure wins and deliberately NOT sharing
+ * code with model_secret: size bounds -> current magic (NOT_LEGACY) ->
+ * legacy magic -> id_len and exact LEGACY size (no digest) -> id. There is
+ * no digest to check; what remains is the sign/verify self-test, whose
+ * verdict this model does not predict (OK / KEY_MISMATCH / CRYPTO). */
+static int model_migrate(const uint8_t *b, size_t L, const uint8_t *eid, size_t elen) {
+    if (L < HDR || L > SK2_LEN(64)) {
+        return M_FORMAT;
+    }
+    if (memcmp(b, MAGICS[MAGIC_SK2], 8) == 0) {
+        return M_NOT_LEGACY;
+    }
+    if (memcmp(b, MAGICS[MAGIC_SK1], 8) != 0) {
+        return M_FORMAT;
+    }
+    const size_t idl = b[8];
+    if (idl < 1u || idl > 64u || L != SK_BODY_LEN(idl)) {
+        return M_FORMAT;
+    }
+    if (idl != elen || memcmp(b + HDR, eid, idl) != 0) {
+        return M_ID_MISMATCH;
+    }
+    return M_VALID;
+}
+
 static const char *model_name(int m) {
     switch (m) {
     case M_FORMAT: return "format";
     case M_ID_MISMATCH: return "id-mismatch";
     case M_UNSUPPORTED: return "unsupported-version";
     case M_INTEGRITY: return "integrity";
+    case M_NOT_LEGACY: return "not-a-legacy-file";
     default: return "structurally-valid";
     }
 }
@@ -458,6 +492,98 @@ static void run_identity(const uint8_t *p, size_t n, const uint8_t *eid, size_t 
     sodium_memzero(g_work, CAP);
 }
 
+/* Migrate mode (V2-9): the same mutation program, but the candidate file is
+ * offered to demo_keys_migrate_legacy() instead of the loader. The input
+ * file must never be modified, and an output must exist ONLY on success. */
+static void run_migrate(const uint8_t *p, size_t n, const uint8_t *eid, size_t elen) {
+    mldsa_keypair_t tkp;
+    memset(&tkp, 0, sizeof(tkp));
+    const size_t tlen = build_template(&tkp);
+    unsigned ops = 0;
+    const size_t L = apply_program(g_work, tlen, p, n, &ops);
+
+    const int m = model_migrate(g_work, L, eid, elen);
+    uint8_t in_sha[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(in_sha, g_work, L);
+    (void)unlink(g_out);
+    write_candidate(g_work, L);
+    const demo_keys_status_t st = demo_keys_migrate_legacy(g_path, g_out, eid, elen);
+
+    if (fuzz_verbose) {
+        fprintf(stderr, "[keys] migrate mode: program %zu bytes, %u ops; working length %zu; model %s; status %s\n",
+                n, ops, L, model_name(m), demo_keys_status_name(st));
+    }
+
+    if (m == M_FORMAT) {
+        FUZZ_ASSERT(st == DEMO_KEYS_ERR_FORMAT, "migrate: FORMAT expected");
+    } else if (m == M_NOT_LEGACY) {
+        FUZZ_ASSERT(st == DEMO_KEYS_ERR_NOT_LEGACY, "migrate: an MLDSASK2 input must report NOT_LEGACY");
+    } else if (m == M_ID_MISMATCH) {
+        FUZZ_ASSERT(st == DEMO_KEYS_ERR_ID_MISMATCH, "migrate: ID_MISMATCH expected");
+    } else {
+        FUZZ_ASSERT(st == DEMO_KEYS_OK || st == DEMO_KEYS_ERR_KEY_MISMATCH || st == DEMO_KEYS_ERR_CRYPTO,
+                    "migrate: a structurally valid legacy file yields OK, KEY_MISMATCH or CRYPTO");
+    }
+
+    struct stat out_st;
+    const int out_exists = (lstat(g_out, &out_st) == 0);
+    if (st == DEMO_KEYS_OK) {
+        FUZZ_ASSERT(out_exists && S_ISREG(out_st.st_mode) && (out_st.st_mode & 0777) == 0600,
+                    "migrate: success must leave a regular 0600 output file");
+        /* The output is a loadable MLDSASK2 carrying the input's own keys,
+         * with a digest this harness recomputes from its OWN label copy. */
+        static uint8_t outbuf[CAP];
+        const int fd = open(g_out, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        FUZZ_ASSERT(fd >= 0, "migrate: output open");
+        const ssize_t rd = read(fd, outbuf, sizeof(outbuf));
+        (void)close(fd);
+        const size_t idl = g_work[8];
+        FUZZ_ASSERT(rd > 0 && (size_t)rd == SK2_LEN(idl), "migrate: output size is 6025 + id_len");
+        uint8_t want[32];
+        harness_digest(want, outbuf, SK_BODY_LEN(idl));
+        FUZZ_ASSERT(memcmp(outbuf, MAGICS[MAGIC_SK2], 8) == 0 &&
+                        memcmp(outbuf + HDR, g_work + HDR, idl + MLDSA_PUBLIC_KEY_BYTES) == 0 &&
+                        sodium_memcmp(outbuf + HDR + idl + MLDSA_PUBLIC_KEY_BYTES,
+                                      g_work + HDR + idl + MLDSA_PUBLIC_KEY_BYTES, MLDSA_SECRET_KEY_BYTES) == 0 &&
+                        sodium_memcmp(outbuf + SK_BODY_LEN(idl), want, 32) == 0,
+                    "migrate: the output carries the input's keys under a correct MLDSASK2 digest");
+        /* The migrated file is a correct MLDSASK2 file for the bytes it was
+         * given -- asserted above. Whether it LOADS is a separate question:
+         * ML-DSA signing is randomized, so the sign/verify self-test is
+         * probabilistic, and a key that passed it during migration can fail
+         * it here. (The fuzzer found this independently of T14.2.) What must
+         * never happen is INTEGRITY or FORMAT: those would mean migration
+         * wrote a file that disagrees with its own digest or layout. */
+        mldsa_keypair_t lkp;
+        const demo_keys_status_t lst = demo_keys_load_identity(g_out, eid, elen, &lkp);
+        FUZZ_ASSERT(lst == DEMO_KEYS_OK || lst == DEMO_KEYS_ERR_KEY_MISMATCH || lst == DEMO_KEYS_ERR_CRYPTO,
+                    "migrate: the migrated file must load, or fail only the randomized self-test");
+        if (lst == DEMO_KEYS_OK) {
+            mldsa_keypair_free(&lkp);
+        }
+        sodium_memzero(outbuf, sizeof(outbuf));
+    } else {
+        FUZZ_ASSERT(!out_exists, "migrate: a refused migration must leave no output file");
+    }
+
+    /* The source is read-only to this command, always. */
+    static uint8_t inbuf[CAP];
+    const int ifd = open(g_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    FUZZ_ASSERT(ifd >= 0, "migrate: input reopen");
+    const ssize_t ird = read(ifd, inbuf, sizeof(inbuf));
+    (void)close(ifd);
+    uint8_t after_sha[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(after_sha, inbuf, (ird > 0) ? (size_t)ird : 0u);
+    FUZZ_ASSERT(ird >= 0 && (size_t)ird == L && sodium_memcmp(in_sha, after_sha, sizeof(in_sha)) == 0,
+                "migrate: the input file is never modified");
+    sodium_memzero(inbuf, sizeof(inbuf));
+
+    (void)unlink(g_out);
+    clear_candidate();
+    mldsa_keypair_free(&tkp);
+    sodium_memzero(g_work, CAP);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size > fuzz_target_max_len) {
         return 0;
@@ -468,7 +594,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fuzz_payload(data, size, &p, &n);
     const unsigned e = (sel >> 1) & 3u;
     if (sel & 1u) {
-        run_identity(p, n, EXPECT[e].id, EXPECT[e].len);
+        if ((sel >> 3) & 1u) {
+            run_migrate(p, n, EXPECT[e].id, EXPECT[e].len);
+        } else {
+            run_identity(p, n, EXPECT[e].id, EXPECT[e].len);
+        }
     } else {
         run_public(p, n, EXPECT[e].id, EXPECT[e].len);
     }
@@ -555,6 +685,21 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_sel(emit, ctx, "identity-truncate-digest", 1, trunc_digest, sizeof(trunc_digest));
     emit_sel(emit, ctx, "identity-idlen-6", 1, idlen6, sizeof(idlen6));
     emit_sel(emit, ctx, "identity-wrong-expected-id", 3, zero_ops, sizeof(zero_ops)); /* expects "a" */
+
+    /* Migrate mode (V2-9), selector 0x09 = identity | migrate, id "alice".
+     * "Legacy" = set the MLDSASK1 magic and truncate away the 32-byte
+     * digest: 6030 -> 5998, which is exactly LEGACY_FILE_LEN(5). */
+    const unsigned leg = (unsigned)(t - 32u); /* 5998 */
+    const unsigned short_leg = leg - 1u;      /* 5997: one byte short */
+    const uint8_t to_legacy[] = {2, 6, MAGIC_SK1, 0, (uint8_t)(leg >> 8), (uint8_t)leg};
+    const uint8_t to_legacy_short[] = {2, 6, MAGIC_SK1, 0, (uint8_t)(short_leg >> 8), (uint8_t)short_leg};
+    const uint8_t legacy_flip_pk[] = {3,   6, MAGIC_SK1, 0, (uint8_t)(leg >> 8), (uint8_t)leg,
+                                      2,   (uint8_t)(pkoff >> 8), (uint8_t)pkoff, 0};
+    emit_sel(emit, ctx, "identity-migrate-legacy-ok", 9, to_legacy, sizeof(to_legacy));
+    emit_sel(emit, ctx, "identity-migrate-sk2-input", 9, zero_ops, sizeof(zero_ops));
+    emit_sel(emit, ctx, "identity-migrate-wrong-id", 11, to_legacy, sizeof(to_legacy)); /* expects "a" */
+    emit_sel(emit, ctx, "identity-migrate-flip-pk", 9, legacy_flip_pk, sizeof(legacy_flip_pk));
+    emit_sel(emit, ctx, "identity-migrate-truncated", 9, to_legacy_short, sizeof(to_legacy_short));
 }
 
 /* ---- repository admission gate: --scan-secret ------------------------------------- */

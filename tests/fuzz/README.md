@@ -8,7 +8,7 @@ Five targets cover every attacker-controlled input:
 | `fuzz_handshake` | v2 state machine (S0 ClientHello **and encapsulation**, S1 ServerHello, S2 up to 4 ClientAuth) | selector + 2-byte-length-prefixed messages |
 | `fuzz_session` | v2 `session_open` on a valid session, padding included | selector (receiver, capacity, limits, clock, **inner mode**) + up to 8 records with 4-byte length prefixes |
 | `fuzz_frame` | `frame_recv` on a socketpair stream | selector (reader state) + byte stream |
-| `fuzz_keys` | Step 6 demo key-file loaders | selector (mode, expected id) + public-key file bytes or an identity-mode mutation program |
+| `fuzz_keys` | Step 6 demo key-file loaders and the V2-9 legacy migration | selector (mode, expected id, migrate) + public-key file bytes or an identity-mode mutation program |
 
 Each harness checks **properties, not just crashes**. An independent
 reference model predicts the correct status, and any disagreement aborts,
@@ -113,6 +113,15 @@ fixed-key ChaCha20 stream, through `randombytes_set_implementation` and
   - **Which windows are secret (V2-8).** An ML-DSA-65 secret key is `rho | K | tr | s1 | s2 | t0`. `rho` **is** `pk[0..32)` and `tr` **is** `SHAKE256(pk, 64)`, so a window lying *entirely* inside either is computable by anyone holding the public key. Those 66 windows are excluded; the other **3951** — including the 45 that straddle a boundary and therefore hold secret bytes — are kept. A file containing the fixture *public* key now scans clean (it produced 17 violations per file before), so a minimized public-mode artifact is admissible through `add_regression.sh`.
   - **The exclusions are proven, not assumed.** Before every scan the tool checks `sk[0..32) == pk[0..32)` and `sk[64..128) == SHAKE256(pk, 64)` against the regenerated fixture. If either fails it prints `SCANNER ABORT` and refuses to scan anything — a packing this code no longer understands must not be allowed to decide what counts as secret.
   - **The scanner proves its own rules before it admits anything.** Sixteen built-in controls (`C1`–`C7`) run first, on in-memory buffers, and a single failure refuses the whole scan: a real `MLDSASK2` and a legacy `MLDSASK1` file are still caught by *both* rules with exactly 3951 window hits (`C1`, `C2`); public-key files are clean (`C3`); `rho`, `tr` and `rho || tr` are clean (`C4`); the windows one byte either side of each boundary behave exactly as the rule says (`C5`); 16 bytes of `K`, `s1` or `t0` embedded in text are caught (`C6`); prose naming the magic is token-only (`C7`).
+
+**Migrate mode (V2-9).** Selector bit 3, in identity mode only, offers the
+mutated file to `demo_keys_migrate_legacy()` instead of the loader. The model
+is written separately from the loader's (size bounds → `MLDSASK2` magic ⇒
+`NOT_LEGACY` → `MLDSASK1` magic → exact *legacy* size, 5993 + id_len, with no
+digest → id), and every input additionally asserts that the source file is
+byte-identical afterwards and that an output file exists **only** on success —
+on success, one that loads through the normal loader and carries the input's
+own keys under a digest this harness recomputes with its own label copy.
 
 ### Identity-mode mutation grammar v2 (`fuzz_keys`, selector bit 0 = 1)
 
