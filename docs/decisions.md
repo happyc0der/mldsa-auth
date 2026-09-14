@@ -2246,7 +2246,35 @@ re-check ran on every tree and logged `liboqs commit verified` each time.
 
 This is a real limitation of that run, not a footnote: it cannot show that a
 clean checkout can still fetch and build from nothing. A complete
-fresh-network configure is therefore required before the tag, separately.
+fresh-network configure was therefore run separately before the tag, and it
+closed exactly that gap.
+
+### The clean-checkout fetch, and the README pass (2026-09-14)
+
+Once GitHub was reachable again, both outstanding items ran against the
+release tree, in that order — the fetch first, because the driver rule is
+never to delete a working tree before proving a fresh configure succeeds.
+
+**A genuine fetch from nothing.** No `FETCHCONTENT_SOURCE_DIR`, no seeded
+tarball, an empty directory: `cmake -S . -B <fresh>` fetched liboqs and
+libsodium over the network, configured, built, and passed 15/15 with its
+currency proven. The checkout landed on `5a1a854b0dc9…` — the pinned commit —
+and this run exercised the **population-time `PATCH_COMMAND`** enforcement
+point that the local-cache run had to bypass, so both of the pin's
+enforcement points are now known to fire. Independently, `git ls-remote`
+confirmed upstream tag `0.16.0` still resolves to that same commit, which is
+the property the tag-plus-SHA design exists to detect if it ever changes.
+
+**Gate 7, the README verbatim pass: all 18 blocks exit 0**, against fresh
+build directories that fetched their own dependencies (`liboqs commit
+verified` appears once per configured tree). That covers both `ctest` runs
+(15/15 each), the 5-target smoke and 5-target 600-second local fuzz (10 runs,
+**0 crashes, 0 artifacts**), a 3-repetition bench (0.445 / 0.455 / 0.449 ms
+against the 15 ms target), both demo blocks, and the `migrate-key` block with
+its integrity warning asserted by text.
+
+With this, nothing in the release rests on the offline cache: every claim in
+the V2-10 record has been reproduced from a clean checkout.
 
 ### The review pass: three of four analyses were invalid on the first attempt
 
