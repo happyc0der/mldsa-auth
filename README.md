@@ -12,11 +12,15 @@ specify: [v1](docs/ml-dsa-auth-protocol-spec.md) (frozen) and
 [v2](docs/ml-dsa-auth-protocol-spec-v2.md) (current). Every design decision
 and its rationale is recorded in [docs/decisions.md](docs/decisions.md).
 
-**Status: v1.0.0 released; v2 protocol-complete on `main`.** Every normative
-element of the v2 specification is implemented and verified — hybrid
-X25519 + ML-KEM-768 key exchange, the v2 wire format and labels, the hybrid
-key schedule, the hybrid handshake, and padded records. What remains before
-`v2.0.0` is engineering cleanup, not protocol work.
+**Status: `v2.0.0`.** Every normative element of the v2 specification is
+implemented and verified — hybrid X25519 + ML-KEM-768 key exchange, the v2
+wire format and labels, the hybrid key schedule, the hybrid handshake, and
+padded records. The release tree was verified end to end rather than
+step by step: normal, ASan and UBSan suites (15/15 each, instrumentation and
+build-currency proven before each result), 56 mutations re-run across seven
+campaigns, the full fuzz corpus, clang-tidy, scan-build and `-Weverything`.
+What that verification does and does not establish is recorded in
+[docs/decisions.md](docs/decisions.md) under *V2-10*.
 
 > **v1 is frozen at the [`v1.0.0`](https://github.com/happyc0der/mldsa-auth/releases/tag/v1.0.0)
 > tag and receives no patches — upgrade or fork.** v2 is a deliberate clean

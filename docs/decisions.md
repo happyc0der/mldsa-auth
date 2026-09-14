@@ -2180,3 +2180,100 @@ unconditionally — and it means the line is exercised by every successful
 migration in the suite, so Y8 is now killed by the check that was written for
 it. A cleanup path only reachable by accident is a cleanup path nobody has
 tested.
+
+## V2-10 — build currency, final review, release
+
+The last step. It exists because of something V2-9's tagging review turned
+up: a build directory can be complete, correctly configured, genuinely
+instrumented — and *stale*. `ctest` never compiles. The tool and the rule that
+close that gap are recorded above under **Process hardening after V2-4**
+(*A suite result is not trusted until the build is proven current*); this
+section records what the release itself rests on.
+
+### Build currency before V2-10 is unverifiable, and the release does not rest on it
+
+For **V2-4, V2-5, V2-6 and V2-8** there is no way to establish, after the
+fact, whether the suite results those steps quoted came from binaries built
+from the sources they committed. The only evidence that could settle it is the
+binaries themselves, and those build directories have been overwritten many
+times since. No amount of reasoning about timestamps or commit order
+substitutes for it: a stale tree and a current tree produce identical-looking
+`ctest` output, which is the whole reason the currency rule now exists.
+
+That gap is stated once, here, and not litigated further. **V2-7 and V2-9 are
+excluded from it** — both had a forced full re-run recorded at the time, V2-7
+after the file-loss incident and V2-9 after the fuzz-oracle correction, so
+their quoted results are known to describe the sources they shipped.
+
+What the release rests on instead is **V2-10's end-to-end re-run against the
+release tree**: every suite, every mutation, every scan, each paired in the
+same invocation with a currency proof. A release verified whole does not
+inherit doubt from the order in which its parts were built.
+
+### The retrospective run found a mutation that had been silently dead
+
+Re-running all 56 mutations was justified on the argument that a stale
+mutation is indistinguishable from a passing one. It was: **X3 no longer
+applied.** Its anchor — the assertion message `"kept-window count disagrees
+with the layout arithmetic"` — does not exist in the codebase. It was reworded
+while fixing X1's table overrun *during V2-8*, and X3 was never re-run
+afterwards, so V2-8's "X1–X10 all killed" carried an X3 verdict from code that
+no longer existed by the time that step was committed. Re-targeted to the
+current source, X3 is killed by scanner controls C1, C2 and C5.2 —
+`KILLED(7 named)`.
+
+The lesson is narrower than "mutations rot": a mutation's search string is
+part of the test, and editing the code it targets silently disarms it. The
+runner's exactly-once contract reports this loudly (`FATAL apply: expected
+exactly 1 occurrence, found 0`) — but only when the campaign is actually
+re-run.
+
+**N7 survived, and should have.** V2-5 recorded it as an equivalent mutant;
+it behaves the same way now. Consistency with a documented result, not a
+regression.
+
+### Provenance: dependencies came from a local cache, declared
+
+The retrospective run happened while GitHub was unreachable, so every fresh
+configure failed. Rather than wait, the run sourced liboqs and libsodium from
+a **local, pin-verified cache**: liboqs at `5a1a854b0dc9…` (checked equal to
+the pinned commit before use) and the libsodium tarball at
+`adbdd8f16149…` (checked equal to `URL_HASH`). Both pins stayed enforced
+end to end, though the liboqs pin was enforced through **one** of its two
+points rather than both: `FETCHCONTENT_SOURCE_DIR_LIBOQS` bypasses the
+population-time `PATCH_COMMAND` by CMake's design, while the configure-time
+re-check ran on every tree and logged `liboqs commit verified` each time.
+
+This is a real limitation of that run, not a footnote: it cannot show that a
+clean checkout can still fetch and build from nothing. A complete
+fresh-network configure is therefore required before the tag, separately.
+
+### The review pass: three of four analyses were invalid on the first attempt
+
+Worth recording because each first attempt produced a *clean-looking* result
+that would have been wrong to report.
+
+- **clang-tidy** reported 31 `clang-diagnostic-error`s: the analysis tree had
+  been configured but never built, so libsodium's headers did not exist yet,
+  and Homebrew clang needed `-isysroot`. Fixed: 0 compile errors, 33 TUs.
+- **scan-build** reported `0 bugs found` — vacuously. Passing
+  `-DCMAKE_C_COMPILER` **overrode the analyzer's compiler interposition**, so
+  all 41 project objects were compiled by the real clang and analysed by
+  nothing. With the flag dropped, the cache shows `ccc-analyzer` and the
+  objects are genuinely analysed.
+- **`-Weverything`** collected almost nothing: the per-target `-Werror` is
+  appended after `CMAKE_C_FLAGS`, so `-Wno-error` never applied and every
+  translation unit aborted at the error limit. Driving clang per-TU from
+  `compile_commands.json` with `-Werror` stripped covers all 33 units without
+  editing the build files.
+
+**No defects were found.** scan-build's single report (uninitialized `th` at
+`test_handshake.c:1197`) is a cross-TU false positive: all five callers guard
+`th` behind a successful `transcript_hash_client_auth`, which the analyzer
+cannot see into. clang-tidy's correctness-flavoured hits are all deliberate
+project idioms — the macro-vs-literal cross-checks (`T14_FILE(5)` *is* 6030,
+confirmed numerically), the `/* secrets SWAPPED */` sensitivity case, and
+`(v << 8) | in[i]`, which is `uint8_t` promoting to `int` and casting
+straight back. `-Wswitch-default` is excluded on evidence rather than
+convenience: `frame.c`'s switch handles every `net_status_t` enumerator, so
+adding `default:` would disable `-Wswitch`'s protection against a future one.
