@@ -1362,6 +1362,64 @@ tool that cannot itself be verified is not evidence. From V2-5 onward the
 link check runs immediately after each sanitizer build, and its result is
 quoted in the step's exit report alongside the test counts.
 
+### A suite result is not trusted until the build is proven current (added after V2-9)
+
+The third standing rule, and the one the first two could not cover.
+
+**What happened.** V2-9's `build-ubsan` was freshly configured (CMake ran full
+compiler detection, so the directory was genuinely empty), fully built, and
+genuinely instrumented — of sources as they stood twelve minutes before a late
+edit to `tests/fuzz/fuzz_keys.c`. Nothing rebuilt it, and **`ctest` never
+compiles**: it runs whatever binaries exist. So the gate exercised stale
+binaries and reported 15/15, and that number went into an exit report.
+
+**Why the existing rules could not catch it.** `check_sanitizer_link.sh`
+passed, correctly — the binaries really were instrumented. It proves
+*instrumentation*, never *currency*. And rebuilding had only ever happened as
+a **side effect** of other work: a mutation campaign's `forced_build`, the
+README pass's `rm -rf build build-fuzz build-asan build-bench`. `build-ubsan`
+is absent from that `rm` list, which is the entire reason ASan escaped and
+UBSan did not. Currency was an accident of unrelated activity, not a gate.
+
+**The rule.** *Every suite result quoted in an exit report must be preceded,
+in the same invocation, by `tools/check_build_current.sh` on that build
+directory* — same command, so the pairing is visible in the transcript rather
+than asserted afterwards:
+
+```sh
+tools/check_build_current.sh build-asan && ctest --test-dir build-asan --output-on-failure
+```
+
+The `&&` matters: on a stale tree the check rebuilds, fails, and the suite
+does not run at all, so a stale number cannot be produced in the first place.
+
+**Why a no-op rebuild rather than mtimes.** The script fingerprints every
+project object and executable, rebuilds, and requires every fingerprint to be
+unchanged. A stale object cannot survive a rebuild byte-identical, whereas
+`touch` and `git checkout` forge mtimes freely and say nothing about content.
+This is sound here because the build is already known deterministic — the
+mutation runner asserts it in every campaign preflight and has never fired —
+and the check re-proves it on each run. Objects are hashed whole; executables
+by their `__text` section, because a relink can move `LC_UUID` without
+changing any code.
+
+**Certified by demonstration, not assertion.** The decisive control reproduces
+the V2-9 mistake exactly: break a literal in `test_session.c` that the suite
+checks, run `ctest` on ASan without rebuilding — **`100% tests passed out of
+15`** — then run the currency check — **`FAIL: build-asan was STALE`**, naming
+`test_session.c.o` and `test_session` — then re-run the suite: **`93% tests
+passed, 1 tests failed`**. The first number and the third describe the same
+source tree. Only one of them is true.
+
+Two further controls pin the design. A comment appended at the end of a file
+changes the object and **not** the executable's text, so an executables-only
+check would miss it — which is why objects are fingerprinted (mutation Z1).
+And forcing a source's mtime to 2027 makes the build recompile — the object's
+mtime moves, its hash does not — and the check still reports OK, so it
+certifies content rather than timestamps (mutation Z4). Mutations Z2 (skip the
+rebuild) and Z3 (treat an empty artifact set as success) are killed by the
+same controls.
+
 ## V2-5 — the hybrid handshake
 
 The state machine now implements spec-v2 §6.3: the initiator generates a
