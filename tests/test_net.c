@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdarg.h>
@@ -181,34 +182,107 @@ static demo_config_t make_cfg_pad(int client, const keystore_t *pins, uint64_t h
     return c;
 }
 
-/* ---- EINTR storm (T12) ----------------------------------------------------- */
+/* ---- EINTR storm (T12) -----------------------------------------------------
+ *
+ * T12 asserts that net_io.c retries after EINTR, which requires a signal to
+ * arrive while a peer is blocked in poll/recv/send. The storm used to be
+ * setitimer(ITIMER_REAL, 500 us) in each peer, which made the test a race
+ * against the host's timer resolution: this laptop delivers ~6 alarms per
+ * scenario, but GitHub's macos-26-arm64 runner delivered between 0 and 19
+ * across seven runs and T12 failed the two where at most one landed (V3-3
+ * bring-up). The alarms now come from a dedicated process that signals both
+ * peers as fast as it is scheduled, for exactly as long as the scenario runs,
+ * so delivery no longer depends on any timer's granularity.
+ */
 
 static volatile sig_atomic_t g_alarms = 0;
 static void on_alarm(int sig) {
     (void)sig;
     g_alarms = g_alarms + 1;
 }
-static void storm_start(void) {
+
+/* Installs the counting handler with NO SA_RESTART, so blocking calls in this
+ * process fail with EINTR rather than resuming silently. Called by each peer
+ * (the parent runs the client; the server runs in a child). */
+static void storm_arm(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_alarm;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0; /* NO SA_RESTART: blocking calls fail with EINTR */
+    sa.sa_flags = 0;
     if (sigaction(SIGALRM, &sa, NULL) != 0) {
         fatal("sigaction");
     }
-    struct itimerval it;
-    it.it_interval.tv_sec = 0;
-    it.it_interval.tv_usec = 500;
-    it.it_value = it.it_interval;
-    if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
-        fatal("setitimer");
-    }
 }
-static void storm_stop(void) {
-    struct itimerval it;
-    memset(&it, 0, sizeof(it));
-    (void)setitimer(ITIMER_REAL, &it, NULL);
+
+static void storm_disarm(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    (void)sigaction(SIGALRM, &sa, NULL);
+}
+
+typedef struct {
+    pid_t pid;   /* the signalling process, -1 when no storm is running */
+    int stop_fd; /* write end; closing it is the stop signal (the child reads EOF) */
+} storm_t;
+
+/* The signalling process: spray SIGALRM at both peers until the parent closes
+ * the stop pipe. It ignores SIGALRM itself and carries its own deadline, so a
+ * hung scenario cannot leave a process spinning for CHILD_WAIT_MS. */
+static void storm_body(int stop_fd, pid_t a, pid_t b) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    (void)sigaction(SIGALRM, &sa, NULL);
+    (void)fcntl(stop_fd, F_SETFL, O_NONBLOCK);
+    const uint64_t deadline = net_deadline_in(CHILD_WAIT_MS);
+    while (net_now_ms() < deadline) {
+        char c;
+        const ssize_t r = read(stop_fd, &c, 1);
+        if (r == 0) {
+            break; /* parent closed the pipe: the scenario is over */
+        }
+        if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            break;
+        }
+        (void)kill(a, SIGALRM);
+        (void)kill(b, SIGALRM);
+        sched_yield();
+    }
+    _exit(0);
+}
+
+static storm_t storm_begin(pid_t a, pid_t b) {
+    int p[2];
+    if (pipe(p) != 0) {
+        fatal("pipe (storm)");
+    }
+    const pid_t pid = fork();
+    if (pid < 0) {
+        fatal("fork (storm)");
+    }
+    if (pid == 0) {
+        (void)close(p[1]);
+        storm_body(p[0], a, b);
+    }
+    (void)close(p[0]);
+    storm_t s = {pid, p[1]};
+    return s;
+}
+
+static void storm_end(storm_t *s) {
+    if (s->pid < 0) {
+        return;
+    }
+    (void)close(s->stop_fd);
+    int st = 0;
+    while (waitpid(s->pid, &st, 0) < 0 && errno == EINTR) {
+    }
+    s->pid = -1;
+    s->stop_fd = -1;
 }
 
 /* ---- child plumbing ---------------------------------------------------------- */
@@ -326,7 +400,7 @@ static void server_body(int wfd, const void *arg) {
     }
     demo_config_t cfg = make_cfg_pad(0, o->pins, o->hs_ms, o->idle_ms, &rep->log, o->pad_bucket);
     if (o->storm) {
-        storm_start();
+        storm_arm(); /* the signals come from the storm process the parent forks */
     }
     net_conn_t conn;
     if (net_accept(o->listen_fd, net_deadline_in(OPS_MS), &conn) == NET_OK) {
@@ -336,7 +410,7 @@ static void server_body(int wfd, const void *arg) {
         rep->elapsed_ms = net_now_ms() - t0;
         rep->buffers_zero = sodium_is_zero((const unsigned char *)buf, sizeof(*buf));
     }
-    storm_stop();
+    storm_disarm();
     write_full(wfd, rep, sizeof(*rep));
 }
 
@@ -575,8 +649,10 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
     memset(&quiet, 0, sizeof(quiet));
     demo_config_t cfg = make_cfg_pad(1, sc->cli_pins, sc->cli_hs_ms, sc->cli_idle_ms,
                                      sc->cli_log ? sc->cli_log : &quiet, sc->cli_pad_bucket);
+    storm_t storm = {-1, -1};
     if (sc->storm) {
-        storm_start();
+        storm_arm();
+        storm = storm_begin(getpid(), srv.pid);
     }
     const uint64_t t0 = net_now_ms();
     net_conn_t conn;
@@ -586,7 +662,8 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
         out->cli.status = DEMO_ERR_IO;
     }
     out->cli_elapsed_ms = net_now_ms() - t0;
-    storm_stop();
+    storm_end(&storm);
+    storm_disarm();
     out->cli_bufs_zero = sodium_is_zero((const unsigned char *)g_cli_buf, sizeof(*g_cli_buf));
 
     out->srv_ok = collect(&srv, &g_srv_rep, sizeof(g_srv_rep));
@@ -1235,8 +1312,8 @@ static void test_t12_eintr(void) {
     run_scenario(&sc, &o);
     char name[200];
     snprintf(name, sizeof(name),
-             "T12: SIGALRM every 500 us without SA_RESTART: both sides succeed (EINTR retries: client %llu, "
-             "server %llu; %d alarms in the client)",
+             "T12: a dedicated process signals both peers without SA_RESTART: both sides succeed (EINTR "
+             "retries: client %llu, server %llu; %d alarms in the client)",
              (unsigned long long)o.cli.net.eintr_retries, (unsigned long long)g_srv_rep.res.net.eintr_retries,
              (int)g_alarms);
     CHECK(o.cli.status == DEMO_OK && server_ok(&o) && g_srv_rep.res.status == DEMO_OK &&
