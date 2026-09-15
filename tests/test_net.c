@@ -106,7 +106,14 @@ static demo_buffers_t *g_cli_buf;
 
 #define TEST_HS_MS 2000u
 #define TEST_IDLE_MS 2000u
-#define CHILD_WAIT_MS 20000u
+/* How long the parent waits for a child's report, and (minus 2 s) how long
+   the proxy stays alive. A hang detector, never a measurement: nothing here
+   asserts anything about it. T2 sends ~12000 bytes through the proxy one at a
+   time, each preceded by a sleep whose real cost is the host's scheduling
+   granularity -- 3.2 s of work here, but the proxy was still forwarding at
+   18.0 s on GitHub's macos-26-arm64 runner, where this bound cut it off and
+   both peers reported the other as having closed (V3-3 bring-up). */
+#define CHILD_WAIT_MS 120000u
 #define OPS_MS 5000u
 
 /* Exact frame sizes for alice <-> bob (ML-DSA-65 signatures are fixed-length). */
@@ -512,6 +519,8 @@ typedef struct {
     const keystore_t *cli_pins;
     uint64_t srv_hs_ms;
     uint64_t cli_hs_ms;
+    uint64_t srv_idle_ms; /* per session-phase frame, each side */
+    uint64_t cli_idle_ms;
     int use_proxy;
     proxy_rules_t rules;
     const demo_message_t *msgs;
@@ -537,6 +546,8 @@ static scenario_t default_scenario(void) {
     s.cli_pins = &g_cli_pins_ok;
     s.srv_hs_ms = TEST_HS_MS;
     s.cli_hs_ms = TEST_HS_MS;
+    s.srv_idle_ms = TEST_IDLE_MS;
+    s.cli_idle_ms = TEST_IDLE_MS;
     s.rules = no_faults();
     return s;
 }
@@ -546,7 +557,7 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
     memset(&g_srv_rep, 0, sizeof(g_srv_rep));
     memset(&g_prx_rep, 0, sizeof(g_prx_rep));
     uint16_t srv_port = 0;
-    child_t srv = start_server_pad(sc->srv_pins, sc->srv_hs_ms, TEST_IDLE_MS, sc->storm, sc->srv_pad_bucket,
+    child_t srv = start_server_pad(sc->srv_pins, sc->srv_hs_ms, sc->srv_idle_ms, sc->storm, sc->srv_pad_bucket,
                                    &srv_port);
     child_t prx = {-1, -1};
     uint16_t port = srv_port;
@@ -562,7 +573,7 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
 
     logcap_t quiet;
     memset(&quiet, 0, sizeof(quiet));
-    demo_config_t cfg = make_cfg_pad(1, sc->cli_pins, sc->cli_hs_ms, TEST_IDLE_MS,
+    demo_config_t cfg = make_cfg_pad(1, sc->cli_pins, sc->cli_hs_ms, sc->cli_idle_ms,
                                      sc->cli_log ? sc->cli_log : &quiet, sc->cli_pad_bucket);
     if (sc->storm) {
         storm_start();
@@ -743,9 +754,27 @@ static void test_t2_fragmented(void) {
     sc.use_proxy = 1;
     sc.rules.chunk = 1;
     sc.rules.delay_us = 200;
-    /* ~7 KB of handshake crosses the proxy one byte at a time: allow for it. */
-    sc.srv_hs_ms = 15000;
-    sc.cli_hs_ms = 15000;
+    /* ~7 KB of handshake crosses the proxy one byte at a time, each byte
+       preceded by a 200 us sleep. What that costs is set by the host's sleep
+       granularity, not by this code: ~2 s on a laptop, but over 15 s on a
+       virtualised CI runner, where 15000 turned a liveness guard into a
+       platform-sensitive failure (GitHub macos-26-arm64, V3-3 bring-up).
+       This bound exists only to stop a hang from running forever, so it is
+       set as far clear of the work as the design allows: the server refuses a
+       handshake timeout above its pending store's TTL (demo_app.c), so
+       HANDSHAKE_PENDING_TTL_MS_DEFAULT is the ceiling, not a round number.
+       ctest's own timeout is the outer guard. */
+    sc.srv_hs_ms = HANDSHAKE_PENDING_TTL_MS_DEFAULT;
+    sc.cli_hs_ms = HANDSHAKE_PENDING_TTL_MS_DEFAULT;
+    /* The same argument applies per session-phase frame: a 541-byte echo
+       frame is 541 sleeps, which cost ~1 s here and far more on a runner.
+       TEST_IDLE_MS (2 s) is a laptop number; with the handshake bound raised,
+       this is what failed next (18.2 s in, server io-error). No timeout is
+       the property T2 tests -- T11 and T13 own that, with their own short,
+       deliberate budgets -- so both sides get a liveness bound here, not a
+       stopwatch. */
+    sc.srv_idle_ms = 20000;
+    sc.cli_idle_ms = 20000;
     sc.msgs = msgs;
     sc.n_msgs = 2;
     outcome_t o;
