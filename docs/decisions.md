@@ -2370,3 +2370,69 @@ W5b  compile-fail  KILLED(compile)   /work/src/protocol/session.c:253:9: error: 
 Both carry `path:line:col: error:`, so no regex widening was needed. Had they
 not, the fix was specified in advance: make the column optional while still
 requiring a project path, then re-verify on both compilers.
+
+## V3-2 — a publishable environment block on Linux
+
+`print_environment()` emitted the `os` line via `uname` but wrapped the `cpu`
+line in `#if defined(__APPLE__)`. On Linux that did not fail to build — it
+silently omitted CPU identification altogether, which is why V3-1 never saw
+it. The consequence is a publishing defect rather than a build defect:
+**"0.450 ms" with no chip named is not a result**, and V3-5 is about to
+publish x86_64 numbers to close the spec §5.1 deviation carried since Step 8.
+
+### Four facts, not one
+
+The Linux branch reports the CPU model and online core count, and two things
+macOS has no analogue for:
+
+- **cpu scaling** — the cpufreq governor and `intel_pstate/no_turbo`. A
+  `powersave` governor can halve throughput, so a Linux timing without it is
+  uninterpretable.
+- **virtualization** — the DMI vendor. CI runners are shared VMs; a reader
+  must be able to tell that from bare metal before trusting a median.
+
+Cores are a plain online count: macOS reports a performance/efficiency split
+and Linux has no universal equivalent, so none is invented.
+
+### Unknown values say why, and name their source
+
+Anything unreadable prints `unknown (<why>)`, never nothing and never a
+guess — an absent line cannot be told apart from a platform with nothing to
+say, while an explicit unknown can be falsified. The reason names the field
+and the file (`unknown (no model name in /proc/cpuinfo)`), so a reader can
+check the claim rather than trust it.
+
+That path is not hypothetical: **arm64 Linux has no `model name` field in
+/proc/cpuinfo at all**, so the degraded branch is the one that runs on the
+container this step was verified in. The x86_64 path that V3-5 will take
+therefore stays unproven until it runs on a real x86_64 runner — stated here
+as a known gap, with the oracle written so a wrong value there fails loudly.
+
+### The oracle lives in bench_smoke
+
+The environment block is the only part of a published measurement that is
+prose rather than a number, so it had no oracle at all. `run_smoke.cmake`
+already captured each binary's output, so the assertions went there rather
+than into a new test, and the suite stays at 15: every required key present,
+no empty values, no bare `unknown` without a reason, and on Linux the `cpu`
+value must either contain the `model name` CMake reads independently from
+/proc/cpuinfo or declare itself unknown.
+
+### What the mutations found in the oracle
+
+- **V1** exposed a **prefix collision**: the key regex allowed one space, so
+  the line `cpu scaling ...` satisfied the requirement for `cpu` and a deleted
+  `cpu` line passed unnoticed. Values are column-aligned, so requiring two
+  spaces after the key disambiguates — a longer key sharing the prefix is
+  followed by exactly one.
+- **V2** twice returned a *void* verdict before a real one. Rebuilding only
+  the changed `.o` left a stale `libmldsa_bench.a`, so the mutation never
+  reached the binary; printing the binary's own `cpu` line proved it still
+  showed the genuine value. The full forced build that
+  `tools/run_mutations_v2.sh` performs — objects **and** archives **and**
+  executables — is not belt-and-braces; a partial one silently reports
+  survivals that never happened.
+
+V1, V2, V3 and V5 are all killed by the oracle; V4 (altering the macOS
+wording) is killed by the byte-identical diff of the macOS block, which is the
+regression guard for every figure already published in `bench/results.md`.

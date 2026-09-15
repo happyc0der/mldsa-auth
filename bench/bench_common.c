@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/utsname.h>
 #include <time.h>
+#include <unistd.h> /* sysconf(): POSIX, needed by the Linux environment block */
 
 #if defined(__APPLE__)
 #include <pthread/qos.h>
@@ -137,6 +138,68 @@ static long sysctl_long(const char *name) {
     }
     return (long)v;
 }
+#elif defined(__linux__)
+/* A value that could not be read is reported as "unknown (<why>)" -- never
+ * omitted and never guessed. An absent line cannot be told apart from a
+ * platform with nothing to say; an explicit "unknown" can be falsified. */
+static void unknown(char *out, size_t cap, const char *why) {
+    snprintf(out, cap, "unknown (%s)", why);
+}
+
+/* First "key<sep>value" line of a colon-separated file such as /proc/cpuinfo. */
+static void proc_field(const char *path, const char *key, char *out, size_t cap) {
+    /* The reason names the field and the file it was sought in: a reader of a
+     * published block must be able to check the claim, not just read "unknown". */
+    char why[160];
+    snprintf(why, sizeof(why), "no %s in %s", key, path);
+    FILE *f = fopen(path, "re");
+    if (f == NULL) {
+        snprintf(why, sizeof(why), "cannot read %s", path);
+        unknown(out, cap, why);
+        return;
+    }
+    char line[512];
+    const size_t klen = strlen(key);
+    while (fgets(line, sizeof(line), f) != NULL) {
+        if (strncmp(line, key, klen) != 0) {
+            continue;
+        }
+        char *colon = strchr(line, ':');
+        if (colon == NULL) {
+            continue;
+        }
+        char *v = colon + 1;
+        while (*v == ' ' || *v == '\t') {
+            v++;
+        }
+        v[strcspn(v, "\n")] = '\0';
+        if (*v != '\0') {
+            snprintf(out, cap, "%s", v);
+            (void)fclose(f);
+            return;
+        }
+    }
+    (void)fclose(f);
+    unknown(out, cap, why);
+}
+
+/* One-line /sys file (cpufreq governor, DMI vendor, ...). */
+static void sys_str(const char *path, char *out, size_t cap, const char *why) {
+    FILE *f = fopen(path, "re");
+    if (f == NULL) {
+        unknown(out, cap, why);
+        return;
+    }
+    char line[256] = {0};
+    if (fgets(line, sizeof(line), f) == NULL) {
+        (void)fclose(f);
+        unknown(out, cap, why);
+        return;
+    }
+    (void)fclose(f);
+    line[strcspn(line, "\n")] = '\0';
+    snprintf(out, cap, "%s", line[0] != '\0' ? line : "unknown (empty file)");
+}
 #endif
 
 /* Which ML-DSA-65 backend liboqs will actually execute.
@@ -222,6 +285,32 @@ static void print_environment(const char *suite_name) {
     sysctl_str("machdep.cpu.brand_string", cpu, sizeof(cpu));
     bench_env_line("cpu", "%s (%ld performance + %ld efficiency cores)", cpu,
                    sysctl_long("hw.perflevel0.logicalcpu"), sysctl_long("hw.perflevel1.logicalcpu"));
+#elif defined(__linux__)
+    /* x86_64 /proc/cpuinfo carries "model name"; arm64 does not, so that path
+     * degrades to an explicit unknown rather than inventing a chip. Cores are
+     * a plain online count: macOS reports a performance/efficiency split and
+     * Linux has no universal equivalent, so none is faked. */
+    char cpu[256];
+    proc_field("/proc/cpuinfo", "model name", cpu, sizeof(cpu));
+    bench_env_line("cpu", "%s (%ld logical cores online)", cpu, sysconf(_SC_NPROCESSORS_ONLN));
+
+    /* No macOS analogue, and not optional: a powersave governor can halve
+     * throughput, so a Linux timing is uninterpretable without it. */
+    char gov[128];
+    char turbo[128];
+    sys_str("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov, sizeof(gov),
+            "no cpufreq sysfs: frequency is not under OS control here");
+    sys_str("/sys/devices/system/cpu/intel_pstate/no_turbo", turbo, sizeof(turbo),
+            "not an intel_pstate system");
+    bench_env_line("cpu scaling", "governor %s, intel_pstate no_turbo %s", gov, turbo);
+
+    /* CI runners are shared VMs; a reader must be able to tell that from
+     * bare metal before trusting a median. */
+    char virt[128];
+    sys_str("/sys/class/dmi/id/sys_vendor", virt, sizeof(virt), "no /sys/class/dmi/id/sys_vendor");
+    bench_env_line("virtualization", "DMI vendor %s", virt);
+#else
+    bench_env_line("cpu", "unknown (unsupported platform)");
 #endif
 #if defined(__clang_version__)
     bench_env_line("compiler", "clang %s", __clang_version__);
