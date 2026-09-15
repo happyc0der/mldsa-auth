@@ -3057,10 +3057,44 @@ Measured on a fast machine. A mid-range phone will be several times slower,
 and the headroom absorbs that; V4-13 re-measures in real browsers rather than
 extrapolating.
 
+### S7 — the model checker is available, and modelling is not a formality
+
+`brew install opam` (2.5.2) → an OCaml 5.1.1 switch → `opam install proverif`
+**fails**: the package pulls `conf-gtk2` for ProVerif's optional GUI and GTK+2
+is not present. The prover itself does not need it, so ProVerif 2.05 was built
+from its source tarball against that switch instead; its `build` script exits
+2 (the GUI half fails) while still producing a working **5.7 MB CLI binary**.
+Recorded because V4-4 will hit the same wall: *install the CLI from source,
+not from opam*.
+
+Functionality confirmed on a toy sign-then-KEM model: ProVerif **proves**
+`not attacker(secretMsg)` — a real secrecy proof — and correctly **reports
+violations** of injective agreement, including on a deliberately broken
+variant with the signature check removed.
+
+What it did **not** do is prove injective agreement on my toy model, and that
+is the useful part of the result. Two successive attempts — first without a
+nonce, then with a responder challenge signed into the transcript — both came
+back `false`. That is not a tool problem and not (as far as this spike
+establishes) a protocol problem: it is that a faithful agreement property
+needs the *whole* transcript binding the real protocol has (`session_id`,
+both nonces, `handshake_id`, both identities — spec-v2 §6.3), and a toy model
+that abbreviates it will not prove what the real one should.
+
+So S7 passes its stated criterion (the toolchain is available and provably
+functional) while demolishing the assumption underneath it: writing the V4-4
+model is genuine protocol work, not a box to tick. Budget it accordingly, and
+keep the broken-variant control — it is what proves the model can fail.
+
 ### What the spikes cost the plan
 
 Two numbers the plan asserted were wrong (the ledger ceiling, and PROXY v2
 support), one hazard was confirmed as live (silent mlock failure), one
-prerequisite was discovered (F0 gates hardening, not just Release), and the
-single largest unknown — whether a browser can run this protocol at all — is
-now answered with byte-identical known-answer tests rather than an opinion.
+prerequisite was discovered (F0 gates hardening, not just Release), one
+step was found to be larger than budgeted (V4-4's model), and the single
+largest unknown — whether a browser can run this protocol at all — is now
+answered with byte-identical known-answer tests rather than an opinion.
+
+Seven spikes, six passes, one pass-with-a-warning. Nothing in the roadmap
+needs reordering; V4-3 can now write a spec whose browser section rests on
+a measurement instead of a hope.
