@@ -2927,3 +2927,140 @@ The document therefore separates what was **machine-checked** from what was
 **read**, and V4-14 produces a packet for an external cryptographic review.
 No timing measurements were taken; the pinned dependency versions were not
 re-checked against advisories in this pass.
+
+## V4-2 — the spikes: measuring what the design was assuming
+
+Seven time-boxed experiments, each with a pass criterion fixed **before** it
+ran, in a scratch directory on a **space-free path** (finding F13: this
+working copy lives under `…/PQ Authentication protocol/…`, which libtool
+cannot handle). No repository code changed; this section is the deliverable.
+
+Three of the seven changed a design decision, and one produced a number the
+plan had assumed and got wrong.
+
+### S1 — libsodium hands back unlocked memory and says nothing
+
+Measured on Linux with 1,000 concurrent `sodium_malloc(32)` blocks (the daemon
+holds ~10 per in-flight handshake):
+
+| `RLIMIT_MEMLOCK` | allocations succeeding | `VmLck` | verdict |
+|---|---|---|---|
+| 8 MiB (container default) | 1000 / 1000 | 4,000 KiB | every block locked |
+| **64 KiB** | **1000 / 1000** | **64 KiB** | **~16 blocks locked; the rest silently unlocked** |
+
+Under a tight limit **every allocation still succeeds** and roughly sixteen of
+a thousand blocks are actually locked. Nothing returns an error, nothing is
+logged: the secrets quietly become swappable. This confirms finding F6 as a
+*live* operational hazard rather than a theoretical one, and it is the reason
+`LimitMEMLOCK` is a correctness setting for this daemon, not a tuning knob.
+
+Cost measured at **9.5 KiB of RSS per 32-byte secret** (guard pages plus page
+rounding), so ~95 KiB per in-flight handshake. `LimitMEMLOCK` must therefore
+be at least `4 KiB × 10 × max_in_flight`; V4-11 derives it from the configured
+slot count instead of guessing, and the daemon logs the limit at startup.
+
+### S2 — the ledger scan fails the plan's own budget at 4,096
+
+`find_slot` is a deliberate constant-time full scan (`handshake.c:74-90`).
+Cost per handshake (four scans), measured:
+
+| capacity | per scan | per handshake | |
+|---|---|---|---|
+| 256 | 2.55 µs | 10.2 µs | |
+| 1,024 | 9.95 µs | 39.8 µs | |
+| **2,048** | **19.90 µs** | **79.6 µs** | under the 100 µs budget |
+| 4,096 | 39.88 µs | 159.5 µs | **over** |
+| 8,192 | 79.89 µs | 319.6 µs | **over** |
+
+The plan said "acceptable to ~4096"; measurement says the ceiling is
+**2,048**. V4-12 therefore caps capacity at 2,048 and uses **TTL** as the
+other lever: capacity ÷ TTL is the sustained rate, so 2,048 with a 10 s TTL is
+~205 handshakes/s — two orders of magnitude above what one website needs.
+Beyond that the answer is an indexed store, which is out of v4's scope.
+(Measured in a container on Apple silicon; the x86 VPS will differ, and V4-12
+re-measures there rather than porting this number.)
+
+### S3 — full hardening links, and F0 blocks the gcc half
+
+A Release, `-fPIE -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack`,
+`CMAKE_POSITION_INDEPENDENT_CODE=ON` build against the static liboqs and
+libsodium:
+
+- **clang: builds.** `check_hardening.sh --require` reports the complete set
+  (PIE, RELRO, BIND_NOW, NX stack, canaries) on **all 15 executables**, and
+  `check_backend_symbols.sh` still proves exactly one optimized backend with
+  no portable-C symbols — hardening does not cost Req 4.10.
+- **gcc: fails**, on audit finding **F0** (`-Werror=unused-result` on
+  `symlink`). So F0 does not merely block a Release build; it blocks the
+  *hardened* build on the compiler a distribution is most likely to use. Its
+  fix in V4-5 is a prerequisite for V4-11, not an independent tidy-up.
+
+### S4 and S5 — the client address, and a correction of my own making
+
+**S4.** Caddy 2.10.2 → Unix-socket upstream, WebSocket upgrade, with
+`header_up X-Real-IP {remote_host}` and `header_up -X-Forwarded-For`. A client
+that sent `X-Real-IP: 1.2.3.4-SPOOFED` and `X-Forwarded-For: 9.9.9.9-SPOOFED`
+produced, at the upstream: `x-real-ip: 127.0.0.1` and
+`x-forwarded-for: <absent>`. Spoofing is defeated, and `SO_PEERCRED` on the
+Unix socket returns the proxy's pid/uid/gid, so the daemon can verify *who*
+connected. The WS frame arrived masked, as a browser sends it.
+
+**S5 — and a result I had to throw away.** My first run reported "PROXY v2
+upstream: NOT supported". That was a **brace error in my own Caddyfile**, not
+a missing feature: the error text was a Caddyfile parse failure, not an
+unknown option. Re-run with a correct config — and with a control proving
+`caddy validate` discriminates (a knowingly bogus transport option *is*
+rejected) — the answer inverts: **`proxy_protocol v2` to the upstream is
+supported by the stock binary.**
+
+This changes the design. PROXY v2 is prepended by the proxy *before* any
+client byte and cannot be forged by the client at all, so V4-10 uses it as the
+primary mechanism and keeps the S4 header arrangement as the fallback for a
+proxy that cannot emit it. The near-miss is worth recording for its own sake:
+a tool's error message must be read, not pattern-matched, and a negative
+result needs a control just as much as a positive one.
+
+### S6 — the browser gate passes, on the pinned liboqs, with no fallback needed
+
+The gate the whole of milestone B hung on. The pinned liboqs 0.16.0 contains
+**zero** mentions of Emscripten or wasm, so nothing suggested it would build.
+
+1. **libsodium 1.0.22** (the pinned tarball) via `emconfigure`: builds;
+   **102 `crypto_pwhash` symbols** in the archive, so Argon2id is available.
+2. **liboqs at the pinned commit**, with the project's exact options
+   (`OQS_MINIMAL_BUILD="SIG_ml_dsa_65;KEM_ml_kem_768"`, `OQS_USE_OPENSSL=OFF`,
+   `OQS_DIST_BUILD=OFF`, `OQS_OPT_TARGET=generic`): builds, 247 KB archive.
+3. **The project's own `src/` plus `tests/test_vectors.c`** compiled to wasm
+   and run under Node 26:
+
+   > **27 checks in wasm, 27 native, and the two lists are byte-for-byte
+   > identical** — including `mldsa65_kat` and `mlkem768_kat` matching
+   > liboqs's published single-vector SHA-256 hashes, RFC 7748 X25519,
+   > RFC 5869 HKDF and RFC 8439 ChaCha20-Poly1305.
+
+4. Performance (Node, Apple silicon): `mldsa_sign` 0.410 ms, `mldsa_verify`
+   0.070 ms, `mlkem_encaps` 0.035 ms, `mlkem_decaps` 0.041 ms →
+   **0.556 ms for the entire login-critical path** against a 50 ms criterion,
+   and **Argon2id(3, 64 MiB) at 111.5 ms** against 2,000 ms. Module: 102 KB
+   (bench) / 171 KB wasm + 91 KB JS (full test binary), against a 1.5 MB
+   budget.
+
+**Verdict: PASS, with ~90× headroom on the crypto and ~18× on the KDF.** The
+fallback (vendoring mldsa-native/mlkem-native directly) is not needed and is
+not adopted. Two practical findings for V4-13: wasm's default stack is 64 KiB
+and this codebase faults immediately on it (ML-DSA keys are 4 KB,
+`handshake_ctx_t` ~3.9 KB) — `-sSTACK_SIZE=8MB` is required; and the KAT tests
+need liboqs's **internal** archive (`liboqs-internal.a`) for the NIST DRBG,
+exactly as `tests/CMakeLists.txt:27` links `oqs-internal` natively.
+
+Measured on a fast machine. A mid-range phone will be several times slower,
+and the headroom absorbs that; V4-13 re-measures in real browsers rather than
+extrapolating.
+
+### What the spikes cost the plan
+
+Two numbers the plan asserted were wrong (the ledger ceiling, and PROXY v2
+support), one hazard was confirmed as live (silent mlock failure), one
+prerequisite was discovered (F0 gates hardening, not just Release), and the
+single largest unknown — whether a browser can run this protocol at all — is
+now answered with byte-identical known-answer tests rather than an opinion.
