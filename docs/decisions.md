@@ -2855,3 +2855,75 @@ was believed, which is the same rule the gates themselves follow.
 One check in it is worth keeping beyond this step: **every committed campaign
 must appear in some nightly matrix**. That is the invariant whose violation
 started this section.
+
+## V4-1 — auditing v1–v3 against a deployment, and what that found
+
+v3 closed with a verified reference implementation whose own README says
+"Not production-ready". v4 asks a different question of the same code: what
+stands between it and being one website's login system? This step answers it
+with evidence rather than opinion — `docs/v4/audit.md` (findings register,
+coverage, spec-conformance matrix, disposition of all 31 recorded debt items)
+and `docs/v4/threat-model.md` (assets, adversaries, trust boundaries, and what
+the post-quantum layer adds over TLS+passwords — and does not).
+
+No code was touched. Fixes are owned by later steps, per the rule that an
+audit reports rather than repairs.
+
+### The finding that justified the whole step
+
+**The project does not build in Release with gcc on Linux** —
+`-Werror=unused-result` on two `symlink()` calls in `tests/test_net.c`.
+Measured, not inferred: `Release + gcc FAILS`, `Release + clang BUILDS`, and a
+three-line probe confirms gcc does **not** honour a `(void)` cast on
+`warn_unused_result` while clang does.
+
+It survived three milestones of verification because every axis that would
+have caught it is covered *separately*: CI builds Linux in Debug, ASan and
+UBSan (never Release); the only Release build is `bench.yml`, with clang; and
+`_FORTIFY_SOURCE=2` is defined only when not sanitizing and only takes effect
+at `-O2`. **The one configuration a deployment would actually use — Linux,
+Release, gcc — had never been built.** The matrix was wide but had a hole
+exactly where production lives.
+
+### Coverage, measured for the first time
+
+87.77% regions / 97.19% lines / **77.29% branches** across `src/` and `apps/`.
+Not adopted as a gate — the mutation campaigns are the gate — but an uncovered
+branch is one no mutation could ever be killed in, so it maps the blind spots.
+The shape is the interesting part: the **protocol core is the best-covered
+code** (`session.c` 95.99% branches, `keystore.c` 92.96%, `transcript.c`
+88.79%) and the **apps layer the worst** (`auth_server.c` 61.17%,
+`auth_client.c` 62.99%, `net_io.c` 68.65%) — which is precisely the layer the
+daemon replaces. `mldsa_wrap.c`'s 57.69% is the lowest in `src/`: liboqs
+failure paths unreachable without fault injection.
+
+The measurement is run from a **separate `build-cov` tree**, never from a gate
+tree: instrumented objects would poison the mutation runner's fingerprints and
+`check_build_current.sh`'s no-op-rebuild proof.
+
+### Two normative requirements have no executable pin
+
+Of spec-v2 §4's thirteen security requirements, eleven are pinned by a test or
+a tool. **Req 4.8 (build hardening) and Req 4.9 (no secret-dependent control
+flow) are pinned by nothing** — the only matches in the tree are comments
+mentioning them. 4.8 now has `tools/audit/check_hardening.sh`, written to
+become a gate in V4-11 (`--require`); 4.9 has no timing test and is argued by
+code review alone, which is now recorded rather than assumed.
+
+### The audit tools are committed, and each can fail
+
+`tools/audit/` follows V3-4's rule that an uncommitted verification is an
+unverifiable claim. Each script refuses to pass vacuously and has a
+demonstrated failure mode: coverage responds to removing a test (session
+branch coverage 95.99% → 76.28% with the session tests excluded);
+`check_hardening.sh` fails when a property is absent and refuses to pass when
+it finds no executables; the constant-time inventory fails if it finds zero
+constant-time calls, i.e. if its own grep broke.
+
+### What this audit does not establish
+
+It is still single-agent review — the agent that wrote v1–v3 audited them.
+The document therefore separates what was **machine-checked** from what was
+**read**, and V4-14 produces a packet for an external cryptographic review.
+No timing measurements were taken; the pinned dependency versions were not
+re-checked against advisories in this pass.
