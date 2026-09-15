@@ -353,7 +353,13 @@ static size_t run_regressions(const char *dir) {
         n++;
     }
     closedir(d);
-    qsort(names, n, sizeof(*names), name_cmp);
+    /* An empty regressions directory leaves names == NULL. glibc declares
+       qsort __nonnull((1, 4)), so passing NULL is undefined even with n == 0;
+       macOS headers carry no such attribute, so only Linux UBSan diagnoses
+       it -- which it did, on four targets at once, the first time CI ran. */
+    if (n > 0) {
+        qsort(names, n, sizeof(*names), name_cmp);
+    }
     for (size_t i = 0; i < n; i++) {
         char path[4096];
         uint8_t *data = NULL;
