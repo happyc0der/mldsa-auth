@@ -33,7 +33,10 @@ if ! "$SCANNER" --scan-secret "$ART" > /dev/null 2>&1; then
     exit 1
 fi
 
-SUM=$(shasum -a 256 "$ART" | cut -c1-12)
+case "$(uname -s)" in
+  Darwin) SUM=$(shasum -a 256 "$ART" | cut -c1-12) ;;
+  *)      SUM=$(sha256sum "$ART" | cut -c1-12) ;;
+esac
 OUT="$DEST/$NAME-$SUM"
 cp "$ART" "$OUT"
 echo "admitted: $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes; secret scan clean)"

@@ -33,14 +33,32 @@ rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 cd "$REPO" || exit 2
 
 # ---- discovery (never a hardcoded list) ---------------------------------
+# ---- platform shim (V3-1) ------------------------------------------------
+# Duplicated per script on purpose: tools/ is deliberately NOT an installable
+# unit (docs/decisions.md), so nothing here may be sourced.
+case "$(uname -s)" in
+  Darwin)
+    MLDSA_PLATFORM="macOS"; MLDSA_TEXTTOOL="otool -X -t"
+    sha256() { shasum -a 256 "$1"; }
+    textdump() { otool -X -t "$1" 2>/dev/null; }
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*Mach-O*executable*) return 0 ;; esac; return 1; } ;;
+  Linux)
+    MLDSA_PLATFORM="Linux"
+    if command -v objdump > /dev/null 2>&1; then MLDSA_TEXTTOOL="objdump -d --section=.text"
+    elif command -v llvm-objdump > /dev/null 2>&1; then MLDSA_TEXTTOOL="llvm-objdump -d --section=.text"
+    else MLDSA_TEXTTOOL="(none: whole-file fingerprint)"; fi
+    sha256() { sha256sum "$1"; }
+    textdump() { case "$MLDSA_TEXTTOOL" in ("(none"*) cat "$1" ;; (*) $MLDSA_TEXTTOOL "$1" 2>/dev/null ;; esac; }
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*ELF*executable*|*ELF*pie*) return 0 ;; esac; return 1; } ;;
+  *) echo "FATAL: unsupported platform $(uname -s)"; exit 2 ;;
+esac
+
 sources()     { find src apps tests bench -type f \( -name '*.c' -o -name '*.h' \) | sort; }
 objects()     { find "$BUILD" -path "$BUILD/_deps" -prune -o -name '*.o' -print 2>/dev/null | sort; }
 archives()    { find "$BUILD" -path "$BUILD/_deps" -prune -o -name '*.a' -print 2>/dev/null | sort; }
 executables() {
   find "$BUILD" -path "$BUILD/_deps" -prune -o -type f -perm -u+x -print 2>/dev/null |
-    while IFS= read -r f; do
-      case "$(file -b "$f" 2>/dev/null)" in *Mach-O*executable*) echo "$f" ;; esac
-    done | sort
+    while IFS= read -r f; do is_exe "$f" && echo "$f"; done | sort
 }
 
 # ---- snapshot / restore: the whole source region, not a chosen subset ----
@@ -73,8 +91,8 @@ forced_build() {
 }
 
 # ---- fingerprint: every object AND every linked binary ------------------
-h()  { shasum -a 256 "$1" | cut -c1-16; }
-ht() { otool -X -t "$1" | shasum -a 256 | cut -c1-16; }
+h()  { sha256 "$1" | cut -c1-16; }
+ht() { textdump "$1" | sha256 /dev/stdin | cut -c1-16; }
 fp() {
   { while IFS= read -r o; do echo "obj $o $(h "$o")"; done < <(objects)
     while IFS= read -r e; do echo "bin $e $(ht "$e")"; done < <(executables); } | shasum -a 256 | cut -c1-16
@@ -87,7 +105,7 @@ CLEAN=$(fp)
 forced_build "$LOG/preflight2.build" || exit 3
 [ "$(fp)" = "$CLEAN" ] || { echo "FATAL: build is not deterministic"; exit 3; }
 ctest --test-dir "$BUILD" > "$LOG/preflight.ctest" 2>&1 || { echo "FATAL: clean suite fails"; exit 3; }
-echo "preflight: $SNAP_COUNT sources snapshotted; fingerprint covers $(fp_counts); deterministic; clean suite PASS ($(grep -c ' Passed' "$LOG/preflight.ctest") passed)"
+echo "preflight: $SNAP_COUNT sources snapshotted; fingerprint covers $(fp_counts); deterministic; clean suite PASS ($(grep -c ' Passed' "$LOG/preflight.ctest") passed) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
 
 overall=0
 

@@ -31,17 +31,45 @@ BUILD="${1:?usage: check_build_current.sh <build-dir>}"
 # so ONLY _deps is pruned here. Executables: pruned the way
 # check_sanitizer_link.sh prunes them -- CMake's configure-time compiler
 # probes are toolchain scratch, not project output.
+# ---- platform shim (V3-1) ------------------------------------------------
+# The gates must mean the same thing on both platforms, so each mechanism is
+# named here rather than probed silently, and the script prints which one it
+# used. Duplicated per script on purpose: tools/ is deliberately NOT an
+# installable unit (docs/decisions.md), so nothing here may be sourced.
+case "$(uname -s)" in
+  Darwin)
+    MLDSA_PLATFORM="macOS"
+    MLDSA_TEXTTOOL="otool -X -t"
+    sha256() { shasum -a 256 "$1"; }
+    textdump() { otool -X -t "$1" 2>/dev/null; }
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*Mach-O*executable*) return 0 ;; esac; return 1; } ;;
+  Linux)
+    MLDSA_PLATFORM="Linux"
+    if command -v objdump > /dev/null 2>&1; then MLDSA_TEXTTOOL="objdump -d --section=.text"
+    elif command -v llvm-objdump > /dev/null 2>&1; then MLDSA_TEXTTOOL="llvm-objdump -d --section=.text"
+    else MLDSA_TEXTTOOL="(none: whole-file fingerprint)"; fi
+    sha256() { sha256sum "$1"; }
+    textdump() {
+      case "$MLDSA_TEXTTOOL" in
+        "(none"*) cat "$1" ;;                      # no disassembler: hash the file itself
+        *) $MLDSA_TEXTTOOL "$1" 2>/dev/null ;;
+      esac
+    }
+    # ELF executables are ET_EXEC ("executable") or ET_DYN ("pie executable").
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*ELF*executable*|*ELF*pie*) return 0 ;; esac; return 1; } ;;
+  *)
+    echo "FAIL: unsupported platform $(uname -s)"; exit 2 ;;
+esac
+
 objects() { find "$BUILD" -path "$BUILD/_deps" -prune -o -name '*.o' -print 2>/dev/null | sort; }
 executables() {
   find "$BUILD" -path "$BUILD/_deps" -prune -o -path '*/CMakeFiles/*' -prune -o \
        -type f -perm -u+x -print 2>/dev/null |
-    while IFS= read -r f; do
-      case "$(file -b "$f" 2>/dev/null)" in (*Mach-O*executable*) echo "$f" ;; esac
-    done | sort
+    while IFS= read -r f; do is_exe "$f" && echo "$f"; done | sort
 }
-h()  { shasum -a 256 "$1" | cut -c1-16; }
-# Text section only: a relink can move LC_UUID without changing any code.
-ht() { otool -X -t "$1" | shasum -a 256 | cut -c1-16; }
+h()  { sha256 "$1" | cut -c1-16; }
+# Text section only: a relink can move LC_UUID / build-id without changing code.
+ht() { textdump "$1" | sha256 /dev/stdin | cut -c1-16; }
 snapshot() {
   while IFS= read -r o; do [ -f "$o" ] && echo "obj $o $(h "$o")"; done < <(objects)
   while IFS= read -r e; do [ -f "$e" ] && echo "bin $e $(ht "$e")"; done < <(executables)
@@ -49,13 +77,27 @@ snapshot() {
 
 nobj=$(objects | wc -l | tr -d ' ')
 nbin=$(executables | wc -l | tr -d ' ')
-if [ "$nobj" -eq 0 ] && [ "$nbin" -eq 0 ]; then
-  echo "FAIL: no project objects or executables under $BUILD (nothing was checked)"
+# BOTH must be non-empty. Requiring only "not both zero" let a broken
+# executable discovery (wrong platform branch, a future layout change) pass
+# while silently comparing objects alone -- V3-1 mutation W1.
+if [ "$nobj" -eq 0 ] || [ "$nbin" -eq 0 ]; then
+  echo "FAIL: $BUILD has $nobj object(s) and $nbin executable(s) -- a tree whose suite results you intend to quote must have both (nothing was checked)"
+  exit 1
+fi
+
+# A text dump that silently produces nothing makes every binary compare equal,
+# so the gate would pass vacuously -- V3-1 mutation W4. Prove the tool works
+# on a real binary before trusting any comparison built from it.
+_probe=$(executables | head -1)
+if [ -z "$(textdump "$_probe" 2>/dev/null | head -c 64)" ]; then
+  echo "FAIL: cannot read the text section of $_probe using '$MLDSA_TEXTTOOL' on $MLDSA_PLATFORM (executable fingerprints would all be empty and compare equal)"
   exit 1
 fi
 before=$(snapshot)
 
-log=$(mktemp -t mldsa-check-current)
+# BSD mktemp accepts a bare -t prefix; GNU mktemp demands XXXXXX in the
+# template. This form is correct on both.
+log=$(mktemp "${TMPDIR:-/tmp}/mldsa-check-current.XXXXXX")
 if ! cmake --build "$BUILD" -j8 > "$log" 2>&1; then
   echo "FAIL: $BUILD does not build from the current working tree"
   grep -m 3 -E "error:" "$log" | sed 's/^/      /'
@@ -67,7 +109,7 @@ after=$(snapshot)
 
 if [ "$before" = "$after" ]; then
   fp=$(echo "$after" | shasum -a 256 | cut -c1-16)
-  echo "OK: $BUILD is current with the working tree ($nobj object(s), $nbin executable(s); a rebuild changed nothing; fingerprint $fp)"
+  echo "OK: $BUILD is current with the working tree ($nobj object(s), $nbin executable(s); a rebuild changed nothing; fingerprint $fp) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
   exit 0
 fi
 

@@ -2305,3 +2305,68 @@ confirmed numerically), the `/* secrets SWAPPED */` sensitivity case, and
 straight back. `-Wswitch-default` is excluded on evidence rather than
 convenience: `frame.c`'s switch handles every `net_status_t` enumerator, so
 adding `default:` would disable `-Wswitch`'s protection against a future one.
+
+## V3-1 — the verification gates run on Linux too
+
+`src/` and `apps/` were already portable — no `__APPLE__`, no Mach headers.
+The *harness* was not: all three `tools/` scripts and `add_regression.sh`
+depended on `otool`, `shasum`, Mach-O detection and BSD `mktemp -t`. Since
+V3's whole point is CI, and CI's value is a second platform, porting the
+gates comes before writing any workflow: a CI job that cannot run the
+standing rules is theatre.
+
+Each script now detects the platform with `uname`, names the mechanism it
+used in its own output, and keeps the shim duplicated rather than sourced —
+`tools/` is deliberately not an installable unit.
+
+### What the port found
+
+Three defects surfaced that ten steps of macOS-only verification could not.
+
+**libm.** `bench_common.c` calls `sqrt()`; macOS folds libm into libSystem,
+Linux does not. One line in `bench/CMakeLists.txt`.
+
+**LeakSanitizer.** LSan runs by default under ASan on Linux and **does not
+exist on macOS**, so "fresh ASan, 0 reports" had never once exercised leak
+detection. All five `fuzz_replay_*` tests leaked their seed/regression corpus.
+Fixed in `da65211` with a single atexit teardown; nothing in `src/` or `apps/`
+leaked.
+
+**gcc `-Wformat-truncation`.** 17 temp-path `snprintf` calls that clang never
+analysed made the tree unbuildable under gcc with the project's own `-Werror`.
+Fixed in `b98bf8a` by checking the return values, not by suppressing the
+warning. The project now builds clean under gcc 13 and clang 18 on Linux and
+Apple clang 21 on macOS.
+
+### And two defects in the gate itself
+
+The W-series mutations were aimed at the shims and found real weaknesses in
+`check_build_current.sh`:
+
+- **W1**: the empty-set guard fired only when objects *and* executables were
+  zero, so a broken `is_exe()` reported `41 object(s), 0 executable(s) … OK` —
+  passing while checking nothing but objects. V2-10's N3 control only ever
+  tested the both-zero case. Now **both** counts must be non-zero.
+- **W4**: forcing the wrong platform branch left `textdump` silently empty, so
+  every executable fingerprint compared equal and the gate passed vacuously.
+  The text tool is now probed against a real binary before any comparison.
+
+Both were found by mutating the tool rather than the code it checks, which is
+the same discipline applied one level up.
+
+### gcc compile-kill attribution, demonstrated
+
+The runner credits `KILLED(compile)` only when the first compiler error names
+a project source file with `line:col`. That regex was written against clang
+and the claim that "gcc's format matches" was an assertion — untestable on the
+dev machine, where `gcc` is an Apple clang alias. Under real GNU gcc 13.3.0,
+with the compiler identity asserted first, both paths attribute correctly:
+
+```
+W5a  compile-fail  KILLED(compile)   /work/src/protocol/session.c:18:1: error: static assertion failed: "record AD label is 20 bytes"
+W5b  compile-fail  KILLED(compile)   /work/src/protocol/session.c:253:9: error: unused variable 'w5b_unused_probe' [-Werror=unused-variable]
+```
+
+Both carry `path:line:col: error:`, so no regex widening was needed. Had they
+not, the fix was specified in advance: make the column optional while still
+requiring a project path, then re-verify on both compilers.

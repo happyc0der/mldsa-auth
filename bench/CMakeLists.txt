@@ -8,7 +8,9 @@
 
 add_library(mldsa_bench STATIC bench_common.c)
 target_include_directories(mldsa_bench PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mldsa_bench PUBLIC mldsa_core)
+# libm: bench_common.c uses sqrt() for the standard deviation. macOS folds
+# libm into libSystem so this is a no-op there; Linux needs it explicitly.
+target_link_libraries(mldsa_bench PUBLIC mldsa_core $<$<NOT:$<PLATFORM_ID:Darwin>>:m>)
 target_compile_options(mldsa_bench PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_bench PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_bench PUBLIC ${MLDSA_SANITIZE_FLAGS})

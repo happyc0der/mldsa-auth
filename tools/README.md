@@ -33,6 +33,29 @@ On a stale tree it rebuilds, fails, and the `&&` stops the suite from running
 at all — so a stale number cannot be produced. `ctest` never compiles, which
 is how V2-9 came to report 15/15 from binaries built before its last edit.
 
+## Platforms
+
+All three run on **macOS and Linux**. Each script detects the platform with
+`uname` and names the mechanism it used in its own output, so a transcript
+records *what was compared*, not just the verdict:
+
+| | macOS | Linux |
+|---|---|---|
+| hashing | `shasum -a 256` | `sha256sum` |
+| executable code | `otool -X -t` | `objdump -d --section=.text` (or `llvm-objdump`) |
+| executable discovery | `file` → Mach-O | `file` → ELF (`executable` or `pie executable`) |
+| ASan linkage | `otool -L` / `nm -u` | `ldd` / `nm` |
+
+The shim is duplicated in each script rather than sourced from a common file:
+`tools/` is deliberately not an installable unit, and a shared file would make
+it one.
+
+Two guards exist because V3-1's mutations found them missing. A tree must have
+**both** objects and executables — requiring merely "not both zero" let broken
+executable discovery pass while silently comparing objects alone. And the text
+tool is probed on a real binary before any comparison is trusted, because a
+dump that silently produces nothing makes every executable compare equal.
+
 The per-step mutation scripts and spec files these take as arguments are
 written for one step's defects and are **not** committed; the runner itself
 is step-agnostic, which is why it lives here.
