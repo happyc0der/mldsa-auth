@@ -53,8 +53,17 @@ function(check_environment_block exe out)
       if(NOT _cpu MATCHES "unknown \\(")
         message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports cpu '${_cpu}' but /proc/cpuinfo has no model name -- it must say unknown (<why>)")
       endif()
-    elseif(NOT _cpu MATCHES "${_model}")
-      message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports cpu '${_cpu}' which does not contain /proc/cpuinfo's model name '${_model}'")
+    else()
+      # LITERAL containment, never MATCHES: a real x86_64 model name is
+      # "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz", in which "(R)" is a
+      # regex capture group and "." matches anything. Compared as a pattern it
+      # does not match itself -- it looks for "IntelR" -- so this check failed
+      # on the first x86_64 machine it ever ran on, and would have passed on an
+      # AMD runner whose model name happens to contain no metacharacters.
+      string(FIND "${_cpu}" "${_model}" _idx)
+      if(_idx LESS 0)
+        message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports cpu '${_cpu}' which does not contain /proc/cpuinfo's model name '${_model}'")
+      endif()
     endif()
   endif()
 endfunction()
