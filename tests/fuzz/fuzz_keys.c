@@ -151,8 +151,14 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/mldsa-fuzz-keys-XXXXXX", (tmp != NULL && tmp[0] != '\0') ? tmp : "/tmp");
     FUZZ_ASSERT(mkdtemp(g_dir) != NULL, "mkdtemp");
-    snprintf(g_path, sizeof(g_path), "%s/input", g_dir);
-    snprintf(g_out, sizeof(g_out), "%s/migrated", g_dir);
+    /* Checked, not assumed: these are a mkdtemp() directory plus a short
+     * literal, so truncation means this harness is wrong. gcc's
+     * -Wformat-truncation cannot prove the bound and fails the build under
+     * -Werror (clang does not implement the analysis). */
+    FUZZ_ASSERT(snprintf(g_path, sizeof(g_path), "%s/input", g_dir) < (int)sizeof(g_path),
+                "temp input path too long");
+    FUZZ_ASSERT(snprintf(g_out, sizeof(g_out), "%s/migrated", g_dir) < (int)sizeof(g_out),
+                "temp output path too long");
     g_work = secure_mem_alloc(CAP);
     FUZZ_ASSERT(g_work != NULL, "secure buffer");
     (void)atexit(cleanup);

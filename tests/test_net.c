@@ -27,6 +27,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,27 @@ static int g_failures = 0;
 static void fatal(const char *what) {
     fprintf(stderr, "FATAL fixture failure: %s (errno %d)\n", what, errno);
     exit(EXIT_FAILURE);
+}
+
+/* Builds a path, refusing to truncate. Every path in this file is a
+ * mkdtemp() directory plus a short literal, so a truncation means this
+ * harness is wrong -- not that some input was large. gcc's
+ * -Wformat-truncation cannot prove that bound and fails the build under
+ * -Werror; clang does not implement the analysis at all, which is why this
+ * surfaced only when V3-1 first built with gcc. Checking the return value
+ * satisfies the warning AND turns a silently wrong path into a loud abort,
+ * which is the behaviour the rest of this file already has. */
+#if defined(__GNUC__)
+__attribute__((format(printf, 3, 4)))
+#endif
+static void mkpath(char *out, size_t cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(out, cap, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= cap) {
+        fatal("path too long for its buffer");
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -1450,7 +1472,7 @@ static void test_t14_demo_keys(void) {
     char path[512];
     char p2[512];
     const char *tmp = getenv("TMPDIR");
-    snprintf(dir, sizeof(dir), "%s/mldsa-t14-XXXXXX", (tmp != NULL && tmp[0] != '\0') ? tmp : "/tmp");
+    mkpath(dir, sizeof(dir), "%s/mldsa-t14-XXXXXX", (tmp != NULL && tmp[0] != '\0') ? tmp : "/tmp");
     if (mkdtemp(dir) == NULL) {
         fatal("mkdtemp");
     }
@@ -1463,7 +1485,7 @@ static void test_t14_demo_keys(void) {
               demo_keys_generate_files(dir, bob, 3) == DEMO_KEYS_OK,
           "T14: keygen writes two identities");
     struct stat st;
-    snprintf(path, sizeof(path), "%s/alice.sk", dir);
+    mkpath(path, sizeof(path), "%s/alice.sk", dir);
     CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600, "T14: the secret key file is mode 0600");
     CHECK(demo_keys_generate_files(dir, alice, 5) == DEMO_KEYS_ERR_EXISTS, "T14: keygen refuses to overwrite");
     {
@@ -1491,7 +1513,7 @@ static void test_t14_demo_keys(void) {
     }
 
     const demo_keys_status_t ls = demo_keys_load_identity(path, alice, 5, &kp);
-    snprintf(p2, sizeof(p2), "%s/alice.pub", dir);
+    mkpath(p2, sizeof(p2), "%s/alice.pub", dir);
     const demo_keys_status_t lp = demo_keys_load_public(p2, alice, 5, pk);
     uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES];
     size_t sl = 0;
@@ -1505,7 +1527,7 @@ static void test_t14_demo_keys(void) {
           "T14: a group/other-readable secret key file is refused");
     (void)chmod(path, 0600);
 
-    snprintf(p2, sizeof(p2), "%s/t.sk", dir);
+    mkpath(p2, sizeof(p2), "%s/t.sk", dir);
     copy_with_edit(path, p2, 1, 0, 0);
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) == DEMO_KEYS_ERR_FORMAT, "T14: truncated secret key file -> FORMAT");
     copy_with_edit(path, p2, 0, 1, 0);
@@ -1564,14 +1586,14 @@ static void test_t14_demo_keys(void) {
             if (demo_keys_generate_files(dir, (const uint8_t *)kid, 4) != DEMO_KEYS_OK) {
                 fatal("T14 t0 keygen");
             }
-            snprintf(kpath, sizeof(kpath), "%s/%s.sk", dir, kid);
+            mkpath(kpath, sizeof(kpath), "%s/%s.sk", dir, kid);
             const size_t n = t14_read(kpath);
             const uint8_t t0bytes[3] = {0x70, 0x3c, 0x8d};
             memcpy(g_kf + T14_SK_OFF(4) + 2642u, t0bytes, sizeof(t0bytes));
             t14_write(p2, g_kf, n);
             rejected += t14_rejected_cleanly(p2, (const uint8_t *)kid, 4, DEMO_KEYS_ERR_INTEGRITY);
             (void)unlink(kpath);
-            snprintf(kpath, sizeof(kpath), "%s/%s.pub", dir, kid);
+            mkpath(kpath, sizeof(kpath), "%s/%s.pub", dir, kid);
             (void)unlink(kpath);
         }
         CHECK(rejected == 5, "T14.1: the recorded t0 corruption is rejected at load time -> INTEGRITY (5/5 keys)");
@@ -1582,7 +1604,7 @@ static void test_t14_demo_keys(void) {
     {
         uint8_t bob_pk[MLDSA_PUBLIC_KEY_BYTES];
         char pubb[512];
-        snprintf(pubb, sizeof(pubb), "%s/bob.pub", dir);
+        mkpath(pubb, sizeof(pubb), "%s/bob.pub", dir);
         const size_t n = t14_read(path);
         if (demo_keys_load_public(pubb, bob, 3, bob_pk) != DEMO_KEYS_OK || n != T14_FILE(5)) {
             fatal("T14 fixture");
@@ -1604,9 +1626,9 @@ static void test_t14_demo_keys(void) {
         char mout2[512];
         uint8_t legacy_sha_before[32];
         uint8_t legacy_sha_after[32];
-        snprintf(legacy, sizeof(legacy), "%s/m-alice.legacy", dir);
-        snprintf(mout, sizeof(mout), "%s/m-alice.sk", dir);
-        snprintf(mout2, sizeof(mout2), "%s/m-alice2.sk", dir);
+        mkpath(legacy, sizeof(legacy), "%s/m-alice.legacy", dir);
+        mkpath(mout, sizeof(mout), "%s/m-alice.sk", dir);
+        mkpath(mout2, sizeof(mout2), "%s/m-alice2.sk", dir);
         const size_t legacy_len = t14_make_legacy(path, legacy);
         t14_file_sha(legacy, legacy_sha_before);
 
@@ -1677,7 +1699,7 @@ static void test_t14_demo_keys(void) {
         /* (d) The strict reader: every malformation refuses and writes nothing. */
         {
             char bad[512];
-            snprintf(bad, sizeof(bad), "%s/m-bad.legacy", dir);
+            mkpath(bad, sizeof(bad), "%s/m-bad.legacy", dir);
             (void)t14_read(legacy);
             t14_write(bad, g_kf, legacy_len - 1u);
             const int trunc = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_FORMAT);
@@ -1702,7 +1724,7 @@ static void test_t14_demo_keys(void) {
             const int perms = t14_migrate_refused(bad, mout2, alice, 5, DEMO_KEYS_ERR_PERMISSIONS);
             (void)chmod(bad, 0600);
             char blink[512];
-            snprintf(blink, sizeof(blink), "%s/m-link.legacy", dir);
+            mkpath(blink, sizeof(blink), "%s/m-link.legacy", dir);
             (void)symlink(legacy, blink);
             const int sym = t14_migrate_refused(blink, mout2, alice, 5, DEMO_KEYS_ERR_IO);
             (void)unlink(blink);
@@ -1748,9 +1770,9 @@ static void test_t14_demo_keys(void) {
                 char kleg[600];
                 char kout[600];
                 snprintf(kid, sizeof(kid), "m0k%d", k);
-                snprintf(ksk, sizeof(ksk), "%s/%s.sk", dir, kid);
-                snprintf(kleg, sizeof(kleg), "%s/%s.legacy", dir, kid);
-                snprintf(kout, sizeof(kout), "%s/%s.migrated", dir, kid);
+                mkpath(ksk, sizeof(ksk), "%s/%s.sk", dir, kid);
+                mkpath(kleg, sizeof(kleg), "%s/%s.legacy", dir, kid);
+                mkpath(kout, sizeof(kout), "%s/%s.migrated", dir, kid);
                 if (demo_keys_generate_files(dir, (const uint8_t *)kid, 4) != DEMO_KEYS_OK) {
                     fatal("T14.2 t0 keygen");
                 }
@@ -1789,7 +1811,7 @@ static void test_t14_demo_keys(void) {
                 (void)unlink(kout);
                 (void)unlink(kleg);
                 (void)unlink(ksk);
-                snprintf(ksk, sizeof(ksk), "%s/%s.pub", dir, kid);
+                mkpath(ksk, sizeof(ksk), "%s/%s.pub", dir, kid);
                 (void)unlink(ksk);
             }
             printf("       [T14.2] t0-corrupted legacy files: %d/5 refused by the self-test, %d/5 migrated "
@@ -1812,7 +1834,7 @@ static void test_t14_demo_keys(void) {
     }
 
     sodium_memzero(g_kf, sizeof(g_kf));
-    snprintf(p2, sizeof(p2), "%s/link.sk", dir);
+    mkpath(p2, sizeof(p2), "%s/link.sk", dir);
     (void)symlink(path, p2);
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) != DEMO_KEYS_OK, "T14: a symlinked key file is refused (O_NOFOLLOW)");
     CHECK(demo_keys_load_public(path, alice, 5, pk) == DEMO_KEYS_ERR_FORMAT,
@@ -1820,22 +1842,22 @@ static void test_t14_demo_keys(void) {
 
     /* keygen creates missing parent directories, each 0700. */
     char nested[512];
-    snprintf(nested, sizeof(nested), "%s/a/b", dir);
-    snprintf(p2, sizeof(p2), "%s/a/b/carol.sk", dir);
+    mkpath(nested, sizeof(nested), "%s/a/b", dir);
+    mkpath(p2, sizeof(p2), "%s/a/b/carol.sk", dir);
     const demo_keys_status_t nst = demo_keys_generate_files(nested, (const uint8_t *)"carol", 5);
     struct stat nd;
     CHECK(nst == DEMO_KEYS_OK && stat(p2, &st) == 0 && stat(nested, &nd) == 0 && (nd.st_mode & 0777) == 0700,
           "T14: keygen into a missing nested directory creates it (mode 0700) and writes the identity");
     (void)unlink(p2);
-    snprintf(p2, sizeof(p2), "%s/a/b/carol.pub", dir);
+    mkpath(p2, sizeof(p2), "%s/a/b/carol.pub", dir);
     (void)unlink(p2);
     (void)rmdir(nested);
-    snprintf(p2, sizeof(p2), "%s/a", dir);
+    mkpath(p2, sizeof(p2), "%s/a", dir);
     (void)rmdir(p2);
 
     static const char *names[] = {"alice.sk", "alice.pub", "bob.sk", "bob.pub", "t.sk", "link.sk"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        snprintf(p2, sizeof(p2), "%s/%s", dir, names[i]);
+        mkpath(p2, sizeof(p2), "%s/%s", dir, names[i]);
         (void)unlink(p2);
     }
     CHECK(rmdir(dir) == 0, "T14: temporary key directory removed (nothing else was written)");
