@@ -2767,6 +2767,28 @@ and `-O3` do not match). **The M4 Pro line is byte-identical** — proven by the
 same before/after diff V3-2 used — so every figure already published keeps its
 regression guard; only the degraded path changed.
 
+### Follow-up: T12's storm needed to be *running*, not merely forked
+
+The per-push run of the commit that landed V3-5 went red on one macOS job:
+`T12 ... (EINTR retries: client 0, server 0; 1 alarms in the client)` — the
+mechanism V3-3 had redesigned, failing 1 macOS job in 15 since.
+
+One alarm in a whole scenario means the storm process barely got a timeslice.
+Forking is not starting: on a loaded 3-vCPU runner a new process can wait tens
+of milliseconds to be scheduled, and T12's scenario finishes inside that
+window. **V3-3 removed this test's dependence on the host's timer granularity
+and replaced it with a dependence on fork-to-first-run latency** — a smaller
+race, and still a race.
+
+`run_scenario()` now waits, bounded by `OPS_MS`, until the parent has actually
+*received* an alarm before the scenario begins: the property the test needs,
+asserted rather than assumed. The server child is still blocked in
+`net_accept()` at that point, so it too does all of its work under the storm.
+A storm that never starts now fails T12 loudly with 0 alarms instead of
+passing or hanging. Locally the floor rose from 38 EINTR retries per side to
+167 over twelve consecutive runs, and S1/S2b were re-run against the changed
+mechanism — both still KILLED, so it detects a real regression as before.
+
 ### Cost, measured
 
 One dispatch: 237 s total — 56 s configure+build, 169 s for 5 repetitions,

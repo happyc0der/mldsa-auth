@@ -653,6 +653,21 @@ static void run_scenario(const scenario_t *sc, outcome_t *out) {
     if (sc->storm) {
         storm_arm();
         storm = storm_begin(getpid(), srv.pid);
+        /* Wait until the storm is provably DELIVERING before the scenario
+           starts. Forking is not starting: a new process can wait tens of
+           milliseconds for a timeslice on a loaded 3-vCPU CI runner, and
+           T12's scenario can finish inside that window -- GitHub's
+           macos-26-arm64 saw ONE alarm and no EINTR at all, 1 macOS job in
+           15 (V3-5). The V3-3 redesign removed this test's dependence on the
+           host's timer granularity; this removes the one that replaced it,
+           on fork-to-first-run latency. Waiting here also means the server
+           child, still blocked in net_accept(), does all of its work under
+           the storm. Bounded: a storm that never starts fails T12 loudly
+           with 0 alarms instead of hanging it. */
+        const uint64_t ready_by = net_deadline_in(OPS_MS);
+        while (g_alarms == 0 && net_now_ms() < ready_by) {
+            (void)usleep(200); /* returns EINTR the moment one lands */
+        }
     }
     const uint64_t t0 = net_now_ms();
     net_conn_t conn;
