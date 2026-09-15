@@ -1,6 +1,6 @@
 # mldsa-auth
 
-[![CI](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml)
+[![CI](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml) [![Nightly](https://github.com/happyc0der/mldsa-auth/actions/workflows/nightly.yml/badge.svg)](https://github.com/happyc0der/mldsa-auth/actions/workflows/nightly.yml)
 
 Mutual authentication and an encrypted session protocol in C11: **ML-DSA-65**
 (FIPS 204) identity signatures over a **hybrid X25519 + ML-KEM-768**
@@ -162,6 +162,14 @@ for the portable target, not the default one. The 600 s fuzz budgets and the
 56-mutation suite are not run per push. Each of these gates has been shown to
 turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
+
+The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
+at 03:17 UTC every day, and on demand, the 57 must-kill mutations in
+[`tools/mutations/`](tools/mutations/) run as one campaign per step against a
+fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
+kept as a downloadable artifact. It is not part of the push gate. GitHub
+disables scheduled workflows after 60 days without a commit, so a badge that
+has stopped updating is not a badge that is passing — check the date on it.
 
 ## Demo
 

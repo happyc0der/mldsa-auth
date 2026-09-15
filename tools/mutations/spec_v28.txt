@@ -1,0 +1,10 @@
+X1|^fuzz_no_committed_secrets$|
+X2|^fuzz_no_committed_secrets$|scanner control C1;scanner control C2
+X3|^fuzz_no_committed_secrets$|scanner control C1;scanner control C6.1
+X4|^fuzz_no_committed_secrets$|
+X5|^fuzz_no_committed_secrets$|
+X6|^fuzz_no_committed_secrets$|
+X7|^fuzz_no_committed_secrets$|scanner control C3.1
+X8|^fuzz_no_committed_secrets$|scanner control C3.1;scanner control C3.2;scanner control C3.3
+X9|^fuzz_no_committed_secrets$|scanner control C5.2
+X10|^fuzz_no_committed_secrets$|scanner control C5.4

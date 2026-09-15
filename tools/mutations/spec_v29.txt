@@ -1,0 +1,9 @@
+Y1|^test_net$|a flipped public-key byte and a flipped s1 byte are both caught
+Y2|^test_net$|migrate-key writes an MLDSASK2 file (mode 0600) whose digest matches one computed
+Y3|^test_net$|an MLDSASK2 input -> NOT_LEGACY (nothing to migrate), no output written
+Y4|^test_net$|a legacy file migrated under the wrong --id -> ID_MISMATCH, no output written
+Y5|^test_net$|migrating onto an existing --out -> EXISTS, and that file is untouched
+Y6|^test_net$|truncated, extended, wrong id_len and wrong magic legacy files -> FORMAT, no output
+Y7|^demo_e2e$|migrate-key printed no integrity warning
+Y8|^test_net$|migrate-key leaves no temporary file behind
+Y9|^fuzz_replay_keys$|

@@ -2575,3 +2575,84 @@ The jobs run in parallel, so a push is green or red in about five minutes.
 The 56-mutation suite (4–6 h) and the 600 s fuzz budgets belong to a
 scheduled workflow (V3-4), not to a push — a policy with the numbers attached,
 not an omission.
+
+## V3-4 — the deep gates run nightly, and the campaigns are finally in the repository
+
+`.github/workflows/nightly.yml` runs, at 03:17 UTC and on demand, the two
+gates V3-3 deliberately left off the push: the mutation suite (one job per
+campaign, fresh Linux ASan tree) and the 600 s fuzz budgets (one job per
+target, crash artifacts uploaded for 30 days).
+
+### The finding that reshaped the step
+
+**The mutation campaigns were not in the repository.** `git ls-files` tracked
+`tools/run_mutations_v2.sh` and nothing else; the seven `mutate_v2*.py`
+scripts and their spec files lived in one agent's scratch directory. Every
+"56 mutations re-run" claim in this document — V2-10's included — rested on
+files nobody but that agent could see or run. They are now `tools/mutations/`,
+one script and one spec per step, consolidated to the expectation strings
+that killed in each step's exit report, and `tools/README.md` carries the
+rule: **a step's campaign is committed with the step.** Dry-run on
+`main@62aa7b5`: all 58 anchors apply (56 + V3-3's S1/S2b), none rotted.
+
+### What the first run on a machine this agent does not control found
+
+Six campaigns green, all five fuzz targets `crashes=0` after 600 s — and two
+campaigns red. Both were **consolidation defects in the committed specs**, not
+findings about the tree, and each reproduced a recorded verdict exactly:
+
+- **M6** (`decode_client_hello` accepts a v1-length message) is killed on an
+  ASan tree by a `heap-buffer-overflow in __asan_memcpy` that aborts
+  `test_handshake` before W5 ever prints. V2-4 recorded that as the ASan form
+  of its spec (`M6|^test_handshake$|`, "must fail somehow"); the consolidation
+  took the plain-suite form instead, so the runner reported
+  `SURVIVED(BAD: [W5 text])` — mutant in the binaries, test failed, named text
+  absent. Restored to the recorded form; it now reads `KILLED(0 named)`.
+- **N7** (keys committed before `consume_success`) survived — as it did in
+  V2-5 and V2-10, where it is recorded as an **equivalent mutant**:
+  `fail_ctx()` wipes the keys on every post-commit failure path, so no
+  public-API test can distinguish the reordering. Linux reproduced the record
+  precisely. A documented survivor cannot be a pass criterion, so it is not in
+  the nightly's spec; the reason sits beside the campaigns in
+  `tools/README.md`, not only here. **57 must-kill**, one documented
+  equivalent.
+
+The second run: 13/13 green, 57 KILLED, every campaign ending in
+`final: all sources restored; all artifacts identical to clean fingerprints`,
+fuzz runs after 600 s of 40.8 M (wire), 1.23 M (handshake), 127.6 M
+(session), 16.4 M (frame) and 0.90 M (keys), all `crashes=0 artifacts=0`.
+
+### The negative controls — the nightly can go red for the right reason
+
+Baseline `05bcdcc`; each control a tree differing from it by exactly one
+file (checked before every push), reverted byte-exactly afterwards.
+
+| # | Deliberate break | Result |
+|---|---|---|
+| D1 | `spec_v26.txt`: Q1's expectation replaced by text no check prints | only `mutations · v26` red: `Q1 SURVIVED(BAD: [this text is printed by no check (CONTROL D1)])`, tree restored, exit 1 — a rotted expectation is loud, the X3 lesson enforced by the runner |
+| D2a | Q1's defect applied to `session.c` *with* its `/* MUTATION */` marker left in (my sed missed it) | every campaign red at the snapshot step: `FATAL: refusing to snapshot -- MUTATION marker already present in: src/protocol/session.c` — the residue guard refuses a tree that already carries a marker. Not the planned control, so it does not stand in for it; reported as what it proved |
+| D2b | the same defect, marker removed | every campaign red at `FATAL: clean suite fails`; every fuzz job red before its 600 s run, at `fuzz_libfuzzer_smoke_session`: `ORACLE FAILURE [session] … session_open status disagrees` — V2-6's authenticated-inner model caught the real defect on its own |
+| D3 | `fuzz_wire.c`: `abort()` on a first byte of `0x42` | red on **all 13 jobs**: `fuzz · wire` at the smoke step (`libFuzzer: deadly signal`), and every campaign at `FATAL: clean suite fails` because `fuzz_replay_wire` shares the harness. The 7-byte crash input beginning `42` was uploaded (`fuzz-wire`, 277 bytes) and downloaded — a crash found on a runner is kept, not lost with it |
+
+One thing the controls exposed about GitHub itself: a concurrency group keeps
+**one** pending run, whatever `cancel-in-progress` says. Four back-to-back
+pushes produced one running, one pending and two *cancelled* runs; D2 and D3
+were re-run on their own SHAs (`gh run rerun`), one at a time. Controls on
+this workflow are pushed one per completed run.
+
+### Cost, measured
+
+Run 2, no cache, `ubuntu-latest`: campaigns 154–460 s each (v33 → v28), fuzz
+jobs 810–832 s each; the whole nightly completes in about **20 minutes** of
+wall clock on 13 parallel jobs. The plan's 4–6 h estimate was the *serial*
+laptop figure; nothing here runs serially. The 300/30-minute timeouts stand
+with an order of magnitude of headroom.
+
+### Choices recorded
+
+Linux only (the stricter tree — LSan runs there — and macOS runners are the
+slow ones; reversible by a matrix row). V2-2's config controls stay out (N1
+already runs per push as V3-3's C4). Separate workflow and badge from the push
+gate; the README says, beside the badge, that GitHub disables a scheduled
+workflow after 60 days without a commit — a badge that stopped is not a badge
+that passes.

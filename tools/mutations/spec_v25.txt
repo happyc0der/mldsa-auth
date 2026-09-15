@@ -1,0 +1,7 @@
+N1|^test_handshake$|v2-5 H1: the initiator's keys equal the INDEPENDENTLY computed;v2-5 H2: the responder's keys equal the INDEPENDENTLY computed
+N2|^test_handshake$|step4 T1: initiator and responder derive identical c2s;v2-5 H2: the responder's keys equal the INDEPENDENTLY computed
+N3|^test_handshake$|v2-5 H5: no keys, secrets wiped
+N4|^test_handshake$|v2-5 T21: ...and both hybrid secrets
+N5|^test_handshake$|v2-5 H5: encapsulation rejects it
+N6|^test_handshake$|step4 T1: initiator and responder derive identical c2s;v2-5 H1: the initiator's keys equal the INDEPENDENTLY computed
+N8|^test_handshake$|v2-5 H6: ss_kem SURVIVES a retryable sig_A failure

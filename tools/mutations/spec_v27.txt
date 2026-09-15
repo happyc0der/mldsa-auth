@@ -1,0 +1,6 @@
+R1|^test_net$|confirmation record is 4121 bytes on the wire (bucket 4096);a bucket-1 client sends exactly unpadded records
+R2|^test_net$|T1: client authenticates the server
+R3|^test_net$|pad-bucket 32 is a config error refused before the handshake starts
+R4|^test_session$|v2-7 P7: SESSION_OPEN_CAP_FOR is 65536 for the record maximum
+R5|^test_net$|server bucket 4096 / client bucket 1 -- handshake completes
+R6|^test_net$|T8(a): after the confirmation record opens, the same call sends

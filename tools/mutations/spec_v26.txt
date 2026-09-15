@@ -1,0 +1,9 @@
+Q1|^test_session$|v2-6 P4(b): the FIRST padding byte nonzero;v2-6 P4(c): the LAST padding byte nonzero
+Q2|^test_session$|
+Q3|^test_session$|v2-6 P3: a receiver requires nothing of the sender's bucket
+Q4|^test_session$|S1: 1-byte payload;S2(a): initiator records seq 0,1,2 decrypt with the hand-built nonce
+Q5|^test_session$|v2-6 P1: ...and each inner is exactly BE16(content_len)
+Q6|^test_session$|v2-6 P4(f): a 26-byte record;S9: 26-byte record (one below the 27-byte minimum)
+Q7|^test_session$|v2-6 P5: ...and everything after it is zeroed
+Q8|^test_session$|S13: invalid limits
+Q9|^test_session$|S2(a): initiator records seq 0,1,2 decrypt with the hand-built nonce

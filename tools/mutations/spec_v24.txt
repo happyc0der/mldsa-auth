@@ -1,0 +1,8 @@
+M1|^test_handshake$|v2-4 D3: the c2s key matches;v2-4 D4: changing ss_x, ss_k
+M2|^test_handshake$|v2-4 D3: the c2s key matches;v2-4 D2: kex_derive_session_key_v2 ==
+M3|^test_handshake$|v2-4 D1: kex_build_kdf_info_v2 is byte-exact;v2-4 D3: the c2s key matches
+M4|^test_handshake$|v2-4 D1: kex_build_kdf_info_v2 is byte-exact;v2-4 D3: the c2s key matches
+M5|^test_handshake$|transcript_hash_server_auth matches independent hand-built
+M6|^test_handshake$|
+M7|^test_handshake$|v2-4 W3: ClientHello bytes are type
+M8|^test_handshake$|v2-4 W1: CH/SH_unsigned/SH/CA maxima

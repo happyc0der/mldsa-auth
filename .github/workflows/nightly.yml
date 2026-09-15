@@ -1,0 +1,118 @@
+# The two gates that do not fit a push: the 58-mutation suite (one campaign
+# per step, tools/mutations/) and the 600 s fuzz budgets. Both had only ever
+# run by hand on one laptop before V3-4; the campaigns themselves were not
+# even in the repository until this workflow needed them.
+#
+# GitHub disables a scheduled workflow after 60 days without a commit. A
+# nightly that stops is therefore NOT a nightly that passes -- the README
+# says so next to the badge.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC: off the hour, per GitHub's load guidance
+  workflow_dispatch:
+  push:
+    branches: [nightly-bringup]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false   # a nightly should finish, not be superseded
+
+jobs:
+  mutations:
+    name: mutations · ${{ matrix.campaign }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per campaign; each is the mutation set of one v2/v3 step.
+        campaign: [v23, v24, v25, v26, v27, v28, v29, v33]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner
+        run: |
+          uname -srm
+          clang --version | head -1
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      # The standing rule: campaigns run against a fresh ASan tree (several
+      # mutations are wipe/leak class, and LSan runs here). No cache: a
+      # -march=native tree cannot be shared across GitHub's mixed fleet (V3-3).
+      - name: Fresh ASan tree, instrumentation proven
+        run: |
+          cmake -S . -B build-asan -DCMAKE_C_COMPILER=clang -DENABLE_ASAN=ON
+          cmake --build build-asan -j
+          tools/check_sanitizer_link.sh build-asan asan
+
+      # The runner exits nonzero on any SURVIVED verdict, on mutation residue,
+      # or on a final fingerprint mismatch -- so the job is red without a wrapper.
+      - name: Run the campaign
+        run: |
+          tools/run_mutations_v2.sh "$PWD" "$RUNNER_TEMP/mut" \
+            "tools/mutations/mutate_${{ matrix.campaign }}.py" \
+            "tools/mutations/spec_${{ matrix.campaign }}.txt" build-asan 2>&1 | tee campaign.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload the campaign logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutations-${{ matrix.campaign }}
+          path: |
+            campaign.log
+            ${{ runner.temp }}/mut/mutation_v2-logs
+          retention-days: 30
+
+  fuzz-local:
+    name: fuzz 600 s · ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [wire, handshake, session, frame, keys]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner
+        run: |
+          uname -srm
+          clang --version | head -1
+          grep -m1 'model name' /proc/cpuinfo || true
+
+      - name: Fuzz tree
+        run: |
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang -DMLDSA_FUZZ=ON
+          cmake --build build-fuzz -j
+
+      - name: Standing rule 3 + fuzz-labelled tests
+        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --output-on-failure
+
+      # run_fuzz.sh reports crashes but never exits nonzero on them; the grep
+      # is the gate, exactly as in ci.yml's smoke run.
+      - name: 600 s run — any crash or artifact fails
+        run: |
+          tests/fuzz/run_fuzz.sh local build-fuzz ${{ matrix.target }} | tee local.log
+          if grep -qE "crashes=[1-9]|artifacts=[1-9]" local.log; then
+            echo "::error::fuzz_${{ matrix.target }} produced a crash or artifact -- see the uploaded artifact"; exit 1
+          fi
+
+      # Kept even on failure: a crash found on a runner must be replayable
+      # here and admissible through tests/fuzz/add_regression.sh.
+      - name: Upload artifacts and log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            local.log
+            build-fuzz/fuzz-artifacts/${{ matrix.target }}
+            build-fuzz/fuzz-logs
+          if-no-files-found: ignore
+          retention-days: 30

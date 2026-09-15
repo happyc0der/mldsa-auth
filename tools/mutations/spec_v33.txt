@@ -1,0 +1,2 @@
+S1|^test_net$|a dedicated process signals both peers without SA_RESTART
+S2b|^test_net$|a dedicated process signals both peers without SA_RESTART

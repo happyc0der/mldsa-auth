@@ -1,0 +1,6 @@
+K1|^test_vectors$|mlkem768_kat: SHA-256(KAT record);mlkem768_kat: mlkem_decaps reproduces
+K2|^test_vectors$|mlkem768_input_validation: decaps rejects a corrupted
+K3|^test_vectors$|mlkem768_input_validation: encaps rejects a malformed
+K4|^test_vectors$|mlkem768_contracts: free() clears the key
+K4b|^test_vectors$|
+K5|^test_vectors$|mlkem768_kat: SHA-256(KAT record)
