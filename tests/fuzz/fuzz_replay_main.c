@@ -43,6 +43,42 @@ static void die(const char *what) {
     exit(2);
 }
 
+/* Teardown lives at exactly ONE site. die() calls exit(2) from deep inside
+ * parsing and I/O helpers, so a cleanup at each return of cmd_ci() would miss
+ * those paths; an atexit handler covers every exit, normal or fatal. It runs
+ * before LeakSanitizer's own end-of-process check (atexit is LIFO and ASan
+ * registers its check during early initialisation), so the replay drivers are
+ * leak-clean under ASan on Linux -- where LSan is on by default. macOS has no
+ * LSan at all, which is why this went unnoticed until V3-1. */
+static blobs_t *g_tracked[2];
+static size_t g_tracked_n;
+
+static void blobs_free_all(void) {
+    for (size_t b = 0; b < g_tracked_n; b++) {
+        blobs_t *x = g_tracked[b];
+        for (size_t i = 0; i < x->n; i++) {
+            free(x->v[i].name);
+            free(x->v[i].data);
+        }
+        free(x->v);
+        x->v = NULL;
+        x->n = 0;
+        x->cap = 0;
+    }
+    g_tracked_n = 0;
+}
+
+/* Registers b for that single teardown. Called once per blobs_t, before it
+ * is filled; the atexit hook itself is installed exactly once. */
+static void blobs_track(blobs_t *b) {
+    if (g_tracked_n == 0 && atexit(blobs_free_all) != 0) {
+        die("cannot register the blob teardown");
+    }
+    if (g_tracked_n < sizeof(g_tracked) / sizeof(g_tracked[0])) {
+        g_tracked[g_tracked_n++] = b;
+    }
+}
+
 static void blobs_push(blobs_t *b, const char *name, const uint8_t *data, size_t len) {
     if (b->n == b->cap) {
         b->cap = b->cap ? 2 * b->cap : 32;
@@ -357,7 +393,10 @@ static int cmd_ci(int argc, char **argv) {
     run_one(NULL, 0);
     printf("fuzz_%s_replay: empty input: ok\n", fuzz_target_name);
 
-    blobs_t seeds = {0};
+    /* static: the single atexit teardown runs after cmd_ci() returns, so
+     * these must outlive its stack frame. */
+    static blobs_t seeds;
+    blobs_track(&seeds);
     fuzz_target_seeds(emit_to_blobs, &seeds);
     for (size_t i = 0; i < seeds.n; i++) {
         /* A seed the target cannot accept is a HARNESS defect: the
@@ -378,7 +417,10 @@ static int cmd_ci(int argc, char **argv) {
         printf("fuzz_%s_replay: regressions: %zu ok\n", fuzz_target_name, r);
     }
 
-    blobs_t dict = {0};
+    /* static: the single atexit teardown runs after cmd_ci() returns, so
+     * these must outlive its stack frame. */
+    static blobs_t dict;
+    blobs_track(&dict);
     if (dict_path != NULL) {
         load_dict(dict_path, &dict);
     }
