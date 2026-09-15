@@ -2436,3 +2436,142 @@ value must either contain the `model name` CMake reads independently from
 V1, V2, V3 and V5 are all killed by the oracle; V4 (altering the macOS
 wording) is killed by the byte-identical diff of the macOS block, which is the
 regression guard for every figure already published in `bench/results.md`.
+
+## V3-3 — every gate on every push, Linux and macOS
+
+Until this step every gate in the project's history had been run by hand, by
+one agent, on one arm64 laptop. `.github/workflows/ci.yml` now runs the full
+per-push set on every push to `main` and on every pull request: eight jobs —
+`ubuntu-latest` × clang × {debug, asan, ubsan}, `ubuntu-latest` × gcc × debug,
+`macos-latest` × clang × {debug, asan, ubsan}, and a Linux-only job for the
+fuzz smoke run and the repository secret scan.
+
+### Bring-up happened on a branch, and the branch found six things
+
+A workflow file cannot be verified locally; GitHub running it is the first
+honest test. So it was developed on a throwaway `ci-bringup` branch and merged
+only after going green there — six iterations, then four negative controls.
+The first run was 3 pass / 5 fail, and every failure was a real finding:
+
+1. **The V3-2 oracle compared a regex against itself.** `run_smoke.cmake`
+   checked the `cpu` line against `/proc/cpuinfo` with `MATCHES`. The string
+   `Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz` does not match itself as a
+   pattern (`(R)` is a capture group), so the check passed on the two AMD
+   runners and failed on the Intel one: **its verdict was decided by which
+   machine GitHub handed out.** It is now literal `string(FIND)`. Proven with
+   the exact string rather than by waiting for another Intel runner: in the
+   Linux container with `/proc/cpuinfo` bind-mounted to that model name, the
+   real line passes and V3-2's mutation V2 (a constant cpu string) still fails.
+2. **`qsort(NULL, 0, …)`** in `tests/fuzz/fuzz_replay_main.c` when the
+   regressions directory is empty. glibc declares `qsort __nonnull((1, 4))`;
+   macOS headers do not, so only Linux UBSan diagnoses it. Four targets failed
+   at once. Guarded with `if (n > 0)`.
+3. **The macOS runner cannot compile liboqs with the project's default
+   target.** `MLDSA_OQS_OPT_TARGET=auto` is `-mcpu=native`; on `macos-26-arm64`
+   that enables **no** ARM crypto extensions (the record-runner step probes it:
+   `__ARM_FEATURE_{AES,CRYPTO,SHA2}` are all defined on the M4 Pro, none on the
+   runner), so `sha2_armv8.c` fails with *always_inline function
+   'vsha256hq_u32' requires target feature 'sha2'*. The macOS jobs pin
+   `generic` (`-march=armv8-a+crypto`, the documented portable target, which
+   still selects the AARCH64 backends). Stated plainly: **the macOS ticks
+   verify the portable target; only the development machine verifies
+   `auto`.** Linux keeps `auto`.
+4. **Caching a `-march=native` build across a heterogeneous fleet is
+   unsound, and the reason for caching was wrong.** The plan assumed ~8 min of
+   dependency build per job and called a cache mandatory. Measured on this
+   workflow: Configure 12 s + Build 23 s cold, against 0 s + 11 s warm — a
+   ~24 s saving. Against that, GitHub's Linux fleet is mixed (EPYC 9V74, EPYC
+   7763, Xeon 8370C and 8573C were all seen in one afternoon), and the second
+   run restored an EPYC-built tree onto another CPU: **13 of 15 tests died
+   with SIGILL.** Keying the cache on the CPU model would have fixed it at the
+   cost of most of the hit rate, for a saving already too small to matter. There
+   is no cache; every job builds its dependencies from the pinned sources on the
+   machine that runs them. This also removes the poisoned-cache threat surface
+   rather than merely mitigating it. If a future step makes the per-job build
+   expensive, the numbers above are the ones to beat.
+5. **Three budgets in `tests/test_net.c` were tuned to this laptop.** T2 pushes
+   ~12 000 bytes through the proxy one at a time with a sleep per byte; what
+   that costs is the host's sleep granularity: 3.2 s here, over 18 s on the
+   macOS runner. Its handshake bound (15 s), then its per-frame idle budget
+   (2 s), then the proxy's own lifetime (`CHILD_WAIT_MS − 2 s = 18 s`, the
+   suspiciously constant 18.2 s the logs kept showing) each failed in turn.
+   All three are liveness guards nothing asserts on; the handshake bound is now
+   the ceiling the design allows (the server refuses a handshake timeout above
+   its pending store's TTL), the idle budget is per-scenario, and
+   `CHILD_WAIT_MS` has headroom over the slowest platform the project runs on.
+6. **T12 was a race, and the macOS runner lost it one time in three.** The
+   EINTR test stormed SIGALRM with `setitimer(500 µs)` in each peer and
+   required at least one observed retry. Across seven macOS executions the
+   alarms delivered were 19, 10, 4, 3, 3, 1, 0 — it failed the two where at most
+   one landed. This laptop delivers 6. The property is sound; the mechanism
+   depended on the host's timer resolution, which a VM does not honour. The
+   alarms now come from a dedicated process that signals both peers as fast as
+   it is scheduled for exactly as long as the scenario runs: 89–608 alarms and
+   38–289 retries per side over ten consecutive local runs.
+
+   A redesign that accidentally became vacuous would be worse than the flake it
+   replaced, so the new mechanism was mutation-tested (fresh ASan tree,
+   `tools/run_mutations_v2.sh`): **S1**, every EINTR still retried but none
+   counted → KILLED (`288 alarms in the client`, `retries: client 0, server 0`,
+   T12 FAIL); **S2b**, EINTR no longer retried in the poll wait → KILLED (the
+   connection fails). S1 shows the assertion still fires; S2b shows the storm
+   really interrupts blocking calls — if it did not, making EINTR fatal would
+   have changed nothing. (S2's first form was KILLED(compile) on
+   `-Wunused-parameter`, an artefact of the mutation's own shape; it was
+   requeued with the parameter kept in use, the V2-7 R3 precedent.)
+
+One finding was **not** fixed here. In the macOS VM the environment block
+prints `Apple M1 (Virtual) (3 performance + -1 efficiency cores)`:
+`sysctl_long()` returns −1 when `hw.perflevel1.logicalcpu` does not exist, and
+the `cpu` line prints that sentinel raw. That is exactly the class V3-2's
+*unknown says why* rule exists for — but the macOS block's wording is the
+byte-identical regression guard for every figure already published, so it is
+recorded here and proposed for V3-5, which owns the bench reporting changes.
+
+### The standing rules are enforced by construction
+
+Every suite job runs `tools/check_build_current.sh "$BUILD_DIR" && ctest
+--test-dir "$BUILD_DIR"` as **one step**, so a stale tree cannot produce a
+number; the sanitizer jobs run `tools/check_sanitizer_link.sh` before the
+suite. The rules no longer depend on anyone remembering them. Actions are
+pinned by commit SHA, `permissions: contents: read`, no secrets, superseded
+runs are cancelled, every job has a timeout.
+
+### The negative controls — CI can go red for the right reason
+
+A green workflow proves nothing until it has been shown to fail. Each control
+was pushed alone against the green baseline (`5412ac2`) and reverted
+byte-exactly (`git diff 5412ac2` empty afterwards):
+
+| # | Deliberate break | Result |
+|---|---|---|
+| C1 | `test_session.c`: `l == 27u` → `28u` | all 7 suite jobs red on `FAIL: v2-6 P6: empty content at bucket 1 -> a 27-byte record` by name; the fuzz job green, correctly — it runs only `-L fuzz` |
+| C2 | `session.c`: an unused local | all 8 jobs red at **Build**: `session.c:253:9: error: unused variable 'control_c2_unused'` — clang `[-Werror,-Wunused-variable]`, gcc `[-Werror=unused-variable]` |
+| C3 | `bench_common.c`: `#if 0` around the Linux `cpu` line | the 4 Linux suite jobs red on `bench_smoke: … environment block has no 'cpu' line` (V3-2's oracle); macOS green (the line is under `__linux__`); fuzz green (no `fuzz` label) |
+| C4 | `cmake/Dependencies.cmake`: last nibble of the pinned liboqs SHA | all 8 jobs red at **Configure**, in liboqs's *patch step* — `VerifyLiboqsCommit.cmake`, before liboqs's own CMake runs: `liboqs commit pin MISMATCH: checked out …183 / pinned …184` |
+
+C4 changed shape. The plan's version ("pin the cache key to a constant, then
+change a pin") tested that a stale cache could not be measured; with no cache
+that threat is gone, and the control became V2-2's N1 run on every job: the
+pin is enforced at population time, on both platforms, in CI.
+
+### Cost, measured
+
+Green run [34930946282](https://github.com/happyc0der/mldsa-auth/actions/runs/34930946282),
+no cache, wall clock per job (Configure / Build / rule 3 + suite):
+
+| job | total | configure | build | suite |
+|---|---|---|---|---|
+| ubuntu · gcc · debug | 63 s | 14 | 23 | 21 |
+| ubuntu · clang · debug | 69 s | 15 | 29 | 22 |
+| ubuntu · clang · asan | 86 s | 15 | 35 | 25 |
+| ubuntu · clang · ubsan | 86 s | 15 | 36 | 26 |
+| macos · clang · debug | 95 s | 15 | 46 | 25 |
+| macos · clang · asan | 126 s | 16 | 55 | 43 |
+| macos · clang · ubsan | 219 s | 22 | 119 | 58 |
+| fuzz smoke + secret scan | 318 s | 69 (configure+build) | — | 182 (`-L fuzz`), 61 (smoke) |
+
+The jobs run in parallel, so a push is green or red in about five minutes.
+The 56-mutation suite (4–6 h) and the 600 s fuzz budgets belong to a
+scheduled workflow (V3-4), not to a push — a policy with the numbers attached,
+not an omission.

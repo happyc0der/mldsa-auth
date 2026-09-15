@@ -1,0 +1,142 @@
+# Every gate this project defines, on every push, on two platforms.
+#
+# Until V3 these gates existed only as commands one agent ran by hand on one
+# macOS machine. Running the same suite on Linux found five defects macOS
+# could not (libm linking, LeakSanitizer leaks, gcc -Wformat-truncation, and
+# two vacuous-pass holes in the currency gate itself), which is why the second
+# platform is not optional here.
+#
+# Standing rule 3 is enforced by construction: check_build_current.sh runs in
+# the SAME step as ctest, so a stale tree cannot produce a green tick.
+name: CI
+
+on:
+  push:
+    branches: [main, ci-bringup]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: ${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, cc: clang, config: debug }
+          - { os: ubuntu-latest, cc: clang, config: asan }
+          - { os: ubuntu-latest, cc: clang, config: ubsan }
+          # gcc earns its own job: it diagnosed 17 defects clang does not
+          # implement a warning for (V3-1). A clang-only CI would ship them.
+          - { os: ubuntu-latest, cc: gcc, config: debug }
+          - { os: macos-latest, cc: clang, config: debug }
+          - { os: macos-latest, cc: clang, config: asan }
+          - { os: macos-latest, cc: clang, config: ubsan }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          uname -srm
+          "${{ matrix.cc }}" --version | head -1
+          cmake --version | head -1
+          # Evidence for the liboqs target chosen below: on arm64, print the
+          # crypto features -mcpu=native actually enables on THIS runner.
+          case "$(uname -m)" in
+            arm64|aarch64)
+              echo "-mcpu=native ARM crypto features:"
+              printf '' | "${{ matrix.cc }}" -mcpu=native -dM -E -x c - 2>/dev/null \
+                | grep -E '__ARM_FEATURE_(CRYPTO|SHA2|AES)' \
+                || echo "  (none -- -mcpu=native does not enable the crypto extensions here)" ;;
+          esac
+
+      - name: Name the build directory
+        run: echo "BUILD_DIR=build-${{ matrix.cc }}-${{ matrix.config }}" >> "$GITHUB_ENV"
+
+      # NO dependency cache, deliberately. The plan assumed ~8 min per job to
+      # build liboqs + libsodium and called caching mandatory; measured on this
+      # workflow it is 35 s cold against 11 s warm -- a ~24 s saving. Against
+      # that: MLDSA_OQS_OPT_TARGET defaults to auto (-march=native), and
+      # GitHub's Linux fleet is heterogeneous (EPYC 9V74, EPYC 7763, Xeon
+      # 8370C). Bring-up run 2 restored run 1's EPYC-built tree onto a
+      # different CPU and 13 of 15 tests died with SIGILL. Keying the cache on
+      # the CPU model would fix that at the cost of most of the hit rate, for a
+      # saving that is already small -- so every job builds its dependencies
+      # from the pinned sources on the machine that will run them.
+
+      - name: Configure
+        run: |
+          case "${{ matrix.config }}" in
+            asan)  extra=-DENABLE_ASAN=ON ;;
+            ubsan) extra=-DENABLE_UBSAN=ON ;;
+            *)     extra= ;;
+          esac
+          # liboqs's sha2_armv8.c needs the ARMv8 crypto extensions. On this
+          # arm64 macOS runner the project default (MLDSA_OQS_OPT_TARGET=auto
+          # -> -mcpu=native) does not provide them and that file fails to
+          # compile -- 'always_inline function vsha256hq_u32 requires target
+          # feature sha2'. The same default builds cleanly on a physical M4
+          # Pro, so this is a property of the runner, not of the setting; the
+          # step above records what native resolves to here. `generic` is the
+          # project's own documented portable target (-march=armv8-a+crypto on
+          # arm64) and still selects the AARCH64 backends, so the macOS jobs
+          # pin it rather than silently losing the platform.
+          opt=
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            opt=-DMLDSA_OQS_OPT_TARGET=generic
+          fi
+          cmake -S . -B "$BUILD_DIR" -DCMAKE_C_COMPILER=${{ matrix.cc }} $extra $opt
+
+      - name: Build
+        run: cmake --build "$BUILD_DIR" -j
+
+      - name: Standing rule 2 — prove the instrumentation is linked
+        if: matrix.config == 'asan' || matrix.config == 'ubsan'
+        run: tools/check_sanitizer_link.sh "$BUILD_DIR" "${{ matrix.config }}"
+
+      # Standing rule 3: currency and the suite in ONE invocation, so a stale
+      # tree cannot produce a number at all.
+      - name: Standing rule 3 + suite
+        run: tools/check_build_current.sh "$BUILD_DIR" && ctest --test-dir "$BUILD_DIR" --output-on-failure
+
+      - name: Environment block (records the CPU these results came from)
+        run: ./"$BUILD_DIR"/bench/bench_primitives --smoke | sed -n '/^mldsa-auth bench/,/^  mode /p'
+
+  fuzz-and-scan:
+    name: fuzz smoke + secret scan (Linux only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # Apple clang ships no libFuzzer runtime, so this gate is Linux-only by
+      # necessity, not by preference (see README).
+      - name: Configure and build the fuzz tree
+        run: |
+          cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang -DMLDSA_FUZZ=ON
+          cmake --build build-fuzz -j
+
+      - name: Standing rule 3 + fuzz-labelled tests
+        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --output-on-failure
+
+      - name: Fuzz smoke (60 s per target) — any crash or artifact fails
+        run: |
+          tests/fuzz/run_fuzz.sh smoke build-fuzz | tee smoke.log
+          if grep -qE "crashes=[1-9]|artifacts=[1-9]" smoke.log; then
+            echo "::error::fuzzing produced a crash or artifact"; exit 1
+          fi
+
+      - name: Repository secret scan
+        run: |
+          ./build-fuzz/tests/fuzz/fuzz_keys_replay --scan-secret-dirs \
+            tests/fuzz/regressions tests/fuzz/dict | tee scan.log
+          grep -q " 0 violation" scan.log || { echo "::error::secret scan found violations"; exit 1; }

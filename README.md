@@ -1,5 +1,7 @@
 # mldsa-auth
 
+[![CI](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/happyc0der/mldsa-auth/actions/workflows/ci.yml)
+
 Mutual authentication and an encrypted session protocol in C11: **ML-DSA-65**
 (FIPS 204) identity signatures over a **hybrid X25519 + ML-KEM-768**
 (FIPS 203) key exchange, with **HKDF-SHA256** key derivation and a padded
@@ -142,6 +144,24 @@ bench/run_bench.sh build-bench 3
 `smoke` runs 60 s per target and `local` 600 s — the spec's Step 7 exit
 criterion. Benchmarks need their own Release build directory, which is why
 they do not reuse `build`.
+
+### Continuous integration
+
+The badge above is [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
+and it means exactly this, on every push and pull request: the 15-test suite
+in debug, ASan and UBSan builds on `ubuntu-latest` (x86_64) and
+`macos-latest` (arm64), plus a gcc build on Linux; every suite run preceded
+**in the same step** by `tools/check_build_current.sh` and, for the sanitizer
+jobs, `tools/check_sanitizer_link.sh`; and on Linux only — Apple clang ships
+no libFuzzer runtime — the fuzz-labelled tests, `run_fuzz.sh smoke` (60 s per
+target, any crash or artifact fails the job) and the repository secret scan.
+The macOS jobs build liboqs with `-DMLDSA_OQS_OPT_TARGET=generic`, because
+`-mcpu=native` on GitHub's arm64 runner enables no crypto extensions and
+liboqs's ARMv8 SHA-2 will not compile there; a macOS tick therefore vouches
+for the portable target, not the default one. The 600 s fuzz budgets and the
+56-mutation suite are not run per push. Each of these gates has been shown to
+turn the badge red when broken — the four controls and what each one
+produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 ## Demo
 
