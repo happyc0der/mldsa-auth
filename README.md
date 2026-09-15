@@ -14,15 +14,22 @@ specify: [v1](docs/ml-dsa-auth-protocol-spec.md) (frozen) and
 [v2](docs/ml-dsa-auth-protocol-spec-v2.md) (current). Every design decision
 and its rationale is recorded in [docs/decisions.md](docs/decisions.md).
 
-**Status: `v2.0.0`.** Every normative element of the v2 specification is
-implemented and verified — hybrid X25519 + ML-KEM-768 key exchange, the v2
-wire format and labels, the hybrid key schedule, the hybrid handshake, and
-padded records. The release tree was verified end to end rather than
-step by step: normal, ASan and UBSan suites (15/15 each, instrumentation and
-build-currency proven before each result), 56 mutations re-run across seven
+**Status: `v2.0.0` is current.** Every normative element of the v2
+specification is implemented and verified — hybrid X25519 + ML-KEM-768 key
+exchange, the v2 wire format and labels, the hybrid key schedule, the hybrid
+handshake, and padded records. The release tree was verified end to end rather
+than step by step: normal, ASan and UBSan suites (15/15 each, instrumentation
+and build-currency proven before each result), 56 mutations re-run across seven
 campaigns, the full fuzz corpus, clang-tidy, scan-build and `-Weverything`.
 What that verification does and does not establish is recorded in
 [docs/decisions.md](docs/decisions.md) under *V2-10*.
+
+Since then the verification has been **automated rather than changed**: the
+library, the reference apps and the build are byte-identical to the `v2.0.0`
+tag, and what was a one-off retrospective now runs on every push and every
+night (see *How this is verified*). That work carries its own `v3-step*` tags
+and deliberately **no version bump** — a new number would advertise a change
+to the code that does not exist.
 
 > **v1 is frozen at the [`v1.0.0`](https://github.com/happyc0der/mldsa-auth/releases/tag/v1.0.0)
 > tag and receives no patches — upgrade or fork.** v2 is a deliberate clean
@@ -164,7 +171,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, the 57 must-kill mutations in
+at 03:17 UTC every day, and on demand, the 59 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub
@@ -413,7 +420,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | 57 mutations as 8 campaigns against a fresh Linux ASan tree, and 600 s per fuzz target with crash artifacts kept — ~20 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | 59 mutations as 9 campaigns against fresh ASan trees — 8 on Linux, and one on macOS for the campaign whose mutations live in macOS-only code — plus 600 s per fuzz target with crash artifacts kept — ~20 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
@@ -435,7 +442,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 57 committed campaigns in `tools/mutations/`, and three checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 59 committed mutations in `tools/mutations/`, and three checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 

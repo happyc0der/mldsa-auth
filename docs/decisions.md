@@ -1,4 +1,4 @@
-# Protocol Decisions (through v1.0.0; v2 in progress)
+# Protocol Decisions (v1.0.0 and v2.0.0 released; V3 assurance work on `main`)
 
 This is a running log of decisions made while implementing
 [ml-dsa-auth-protocol-spec.md](ml-dsa-auth-protocol-spec.md), for
@@ -2794,3 +2794,64 @@ mechanism — both still KILLED, so it detects a real regression as before.
 One dispatch: 237 s total — 56 s configure+build, 169 s for 5 repetitions,
 the checks under 3 s. The 45-minute timeout stands as a ceiling with an order
 of magnitude of headroom.
+
+## V3-6 — closing the milestone without a version number
+
+### The release the roadmap planned would have misrepresented the code
+
+V3 was scoped as *assurance and CI, shipping as v2.1.0*. Checked before
+acting: `git diff b71a06a HEAD -- src apps cmake CMakeLists.txt` is **empty**.
+Every line V3 changed is in `tools/` (23 files), `tests/` (4), `bench/` (4),
+`.github/` (3) and documentation. **Anyone building from a `v2.1.0` tag would
+get bit-for-bit what `v2.0.0` already gives them.**
+
+Semver MINOR advertises added backwards-compatible functionality; there is
+none in the artifact. PATCH advertises fixes to it; there are none either —
+the fixes were to tests, tools and CI. `CMakeLists.txt` declares no `VERSION`,
+so nothing in the build depends on the number; it lives only in tags and prose.
+
+There is a defensible reading in which the version tracks *the repository as a
+distributed artifact*, and a bump for "added continuous verification" would be
+fair. But v1.0.0 → v2.0.0 was a **protocol** break: the number has so far meant
+the implementation, and changing what it means silently, in the release that
+claims to be about trustworthiness, is exactly the wrong place to do it.
+
+**Decision: no version bump and no GitHub Release.** The five annotated
+`v3-step*` tags already record the work, and the badges, `.github/`,
+`tools/mutations/` and this log make it visible to anyone deciding whether to
+trust the code. The README's status paragraph says plainly that the library is
+byte-identical to `v2.0.0` and that the verification was *automated rather than
+changed*. A version number that advertises a change to the code is a claim, and
+this project does not make claims it cannot show.
+
+### A campaign that was committed and never ran
+
+`tools/mutations/` held **59 mutations across 9 specs**; `nightly.yml`'s matrix
+listed **8**. `v35` was absent — correctly, since U2 and U3 anchor inside
+`bench_common.c`'s `#if defined(__APPLE__)` branch and cannot be applied on
+Linux at all. But the omission was never written down, which left three
+published counts wrong (README ×3 and `tools/README.md` ×1 all said 57), one
+claim outright false (*"nightly.yml runs every campaign"*), and **U2 — a defect
+that only ever appeared on a macOS VM — re-verified nowhere automatically**.
+
+V3-4 excluded macOS from the nightly and recorded that as *"reversible by
+adding a matrix row"*. This is that row: one `macos-latest` job for the one
+macOS-only campaign, ~2 minutes. The exclusion narrows rather than reverses —
+the eight architecture-independent campaigns still run on the stricter Linux
+ASan tree.
+
+### The counts are now derived, not remembered
+
+Every mechanically checkable claim in `README.md` and `tools/README.md` is
+re-derived from the tree by a scratch audit — test count from `ctest -N`,
+campaign and mutation counts from `tools/mutations/spec_*.txt`, the workflow
+table from the YAML matrices, and every relative link resolved from its own
+file's directory — and diffed against what the documents say. It found all four
+stale counts above. It also found a defect in **itself** on the first run
+(links resolved from the repository root, so correct `../docs/…` links in
+`tools/README.md` were reported broken); the tool was fixed before its verdict
+was believed, which is the same rule the gates themselves follow.
+
+One check in it is worth keeping beyond this step: **every committed campaign
+must appear in some nightly matrix**. That is the invariant whose violation
+started this section.

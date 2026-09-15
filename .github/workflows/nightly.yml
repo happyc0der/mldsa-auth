@@ -31,6 +31,11 @@ jobs:
       fail-fast: false
       matrix:
         # One job per campaign; each is the mutation set of one v2/v3 step.
+        # v35 is NOT here and must not be: its mutations anchor inside
+        # bench_common.c's #if defined(__APPLE__) branch, so on Linux the
+        # anchors cannot match and the runner would abort. It runs in
+        # mutations-macos below -- which is the point, since U2 is a defect
+        # that only ever appeared on a macOS VM.
         campaign: [v23, v24, v25, v26, v27, v28, v29, v33]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -64,6 +69,55 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: mutations-${{ matrix.campaign }}
+          path: |
+            campaign.log
+            ${{ runner.temp }}/mut/mutation_v2-logs
+          retention-days: 30
+
+  # V3-4 kept macOS out of the nightly (the Linux ASan tree is stricter, and
+  # macOS runners are the slow, costly ones) and said so as a decision
+  # "reversible by adding a matrix row". This is that row, added for a reason:
+  # the v35 campaign's mutations live in macOS-only code, so without it U2 --
+  # whose whole point is a defect that only appears on a macOS VM -- is
+  # re-verified nowhere automatically. Two mutations, ~2 minutes.
+  mutations-macos:
+    name: mutations · ${{ matrix.campaign }} (macOS-only code)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        campaign: [v35]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner
+        run: |
+          uname -srm
+          clang --version | head -1
+          sysctl -n machdep.cpu.brand_string || true
+
+      # -mcpu=native enables no crypto extensions on this runner, so liboqs's
+      # sha2_armv8.c will not compile with the project default (V3-3).
+      - name: Fresh ASan tree, instrumentation proven
+        run: |
+          cmake -S . -B build-asan -DCMAKE_C_COMPILER=clang -DENABLE_ASAN=ON \
+            -DMLDSA_OQS_OPT_TARGET=generic
+          cmake --build build-asan -j
+          tools/check_sanitizer_link.sh build-asan asan
+
+      - name: Run the campaign
+        run: |
+          tools/run_mutations_v2.sh "$PWD" "$RUNNER_TEMP/mut" \
+            "tools/mutations/mutate_${{ matrix.campaign }}.py" \
+            "tools/mutations/spec_${{ matrix.campaign }}.txt" build-asan 2>&1 | tee campaign.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload the campaign logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutations-${{ matrix.campaign }}-macos
           path: |
             campaign.log
             ${{ runner.temp }}/mut/mutation_v2-logs
