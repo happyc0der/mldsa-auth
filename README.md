@@ -394,6 +394,35 @@ ships; each is a decision to stop somewhere.
   but message timing, counts and direction are unprotected; no cover traffic
   and no constant-rate sending. (spec-v2 §6.4.1, §9)
 
+## How this is verified
+
+Three standing rules, each added after it was violated at least once, and now
+enforced by CI rather than by anyone remembering them:
+
+1. **A mutation that fails to compile is a kill** — but only when the first
+   compiler error names a project source file, so an unrelated build failure
+   can never be laundered into one.
+2. **A sanitizer result counts only if the instrumentation is linked**
+   (`check_sanitizer_link.sh`): two trees were once configured with a
+   misspelled flag that CMake accepted in silence.
+3. **A suite result counts only if the build is current**
+   (`check_build_current.sh`), proven **in the same command** as the suite:
+   `ctest` never compiles, so a complete, correctly instrumented, freshly
+   configured tree can still be testing yesterday's sources.
+
+| Workflow | When | What it runs |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | 57 mutations as 8 campaigns against a fresh Linux ASan tree, and 600 s per fuzz target with crash artifacts kept — ~20 min |
+| [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
+
+Every one of these gates has been shown to go **red** for the right reason by
+deliberately breaking it, pushing the break alone and reverting it; what each
+control produced is recorded in [docs/decisions.md](docs/decisions.md) under
+*V3-3*, *V3-4* and *V3-5*. A green badge that has never been shown to fail
+proves nothing, and a scheduled workflow GitHub has disabled after 60 days of
+inactivity still shows its last green run — check the date, not the colour.
+
 ## Repository layout
 
 | Path | Contents |
@@ -406,7 +435,7 @@ ships; each is a decision to stop somewhere.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | Verification scripts (mutation campaigns, sanitizer-link checking); not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 57 committed campaigns in `tools/mutations/`, and three checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 
