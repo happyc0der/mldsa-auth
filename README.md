@@ -318,6 +318,14 @@ Padding is a sender-side choice with a measurable price on small messages: a
 64-byte round trip costs 605 ns unpadded and 1.29 µs at the default bucket,
 and nothing at 64 KiB, where there is nothing left to pad.
 
+The first x86_64 measurements (V3-5) come from GitHub-hosted runners, which
+are shared 4-vCPU VMs: the handshake medians **0.783 ms** on a Xeon Platinum
+8370C and **1.022 ms** on an EPYC 7763 — 15–19× inside the 15 ms target, on
+chips that differ 24% from each other, so they are published per model and
+never averaged. An AVX2 backend is proven linked in the binary before any of
+those numbers is recorded. What a shared VM does and does not establish is
+spelled out in [bench/results.md](bench/results.md).
+
 Measured on an Apple M4 Pro (arm64), Release build, median of three runs. The
 spec's target names "a modern x86_64 core" and no x86_64 hardware was
 available, so these are real measurements on a different architecture rather

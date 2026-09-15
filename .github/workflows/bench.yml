@@ -1,0 +1,99 @@
+# Benchmarks, on demand only.
+#
+# Not per-push (numbers are noise in a gate that must stay fast) and not
+# nightly (unread figures accumulating): this runs when someone wants numbers.
+#
+# A GitHub-hosted runner is a SHARED VM on a fleet that hands out different
+# CPUs from run to run -- EPYC 7763, EPYC 9V74, Xeon 8370C and Xeon 8573C were
+# all seen in one afternoon. So nothing here produces "the x86_64 number".
+# Every figure is an upper bound on latency and a lower bound on throughput,
+# published per CPU model, with the environment block that names the chip, the
+# scaling governor and the hypervisor quoted beside it (bench/results.md).
+name: Bench
+
+on:
+  # workflow_dispatch only registers once a workflow is on the default branch,
+  # so bring-up cannot dispatch from its own branch. The push trigger below is
+  # how this file was verified before it landed, and it stays for the same
+  # reason nightly.yml's does: what shipped is then byte-identical to what was
+  # verified, and the branch it names no longer exists.
+  push:
+    branches: [bench-bringup]
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: 'bench/run_bench.sh repetitions'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench · ${{ github.event.inputs.repetitions || '5' }} repetitions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # a ceiling; the measured cost is recorded in decisions.md
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner
+        run: |
+          uname -srm
+          clang --version | head -1
+          grep -m1 'model name' /proc/cpuinfo || true
+          nproc
+          cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "(no cpufreq sysfs)"
+          cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "(no DMI vendor)"
+
+      # Release, and the project's DEFAULT optimisation target (auto ->
+      # -march=native), which on x86_64 is what selects liboqs's AVX2 backends.
+      - name: Configure and build (Release, default target)
+        run: |
+          cmake -S . -B build-bench -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-bench -j
+
+      # Req 4.10 / Performance Req 3, proven in the binary. Until V3-5 this
+      # had only ever run on arm64.
+      - name: One optimized backend is linked, and no portable-C one
+        run: |
+          # pipefail, or `tee` decides the step's exit status: E1 (a generic
+          # x86_64 build) printed 15 FAIL lines under a GREEN step, and only
+          # the agreement check's guard turned the run red.
+          set -o pipefail
+          tools/check_backend_symbols.sh build-bench | tee symbols.log
+
+      # The step that makes a misreported backend impossible to publish: the
+      # binary's own environment block must name the family the symbol check
+      # just found IN THAT BINARY. A block that lies about what it measured
+      # invalidates every number printed beneath it.
+      - name: Agreement — the environment block matches the linked symbols
+        run: |
+          fam=$(sed -n 's/^BACKEND_FAMILY=//p' symbols.log)
+          [ -n "$fam" ] || { echo "::error::symbol check reported no backend family"; exit 1; }
+          ./build-bench/bench/bench_primitives --smoke > block.log 2>&1
+          echo "linked family: $fam"
+          rc=0
+          for key in "ml-dsa backend" "ml-kem backend"; do
+            line=$(grep "  $key  " block.log || true)
+            [ -n "$line" ] || { echo "::error::no '$key' line in the environment block"; rc=1; continue; }
+            case "$line" in
+              *"($fam)"*) echo "  ok   $line" ;;
+              *) echo "::error::$key disagrees with the linked symbols ($fam): $line"; rc=1 ;;
+            esac
+          done
+          exit $rc
+
+      - name: Run the benchmarks
+        run: bench/run_bench.sh build-bench "${{ github.event.inputs.repetitions || '5' }}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bench-${{ github.run_id }}
+          path: |
+            build-bench/bench-results
+            symbols.log
+            block.log
+          retention-days: 90

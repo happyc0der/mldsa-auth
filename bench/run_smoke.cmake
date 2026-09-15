@@ -34,6 +34,14 @@ function(check_environment_block exe out)
     if(_value MATCHES "^(unknown|\\(null\\))$")
       message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports '${_key}' as a bare '${_value}' with no reason")
     endif()
+    # A negative number in an environment block is a sentinel that escaped,
+    # never a measurement: sysctl_long() returns -1 for an absent key, and
+    # "3 performance + -1 efficiency cores" reached a published block on
+    # GitHub's macOS runner (V3-3). Anchored to a token boundary so version
+    # strings like "clang-2100.1.1.101" and flags like "-O3" do not match.
+    if(_value MATCHES "(^| )-[0-9]")
+      message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports '${_key}' as '${_value}' -- a negative sentinel escaped instead of unknown (<why>)")
+    endif()
   endforeach()
   # On Linux the cpu line must be derived from /proc/cpuinfo, not invented:
   # either it matches the model name read independently here, or it declares

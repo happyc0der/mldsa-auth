@@ -2656,3 +2656,119 @@ already runs per push as V3-3's C4). Separate workflow and badge from the push
 gate; the README says, beside the badge, that GitHub disables a scheduled
 workflow after 60 days without a commit — a badge that stopped is not a badge
 that passes.
+
+## V3-5 — the first x86_64 measurements, and the backend claim proven there
+
+### The step's own premise was wrong, and checking it was the first finding
+
+The V3 roadmap said *"spec-v2 §5.1 targets 'a modern x86_64 core' and has
+never been measured on one … carried as a recorded deviation since Step 8"*.
+Both halves needed checking against the documents rather than the memory of
+them:
+
+- **v1** §5.1 does say it, and that deviation is real and recorded twice
+  above. But v1 is frozen at `v1.0.0` and its code was **deleted from `main`
+  in V2-4/V2-5**. Closing it would mean benchmarking a protocol this
+  repository no longer implements. **V3-5 does not close it**; it stays open,
+  and `bench/results.md` says so where a reader looking for the numbers will
+  find it.
+- **spec-v2** §5.1 was rewritten in V2-1 and now reads *"< 15 ms per
+  handshake **on the measurement platform** … the reference measurement
+  platform is an Apple M4 Pro (arm64)"*. **There is no open x86_64 deviation
+  in v2.** The step could not close what was not open, and does not claim to.
+
+What was genuinely missing was more interesting than the bookkeeping: the
+x86_64 *backend* claim had never been executed, and the tool that checks it
+was not in the repository.
+
+### The backend claim, proven in the binary on the architecture it was written for
+
+`mldsa_backend()`/`mlkem_backend()` return `"AVX2-optimized (x86_64)"` from an
+`#if defined(OQS_ENABLE_*_x86_64)` branch that had never been **compiled**,
+let alone checked against what the linker actually pulled in. Every symbol
+check in this project's history was arm64 — and V3-3 had just proved that
+untested branches in this very file rot silently.
+
+`tools/check_backend_symbols.sh` is now **in the repository** (it was
+scratch-only and arm64-only — the same finding as V3-4's about the mutation
+campaigns: an unversioned tool makes an unverifiable claim), knows the
+`PQCP_*_{C,AARCH64,X86_64}_*` families taken from the pinned liboqs source,
+and carries three vacuous-pass guards. On the first x86_64 run it found the
+AVX2 families in all 15 executables and zero portable-C symbols.
+
+`bench.yml` then adds the step that matters: **the binary's own environment
+block must name the family the symbol check just found in that binary.** A
+block that lies about what it measured invalidates every number beneath it,
+and this is what makes that unpublishable.
+
+### A shared VM is not a benchmark platform, and every figure says so
+
+`ubuntu-latest` runners are 4-vCPU slices of Azure hosts. Five different CPUs
+appeared during this one step (EPYC 7763, EPYC 9V74, Xeon Platinum 8370C,
+Xeon 8573C, Xeon 6973P-C), and the two measured differ by **24%** on the same
+build. So: figures are published **per CPU model, never averaged**, as an
+upper bound on latency and a lower bound on throughput, with the environment
+block naming the chip, the governor and the hypervisor beside them.
+
+The decision made in advance was that if run-to-run spread exceeded ±20%, no
+headline figure would be published at all — only the spread. It did not: the
+spread is ±0.7–2.0%, *narrower* than the M4 Pro's ±2.5% for the same
+measurement, because ML-DSA's rejection sampling dominates the variance and
+the VM adds less than that. Two EPYC 7763 runs on different machines agreed
+to 0.7%, so the VM penalty here is systematic rather than noisy.
+
+The claim that survives: **15–19× inside §5.1's target on x86_64 as well**,
+with margin enough that no bare-metal correction changes it.
+
+### What the controls found — including a defect in the workflow itself
+
+| # | break | result |
+|---|---|---|
+| E1 | `-DMLDSA_OQS_OPT_TARGET=generic` on x86_64 (V2-2's N3 path: `-march=x86-64`, no AVX2) | 15 `FAIL … portable-C backend symbol(s) linked`, `linking a backend: 0` — the check detects the real regression on an architecture it had never run on |
+| E2 | U1: the x86_64 branch names the aarch64 family | agreement check red, naming both sides: `ml-dsa backend disagrees with the linked symbols (x86_64): … NEON-optimized (aarch64)`, while `ml-kem backend` stayed `ok` — U1 mutates only one of the two |
+| E3 | the symbol check pointed at a bare configure | `FAIL: no executable linked an ML-DSA/ML-KEM backend at all` — the second guard, since CMake's own probe binaries mean the first never fires |
+
+**E1 also exposed a defect in `bench.yml`.** The step ran
+`check_backend_symbols.sh … | tee symbols.log`, so `tee` decided its exit
+status: the step printed 15 `FAIL` lines **under a green tick**, and only the
+agreement check downstream turned the run red. Fixed with `set -o pipefail`
+and re-run **with E1 still applied**, so the fix was proven at the step that
+had been lying rather than by a subsequent green.
+
+### U2 survived first, and that was the useful part
+
+The campaign is `tools/mutations/{mutate,spec}_v35` (V3-4's rule: a step's
+campaign ships with the step). U3 (the macOS `cpu` line dropped) was killed
+immediately. **U2 — the absent-sysctl sentinel printed raw, the exact defect
+V3-3 found — SURVIVED**, because on any Apple Silicon Mac both perflevel keys
+exist, so the degraded branch never runs; and on Linux the code does not
+compile at all. It was unkillable everywhere the campaigns run, while still
+broken in production.
+
+The fix was not to accept it but to make the path reachable: `print_environment()`
+now probes `core_count()` with a name that cannot resolve and requires the
+`unknown (<why>)` form via `BENCH_REQUIRE`. U2 is killed on re-run. This is
+the shape of an honest mutation result — a survivor that exposes a gap in the
+*oracle* rather than a property of the code. (Contrast N7, which survives
+because it is genuinely equivalent.)
+
+`spec_v35.txt` lists only U2 and U3: U1's branch does not compile on arm64,
+so it is applied by hand during `bench.yml` bring-up, where the agreement
+check kills it.
+
+### The macOS sentinel, fixed with the published figures' guard intact
+
+V3-3 observed `Apple M1 (Virtual) (3 performance + -1 efficiency cores)` on
+GitHub's macOS runner: `sysctl_long()` returns −1 for an absent key and the
+raw sentinel reached the block. `core_count()` now renders it as
+`unknown (no hw.perflevel1.logicalcpu)`, and `bench_smoke`'s oracle rejects
+any value containing a negative number token (anchored so `clang-2100.1.1.101`
+and `-O3` do not match). **The M4 Pro line is byte-identical** — proven by the
+same before/after diff V3-2 used — so every figure already published keeps its
+regression guard; only the degraded path changed.
+
+### Cost, measured
+
+One dispatch: 237 s total — 56 s configure+build, 169 s for 5 repetitions,
+the checks under 3 s. The 45-minute timeout stands as a ceiling with an order
+of magnitude of headroom.

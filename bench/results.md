@@ -386,3 +386,86 @@ benchmarks do not establish still applies. Two v2-specific cautions:
   here, and it is the one an application feels per received message. If
   small records dominate your traffic, measure bucket 1 before assuming
   the default.
+
+## x86_64 (V3-5) — GitHub-hosted runners, which are shared VMs
+
+The first numbers this project has ever produced on x86_64. **Read the
+heading literally**: these come from `ubuntu-latest` runners, which are
+4-vCPU slices of much larger Azure hosts (`virtualization  DMI vendor
+Microsoft Corporation` in every block below). They are an **upper bound on
+latency and a lower bound on throughput** — not bare-metal figures, and not
+comparable with the M4 Pro tables above except in the loose sense recorded
+here. They are produced by `.github/workflows/bench.yml`, on demand only.
+
+**There is no "the x86_64 number", so none is given.** The fleet handed out
+five different CPUs during this step alone (EPYC 7763, EPYC 9V74, Xeon
+Platinum 8370C, Xeon 8573C and Xeon 6973P-C), and the two measured below
+differ by 24% on the same build. Every row names its chip and its run.
+
+### Full hybrid handshake, in process
+
+| CPU (4 vCPU slice) | 5 repetition medians | median | vs M4 Pro 0.450 ms | vs §5.1's 15 ms |
+|---|---|---|---|---|
+| Xeon Platinum 8370C @ 2.80 GHz | 0.775 / 0.785 / 0.804 / 0.778 / 0.783 ms | **0.783 ms** | 1.74× slower | 19× under |
+| EPYC 7763 64-Core | 1.024 / 1.019 / 1.022 / 1.034 / 1.021 ms | **1.022 ms** | 2.27× slower | 14.7× under |
+
+Run-to-run spread within a model is ±0.7–2.0% — *narrower* than the ±2.5%
+the M4 Pro shows for the same measurement, because ML-DSA's rejection
+sampling dominates the variance and the VM adds less than that. A second
+EPYC 7763 run (a different machine, days-equivalent apart) gave 1.015 ms,
+0.7% from the first: the shared-VM penalty here is systematic, not noisy.
+
+### Per-primitive, same runs
+
+| Operation | Xeon 8370C | EPYC 7763 | M4 Pro |
+|---|---|---|---|
+| `mldsa_keypair_generate` | 54.56 µs | 91.66 µs | 40.58 µs |
+| `mldsa_sign` (32 B) | 83.90 µs | 104.59 µs | 62.62 µs |
+| `mldsa_verify` (32 B) | 35.37 µs | 50.07 µs | 31.25 µs |
+| `mlkem_keypair_generate` | 28.42 µs | 46.51 µs | 14.2 µs |
+| `mlkem_encaps` | 11.82 µs | 14.54 µs | 8.7 µs |
+| `mlkem_decaps` | 15.16 µs | 18.00 µs | 10.3 µs |
+
+`mldsa_sign`'s p99 is 3–4× its median on both chips (411 µs on the EPYC
+against a 104 µs median) — rejection sampling, the same shape seen on arm64,
+not a VM artefact.
+
+### Record layer, EPYC 7763, bucket 1
+
+| Payload | seal | open | throughput |
+|---|---|---|---|
+| 64 B | 538.6 ns | 528.2 ns | 113.3 / 115.6 MiB/s |
+| 1 KiB | 1.22 µs | 1.21 µs | 802 / 810 MiB/s |
+| 64 KiB | 70.33 µs | 49.68 µs | 889 / 1258 MiB/s |
+
+End-to-end over TCP loopback with framing: 1.075 ms, i.e. transport adds
+0.055 ms on top of the 1.020 ms in-process handshake.
+
+### What these establish, and what they do not
+
+They establish that **the AVX2 backends are the ones running** — proven in
+the binary, not inferred: `tools/check_backend_symbols.sh` finds the
+`PQCP_*_X86_64_*` families and zero portable-C symbols in all 15
+executables, and `bench.yml` then requires the binary's own environment
+block to name the same family before any number is recorded. Until V3-5 that
+half of Security Req 4.10 had never been checked on the architecture it was
+written for.
+
+They establish that the protocol is **far inside §5.1's 15 ms target on
+x86_64 as well** — by 15–19×, with enough margin that no plausible
+bare-metal-versus-VM correction changes the conclusion.
+
+They do **not** establish what this protocol does on x86_64 hardware you
+control. A dedicated machine would be faster than both rows above, by an
+unknown amount; nothing here measures that, and nothing here should be
+quoted as if it did.
+
+### The v1 §5.1 deviation stays open
+
+v1's spec asked for **< 15 ms on a modern x86_64 core** and was only ever
+measured on arm64 — recorded twice above. These numbers do not close it:
+they measure **v2**, and v1's code was deleted from `main` in V2-4/V2-5, so
+closing it would mean benchmarking a tag this repository no longer
+implements. It remains an open, recorded deviation against a frozen spec.
+spec-v2 §5.1 has no such gap — it names its measurement platform, and V2-7
+measured it there.

@@ -138,6 +138,22 @@ static long sysctl_long(const char *name) {
     }
     return (long)v;
 }
+
+/* A core count macOS cannot report has to SAY so. sysctl_long() returns -1
+ * for an absent key, and a raw -1 in a published environment block is exactly
+ * the unknown-with-no-reason V3-2 forbade: GitHub's macOS runner is a VM with
+ * no efficiency perflevel, and printed "3 performance + -1 efficiency cores"
+ * (found by V3-3's CI, fixed here). The format string is unchanged, so on a
+ * machine where both keys exist -- the M4 Pro every published figure was
+ * measured on -- the line is byte-identical to before. */
+static void core_count(const char *name, char *out, size_t cap) {
+    const long v = sysctl_long(name);
+    if (v < 0) {
+        (void)snprintf(out, cap, "unknown (no %s)", name);
+    } else {
+        (void)snprintf(out, cap, "%ld", v);
+    }
+}
 #elif defined(__linux__)
 /* A value that could not be read is reported as "unknown (<why>)" -- never
  * omitted and never guessed. An absent line cannot be told apart from a
@@ -283,8 +299,22 @@ static void print_environment(const char *suite_name) {
 #if defined(__APPLE__)
     char cpu[256];
     sysctl_str("machdep.cpu.brand_string", cpu, sizeof(cpu));
-    bench_env_line("cpu", "%s (%ld performance + %ld efficiency cores)", cpu,
-                   sysctl_long("hw.perflevel0.logicalcpu"), sysctl_long("hw.perflevel1.logicalcpu"));
+    /* The degraded path is unreachable on a machine where both perflevel keys
+     * exist -- every Apple Silicon Mac -- so it is exercised directly rather
+     * than left to a runner nobody benchmarks on. Without this the V3-5
+     * mutation U2 (sentinel printed raw, the exact V3-3 defect) SURVIVES on
+     * this hardware and cannot be compiled at all on Linux: unkillable
+     * everywhere the campaigns run, while still broken in production. */
+    char probe[96];
+    core_count("hw.perflevel_nonexistent.mldsa_probe", probe, sizeof(probe));
+    BENCH_REQUIRE(strncmp(probe, "unknown (", 9) == 0,
+                  "core_count must report an absent sysctl as unknown (<why>), got '%s'", probe);
+
+    char p_cores[96];
+    char e_cores[96];
+    core_count("hw.perflevel0.logicalcpu", p_cores, sizeof(p_cores));
+    core_count("hw.perflevel1.logicalcpu", e_cores, sizeof(e_cores));
+    bench_env_line("cpu", "%s (%s performance + %s efficiency cores)", cpu, p_cores, e_cores);
 #elif defined(__linux__)
     /* x86_64 /proc/cpuinfo carries "model name"; arm64 does not, so that path
      * degrades to an explicit unknown rather than inventing a chip. Cores are
