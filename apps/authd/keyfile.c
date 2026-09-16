@@ -107,6 +107,35 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
     return r;
 }
 
+keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_header_t *out) {
+    if (buf == NULL || out == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    const size_t max_ct = demo_keys_sk2_image_len(64) + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    if (total <= KEYFILE_HEADER_LEN || total > KEYFILE_HEADER_LEN + max_ct) {
+        return KEYFILE_ERR_FORMAT;
+    }
+    if (memcmp(buf + OFF_MAGIC, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN) != 0 ||
+        buf[OFF_VERSION] != KEYFILE_VERSION || buf[OFF_KDFALG] != KEYFILE_KDF_ARGON2ID13 ||
+        buf[OFF_AEADALG] != KEYFILE_AEAD_XCHACHA20POLY1305) {
+        return KEYFILE_ERR_FORMAT;
+    }
+    const uint32_t ct_len = get_be32(buf + OFF_CTLEN);
+    if ((size_t)ct_len != total - KEYFILE_HEADER_LEN || ct_len <= crypto_aead_xchacha20poly1305_ietf_ABYTES) {
+        return KEYFILE_ERR_FORMAT;
+    }
+    const uint32_t ops = get_be32(buf + OFF_OPSLIMIT);
+    const uint64_t mem = get_be64(buf + OFF_MEMLIMIT);
+    if (!params_ok(ops, mem)) {
+        return KEYFILE_ERR_PARAMS;
+    }
+    out->opslimit = ops;
+    out->memlimit = mem;
+    out->ct_len = ct_len;
+    out->img_len = ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    return KEYFILE_OK;
+}
+
 keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, size_t image_len,
                               const char *passphrase, size_t pass_len,
                               uint32_t opslimit, uint64_t memlimit) {
@@ -194,22 +223,14 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
         }
         if (off != total) { r = KEYFILE_ERR_FORMAT; goto freebufs; }
     }
-    if (memcmp(buf + OFF_MAGIC, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN) != 0 ||
-        buf[OFF_VERSION] != KEYFILE_VERSION || buf[OFF_KDFALG] != KEYFILE_KDF_ARGON2ID13 ||
-        buf[OFF_AEADALG] != KEYFILE_AEAD_XCHACHA20POLY1305) {
-        r = KEYFILE_ERR_FORMAT; goto freebufs;
-    }
-    const uint32_t ops = get_be32(buf + OFF_OPSLIMIT);
-    const uint64_t mem = get_be64(buf + OFF_MEMLIMIT);
-    const uint32_t ct_len = get_be32(buf + OFF_CTLEN);
-    if ((size_t)ct_len != total - KEYFILE_HEADER_LEN || ct_len <= crypto_aead_xchacha20poly1305_ietf_ABYTES) {
-        r = KEYFILE_ERR_FORMAT; goto freebufs;
-    }
-    if (!params_ok(ops, mem)) { r = KEYFILE_ERR_PARAMS; goto freebufs; }
-    r = derive_key(key, passphrase, pass_len, buf + OFF_SALT, ops, mem);
+    keyfile_header_t hdr;
+    r = keyfile_parse_header(buf, total, &hdr);
+    if (r != KEYFILE_OK) { goto freebufs; }
+    const uint32_t ct_len = hdr.ct_len;
+    r = derive_key(key, passphrase, pass_len, buf + OFF_SALT, hdr.opslimit, hdr.memlimit);
     if (r != KEYFILE_OK) { goto freebufs; }
 
-    const size_t img_len = ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    const size_t img_len = hdr.img_len;
     img = secure_mem_alloc(img_len);
     if (img == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
     {

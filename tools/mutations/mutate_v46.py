@@ -22,8 +22,8 @@ M = {
              "        (void)demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp);\n        r = KEYFILE_OK; /* MUTATION E5 */")]),
  "E6": (KF, [("O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)",
              "O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644) /* MUTATION E6 */")]),
- "E7": (KF, [("    if (!params_ok(ops, mem)) { r = KEYFILE_ERR_PARAMS; goto freebufs; }",
-             "    if (0) { r = KEYFILE_ERR_PARAMS; goto freebufs; } /* MUTATION E7: open bound off */")]),
+ "E7": (KF, [("    if (!params_ok(ops, mem)) {\n        return KEYFILE_ERR_PARAMS;\n    }",
+             "    if (0) {\n        return KEYFILE_ERR_PARAMS;\n    } /* MUTATION E7: open bound off */")]),
 }
 path, edits = M[MID]
 f = REPO / path; s = f.read_text()

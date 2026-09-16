@@ -9,7 +9,7 @@
 # The deterministic test-only RNG in fuzz_common.c is linked ONLY into these
 # executables.
 
-set(FUZZ_TARGETS wire handshake session frame keys)
+set(FUZZ_TARGETS wire handshake session frame keys envelope)
 
 # CI smoke budget (deterministic fallback mutations per target).
 set(FUZZ_ITER_wire 20000)
@@ -17,8 +17,10 @@ set(FUZZ_ITER_handshake 300)
 set(FUZZ_ITER_session 5000)
 set(FUZZ_ITER_frame 5000)
 set(FUZZ_ITER_keys 2000)
+set(FUZZ_ITER_envelope 5000)
 
 # libFuzzer -max_len per target (the harnesses enforce the same bound).
+set(FUZZ_MAXLEN_envelope 8192)
 set(FUZZ_MAXLEN_wire 4096)
 set(FUZZ_MAXLEN_handshake 16384)
 set(FUZZ_MAXLEN_session 140000)
@@ -36,7 +38,7 @@ set(FUZZ_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 foreach(t IN LISTS FUZZ_TARGETS)
   add_executable(fuzz_${t}_replay fuzz_replay_main.c fuzz_${t}.c fuzz_common.c)
   target_include_directories(fuzz_${t}_replay PRIVATE ${FUZZ_DIR})
-  target_link_libraries(fuzz_${t}_replay PRIVATE mldsa_demo)
+  target_link_libraries(fuzz_${t}_replay PRIVATE mldsa_authd)
   target_compile_options(fuzz_${t}_replay PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS}
                                                   ${FUZZ_REPLAY_EXTRA_FLAGS})
   target_compile_definitions(fuzz_${t}_replay PRIVATE ${MLDSA_HARDENING_DEFS})
@@ -51,7 +53,7 @@ foreach(t IN LISTS FUZZ_TARGETS)
   if(MLDSA_FUZZ)
     add_executable(fuzz_${t} fuzz_${t}.c fuzz_common.c)
     target_include_directories(fuzz_${t} PRIVATE ${FUZZ_DIR})
-    target_link_libraries(fuzz_${t} PRIVATE mldsa_demo)
+    target_link_libraries(fuzz_${t} PRIVATE mldsa_authd)
     target_compile_options(fuzz_${t} PRIVATE ${MLDSA_HARDENING_FLAGS}
       -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1)
     target_link_options(fuzz_${t} PRIVATE -fsanitize=fuzzer,address,undefined)

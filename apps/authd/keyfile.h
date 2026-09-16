@@ -60,6 +60,20 @@ typedef enum {
 
 const char *keyfile_status_name(keyfile_status_t st);
 
+/* The parsed, validated MLDSAEK1 header (everything before the KDF). */
+typedef struct {
+    uint32_t opslimit;
+    uint64_t memlimit;
+    uint32_t ct_len;   /* ciphertext + tag */
+    uint32_t img_len;  /* plaintext (MLDSASK2 image) length */
+} keyfile_header_t;
+
+/* Validates the header of a `total`-byte candidate: size range, magic,
+ * version, algorithm ids, ct_len consistency and the KDF parameter bounds --
+ * stopping BEFORE the KDF, so it is safe to run on arbitrary attacker bytes
+ * (the fuzz target does exactly that). Returns FORMAT, PARAMS or OK. */
+keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_header_t *out);
+
 /* Seals an MLDSASK2 image (from demo_keys_build_sk2_image) under a passphrase,
  * publishing out_path atomically (temp + link, mode 0600); refuses an existing
  * out_path. opslimit/memlimit must be within the bounds above. */
