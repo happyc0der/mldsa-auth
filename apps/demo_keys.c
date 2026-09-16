@@ -319,12 +319,100 @@ fail:
     return r;
 }
 
-demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *expect_id, size_t id_len,
-                                           mldsa_keypair_t *kp) {
-    uint8_t hdr[HDR_LEN];
-    uint8_t id[64];
+size_t demo_keys_sk2_image_len(size_t id_len) {
+    if (id_len < 1u || id_len > 64u) {
+        return 0u;
+    }
+    return SK2_FILE_LEN(id_len);
+}
+
+demo_keys_status_t demo_keys_build_sk2_image(uint8_t *img, size_t img_cap, const uint8_t *id, size_t id_len,
+                                             const mldsa_keypair_t *kp) {
+    if (img == NULL || id == NULL || kp == NULL || kp->secret_key == NULL || id_len < 1u || id_len > 64u ||
+        img_cap < SK2_FILE_LEN(id_len)) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    put_header(img, DEMO_KEY_MAGIC_SECRET, id, id_len);
+    memcpy(img + HDR_LEN + id_len, kp->public_key, MLDSA_PUBLIC_KEY_BYTES);
+    memcpy(img + HDR_LEN + id_len + MLDSA_PUBLIC_KEY_BYTES, kp->secret_key, MLDSA_SECRET_KEY_BYTES);
+    integrity_digest(img + SK2_BODY_LEN(id_len), (uint8_t)id_len, id, kp->public_key, kp->secret_key);
+    return DEMO_KEYS_OK;
+}
+
+demo_keys_status_t demo_keys_load_identity_from_image(const uint8_t *img, size_t img_len,
+                                                      const uint8_t *expect_id, size_t id_len,
+                                                      mldsa_keypair_t *kp) {
     uint8_t stored[DEMO_KEY_DIGEST_BYTES];
     uint8_t computed[DEMO_KEY_DIGEST_BYTES];
+
+    if (kp == NULL) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    memset(kp->public_key, 0, sizeof(kp->public_key));
+    kp->secret_key = NULL;
+    if (img == NULL || expect_id == NULL || id_len < 1u || id_len > 64u) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    /* Bounded size (admits every legacy size, so the magic step can name it). */
+    if (img_len < HDR_LEN || img_len > SK2_FILE_LEN(64)) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    /* Header and version. */
+    if (memcmp(img, DEMO_KEY_MAGIC_SECRET_LEGACY, DEMO_KEY_MAGIC_LEN) == 0) {
+        return DEMO_KEYS_ERR_UNSUPPORTED_VERSION;
+    }
+    if (memcmp(img, DEMO_KEY_MAGIC_SECRET, DEMO_KEY_MAGIC_LEN) != 0) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    /* Exact size for the declared id length. */
+    const size_t idl = img[DEMO_KEY_MAGIC_LEN];
+    if (idl < 1u || idl > 64u || img_len != SK2_FILE_LEN(idl)) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    const uint8_t *id = img + HDR_LEN;
+    const uint8_t *pk = id + idl;
+    const uint8_t *sk = pk + MLDSA_PUBLIC_KEY_BYTES;
+    memcpy(stored, sk + MLDSA_SECRET_KEY_BYTES, DEMO_KEY_DIGEST_BYTES);
+
+    /* The secret key goes into secure memory. */
+    kp->secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
+    if (kp->secret_key == NULL) {
+        sodium_memzero(stored, sizeof(stored));
+        return DEMO_KEYS_ERR_CRYPTO;
+    }
+    memcpy(kp->public_key, pk, MLDSA_PUBLIC_KEY_BYTES);
+    memcpy(kp->secret_key, sk, MLDSA_SECRET_KEY_BYTES);
+
+    /* Integrity: constant-time comparison of all 32 bytes. */
+    integrity_digest(computed, (uint8_t)idl, id, kp->public_key, kp->secret_key);
+    const int intact = (sodium_memcmp(computed, stored, DEMO_KEY_DIGEST_BYTES) == 0);
+    sodium_memzero(computed, sizeof(computed));
+    sodium_memzero(stored, sizeof(stored));
+    if (!intact) {
+        mldsa_keypair_free(kp);
+        return DEMO_KEYS_ERR_INTEGRITY;
+    }
+    /* Identity (after integrity: a corrupted id reports INTEGRITY). */
+    if (idl != id_len || memcmp(id, expect_id, idl) != 0) {
+        mldsa_keypair_free(kp);
+        return DEMO_KEYS_ERR_ID_MISMATCH;
+    }
+    /* Defense in depth against a buggy writer pairing a mismatched pk/sk. */
+    uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES];
+    size_t sig_len = 0;
+    if (mldsa_sign(sig, &sig_len, SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, kp) != 0) {
+        mldsa_keypair_free(kp);
+        return DEMO_KEYS_ERR_CRYPTO;
+    }
+    if (mldsa_verify(SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, sig, sig_len, kp->public_key) != 0) {
+        mldsa_keypair_free(kp);
+        return DEMO_KEYS_ERR_KEY_MISMATCH;
+    }
+    return DEMO_KEYS_OK;
+}
+
+demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *expect_id, size_t id_len,
+                                           mldsa_keypair_t *kp) {
     struct stat st;
 
     if (kp == NULL) {
@@ -336,7 +424,7 @@ demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *e
         return DEMO_KEYS_ERR_ARG;
     }
 
-    /* 1. No symlinks; a regular file owned by us, no group/other access. */
+    /* Custody: no symlinks; a regular file owned by us, no group/other access. */
     const int fd = open(sk_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         return DEMO_KEYS_ERR_IO;
@@ -350,69 +438,29 @@ demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *e
         r = DEMO_KEYS_ERR_PERMISSIONS;
         goto fail;
     }
-    /* 2. Bounded size (admits every legacy size, so step 4 can name it). */
     if (st.st_size < 0 || (size_t)st.st_size < HDR_LEN || (size_t)st.st_size > SK2_FILE_LEN(64)) {
         goto fail;
     }
-    /* 3-4. Header and version. */
-    if (read_all_fd(fd, hdr, sizeof(hdr)) != 0) {
-        goto fail;
-    }
-    if (memcmp(hdr, DEMO_KEY_MAGIC_SECRET_LEGACY, DEMO_KEY_MAGIC_LEN) == 0) {
-        r = DEMO_KEYS_ERR_UNSUPPORTED_VERSION;
-        goto fail;
-    }
-    if (memcmp(hdr, DEMO_KEY_MAGIC_SECRET, DEMO_KEY_MAGIC_LEN) != 0) {
-        goto fail;
-    }
-    /* 5. Exact size for the declared id length. */
-    const size_t idl = hdr[DEMO_KEY_MAGIC_LEN];
-    if (idl < 1u || idl > 64u || (size_t)st.st_size != SK2_FILE_LEN(idl)) {
-        goto fail;
-    }
-    /* 6. Read; the secret key goes straight from the file into secure memory. */
-    kp->secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
-    if (kp->secret_key == NULL) {
+    /* Read the whole file into secure memory so the secret key never sits in
+     * ordinary memory, then hand the image to the shared validator. */
+    const size_t img_len = (size_t)st.st_size;
+    uint8_t *img = secure_mem_alloc(img_len);
+    if (img == NULL) {
         r = DEMO_KEYS_ERR_CRYPTO;
         goto fail;
     }
-    if (read_all_fd(fd, id, idl) != 0 || read_all_fd(fd, kp->public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 ||
-        read_all_fd(fd, kp->secret_key, MLDSA_SECRET_KEY_BYTES) != 0 ||
-        read_all_fd(fd, stored, sizeof(stored)) != 0) {
+    if (read_all_fd(fd, img, img_len) != 0) {
+        secure_mem_free(img, img_len);
+        r = DEMO_KEYS_ERR_FORMAT;
         goto fail;
     }
     (void)close(fd);
-
-    /* 7. Integrity: constant-time comparison of all 32 bytes. */
-    integrity_digest(computed, (uint8_t)idl, id, kp->public_key, kp->secret_key);
-    const int intact = (sodium_memcmp(computed, stored, DEMO_KEY_DIGEST_BYTES) == 0);
-    sodium_memzero(computed, sizeof(computed));
-    sodium_memzero(stored, sizeof(stored));
-    if (!intact) {
-        mldsa_keypair_free(kp);
-        return DEMO_KEYS_ERR_INTEGRITY;
-    }
-    /* 8. Identity (after integrity: a corrupted id reports INTEGRITY). */
-    if (idl != id_len || memcmp(id, expect_id, idl) != 0) {
-        mldsa_keypair_free(kp);
-        return DEMO_KEYS_ERR_ID_MISMATCH;
-    }
-    /* 9. Defense in depth against a buggy writer pairing a mismatched pk/sk. */
-    uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES];
-    size_t sig_len = 0;
-    if (mldsa_sign(sig, &sig_len, SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, kp) != 0) {
-        mldsa_keypair_free(kp);
-        return DEMO_KEYS_ERR_CRYPTO;
-    }
-    if (mldsa_verify(SELFTEST_MSG, sizeof(SELFTEST_MSG) - 1u, sig, sig_len, kp->public_key) != 0) {
-        mldsa_keypair_free(kp);
-        return DEMO_KEYS_ERR_KEY_MISMATCH;
-    }
-    return DEMO_KEYS_OK;
+    r = demo_keys_load_identity_from_image(img, img_len, expect_id, id_len, kp);
+    secure_mem_free(img, img_len);
+    return r;
 
 fail:
     (void)close(fd);
-    sodium_memzero(stored, sizeof(stored));
     mldsa_keypair_free(kp); /* no-op if nothing was allocated; always leaves pk zeroed */
     return r;
 }

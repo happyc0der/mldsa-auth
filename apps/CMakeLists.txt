@@ -23,3 +23,6 @@ target_link_libraries(auth_client PRIVATE mldsa_demo)
 target_compile_options(auth_client PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(auth_client PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(auth_client PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+# The authentication daemon subsystem (V4-6+).
+add_subdirectory(authd)

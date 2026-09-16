@@ -1,0 +1,5 @@
+E2|^test_authd_keyfile$|memlimit over the ceiling -> PARAMS
+E3|^test_authd_keyfile$|a wrong passphrase is rejected (DECRYPT), no keypair
+E4|^test_authd_keyfile$|sealing over an existing file -> EXISTS, not overwritten
+E5|^test_authd_keyfile$|a wrong expected id -> IMAGE (validator rejects)
+E6|^test_authd_keyfile$|the sealed file is mode 0600

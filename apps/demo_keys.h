@@ -89,6 +89,29 @@ demo_keys_status_t demo_keys_generate_files(const char *dir, const uint8_t *id, 
 demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *expect_id, size_t id_len,
                                            mldsa_keypair_t *kp);
 
+/* The exact length of the MLDSASK2 image for an identity of id_len bytes
+ * ("MLDSASK2" || id_len || id || pk || sk || digest), 6025 + id_len. Returns
+ * 0 for an out-of-range id_len. */
+size_t demo_keys_sk2_image_len(size_t id_len);
+
+/* Validates an in-memory MLDSASK2 image and, on success, returns the keypair
+ * with the secret key in secure memory. This is the shared validator: the file
+ * loader above reads a file into a buffer and calls it, and the key-at-rest
+ * envelope (keyfile.c, V4-6) decrypts into a buffer and calls it, so both
+ * paths run the SAME digest/id/self-test checks and neither writes plaintext
+ * to disk. The caller SHOULD hold the image in secure memory. Same status
+ * codes and order as demo_keys_load_identity from the magic check onward. */
+demo_keys_status_t demo_keys_load_identity_from_image(const uint8_t *img, size_t img_len,
+                                                      const uint8_t *expect_id, size_t id_len,
+                                                      mldsa_keypair_t *kp);
+
+/* Builds an MLDSASK2 image (header, id, public key, secret key, integrity
+ * digest) into img, which must hold demo_keys_sk2_image_len(id_len) bytes and
+ * SHOULD be secure memory (it contains the secret key). Used by keygen and by
+ * the envelope's keygen/rewrap. Returns OK or ARG. */
+demo_keys_status_t demo_keys_build_sk2_image(uint8_t *img, size_t img_cap, const uint8_t *id, size_t id_len,
+                                             const mldsa_keypair_t *kp);
+
 /* Converts a legacy MLDSASK1 file at in_path into a new MLDSASK2 file at
  * out_path, published atomically (temp + link) with mode 0600. Order:
  * permissions -> size bounds -> magic (MLDSASK2 -> NOT_LEGACY, anything

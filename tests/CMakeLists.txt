@@ -89,6 +89,13 @@ target_link_options(test_net PRIVATE ${MLDSA_SANITIZE_FLAGS})
 
 add_test(NAME test_net COMMAND test_net)
 
+add_executable(test_authd_keyfile test_authd_keyfile.c)
+target_link_libraries(test_authd_keyfile PRIVATE mldsa_authd)
+target_compile_options(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_authd_keyfile PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_keyfile COMMAND test_authd_keyfile)
+
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/demo_e2e.sh $<TARGET_FILE:auth_server> $<TARGET_FILE:auth_client>
