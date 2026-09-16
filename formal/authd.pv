@@ -1,0 +1,152 @@
+(* mldsa-auth v2 handshake + mldsa-authd login code and rotation (V4-4).
+   ProVerif 2.05, typed pi calculus, symbolic (Dolev-Yao) attacker.
+
+   Each construct cites the spec line it mirrors:
+     spec-v2 6.3.1 layouts   6.3.2 signature coverage   6.3.3 handshake_id
+     6.3.7 key schedule      authd 6.2 LOGIN_CODE        authd 6.3 ROTATE
+   Long-term keys are honest and pre-pinned (spec-v2 6.2 puts registration out
+   of band). The attacker owns the network and runs unboundedly many sessions.
+
+   The daemon's three concerns run as SEPARATE processes, because they are
+   separate channels and peers in the deployment: the client-facing session
+   (channel c, over the proxy), and the site's local-socket EXCHANGE
+   (channel ls, peer-authenticated, authd 8/Req 11). Conflating them made an
+   earlier model prove its controls vacuously (V4-4, and the S7 warning).
+
+   Lines marked (* CONTROL:xx *) / (* LEAK:xx *) are anchors run.sh rewrites. *)
+
+set traceDisplay = short.
+free c: channel.               (* the network: attacker-controlled *)
+free ls: channel [private].    (* daemon<->site local socket: not attacker-controlled (Req 11) *)
+
+type skey. type pkey. type kemsk. type kempk. type kemss.
+type G. type exponent. type key. type id. type nonce.
+
+fun pk(skey): pkey.
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, k: skey; checksign(sign(m, k), pk(k)) = m.
+fun kempub(kemsk): kempk.
+fun encaps(kempk, kemss): bitstring.
+reduc forall s: kemsk, ss: kemss; decaps(encaps(kempub(s), ss), s) = ss.
+const g: G.
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent; exp(exp(g, x), y) = exp(exp(g, y), x).
+fun hash(bitstring): bitstring.
+fun kdf(G, kemss, nonce, id, id, bitstring, bitstring): key.   (* 6.3.7: both secrets *)
+const zeroG: G.          (* CONTROL: kdf ablation, DH half removed *)
+const zerokem: kemss.    (* CONTROL: kdf ablation, KEM half removed *)
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+fun n2b(nonce): bitstring [data, typeConverter].
+fun pk2b(pkey): bitstring [data, typeConverter].
+
+const serverauth, clientauth, hsidlabel, c2s, s2c: bitstring.
+const opLOGIN, opROTATE: bitstring.
+const rotold, rotnew: bitstring.
+
+event initEstablished(id, id, nonce, nonce, key).
+event respSentServerHello(id, id, nonce, nonce).
+event respEstablished(id, id, nonce, nonce, key).
+event initConfirmed(id, id, nonce, nonce, key).
+event codeIssued(id, bitstring, bitstring).     (* device, state, code *)
+event loginStart(id, bitstring).                (* device began a login carrying state *)
+event siteLoggedIn(id, bitstring).              (* site accepted an EXCHANGE under state *)
+event rotateRequested(id, pkey, pkey, bitstring).
+event rotated(id, pkey, pkey, bitstring).
+
+(* P1/P2: injective mutual agreement on (A,B,session_id,nonce_B,key) *)
+query a: id, b: id, s: nonce, nb: nonce, k: key;
+  inj-event(respEstablished(a,b,s,nb,k)) ==> inj-event(initEstablished(a,b,s,nb,k)).
+query a: id, b: id, s: nonce, nb: nonce, k: key;
+  inj-event(initEstablished(a,b,s,nb,k)) ==> inj-event(respSentServerHello(a,b,s,nb)).
+query a: id, b: id, s: nonce, nb: nonce, k: key;
+  inj-event(initConfirmed(a,b,s,nb,k)) ==> inj-event(respEstablished(a,b,s,nb,k)).
+(* P3: session-key secrecy (resilience variants leak one half, see run.sh) *)
+query a: id, b: id, s: nonce, nb: nonce, k: key;
+  event(initEstablished(a,b,s,nb,k)) && attacker(k) ==> false.
+(* P4: the login code is secret, and a login the site accepts under `state`
+   was begun by that device with that state (kills login-CSRF at EXCHANGE) *)
+query d: id, st: bitstring, cd: bitstring;
+  event(codeIssued(d,st,cd)) && attacker(cd) ==> false.
+query d: id, st: bitstring;
+  event(siteLoggedIn(d,st)) ==> event(loginStart(d,st)).
+(* P5: a committed rotation was requested in that session *)
+query d: id, po: pkey, pn: pkey, h: bitstring;
+  inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)).
+
+let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
+  new sid: nonce; new nA: nonce; new x: exponent; new dk: kemsk;
+  let epkA = exp(g, x) in let ekA = kempub(dk) in
+  let ch = (A, epkA, ekA, sid, nA) in
+  event loginStart(A, state);
+  out(c, (ch, state));
+  in(c, (shu: bitstring, sigB: bitstring));
+  let (=B, epkB: G, ct: bitstring, nB: nonce, =sid) = shu in
+  let m = checksign(sigB, pkB) in
+  if m = hash((serverauth, ch, shu)) then
+  let sh = (shu, sigB) in
+  let th = hash((clientauth, ch, sh)) in                     (* CONTROL:nb (via sh) *)
+  let hsid = hash((hsidlabel, ch, sh)) in
+  let ssx = exp(epkB, x) in let ssk = decaps(ct, dk) in
+  let kc2s = kdf(ssx, ssk, sid, A, B, th, c2s) in
+  let ks2c = kdf(ssx, ssk, sid, A, B, th, s2c) in
+  event initEstablished(A, B, sid, nB, kc2s);
+  (* LEAK:dh *)  (* LEAK:kem *)  (* LEAK:c2s *)
+  out(c, (hsid, sign(th, skA)));
+  in(c, rec: bitstring);
+  let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in
+  event initConfirmed(A, B, sid, nB, kc2s);
+  new skNew: skey; let pkNew = pk(skNew) in
+  let mrot = (hsid, A, pk2b(pk(skA)), pk2b(pkNew)) in
+  event rotateRequested(A, pk(skA), pkNew, hsid);
+  out(c, senc((opROTATE, A, pkNew, sign(hash((rotold,mrot)),skA), sign(hash((rotnew,mrot)),skNew)), kc2s)).
+
+(* daemon, client-facing session: handshake -> issue code -> accept ROTATE.
+   ROTATE is gated on the handshake only, never on the site's EXCHANGE. *)
+let responder(B: id, skB: skey, A: id, pkA: pkey) =
+  in(c, (ch: bitstring, state: bitstring));
+  let (=A, epkA: G, ekA: kempk, sid: nonce, nA: nonce) = ch in
+  new y: exponent; new nB: nonce; new ssk: kemss;
+  let epkB = exp(g, y) in let ct = encaps(ekA, ssk) in
+  let shu = (B, epkB, ct, nB, sid) in
+  let sigB = sign(hash((serverauth, ch, shu)), skB) in
+  event respSentServerHello(A, B, sid, nB);
+  out(c, (shu, sigB));
+  let sh = (shu, sigB) in
+  let th = hash((clientauth, ch, sh)) in                     (* CONTROL:nb (via sh) *)
+  let hsid = hash((hsidlabel, ch, sh)) in
+  in(c, (=hsid, sigA: bitstring));
+  let m = checksign(sigA, pkA) in
+  if m = th then
+  let ssx = exp(epkA, y) in
+  let kc2s = kdf(ssx, ssk, sid, A, B, th, c2s) in
+  let ks2c = kdf(ssx, ssk, sid, A, B, th, s2c) in
+  event respEstablished(A, B, sid, nB, kc2s);
+  new code: bitstring;
+  event codeIssued(A, state, code);
+  out(ls, (code, A, state));                                 (* daemon records the binding *)
+  out(c, senc((opLOGIN, code), ks2c));
+  in(c, rrec: bitstring);
+  let (=opROTATE, =A, pkNew: pkey, sigOld: bitstring, sigNew: bitstring) = sdec(rrec, kc2s) in
+  let mrot = (hsid, A, pk2b(pkA), pk2b(pkNew)) in            (* CONTROL:hsid *)
+  let mo = checksign(sigOld, pkA) in                         (* CONTROL:sigold *)
+  if mo = hash((rotold, mrot)) then                          (* CONTROL:sigold *)
+  let mn = checksign(sigNew, pkNew) in
+  if mn = hash((rotnew, mrot)) then
+  event rotated(A, pkA, pkNew, hsid).
+
+(* the site's EXCHANGE(code, state) over the local socket: the daemon holds the
+   binding (code -> the state it was issued under); EXCHANGE must present it. *)
+let site() =
+  in(ls, (code: bitstring, dev: id, boundstate: bitstring));  (* daemon's stored binding *)
+  in(c, (excode: bitstring, exstate: bitstring));             (* the request, attacker-reachable *)
+  if excode = code then
+  if exstate = boundstate then                                (* CONTROL:state *)
+  event siteLoggedIn(dev, exstate).
+
+process
+  new skA: skey; new skB: skey; new A: id; new B: id;
+  out(c, (A, B, pk(skA), pk(skB)));
+  ( !(new st: bitstring; out(c, st); initiator(A, skA, B, pk(skB), st))
+  | !responder(B, skB, A, pk(skA))
+  | !site() )

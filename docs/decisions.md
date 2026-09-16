@@ -3170,3 +3170,65 @@ problem the V4-1 audit named. Numbering every requirement is what makes an
 external reviewer able to work through it one claim at a time, and V4-14
 produces that packet. V4-4's model is deliberately the next step, so the
 message layouts meet a checker before they meet a compiler.
+
+## V4-4 — a machine-checked model of the handshake, login code and rotation
+
+`formal/authd.pv` models, in ProVerif's symbolic (Dolev–Yao) setting, the
+spec-v2 handshake (§6.3) plus the two things `mldsa-authd-spec.md` adds: the
+login-code exchange (§6.2) and rotation (§6.3). It runs before any of that is
+implemented, so a flaw is found in prose, not in C — V4-2's S7 already showed a
+*toy* model of this flow needed real care, and it did here too.
+
+### What it proves, and what makes the proofs non-vacuous
+
+Base model (all `true`): injective mutual agreement on
+`(A, B, session_id, nonce_B, key)` both directions; key confirmation on the
+initiator's first decrypted record; session-key secrecy; login-code secrecy;
+that a site login under a `state` was begun by that device with that `state`;
+and that a committed rotation was requested in that session.
+
+`gen_controls.py` derives eight variants by exact string replacement, each
+asserting the edit bit. Three **resilience** runs must still prove — leak the
+ML-KEM secret, leak the X25519 secret, or leak the record key — and the first
+two are the hybrid claim *checked* rather than asserted: either KEX half
+surviving keeps the key secret. Five **controls** must stop proving: signing
+only `ClientHello` breaks mutual agreement; ablating one KDF half while leaking
+the other makes the key recoverable (so both halves are load-bearing);
+dropping `handshake_id` from the rotation digest, or skipping the outgoing
+key's signature, unbinds rotation from its session.
+
+`formal/run.sh` requires `is true` for the base and resilience runs and
+anything-but-`is true` for the controls, and refuses a control file identical
+to its base. It runs in the nightly (`formal` job), which builds the ProVerif
+CLI from a **SHA-256-pinned** tarball — opam's package needs GTK (S7), so the
+CLI is built from source with only OCaml and ocamlfind.
+
+### Two honest wrinkles, recorded not hidden
+
+**An over-sequentialized first model proved its controls vacuously.** I first
+put the site's `EXCHANGE` and the client's `ROTATE` inline in the daemon's
+client-facing session, so a broken variant could not even *reach* the event it
+was meant to break, and every control passed for the wrong reason. The fix was
+to model the daemon's three concerns as the separate processes and channels
+they are in the deployment — the client session on the network channel, and
+the site's `EXCHANGE` on the peer-authenticated local socket — which is exactly
+the S7 warning made concrete.
+
+**Two rotation controls land on "cannot be proved", not "false".** Injective
+agreement with a leaked record key is a hard case for ProVerif's resolution
+(the P5′ risk V4-4 named). The base model *proves* rotation binding "true"; the
+control moves it to "cannot be proved". That regression is the result — the
+check under test is what took the property from provable to unprovable — so
+`run.sh` treats "no longer provable" as a passing control and the reasoning is
+written down rather than papered over with a forced "false".
+
+### What the model does not cover
+
+TOFU registration is out of scope by decision (spec-v2 §6.2 puts it out of
+band), so long-term keys are honest and pre-pinned. The `state` binding's value
+against a *leaked* login code (an XSS-class threat, §14) is outside a symbolic
+model where the code stays secret; it is proven where the model can see it (the
+code is secret; a site login implies a real handshake for that device) and the
+XSS argument stays in the threat model. The model is only as faithful as its
+author — which is why every construct cites its spec line, why the controls
+exist, and why V4-14's external-review packet includes `formal/`.

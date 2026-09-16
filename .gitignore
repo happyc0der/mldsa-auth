@@ -17,3 +17,5 @@ leak-*
 timeout-*
 oom-*
 slow-unit-*
+formal/controls/
+formal/out/
