@@ -115,8 +115,13 @@ int main(void) {
     /* tamper-evidence: flip each header field and the ciphertext; every flip
        must fail to open (the header is the AEAD's associated data). */
     { long total = fsize(ek);
-      const size_t spots[] = {9,10,14,22,38,39,63, (size_t)total - 1u}; /* version,kdf,ops,salt,aead,nonce,ctlen,ct */
-      const char *names[] = {"version","kdf_alg","opslimit","salt","aead_alg","nonce","ct_len","ciphertext"};
+      /* opslimit (off 10) and memlimit (off 14) are deliberately NOT flipped:
+         they set the Argon2 work factor, so under a mutation that dropped the
+         bound, reaching the KDF with a corrupted work factor would burn
+         minutes/gigabytes. They are covered by the PARAMS checks and by being
+         AEAD associated data. */
+      const size_t spots[] = {8,9,22,38,39,63, (size_t)total - 1u}; /* version,kdf,salt,aead,nonce,ctlen,ct */
+      const char *names[] = {"version","kdf_alg","salt","aead_alg","nonce","ct_len","ciphertext"};
       int all = 1;
       for (size_t i = 0; i < sizeof(spots)/sizeof(spots[0]); i++) {
           uint8_t *b = malloc((size_t)total); FILE *f = fopen(ek, "rb"); size_t n = fread(b,1,(size_t)total,f); fclose(f);
