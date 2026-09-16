@@ -10,6 +10,7 @@ audit.
 |---|---|---|
 | `coverage.sh <build-cov> [out]` | Line, region and branch coverage of `src/` and `apps/`, from a **separate** instrumented tree (instrumented objects would poison the mutation runner's fingerprints and the currency checker's no-op-rebuild proof) | Excluding the session tests drops `session.c` branch coverage 95.99% → 76.28% |
 | `check_hardening.sh <build> [--require]` | PIE / RELRO / BIND_NOW / non-executable stack / stack canaries, read **from the binary**, never from the build files. Executables discovered, never enumerated | `--require` fails on a tree lacking any property; refuses to pass when no executable is found |
+| `check_spec_constants.sh <repo>` | Re-derives every size in `docs/mldsa-authd-spec.md` from `session.h`, `transcript.h`, `mldsa_wrap.h` and the envelope arithmetic, and diffs it against the document. A specification fails by lying, and prose does not compile | Changing one digit in the spec (8611 → 8610) fails the check; the restore is `cmp`-identical |
 | `constant_time_inventory.sh <repo>` | Every comparison in `src/` and `apps/` classified CT (`sodium_memcmp`/`sodium_is_zero`) vs plain. The audit's dispositions are the judgement; this is the evidence they were made against the real tree | Fails if it finds zero constant-time calls — i.e. if the grep itself broke |
 
 Coverage is **not** a gate. The mutation campaigns are the gate; coverage maps

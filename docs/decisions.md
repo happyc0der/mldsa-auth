@@ -3098,3 +3098,75 @@ answered with byte-identical known-answer tests rather than an opinion.
 Seven spikes, six passes, one pass-with-a-warning. Nothing in the roadmap
 needs reordering; V4-3 can now write a spec whose browser section rests on
 a measurement instead of a hope.
+
+## V4-3 — specifying the daemon before building it
+
+`docs/mldsa-authd-spec.md` (19 sections) specifies `mldsa-authd`: the
+application messages above spec-v2's record layer, the store, the local API,
+the key envelope, the identity lifecycle, logging and deployment. No code.
+
+The project wrote spec-v2 first and implemented against it for nine steps
+without ever editing it to match the code; the same discipline applies here,
+for a larger surface. V4-2's S7 made the argument concrete: a *toy* model of
+this message flow already needed real care, so committing the byte layouts to
+prose — where a flaw costs a paragraph rather than a rewrite — is the cheap
+place to be wrong.
+
+**Nothing on the wire changes.** The document says so in §0 and adds the rule
+that where it and spec-v2 disagree inside spec-v2's scope, spec-v2 wins and
+this document is wrong. Both protocol specs are byte-identical.
+
+### What the spikes wrote into the specification
+
+V4-2 was not a box-ticking exercise; four of its results are load-bearing text:
+the ledger ceiling is **2048** rather than 4096 (§17, from S2); the client
+address arrives by **PROXY protocol v2** with the header arrangement as
+fallback (§7.2, from S4/S5); `LimitMEMLOCK` is described as a **correctness**
+setting derived from the slot count rather than a tuning knob (§16, from S1's
+silent unlocked-memory finding); and §14 asserts browser feasibility on the
+measured evidence — 27 wasm checks identical to 27 native — rather than on
+hope, and adopts no fallback backend.
+
+### Two design points worth their own record
+
+**The envelope authenticates its own header.** `MLDSAEK1` uses an AEAD with
+bytes [0, 67) as associated data rather than `crypto_secretbox`, because a
+secretbox authenticates nothing outside the box: an attacker who could write
+the file could rewrite `memlimit` to 1 GiB and turn every start-up into memory
+exhaustion. Parameter bounds close that anyway; binding the header costs one
+argument and closes it twice. The plaintext is the exact `MLDSASK2` image, so
+the existing loader validates it unchanged after decryption.
+
+**The token never reaches JavaScript.** The daemon issues a single-use login
+code bound to `{user, handle, handshake_id, SHA-256(state)}`; the site
+exchanges it over the local socket for the token. An XSS that steals the code
+cannot exchange it, and the `state` binding kills login-CSRF at the exchange
+step. Signed or structured tokens were rejected: offline verification would
+need an ML-DSA implementation in the site's language and would lose instant
+revocation, for no gain, since the credential is a bearer token either way.
+
+### The specification is checkable, and was checked
+
+`tools/audit/check_spec_constants.sh` re-derives thirteen sizes from
+`session.h`, `transcript.h`, `mldsa_wrap.h` and the envelope arithmetic and
+diffs them against the document — `ROTATE` body 8611 and content 8612,
+`AUTHD_MAX_RECORD` 12313, the 281-byte `LOGIN_CODE` record, the `MLDSASK2`
+image at 6025 + id_len, the 67-byte envelope header, the 6142-byte sealed file
+for a 34-byte handle. All thirteen matched on the first run. **Control:**
+changing one digit (8611 → 8610) fails the check, and the restore is
+`cmp`-identical.
+
+Also verified: all **14** §5 requirements are numbered (the V4-1 conformance
+matrix found two requirements in spec-v2 pinned by nothing; this document
+starts with none, and each step ships the pin for the requirements it
+implements); the only labels it defines are `mldsa-authd/v1/{rotate-old,
+rotate-new,audit-mac}` and it redefines no spec-v2 label; every relative link
+resolves.
+
+### What this does not settle
+
+The spec is written by the agent who will implement it — the single-agent
+problem the V4-1 audit named. Numbering every requirement is what makes an
+external reviewer able to work through it one claim at a time, and V4-14
+produces that packet. V4-4's model is deliberately the next step, so the
+message layouts meet a checker before they meet a compiler.
