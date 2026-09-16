@@ -92,13 +92,25 @@ int main(void) {
     CHECK(keyfile_seal(ek, img, ilen, PASS, strlen(PASS), OPS, MEM) == KEYFILE_ERR_EXISTS,
           "sealing over an existing file -> EXISTS, not overwritten");
 
-    /* parameter bounds */
+    /* parameter bounds -- exercised with opslimit, whose over-ceiling value
+       (11) is a handful of iterations even if a bound is removed, so a mutation
+       kills cleanly instead of triggering a multi-gigabyte Argon2 allocation. */
     { char ek2[256]; path(ek2, sizeof(ek2), "toobig.ek");
-      CHECK(keyfile_seal(ek2, img, ilen, PASS, strlen(PASS), OPS, KEYFILE_MEMLIMIT_MAX + 1u) == KEYFILE_ERR_PARAMS,
-            "memlimit over the ceiling -> PARAMS");
       CHECK(keyfile_seal(ek2, img, ilen, PASS, strlen(PASS), KEYFILE_OPSLIMIT_MAX + 1u, MEM) == KEYFILE_ERR_PARAMS,
-            "opslimit over the ceiling -> PARAMS");
-      CHECK(fsize(ek2) == -1, "no file is written when parameters are rejected"); }
+            "seal opslimit over the ceiling -> PARAMS");
+      CHECK(keyfile_seal(ek2, img, ilen, PASS, strlen(PASS), OPS, KEYFILE_MEMLIMIT_MAX + 1u) == KEYFILE_ERR_PARAMS,
+            "seal memlimit over the ceiling -> PARAMS");
+      CHECK(fsize(ek2) == -1, "no file is written when parameters are rejected");
+      /* open-side bound: craft a header whose opslimit exceeds the ceiling.
+         params_ok fires before derive_key, so this is PARAMS, not a slow KDF. */
+      long total = fsize(ek);
+      uint8_t *b = malloc((size_t)total); FILE *f = fopen(ek, "rb"); size_t rn = fread(b,1,(size_t)total,f); fclose(f); (void)rn;
+      b[10] = 0; b[11] = 0; b[12] = 0; b[13] = (uint8_t)(KEYFILE_OPSLIMIT_MAX + 1u); /* opslimit BE32 @ off 10 */
+      char bad[256]; path(bad, sizeof(bad), "badops.ek"); (void)unlink(bad);
+      FILE *g = fopen(bad, "wb"); fwrite(b,1,(size_t)total,g); fclose(g); chmod(bad, 0600); free(b);
+      CHECK(keyfile_open(bad, ID_A, IDLEN, PASS, strlen(PASS), &kp) == KEYFILE_ERR_PARAMS,
+            "open rejects a header opslimit over the ceiling -> PARAMS (before the KDF)");
+      (void)unlink(bad); }
 
     /* tamper-evidence: flip each header field and the ciphertext; every flip
        must fail to open (the header is the AEAD's associated data). */
