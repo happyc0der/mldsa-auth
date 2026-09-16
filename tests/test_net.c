@@ -1846,7 +1846,9 @@ static void test_t14_demo_keys(void) {
             (void)chmod(bad, 0600);
             char blink[512];
             mkpath(blink, sizeof(blink), "%s/m-link.legacy", dir);
-            (void)symlink(legacy, blink);
+            if (symlink(legacy, blink) != 0) {
+                fatal("symlink (migrate O_NOFOLLOW fixture)");
+            }
             const int sym = t14_migrate_refused(blink, mout2, alice, 5, DEMO_KEYS_ERR_IO);
             (void)unlink(blink);
             CHECK(perms && sym,
@@ -1956,7 +1958,9 @@ static void test_t14_demo_keys(void) {
 
     sodium_memzero(g_kf, sizeof(g_kf));
     mkpath(p2, sizeof(p2), "%s/link.sk", dir);
-    (void)symlink(path, p2);
+    if (symlink(path, p2) != 0) {
+        fatal("symlink (load O_NOFOLLOW fixture)");
+    }
     CHECK(demo_keys_load_identity(p2, alice, 5, &kp) != DEMO_KEYS_OK, "T14: a symlinked key file is refused (O_NOFOLLOW)");
     CHECK(demo_keys_load_public(path, alice, 5, pk) == DEMO_KEYS_ERR_FORMAT,
           "T14: a secret key file offered as a public key -> FORMAT");
