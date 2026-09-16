@@ -3232,3 +3232,65 @@ code is secret; a site login implies a real handshake for that device) and the
 XSS argument stays in the threat model. The model is only as faithful as its
 author — which is why every construct cites its spec line, why the controls
 exist, and why V4-14's external-review packet includes `formal/`.
+
+## V4-6 — the MLDSAEK1 key-at-rest envelope
+
+Identity keys are encrypted at rest (spec mldsa-authd §12, Req 10): the daemon
+and CLIs never write a plaintext secret key to disk. `apps/authd/keyfile.c`
+seals the exact `MLDSASK2` image under Argon2id + XChaCha20-Poly1305, published
+atomically (temp + `O_EXCL` + `link` + `fsync`, never in place, mode 0600).
+
+### One validator, not two
+
+The spec says the existing loader validates the image after decryption, and
+that is implemented literally: `demo_keys.c`'s inline MLDSASK2 validation was
+factored into `demo_keys_load_identity_from_image()` and
+`demo_keys_build_sk2_image()`, and both the file loader and the envelope call
+them. The file loader now reads into secure memory and delegates; behaviour is
+unchanged (16/16, and — since this is the released, mutation-covered core — the
+**v29 campaign was re-run, all 9 KILLED**, proving the refactor preserved every
+digest/id/self-test check). Verifying the envelope's own checks: `mutate_v46`
+E2–E7, all KILLED (seal and open parameter bounds, the AEAD result honoured, no
+clobber, the image validated, mode 0600). `test_authd_keyfile`: 17 checks
+including a tamper sweep over the header fields and ciphertext; fresh ASan and
+UBSan clean.
+
+### The header authenticates itself, and E1 was dropped for a real reason
+
+Bytes [0, 67) are the AEAD's associated data, so the KDF parameters are bound.
+The mutation that was to prove this (E1) **survived**, and the survival is the
+finding: every header field is *independently* range-checked (magic, version,
+alg ids, `ct_len`) or feeds the KDF/AEAD (salt, nonce, opslimit, memlimit), so
+a single-byte header flip is caught with or without the AAD. The AAD is genuine
+defense-in-depth — exactly what §12 already says ("the bounds close that
+anyway; binding the header closes it twice") — so E1 was dropped rather than
+mis-asserted, and the tamper sweep (which does verify tampering is rejected)
+stays as a positive unit check.
+
+### Two self-inflicted incidents, both recovered and recorded
+
+A defense-of-the-attack detail worth keeping: **exercising a parameter bound by
+feeding an over-limit value, then removing the bound by mutation, drives
+Argon2 into a multi-gigabyte / multi-minute run** and hung the mutation runner
+twice — first from the dedicated `memlimit`-over-ceiling check, then from the
+tamper sweep flipping the `memlimit` byte. The fix is to exercise the bounds
+with **opslimit**, whose over-ceiling value (11) is a handful of iterations, and
+to keep the two KDF work-factor fields out of the byte-flip sweep. Their
+integrity is covered by the PARAMS checks and by being AAD. A mutation-tested
+security check must fail *cleanly*, not by exhausting the machine.
+
+And, recorded in [[destructive-action-discipline]]: clearing a killed run's
+`MUTATION` residue with `git checkout -- apps/ src/` also reverted V4-6's own
+uncommitted work (the `demo_keys.c` refactor, a CMake edit). Recovered
+byte-exact from the runner's preflight `snapshot_v2/`, then committed
+immediately. The rule is now: commit the step's intended work before any
+campaign or residue-cleanup checkout.
+
+### Remaining V4-6 item
+
+`fuzz_envelope`. Fuzzing `keyfile_open` naively is an OOM hazard: an in-bounds
+`memlimit` of up to 1 GiB means the fuzzer could burn a gigabyte and seconds
+per input. It is therefore built on a pure `keyfile_parse_header()` extraction
+(everything before the KDF), fuzzed with an independent model, while the
+KDF/AEAD/image path stays covered by the low-parameter unit test. Landed as the
+closing piece of the step.
