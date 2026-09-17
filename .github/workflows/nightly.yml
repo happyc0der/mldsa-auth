@@ -1,4 +1,4 @@
-# The two gates that do not fit a push: the 80-mutation suite (one campaign
+# The two gates that do not fit a push: the 87-mutation suite (one campaign
 # per step, tools/mutations/) and the 600 s fuzz budgets. Both had only ever
 # run by hand on one laptop before V3-4; the campaigns themselves were not
 # even in the repository until this workflow needed them.
@@ -36,7 +36,7 @@ jobs:
         # anchors cannot match and the runner would abort. It runs in
         # mutations-macos below -- which is the point, since U2 is a defect
         # that only ever appeared on a macOS VM.
-        campaign: [v23, v24, v25, v26, v27, v28, v29, v33, v46, v47, v48a]
+        campaign: [v23, v24, v25, v26, v27, v28, v29, v33, v46, v47, v48a, v48b]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -149,7 +149,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [wire, handshake, session, frame, keys, envelope, authd_config]
+        target: [wire, handshake, session, frame, keys, envelope, authd_config, authd_conn]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
