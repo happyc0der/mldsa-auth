@@ -30,16 +30,25 @@ RETIRED, with the reason recorded rather than the line quietly deleted:
   replacement check and is killed by the same assertion, "verify_token past its
   absolute lifetime is EXPIRED". Re-pointing S8 there would have made it a
   duplicate of T3, which proves nothing twice.
+
+S1's anchors were RE-POINTED in V4-9c's bring-up, and how that was found is the
+point. V4-9c rewrote store_rotate_key -- it gained the device/user-active
+predicate, a caller-supplied clock, an expected-old-key pin and two out-params
+-- and S1's anchor text went with it. The step's OWN campaign (v49c) could not
+notice: a step runs its own campaign, and v47 is not its own. The nightly
+bring-up branch ran v47 against the new tree and turned red, which is the second
+time in three steps that the only thing standing between a silently weakened
+gate and main was running EVERY campaign rather than the step's.
 """
 import sys, pathlib
 REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
 ST = "apps/authd/store/store.c"
 M = {
  # no transaction around the rotation: begin and commit both neutered
- "S1": (ST, [("    store_status_t r = tx_begin(s);\n    if (r != STORE_OK) { return r; }\n\n    uint8_t cur[STORE_PK_BYTES];\n    int64_t cur_id = 0;",
-              "    store_status_t r = STORE_OK; /* MUTATION S1: rotation without a transaction */\n\n    uint8_t cur[STORE_PK_BYTES];\n    int64_t cur_id = 0;"),
-             ("    r = audit_append(s, \"key-rotate\", NULL, 0, handle, handle_len, drop_tokens ? \"tokens-dropped\" : \"tokens-kept\");\n    if (r != STORE_OK) { tx_rollback(s); return r; }\n    return tx_commit(s);",
-              "    r = audit_append(s, \"key-rotate\", NULL, 0, handle, handle_len, drop_tokens ? \"tokens-dropped\" : \"tokens-kept\");\n    if (r != STORE_OK) { tx_rollback(s); return r; }\n    return r; /* MUTATION S1: no commit */")]),
+ "S1": (ST, [("    store_status_t r = tx_begin(s);\n    if (r != STORE_OK) { return r; }\n\n    int live = 0;",
+              "    store_status_t r = STORE_OK; /* MUTATION S1: rotation without a transaction */\n\n    int live = 0;"),
+             ("    r = tx_commit(s);\n    if (r == STORE_OK && rotated_at_out != NULL) { *rotated_at_out = now; }\n    return r;",
+              "    if (rotated_at_out != NULL) { *rotated_at_out = now; }\n    return r; /* MUTATION S1: no commit */")]),
  # the chain link is not covered by the MAC on append (but is still stored)
  "S2": (ST, [("    uint8_t inbuf[1024];\n    size_t in_len = audit_mac_input(inbuf, sizeof inbuf, prev_mac, seq, at, event,\n                                    user_id, user_id_len, handle, handle_len, detail);",
               "    uint8_t inbuf[1024];\n    uint8_t zprev[STORE_AUDIT_MAC_BYTES]; memset(zprev, 0, sizeof zprev); /* MUTATION S2 */\n    size_t in_len = audit_mac_input(inbuf, sizeof inbuf, zprev, seq, at, event,\n                                    user_id, user_id_len, handle, handle_len, detail);")]),

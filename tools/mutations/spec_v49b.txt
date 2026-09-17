@@ -8,6 +8,6 @@ P2|^test_authd_cli$|init: creates a server key, a store and a passphrase file
 L1|^test_authd_cli$|framing: the list table matches what the daemon actually sends
 L2|^test_authd_cli$|framing: a list carries its rows between the header and END
 E1|^test_authd_cli$|enroll-operator: a .pub whose embedded id differs from --handle is id-mismatch
-I1|^test_authd_cli$|init: a second init into the same directory is refused
+I1|^test_authd_cli$|init: an EXISTING STORE is refused even when all key material is gone
 R1|^authd_e2e$|the cleanup epilogue did not run
 B1|^authd_e2e$|the backup is not 0600

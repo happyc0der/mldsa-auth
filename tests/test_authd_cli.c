@@ -210,6 +210,43 @@ static void test_init(void)
     CHECK(memcmp(h_ek, h_ek2, 32) == 0 && memcmp(h_db, h_db2, 32) == 0,
           "init: the refused second init left server.ek and store.sqlite3 byte-identical");
 
+    /* The dangerous case, and the one the existence check actually exists for.
+     *
+     * Refusing a second init when the PASSPHRASE file is still there proves
+     * little: write_secret_file uses O_EXCL, so it would refuse anyway. The
+     * state that matters is the one an operator creates when they decide to
+     * start the server identity over: every piece of key material removed, the
+     * STORE left behind. Without the check init would seal a brand new key and
+     * then store_open the existing store with a DIFFERENT KEK, re-deriving
+     * key_audit and breaking the audit chain permanently -- and it would
+     * report SUCCESS, because nothing downstream notices.
+     *
+     * (This is what a mutation surviving on Linux revealed: the refusal had
+     * only ever been "killed" by a compile error on the unused helper, which
+     * V4-9c removed by giving that helper a second caller.) */
+    {
+        char db2[256], ek2[256], pass2[256], pub2[256];
+        (void)snprintf(db2, sizeof db2, "%s/i2/store.sqlite3", g_dir);
+        (void)snprintf(ek2, sizeof ek2, "%s/i2/server.ek", g_dir);
+        (void)snprintf(pass2, sizeof pass2, "%s/i2/pass", g_dir);
+        (void)snprintf(pub2, sizeof pub2, "%s/i2/server.pub", g_dir);
+        char dir2[256];
+        (void)snprintf(dir2, sizeof dir2, "%s/i2", g_dir);
+        CHECK(RUN_ADMIN("init", "--dir", dir2, "--server-id", "authd",
+                        "--passphrase-file", pass2) == 0, "init: a second directory for the store check");
+        uint8_t before[32], after[32];
+        sha256_file(db2, before);
+        /* the operator's tidy-up: credential stored, plaintext gone */
+        CHECK(unlink(pass2) == 0 && unlink(ek2) == 0 && unlink(pub2) == 0,
+              "init: remove ALL key material, keep the store");
+        CHECK(RUN_ADMIN("init", "--dir", dir2, "--server-id", "authd",
+                        "--passphrase-file", pass2) != 0,
+              "init: an EXISTING STORE is refused even when all key material is gone");
+        sha256_file(db2, after);
+        CHECK(memcmp(before, after, 32) == 0,
+              "init: the refused init left the existing store byte-identical");
+    }
+
     CHECK(RUN_ADMIN("init", "--dir", dir, "--server-id") == 2, "init: a missing value is usage (2)");
     CHECK(RUN_ADMIN("init", "--dir", dir, "--bogus", "x") == 2, "init: an unknown option is usage (2)");
 }

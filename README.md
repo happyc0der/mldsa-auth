@@ -190,7 +190,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, the committed must-kill mutations in
+at 03:17 UTC every day, and on demand, all 122 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub

@@ -33,7 +33,23 @@ reason each has its own assertion:
 Not mutated, and the reason stated rather than assumed: "the daemon logs the
 login code" is still UNREPRESENTABLE -- authd_log.h has no arbitrary-buffer
 sink. Its inverse is now representable, because authd_cli.c uses fprintf
-freely, and the e2e scans every CLI stream for the passphrase bytes."""
+freely, and the e2e scans every CLI stream for the passphrase bytes.
+I1 SURVIVED ON LINUX in V4-9c's bring-up, having been "killed" on macOS, and
+the difference is worth more than the verdict. It was only ever killed by a
+COMPILE error: removing the clash check left path_exists() unused, and
+-Werror=unused-function did the work. V4-9c gave path_exists a second caller,
+the compile error went away, and the mutation then survived -- because the only
+assertion was that a SECOND init into the same directory is refused, which it
+is anyway: write_secret_file uses O_EXCL, so the passphrase file alone refuses
+it.
+
+A compile-fail kill had been standing in for a test that did not exist. The
+check now covers the state that actually matters -- key and passphrase removed
+(the operator moved the credential into systemd and deleted the plaintext),
+STORE still present -- where without the guard init would seal a new key and
+re-open the existing store under a DIFFERENT KEK, breaking the audit chain
+permanently with nothing reported at the time.
+"""
 import sys, pathlib
 REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
 LS = "apps/authd/listener.c"
