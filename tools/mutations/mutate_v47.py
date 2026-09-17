@@ -14,7 +14,23 @@ Deliberately NOT mutated: the duplicate-public-key rule. It is enforced twice
 either one alone leaves the other catching it and the mutant survives while the
 invariant still holds. That is defense in depth working as intended, not a gap;
 it is recorded here rather than papered over with a mutation that proves
-nothing."""
+nothing.
+S6's anchor was re-pointed in V4-9b: V4-9a turned store_consume_login_code into
+the _ex form that reports a VERDICT, so the lines S6 patched changed shape. The
+property is unchanged and so is its check.
+
+RETIRED, with the reason recorded rather than the line quietly deleted:
+
+  S8 mutated the SQL of the token lookup, which used to filter on expires_at
+  and idle_expires_at inside the SELECT. V4-9a rewrote store_verify_token to
+  return a VERDICT and to make that decision in C, so the string S8 patched no
+  longer exists anywhere -- the runner reported `FATAL apply: anchor for S8
+  matched 0 times`, which is exactly what a rotted anchor should do. The
+  property it guarded did not disappear with it: v49a's T3 mutates the
+  replacement check and is killed by the same assertion, "verify_token past its
+  absolute lifetime is EXPIRED". Re-pointing S8 there would have made it a
+  duplicate of T3, which proves nothing twice.
+"""
 import sys, pathlib
 REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
 ST = "apps/authd/store/store.c"
@@ -37,14 +53,12 @@ M = {
  "S5": (ST, [("\"DELETE FROM tokens WHERE handle=?1;\", -1, &st, NULL)",
               "\"DELETE FROM tokens WHERE handle=?1 AND 0;\", -1, &st, NULL) /* MUTATION S5 */")]),
  # the login code is no longer bound to the `state` it was issued against
- "S6": (ST, [("    if (n_state != STORE_HASH_BYTES || sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {\n        tx_rollback(s);\n        return STORE_ERR_CONFLICT;\n    }",
-              "    if (0) {\n        tx_rollback(s);\n        return STORE_ERR_CONFLICT;\n    } /* MUTATION S6: state binding off */")]),
+ "S6": (ST, [("    if (n_state != STORE_HASH_BYTES ||\n        sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {\n        tx_rollback(s);\n        *verdict = STORE_CODE_STATE_MISMATCH;   /* the login-CSRF binding (Req 5) */\n        return STORE_OK;\n    }",
+              "    if (0) {\n        tx_rollback(s);\n        *verdict = STORE_CODE_STATE_MISMATCH;\n        return STORE_OK;\n    } /* MUTATION S6: state binding off */")]),
  # a consumed login code is never marked used, so it is replayable
  "S7": (ST, [("\"UPDATE login_codes SET used_at=?2 WHERE code_hash=?1;\"",
               "\"UPDATE login_codes SET used_at=?2 WHERE code_hash=?1 AND 0;\" /* MUTATION S7 */")]),
  # token verification ignores both expiry columns
- "S8": (ST, [("\"SELECT user_id FROM tokens WHERE token_hash=?1 AND expires_at>?2 AND idle_expires_at>?2 LIMIT 1;\"",
-              "\"SELECT user_id FROM tokens WHERE token_hash=?1 AND (?2 IS NOT NULL) LIMIT 1;\" /* MUTATION S8 */")]),
 }
 path, edits = M[MID]
 f = REPO / path; s = f.read_text()

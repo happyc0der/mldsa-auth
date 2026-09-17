@@ -4124,3 +4124,38 @@ The invocation itself also improved. Earlier steps passed `-DCMAKE_C_FLAGS` and
 left `CMAKE_BUILD_TYPE` at its default; this run sets Debug and Release
 explicitly, which is what the deployment actually builds and what surfaced two
 of the three. The gcc Release suite is now run on Linux as well, not just built.
+
+### The nightly caught three rotted anchors, which is what it is for
+
+The first scheduled nightly after V4-9a went **red**, and the cause was V4-9a
+itself. Three mutations in already-wired campaigns no longer matched anything:
+
+```
+v47   S6: FATAL apply: anchor for S6 matched 0 times in apps/authd/store/store.c
+v47   S8: FATAL apply: anchor for S8 matched 0 times in apps/authd/store/store.c
+v48a  D4: FATAL apply: anchor for D4 matched 0 times in apps/authd/evloop.c
+```
+
+V4-9a rewrote `store_consume_login_code` into its `_ex` verdict form, replaced
+`store_verify_token` with a joined verdict lookup, and gave `evloop`'s slot
+release a mode to restore — and each edit moved or dissolved the exact text an
+older mutation patched. Nothing about the *properties* changed; the anchors
+pointing at them did.
+
+Two things are worth stating. First, this is the failure mode working: a rotted
+anchor is `FATAL`, not a silent `SURVIVED` and not a silent pass, so the gate
+went loudly red rather than quietly proving less than it claimed. Second, **the
+local campaign could not have caught it**: a step runs its own campaign, and
+v47/v48a are not its own. The nightly running *every* committed campaign is the
+only thing that sees a step damage an older one — which is precisely the
+argument V3-4 made for committing campaigns and running them all, now
+demonstrated rather than asserted.
+
+The repair, in V4-9b: S6 and D4 re-pointed at the current code and each
+re-verified by an actual campaign run (S6 killed by 3 named checks, D4 by 2,
+residue 0, artifacts restored). **S8 was retired rather than re-pointed**, with
+the reason in `mutate_v47.py`: the token lookup no longer filters on expiry in
+SQL, so the string it patched exists nowhere, and the property it guarded is
+now guarded by v49a's T3 against the replacement check. Re-pointing it would
+have produced a duplicate of T3, which proves nothing twice. The committed
+total is therefore 110, not 111.

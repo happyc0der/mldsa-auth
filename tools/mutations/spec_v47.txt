@@ -5,4 +5,3 @@ S4|^test_authd_store$|disabling a user deletes that user's tokens
 S5|^test_authd_store$|revoking a device deletes its tokens
 S6|^test_authd_store$|a login code presented with the WRONG state is refused (login-CSRF binding)
 S7|^test_authd_store$|a login code is single-use
-S8|^test_authd_store$|verify_token after expiry is NOT_FOUND

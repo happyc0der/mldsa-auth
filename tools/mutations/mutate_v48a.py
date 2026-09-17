@@ -23,8 +23,8 @@ M = {
  "D3": (IO, [("    if (c->in_len < AUTHD_FRAME_HEADER + c->frame_len) {\n        return 0;                       /* payload still arriving */\n    }",
               "    if (0) {\n        return 0;\n    } /* MUTATION D3: incomplete frame released */")]),
  # a released slot keeps the previous connection's bytes
- "D4": (EV, [("    /* Wipe before the slot is handed to the next connection: the buffers held\n     * handshake messages and decrypted records. */\n    conn_io_reset(&s->io);",
-              "    /* MUTATION D4: slot not wiped on release */")]),
+ "D4": (EV, [("    const int local = (s->kind == SLOT_KIND_LOCAL);\n    conn_io_reset(&s->io);\n    if (local) {\n        conn_io_set_mode(&s->io, CONN_IO_MODE_LINE);   /* the mode is the pool's, not the connection's */\n    }",
+              "    const int local = (s->kind == SLOT_KIND_LOCAL);\n    if (local) {\n        conn_io_set_mode(&s->io, CONN_IO_MODE_LINE);\n    } /* MUTATION D4: slot not wiped on release */")]),
  # a partial write is recorded as a complete one, so the tail is never sent
  "D5": (IO, [("    c->out_sent += (n > pending) ? pending : n;",
               "    (void)pending; c->out_sent = c->out_len; /* MUTATION D5: partial send treated as complete */")]),
