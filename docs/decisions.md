@@ -3419,3 +3419,121 @@ machine-readable one" failure this project has now hit three times (V3-4's
 untracked campaigns, V3-6's four stale counts, and these). The fix applied here
 is the same one that worked before: derive the list, and make an empty
 derivation a failure rather than a quiet no-op.
+
+## V4-8a — the daemon's transport skeleton
+
+V4-8 was planned as one step and is being built as two, approved at planning:
+**V4-8a** is the transport (event loop, slots, reassembly, config, logging) and
+**V4-8b** is the connection state machine (handshake, decoy flow, `LOGIN_CODE`).
+The roadmap's single ~2 400-line commit would not have been reviewable to this
+project's standard, and V4-13 already carried the "sub-steps planned at its
+turn" precedent.
+
+### A second I/O layer, on purpose
+
+`apps/frame.c` and `net_io.c` are blocking-with-deadline (`net_read_exact`,
+`frame_recv(deadline)`) and are depended on by the demo apps, `test_net` and
+`demo_e2e`. The daemon is one `poll()` loop over many slots and must never
+block on a single peer. Bending those functions into both shapes would rewrite
+a surface three verified things rely on, so `conn_io.{c,h}` is a separate
+reassembler and the duplication is deliberate. It owns no socket and makes no
+syscalls — bytes are pushed in, frames come out — which is what lets the test
+drive **every one of the 16 split points** of a two-frame stream and prove a
+frame becomes available on exactly its final byte and not before.
+
+### Time is an argument
+
+`evloop_run_once(ev, poll_timeout, now_ms)` takes the clock as a parameter.
+That is the difference between a deadline test that is exact and one that is
+wall-clock flaky, and it makes the V4 cross-cutting rule cheap to honour: every
+deadline check here proves the connection is **still open one millisecond
+before** its deadline and gone at it. Without the lower bound, a loop that
+closed every connection instantly would pass.
+
+### Fixed slots, and refusal as the correct behaviour at capacity
+
+Slots are allocated once at startup and never grown; after `evloop_init` the
+loop allocates nothing. A connection is a slot index. At capacity the daemon
+**closes the new connection immediately** rather than queueing it — cheaper for
+us than for the peer, and it keeps the memory budget something an operator can
+compute (~24 KB of I/O buffers per slot, so `max_slots` is a number with a
+meaning). `AUTHD_MAX_RECORD` was re-derived from the tree and is **12 313**,
+matching the spec exactly.
+
+### The config parser fails closed, and the fuzzer proved it did not
+
+The parser refuses an unknown key, a duplicate key, an out-of-range value, a
+missing required key, a value with a NUL in it, and a config with no listener
+at all. Two things are worth recording:
+
+1. **`fuzz_authd_config` found a real bug on its first run.** The oracle is not
+   a re-implementation — for a line-based parser a second line-based parser is
+   just a second copy of the same misunderstanding — it is the parser's own
+   *contract*: on OK every documented bound must hold for the returned struct;
+   on failure the struct must equal the defaults. That second clause failed
+   immediately: the `UNKNOWN_KEY`, `SYNTAX` and `LINE_LONG` paths returned
+   without resetting, so a file with valid keys followed by a bad one left a
+   **partially applied config**. Fixed structurally rather than by patching
+   four return sites: the parse now writes to a local and commits to `*out` at
+   a single point, which makes the whole class unrepresentable. The oracle
+   proved its own non-vacuity by catching this, so no synthetic control was
+   needed.
+2. **Check order is now structural, not incidental.** A duplicate key is a
+   structural error whether or not its value happens to be valid, so key
+   resolution and duplicate detection both precede value parsing. The first
+   version parsed the value first and reported `RANGE` for a repeated key with
+   an out-of-range value, which told the operator the less useful of the two
+   true things.
+
+### Logging cannot carry a secret, by API shape
+
+`authd_log.h` offers no function that takes a byte buffer. Key material,
+session keys, signatures, nonces, raw frames, decrypted payloads, tokens and
+codes therefore cannot be logged by using the interface correctly — the
+never-list (spec §15) is a property of the API rather than of the caller's
+discipline, and there is deliberately no debug level that relaxes it. The one
+peer-influenced field, an identifier, is escaped (non-printable bytes become
+`.`) and truncated at 64 bytes with a `~`, so a hostile handle can neither
+inject a newline nor forge a second log line. The test uses a **present
+canary**: it first proves an identity *is* logged, so the escaping and absence
+checks are examining a stream that actually contains something.
+
+### What V4-8a deliberately does not do
+
+The daemon binary builds, validates config, listens, accepts, reassembles,
+enforces deadlines and drains on SIGTERM — and then **closes any complete frame
+unserved**, logging `frame-not-implemented`. It does not speak the protocol
+until V4-8b. Shipping a handler that looked like it worked would be worse than
+one that refuses, so the refusal is explicit in the code and in `--check-config`
+output rather than implied.
+
+### Two survivors in the first v48a run, and what each meant
+
+The campaign is reported here as it actually ran, including the first attempt,
+because both survivors were informative and neither was re-run to green.
+
+**D4 (a released slot is not wiped) SURVIVED, and that was a gap in the test.**
+The canary frame had been fully consumed, and `conn_io_consume_frame` already
+zeroes the buffer it slides down — so by the time `evloop_close_slot` ran there
+was nothing left for its wipe to remove, and removing that wipe changed
+nothing observable. The real case for a wipe-on-close is a **partial frame that
+never completes**: those bytes are never consumed, so only the close wipes
+them. The test now sends a frame declaring 32 bytes and supplying 4, proves the
+fragment is genuinely buffered (a present canary, so the check is not vacuous),
+and then proves it is gone once the slot is released. D4's expectation points
+at that check, and it kills.
+
+**D7 (the sticky `failed` flag is not honoured in `conn_io_push`) SURVIVED, and
+it is an equivalent mutant.** After an illegal declared length the offending
+4-byte header is still at offset 0 and is never consumed, so the next push
+re-reads it through `note_header()` and is refused again — with or without the
+flag. The flag is genuine defense in depth (it keeps the refusal sticky if a
+future change ever made the buffer recoverable) but nothing through this
+interface can distinguish its removal today. It is therefore **absent from
+`spec_v48a.txt`**, for exactly the reason N7 is absent from v25: a documented
+survivor must never be a pass criterion. The reasoning lives in the campaign
+script's header so the next person to read it does not "fix" the omission.
+
+The distinction between the two matters and is worth stating plainly: D4 was a
+weakness in the tests and was fixed there; D7 is a property of the code that no
+test at this interface can see, and is recorded rather than papered over.

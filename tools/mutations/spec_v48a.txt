@@ -1,0 +1,7 @@
+D1|^test_authd_evloop$|ev: the connection is closed at its deadline
+D2|^test_authd_evloop$|io: a frame one byte over the cap is refused
+D3|^test_authd_evloop$|io: a frame becomes available on exactly its final byte, not before
+D4|^test_authd_evloop$|ev: an UNCONSUMED partial frame is wiped when the slot is released
+D5|^test_authd_evloop$|io: a partial send leaves the remainder pending
+D6|^test_authd_evloop$|cfg: max_slots 0 is out of range
+D8|^test_authd_evloop$|cfg: a duplicate key is refused

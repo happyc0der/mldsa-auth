@@ -109,6 +109,13 @@ target_compile_options(test_authd_store PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA
 target_link_options(test_authd_store PRIVATE ${MLDSA_SANITIZE_FLAGS})
 add_test(NAME test_authd_store COMMAND test_authd_store)
 
+add_executable(test_authd_evloop test_authd_evloop.c)
+target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)
+target_compile_options(test_authd_evloop PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_evloop PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_authd_evloop PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_evloop COMMAND test_authd_evloop)
+
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/demo_e2e.sh $<TARGET_FILE:auth_server> $<TARGET_FILE:auth_client>

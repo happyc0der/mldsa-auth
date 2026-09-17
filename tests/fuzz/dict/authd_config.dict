@@ -1,0 +1,18 @@
+# fuzz_authd_config: the key names and the structural bytes of a `key = value`
+# config. Tokens are what a mutator needs to build a line the parser will take
+# seriously; values are covered by the seeds and the bounds.
+k_store="store_path"
+k_key="key_path"
+k_server_id="server_id"
+k_listen_unix="listen_unix"
+k_listen_port="listen_port"
+k_max_slots="max_slots"
+k_hs_timeout="handshake_timeout_ms"
+k_idle_timeout="idle_timeout_ms"
+k_pad_bucket="pad_bucket"
+eq=" = "
+nl="\x0a"
+comment="#"
+bucket_256="256"
+bucket_32="32"
+slots_max="4096"
