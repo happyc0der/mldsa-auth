@@ -1,3 +1,12 @@
+/* glibc exposes `struct ucred` (SO_PEERCRED) only under _GNU_SOURCE, and this
+ * MUST be defined before the first glibc header is pulled in -- hence before
+ * every #include below. macOS uses getpeereid() and never needed it, which is
+ * why a macOS-only build could not have caught this: CI's Linux jobs did, on
+ * both clang ("incomplete type") and gcc ("storage size isn't known"). */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1
+#endif
+
 #include "listener.h"
 
 #include <errno.h>
