@@ -31,6 +31,7 @@
 #include "evloop.h"
 #include "listener.h"
 #include "localapi.h"
+#include "localcli.h"
 #include "store.h"
 #include "handshake.h"
 #include "keystore.h"
@@ -108,9 +109,9 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
         const uid_t me[1] = { getuid() };
         snprintf(d->site_path, sizeof d->site_path, "%s/site.sock", dir);
         snprintf(d->admin_path, sizeof d->admin_path, "%s/admin.sock", dir);
-        if (listener_open_unix(d->site_path, 8, &d->site_fd) != LISTENER_OK) { return -1; }
+        if (listener_open_unix(d->site_path, 8, LISTENER_MODE_GROUP, &d->site_fd) != LISTENER_OK) { return -1; }
         if (evloop_add_local_listener(&d->ev, d->site_fd, me, 1u, 0) != 0) { return -1; }
-        if (listener_open_unix(d->admin_path, 8, &d->admin_fd) != LISTENER_OK) { return -1; }
+        if (listener_open_unix(d->admin_path, 8, LISTENER_MODE_PRIVATE, &d->admin_fd) != LISTENER_OK) { return -1; }
         if (evloop_add_local_listener(&d->ev, d->admin_fd, me, 1u, 1) != 0) { return -1; }
     }
     return 0;
@@ -159,7 +160,12 @@ static inline int h_dial_unix(const char *path)
     struct sockaddr_un a;
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
-    snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    /* An explicit bound rather than snprintf's silent truncation. gcc at -O2
+     * refuses the snprintf outright (-Werror=format-truncation), and it is
+     * right to: a truncated sun_path connects to a DIFFERENT socket. */
+    const size_t plen = strlen(path);
+    if (plen >= sizeof a.sun_path) { (void)close(fd); return -1; }
+    memcpy(a.sun_path, path, plen + 1u);
     if (connect(fd, (const struct sockaddr *)&a, sizeof a) != 0) { (void)close(fd); return -1; }
     /* NON-BLOCKING, and it matters: the daemon runs in THIS thread, so a
      * blocking write that fills the socket buffer would deadlock -- nothing
@@ -226,8 +232,32 @@ static inline int h_recv_frame(h_daemon_t *d, int fd, uint8_t *out, size_t cap, 
 
 /* Sends one request line and collects the whole response: a single line, or
  * everything up to and including the "END" line for a list. */
+/* True when `buf` holds a complete response: an ERR line always terminates,
+ * a list ends at a line that is exactly "END", anything else is one line. */
+static inline int h_reply_complete(const char *buf, size_t len, int is_list)
+{
+    const char *nl = memchr(buf, '\n', len);
+    if (nl == NULL) { return 0; }
+    if (strncmp(buf, "ERR ", 4) == 0 || !is_list) { return 1; }
+    const char *line = nl + 1;
+    const char *end = buf + len;
+    while (line < end) {
+        const char *e = memchr(line, '\n', (size_t)(end - line));
+        if (e == NULL) { return 0; }
+        if ((size_t)(e - line) == 3u && memcmp(line, "END", 3) == 0) { return 1; }
+        line = e + 1;
+    }
+    return 0;
+}
+
 static inline int h_local_cmd(h_daemon_t *d, int fd, const char *req, char *out, size_t cap)
 {
+    /* The CALLER's command decides, never the reply's prefix. */
+    char cmd[32];
+    size_t ci = 0;
+    while (req[ci] != '\0' && req[ci] != ' ' && ci + 1u < sizeof cmd) { cmd[ci] = req[ci]; ci++; }
+    cmd[ci] = '\0';
+    const int h_expects_list = localcli_is_list_command(cmd);
     const size_t n = strlen(req);
     if (h_write_all(d, fd, req, n) != 0 || h_write_all(d, fd, "\n", 1) != 0) { return -1; }
     size_t got = 0;
@@ -242,15 +272,40 @@ static inline int h_local_cmd(h_daemon_t *d, int fd, const char *req, char *out,
             got += (size_t)r;
             out[got] = '\0';
             /* complete when a list has ended, or a single line has arrived */
-            if (strstr(out, "\nEND\n") != NULL || strcmp(out + got - 1, "\n") == 0) {
-                if (strncmp(out, "OK count=", 9) == 0) {
-                    if (strstr(out, "\nEND\n") != NULL) { return 0; }
-                } else {
-                    return 0;
-                }
-            }
+            /* THE framing rule lives in ONE place: localcli_is_list_command().
+             * This used to classify any "OK count=" reply as a list, which is
+             * wrong -- REVOKE-TOKENS answers OK count=N on a single line -- and
+             * it survived only because no test sent that command through here.
+             * A second copy of a subtle rule is a second rule. */
+            if (h_reply_complete(out, got, h_expects_list)) { return 0; }
         } else if (r == 0) {
             return (got > 0) ? 0 : -1;
+        }
+    }
+    return (got > 0) ? 0 : -1;
+}
+
+/* Sends a request and pumps a FIXED number of ticks, returning whatever
+ * arrived, with no completion heuristic at all.
+ *
+ * It exists so a test can measure what shape a command's reply actually has
+ * WITHOUT consulting localcli_is_list_command() -- which is the table under
+ * test. Using h_local_cmd() there would compare the table against itself. */
+static inline int h_local_drain(h_daemon_t *d, int fd, const char *req, char *out, size_t cap)
+{
+    const size_t n = strlen(req);
+    if (h_write_all(d, fd, req, n) != 0 || h_write_all(d, fd, "\n", 1) != 0) { return -1; }
+    size_t got = 0;
+    out[0] = '\0';
+    for (int i = 0; i < 800; i++) {
+        h_tick(d);
+        char buf[1024];
+        const ssize_t r = recv(fd, buf, sizeof buf, MSG_DONTWAIT);
+        if (r > 0) {
+            if (got + (size_t)r >= cap) { return -1; }
+            memcpy(out + got, buf, (size_t)r);
+            got += (size_t)r;
+            out[got] = '\0';
         }
     }
     return (got > 0) ? 0 : -1;

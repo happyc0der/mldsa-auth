@@ -95,9 +95,14 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
     return LISTENER_OK;
 }
 
-listener_status_t listener_open_unix(const char *path, int backlog, int *fd)
+listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode, int *fd)
 {
     if (path == NULL || fd == NULL || backlog <= 0) {
+        return LISTENER_ERR_ARG;
+    }
+    /* Only the two modes spec 8 defines. A caller that wants something else is
+     * a bug, not a configuration: refuse instead of obeying. */
+    if (mode != (mode_t)LISTENER_MODE_PRIVATE && mode != (mode_t)LISTENER_MODE_GROUP) {
         return LISTENER_ERR_ARG;
     }
     *fd = -1;
@@ -136,8 +141,8 @@ listener_status_t listener_open_unix(const char *path, int backlog, int *fd)
         (void)close(s);
         return LISTENER_ERR_BIND;
     }
-    /* 0660: owner (the daemon) and group (the proxy's group) only. */
-    if (chmod(path, 0660) != 0) {
+    /* Spec 8: admin.sock 0600, site.sock and the proxy listener 0660. */
+    if (chmod(path, mode) != 0) {
         (void)close(s);
         (void)unlink(path);
         return LISTENER_ERR_PATH;

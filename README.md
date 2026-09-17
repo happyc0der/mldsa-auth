@@ -110,7 +110,7 @@ cmake --build build-fuzz -j8
 ctest --test-dir build --output-on-failure
 ```
 
-15 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+27 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
@@ -122,6 +122,8 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
 | `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, asymmetric pad buckets on the wire (27/281/4121-byte confirmation records), and legacy-key migration |
 | `demo_e2e` | The full client/server demo end to end — three times: default padding, mismatched `--pad-bucket` policies, and a migrated legacy key authenticating against the original pin — including a check that no key material reaches any log |
+| `test_authd_cli` | The two command-line tools driven in-process: `init` refusing an existing store and leaving it byte-identical, the sealed key opening with the passphrase **as written to the file**, spec §12's per-role Argon2id parameters read back out of the header, `rewrap` refusing a wrong passphrase and refusing to work in place, a `.pub` whose embedded id differs from `--handle`, both binaries' `--check-config` reporting the same status name, and the one list-framing table measured against a live daemon's actual replies |
+| `authd_e2e` | Milestone A with the shipped binaries as real processes: `init` → daemon → `keygen` → `enroll-operator` → `login` → the Node site handler exchanging and verifying → the admin queries. Also that no plaintext secret key is written anywhere (Req 10), that a login refuses a ServerHello not signed by the pinned key, that a listener failure runs its cleanup epilogue, and that no passphrase or login code reaches a log |
 | `test_authd_keyfile` | The `MLDSAEK1` key-at-rest envelope: seal/open round trip, header-as-AAD, KDF parameter bounds on both sides, a tamper sweep over every header field, `O_NOFOLLOW`, and the KEK out-parameter (filled on success, identical on re-derive, zeroed on failure) |
 | `test_authd_store` | The daemon's SQLite store: schema-enforced invariants (one active key per handle, a public key unique forever), the three-join active lookup, Req 7 re-enrollment refusal, rotation atomicity proven by injecting a fault mid-rotation and reopening, audit-chain MAC verification with tamper and truncation detection, token/login-code lifetimes and the login-CSRF state binding, and backup/restore |
 | `test_authd_evloop` | The daemon's transport skeleton: strict `key = value` config parsing (unknown/duplicate/out-of-range/missing all refused, and a failed parse applies nothing), frame reassembly at every split point of a two-frame stream, the fixed slot pool and its refusal at capacity, deadline enforcement with a lower bound on both sides, graceful drain, slot wiping on release, and log hygiene with a present canary |
@@ -281,6 +283,120 @@ time — but it is **unkeyed**: it detects corruption, not tampering. Legacy
 `MLDSASK1` files (Step 6) are rejected by the loaders; regenerate them with
 `keygen`, or convert one with `migrate-key` (below) when the identity's public
 key is already pinned by peers.
+
+## The authentication daemon (milestone A)
+
+The daemon (`mldsa-authd`) turns the protocol into a login system: a device
+authenticates with a post-quantum handshake and receives a single-use **login
+code**, which the site exchanges over a local Unix socket for an opaque
+**session token**. The token never reaches browser JavaScript, and the site
+never holds a device's secret. It is specified in
+[docs/mldsa-authd-spec.md](docs/mldsa-authd-spec.md).
+
+Milestone A is operators with a command-line client. Browsers are milestone B.
+
+```sh
+# 0. Build, and work somewhere with a short path: a Unix socket path must fit
+#    sun_path (104 bytes on macOS, 108 on Linux), which is far shorter than the
+#    255 bytes the configuration file allows.
+cmake -S . -B build && cmake --build build -j
+REPO=$PWD
+mkdir -p /tmp/authd-demo && cd /tmp/authd-demo
+```
+
+```sh
+# 1. Create the server identity, the store and the passphrase, in one command.
+#    The passphrase is 32 random bytes that init generates; move it into a
+#    systemd credential and delete the plaintext copy before going live.
+"$REPO/build/apps/authd/authd_admin" init \
+    --dir /tmp/authd-demo/data --server-id authd \
+    --passphrase-file /tmp/authd-demo/data/pass
+```
+
+```sh
+# 2. Configure and start the daemon. listen_unix carries the protocol; the two
+#    local sockets carry the site API (0660) and the admin API (0600).
+cat > /tmp/authd-demo/authd.conf <<EOF
+store_path = /tmp/authd-demo/data/store.sqlite3
+key_path = /tmp/authd-demo/data/server.ek
+key_passphrase_file = /tmp/authd-demo/data/pass
+server_id = authd
+listen_unix = /tmp/authd-demo/p.sock
+site_socket = /tmp/authd-demo/s.sock
+admin_socket = /tmp/authd-demo/a.sock
+site_uids = $(id -u)
+admin_uids = $(id -u)
+EOF
+"$REPO/build/apps/authd/authd_admin" --check-config --config /tmp/authd-demo/authd.conf
+"$REPO/build/apps/authd/mldsa-authd" --config /tmp/authd-demo/authd.conf &
+```
+
+```sh
+# 3. On the operator's own machine: generate a device key. The secret never
+#    leaves it. keygen prints the device handle on stdout.
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /tmp/authd-demo/opass
+chmod 600 /tmp/authd-demo/opass
+"$REPO/build/apps/authd/authd_client" keygen \
+    --dir /tmp/authd-demo/dev --passphrase-file /tmp/authd-demo/opass
+```
+
+```sh
+# 4. The operator sends <handle>.pub to an administrator, who enrolls it.
+#    Replace HANDLE with what keygen printed. --handle is the authority: a
+#    .pub whose embedded id disagrees is refused.
+HANDLE=$(ls /tmp/authd-demo/dev | sed -n 's/\.ek$//p')
+"$REPO/build/apps/authd/authd_admin" enroll-operator \
+    --socket /tmp/authd-demo/a.sock --user alice --handle "$HANDLE" \
+    --pub "/tmp/authd-demo/dev/$HANDLE.pub" --label "work laptop"
+```
+
+```sh
+# 5. Log in. This is a real hybrid X25519 + ML-KEM-768 handshake with an
+#    ML-DSA-65 identity on both sides. It prints a 43-character base64url
+#    login code, valid for 60 seconds and usable once.
+"$REPO/build/apps/authd/authd_client" login \
+    --handle "$HANDLE" --key "/tmp/authd-demo/dev/$HANDLE.ek" \
+    --passphrase-file /tmp/authd-demo/opass \
+    --server-id authd --server-pub /tmp/authd-demo/data/server.pub \
+    --unix /tmp/authd-demo/p.sock
+```
+
+The site takes that code and exchanges it for a token over `site.sock`, using
+the reference handler in [examples/site-node/](examples/site-node/):
+
+```sh
+cat > /tmp/authd-demo/site.mjs <<EOF
+import { Authd, exchange, verify } from '$REPO/examples/site-node/authd.mjs';
+const authd = await new Authd('/tmp/authd-demo/s.sock').connect();
+const session = await exchange(authd, process.argv[2], '');  // state: V4-10
+console.log(await verify(authd, session.token));
+authd.close();
+EOF
+node /tmp/authd-demo/site.mjs "<the code from step 5>"
+```
+
+```sh
+# 6. Administrative queries, and shutdown.
+"$REPO/build/apps/authd/authd_admin" list-users    --socket /tmp/authd-demo/a.sock
+"$REPO/build/apps/authd/authd_admin" list-devices  --socket /tmp/authd-demo/a.sock --user alice
+"$REPO/build/apps/authd/authd_admin" audit-tail    --socket /tmp/authd-demo/a.sock --n 10
+"$REPO/build/apps/authd/authd_admin" backup        --socket /tmp/authd-demo/a.sock --path /tmp/authd-demo/backup.sqlite3
+kill %1
+```
+
+Identifiers and labels are hex on the wire and are printed back as hex: they
+are attacker-influenced strings, and a tool that decodes them for display is a
+tool with a terminal-escape hazard. `xxd -r -p` decodes one when you want it.
+
+**Passphrases are files, never a prompt and never `argv`** — argv and the
+environment are readable by other processes on the same host. The file must be
+mode 0600 and owned by you; anything else is a configuration error (exit 3).
+
+Not yet, and named rather than implied: `authd_client rotate` and the recovery
+flow are V4-9c; WebSocket, the client IP behind a proxy and rate limiting are
+V4-10; the systemd unit, the hardening flags and the runbook are V4-11. Until
+those land this is a working milestone, not a deployment.
+
 
 ## Dependencies
 

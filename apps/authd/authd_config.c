@@ -3,7 +3,9 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "session.h"   /* SESSION_PAD_BUCKET_* for the bucket whitelist */
@@ -382,4 +384,90 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
     }
     (void)close(fd);
     return authd_config_parse(buf, total, out, err_line);
+}
+
+/* ---- filesystem checks (V4-9b) ------------------------------------------ */
+
+static void detail_set(char *detail, size_t cap, const char *key, const char *val, const char *why)
+{
+    if (detail != NULL && cap > 0u) {
+        (void)snprintf(detail, cap, "%s = %s: %s", key, val, why);
+    }
+}
+
+/* A configured Unix socket path must fit sun_path, and its directory must
+ * already exist -- the daemon creates sockets, never directories. */
+static authd_config_status_t check_sock(const char *key, const char *path, char *detail, size_t cap)
+{
+    if (path[0] == '\0') {
+        return AUTHD_CFG_OK;   /* "" means the listener is disabled */
+    }
+    struct sockaddr_un probe;
+    if (strlen(path) >= sizeof probe.sun_path) {
+        detail_set(detail, cap, key, path, "path too long for a Unix socket");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    char dir[AUTHD_PATH_MAX + 1u];
+    (void)snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash != NULL) {
+        *slash = (slash == dir) ? '/' : '\0';
+        struct stat st;
+        if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            detail_set(detail, cap, key, path, "its directory does not exist");
+            return AUTHD_CFG_ERR_VALUE;
+        }
+    }
+    return AUTHD_CFG_OK;
+}
+
+static authd_config_status_t check_regular(const char *key, const char *path, char *detail, size_t cap)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        detail_set(detail, cap, key, path, "does not exist");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        detail_set(detail, cap, key, path, "is not a regular file");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    return AUTHD_CFG_OK;
+}
+
+authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *detail, size_t detail_cap)
+{
+    if (cfg == NULL) {
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    if (detail != NULL && detail_cap > 0u) {
+        detail[0] = '\0';
+    }
+    authd_config_status_t st;
+    if ((st = check_regular(K_KEY, cfg->key_path, detail, detail_cap)) != AUTHD_CFG_OK ||
+        (st = check_regular(K_PASS, cfg->key_passphrase_file, detail, detail_cap)) != AUTHD_CFG_OK) {
+        return st;
+    }
+    /* The store itself may legitimately be absent -- store_open creates it --
+     * but its directory may not, because nothing in the daemon does mkdir. */
+    {
+        char dir[AUTHD_PATH_MAX + 1u];
+        (void)snprintf(dir, sizeof dir, "%s", cfg->store_path);
+        char *slash = strrchr(dir, '/');
+        if (slash != NULL) {
+            *slash = (slash == dir) ? '/' : '\0';
+            struct stat ds;
+            if (stat(dir, &ds) != 0 || !S_ISDIR(ds.st_mode)) {
+                detail_set(detail, detail_cap, K_STORE, cfg->store_path,
+                           "its directory does not exist");
+                return AUTHD_CFG_ERR_VALUE;
+            }
+        }
+    }
+    if ((st = check_sock(K_UNIX, cfg->listen_unix, detail, detail_cap)) != AUTHD_CFG_OK ||
+        (st = check_sock(K_SITE_SOCK, cfg->site_socket, detail, detail_cap)) != AUTHD_CFG_OK ||
+        (st = check_sock(K_ADMIN_SOCK, cfg->admin_socket, detail, detail_cap)) != AUTHD_CFG_OK) {
+        return st;
+    }
+    return AUTHD_CFG_OK;
 }

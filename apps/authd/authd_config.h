@@ -94,4 +94,24 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
 
 const char *authd_config_status_name(authd_config_status_t st);
 
+/* The checks authd_config_parse() cannot make, because it is a pure function
+ * of the config's BYTES and these touch the filesystem:
+ *
+ *   - key_path and key_passphrase_file exist and are regular files;
+ *   - the parent directory of store_path exists;
+ *   - every configured socket path FITS sun_path.
+ *
+ * That last one is the reason this exists. AUTHD_PATH_MAX is 255 while
+ * sun_path is 104 bytes on macOS and 108 on Linux, so a config with a long
+ * socket path passes every byte-level check, --check-config reports "valid",
+ * and the daemon then fails to bind at start-up. Catching it in the validator
+ * is the difference between a clear refusal and a service that will not start.
+ *
+ * Called by BOTH binaries, deliberately: a second validator that drifts from
+ * the first is worse than no second validator. `detail` (when non-NULL, at
+ * least AUTHD_PATH_MAX + 64 bytes) receives a message naming the offending
+ * key and value. */
+#define AUTHD_CONFIG_DETAIL_MAX (AUTHD_PATH_MAX + 64u)
+authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *detail, size_t detail_cap);
+
 #endif /* MLDSA_AUTHD_CONFIG_H */

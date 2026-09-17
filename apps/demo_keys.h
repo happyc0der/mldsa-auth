@@ -81,6 +81,18 @@ int demo_keys_id_filename_safe(const uint8_t *id, size_t len);
  * filename-safe demo id. */
 demo_keys_status_t demo_keys_generate_files(const char *dir, const uint8_t *id, size_t id_len);
 
+/* Publishes ONE public-key file (MLDSAPK1, mode 0644) at exactly `path`,
+ * atomically and without clobbering: DEMO_KEYS_ERR_EXISTS if it is already
+ * there. A full path rather than dir+id, because spec mldsa-authd 16 fixes the
+ * server's file name as "server.pub" whatever the server's id happens to be.
+ *
+ * This exists because demo_keys_generate_files() also writes the plaintext
+ * MLDSASK2 secret key, which spec mldsa-authd Req 10 forbids for every daemon
+ * and CLI command. The authd keygen paths seal the secret with keyfile_seal()
+ * and publish the public half with this. */
+demo_keys_status_t demo_keys_write_public(const char *path, const uint8_t *id, size_t id_len,
+                                          const uint8_t public_key[MLDSA_PUBLIC_KEY_BYTES]);
+
 /* Loads an MLDSASK2 identity. Order: permissions -> size bounds -> magic
  * (MLDSASK1 -> UNSUPPORTED_VERSION) -> exact size -> read (secret key
  * directly into secure memory) -> constant-time digest check (INTEGRITY) ->

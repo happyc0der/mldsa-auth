@@ -2,11 +2,14 @@
 # envelope; later steps add the store, the event loop and the local API.
 add_library(mldsa_authd STATIC
   keyfile.c
+  authd_secret.c
   store/store.c
   authd_config.c
   authmsg.c
   tokens.c
   localapi.c
+  localcli.c
+  authd_cli.c
   authd_conn.c
   conn_io.c
   evloop.c
@@ -30,3 +33,21 @@ target_link_libraries(mldsa_authd_bin PRIVATE mldsa_authd)
 target_compile_options(mldsa_authd_bin PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_authd_bin PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd_bin PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+# The two command-line tools (V4-9b, spec 13). Both are thin main()s over
+# authd_cli.c, which is in the library so tests can call the subcommands
+# directly. authd_client.c lives in apps/ rather than apps/authd/ because it is
+# the DEVICE's tool, not part of the daemon.
+add_executable(authd_admin_bin authd_admin.c)
+set_target_properties(authd_admin_bin PROPERTIES OUTPUT_NAME authd_admin)
+target_link_libraries(authd_admin_bin PRIVATE mldsa_authd)
+target_compile_options(authd_admin_bin PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(authd_admin_bin PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(authd_admin_bin PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+add_executable(authd_client_bin ${CMAKE_CURRENT_SOURCE_DIR}/../authd_client.c)
+set_target_properties(authd_client_bin PROPERTIES OUTPUT_NAME authd_client)
+target_link_libraries(authd_client_bin PRIVATE mldsa_authd)
+target_compile_options(authd_client_bin PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(authd_client_bin PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(authd_client_bin PRIVATE ${MLDSA_SANITIZE_FLAGS})

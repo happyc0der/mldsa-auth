@@ -174,6 +174,56 @@ static void fsync_dir(const char *dir) {
     }
 }
 
+/* Publishes ONLY a .pub, atomically (temp + link), for callers that must not
+ * write a plaintext secret key at all.
+ *
+ * demo_keys_generate_files() cannot be reused by the authd CLIs: it writes the
+ * MLDSASK2 image to disk unconditionally, and spec mldsa-authd Req 10 says no
+ * plaintext secret key is written to disk by any daemon or CLI command. The
+ * authd keygen commands therefore build the SK2 image in secure memory, seal
+ * it with keyfile_seal(), and use this to publish the public half. */
+static void fsync_parent_dir(const char *path);
+
+demo_keys_status_t demo_keys_write_public(const char *path, const uint8_t *id, size_t id_len,
+                                          const uint8_t public_key[MLDSA_PUBLIC_KEY_BYTES]) {
+    char tmp_path[PATH_MAX];
+    uint8_t pub_file[PUB_FILE_LEN(64)];
+    struct stat st;
+    int tmp_made = 0;
+    demo_keys_status_t result = DEMO_KEYS_ERR_IO;
+
+    if (path == NULL || public_key == NULL || !demo_keys_id_filename_safe(id, id_len)) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    const int n = snprintf(tmp_path, sizeof tmp_path, "%s.tmp.%ld", path, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof tmp_path) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    /* Refuse an existing target before writing anything; link() below is the
+     * atomic guarantee, this is only the earlier, clearer refusal. */
+    if (lstat(path, &st) == 0) {
+        return DEMO_KEYS_ERR_EXISTS;
+    }
+    put_header(pub_file, DEMO_KEY_MAGIC_PUBLIC, id, id_len);
+    memcpy(pub_file + HDR_LEN + id_len, public_key, MLDSA_PUBLIC_KEY_BYTES);
+
+    if (write_new_file(tmp_path, pub_file, PUB_FILE_LEN(id_len), 0644, &tmp_made) != 0) {
+        goto out;
+    }
+    if (link(tmp_path, path) != 0) {
+        result = (errno == EEXIST) ? DEMO_KEYS_ERR_EXISTS : DEMO_KEYS_ERR_IO;
+        goto out;
+    }
+    fsync_parent_dir(path);
+    result = DEMO_KEYS_OK;
+out:
+    if (tmp_made) {
+        (void)unlink(tmp_path);
+    }
+    sodium_memzero(pub_file, sizeof(pub_file));
+    return result;
+}
+
 demo_keys_status_t demo_keys_generate_files(const char *dir, const uint8_t *id, size_t id_len) {
     char sk_path[PATH_MAX];
     char pub_path[PATH_MAX];

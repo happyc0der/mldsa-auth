@@ -64,6 +64,15 @@ net_status_t net_accept(int listen_fd, uint64_t deadline_ms, net_conn_t *out);
 /* Non-blocking connect to 127.0.0.1:port, bounded by deadline_ms. */
 net_status_t net_connect_loopback(uint16_t port, uint64_t deadline_ms, net_conn_t *out);
 
+/* Non-blocking connect to an AF_UNIX stream socket at `path`, bounded by
+ * deadline_ms (V4-9b: the CLIs reach a co-located daemon this way, and the
+ * end-to-end test uses it so there is no ephemeral-port race at all).
+ *
+ * A path that does not fit sun_path -- 104 bytes on macOS, 108 on Linux, well
+ * under AUTHD_PATH_MAX -- is NET_ERR_INVALID_ARG, never a silent truncation to
+ * some other socket. */
+net_status_t net_connect_unix(const char *path, uint64_t deadline_ms, net_conn_t *out);
+
 /* Reads exactly n bytes. *got always reports how many bytes were read, also
  * on NET_EOF / NET_TIMEOUT / NET_ERR_IO (so callers can tell a clean EOF at
  * a boundary from a truncation). */

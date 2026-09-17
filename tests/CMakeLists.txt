@@ -128,6 +128,13 @@ add_test(NAME test_authd_conn COMMAND test_authd_conn)
 # V4-9a: the local socket protocol, tokens and revocation reaching live
 # sessions. Shares tests/authd_harness.h with test_authd_conn so both drive
 # the same in-process daemon.
+add_executable(test_authd_cli test_authd_cli.c)
+target_link_libraries(test_authd_cli PRIVATE mldsa_authd)
+target_compile_options(test_authd_cli PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_cli PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_cli COMMAND test_authd_cli)
+
 add_executable(test_authd_localapi test_authd_localapi.c)
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
@@ -152,6 +159,18 @@ if(MLDSA_NODE)
   set_tests_properties(site_node_handler PROPERTIES
     ENVIRONMENT "AUTHD_FIXTURE=$<TARGET_FILE:authd_node_fixture>")
 endif()
+
+# Milestone A, automated: the shipped daemon and both CLIs as real processes.
+# The node arguments are optional -- the script prints a named SKIP line for
+# the EXCHANGE/VERIFY leg when node is absent, rather than failing or (worse)
+# passing quietly.
+add_test(NAME authd_e2e
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/authd_e2e.sh
+          $<TARGET_FILE:authd_admin_bin> $<TARGET_FILE:authd_client_bin>
+          $<TARGET_FILE:mldsa_authd_bin> "${MLDSA_NODE}"
+          ${CMAKE_CURRENT_SOURCE_DIR}/e2e_site.mjs
+)
+set_tests_properties(authd_e2e PROPERTIES TIMEOUT 600)
 
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e

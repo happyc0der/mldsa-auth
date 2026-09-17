@@ -3883,3 +3883,244 @@ redundant.** A check only tests what it can distinguish. Writing the negative
 case is not enough — the negative case has to fail for the reason under test
 and no other, and the cheapest way to confirm that is a canary asserting the
 same input fails *differently* when the rule is not the thing at fault.
+
+## V4-9b — the two command-line tools, and the first login a person can perform
+
+V4-9a made the local API real: a site could `EXCHANGE` a login code for a token
+and `VERIFY` it. Nothing a human could run drove any of it. There was no way to
+create a store, generate an operator key, enroll one, or log in except from a C
+test harness. V4-9b adds `authd_admin` (12 subcommands), `authd_client`
+(`keygen`, `login`) and `tests/authd_e2e.sh`, which performs the whole of
+milestone A with the shipped binaries as real processes.
+
+### Passphrases are files, and there is no prompt
+
+The daemon's `key_passphrase_file` already said why: argv and the environment
+are readable by other processes on the host, and a systemd credential *is* a
+file under `$CREDENTIALS_DIRECTORY`. The CLIs use the same rule and the same
+reader.
+
+A TTY prompt was considered and deliberately not built. It is better for the one
+case of an operator generating a key on their own laptop — the passphrase never
+touches disk — but it would be the first termios code in the tree and the
+prompt path cannot be covered by CTest without a pty, which would make it the
+only security-relevant path in this project verified by hand. The interactive
+passphrase experience is designed once, in V4-13, alongside the browser
+client's, which needs the same strength rules and the same wipe discipline.
+
+### `read_passphrase` became a library function, and grew an owner check
+
+It was `static` in `authd_main.c`. Three copies of a custody rule is three
+chances to relax one of them, so it moved to `authd_secret.{c,h}` and all three
+callers share it. Two changes came with the move. It returns a status with a
+name, because spec §13 requires every failure to print a status name from the
+same enums the daemon logs and `"mldsa-authd: ... mode must be 0600"` is neither.
+And it now checks `st_uid == geteuid()`, which spec §12's load order applies to
+the key file and which the daemon's copy had never applied to the passphrase.
+`LoadCredentialEncrypted` delivers a 0400 file owned by the service user, so the
+deployment path this exists for is unaffected.
+
+### `init` writes the passphrase, then reads it back, then seals
+
+Spec §12 says the server passphrase is "32 random bytes from `authd_admin
+init`". The obvious implementation — generate 32 bytes, seal under them, write
+them out — has a defect that would have shipped: the reader strips one trailing
+newline, so whenever the last random byte is `0x0A` the daemon derives its key
+from **31** bytes and `keyfile_open` fails forever, with `init` having reported
+success. One time in 256. At roughly a dozen full-suite runs per mutation
+campaign that is a ~5% chance of one inexplicable `decryption-failed` per
+campaign, which is precisely the kind of failure that gets blamed on the test.
+
+So `init` writes the file first, reads it back through the shared reader, and
+seals under *that* buffer. The same ordering is what makes `init`'s second
+Argon2id worth its second second of CPU: the reopen verifies the
+file-to-key binding rather than re-deriving an answer already known.
+
+`init` also refuses if the key, the store **or** the passphrase file exists, and
+names which. This is not tidiness. `store_open()` succeeds on an existing store
+and derives `key_audit = HKDF(KEK, store_id, …)`; a second `init` with a
+different passphrase derives it from a *different* KEK, every subsequent audit
+row chains under the wrong key, and `store_audit_verify()` fails permanently —
+with nothing reported at the moment of damage. The command is not resumable and
+says so, printing the exact paths to remove.
+
+### Req 10 forbade the obvious reuse
+
+`demo_keys_generate_files()` writes the plaintext `MLDSASK2` file
+unconditionally. Spec Req 10 says no plaintext secret key is written to disk by
+any daemon or CLI command, so none of the three keygen paths can use it. They
+build the image in `secure_mem`, seal it with `keyfile_seal()`, and publish the
+public half through a new `demo_keys_write_public()`.
+
+The reason this needs its own check rather than a code review is that **every
+functional check still passes if it is violated**: the `.ek` and `.pub` are
+correct, enrollment works, login works. Mutation `K1` adds the plaintext write
+and is caught only by a directory scan for the `MLDSASK2` magic.
+
+### One framing rule, three consumers
+
+Spec §8's replies cannot tell you how to read them:
+
+- `REVOKE-TOKENS` answers `OK count=N` on ONE line, exactly like a list
+  *header*. A reader that waits for `END` on any `OK count=` hangs on it.
+- A **refused** list command answers a single `ERR code=` line with no `END`, so
+  a reader that always waits for `END` on a list command hangs on that. That one
+  is not hypothetical: it hung the Node handler's own test suite for 24 seconds
+  in V4-9a.
+
+The caller knows which command it sent, so that is what decides.
+`localcli_is_list_command()` is now the single authority, and
+`tests/authd_harness.h` was moved onto it — its own copy classified any
+`OK count=` reply as a list, which is wrong and survived only because no test
+had ever sent `REVOKE-TOKENS` through it.
+
+The mutation that proves this (`L1`) is the one worth describing, because the
+first draft of the plan would have let it survive. Adding `REVOKE-TOKENS` to the
+list table causes a hang — but no `authd_admin` subcommand issues that command,
+so no CLI path reaches it. The check therefore had to be **table-level**:
+`test_authd_cli` sends every probe command to a live daemon through
+`h_local_drain()`, which applies no framing rule at all, measures whether the
+reply really ends with an `END` line, and requires the table to agree. It also
+requires both `OK count=` shapes to have been observed, so the test cannot pass
+against a table that is a constant.
+
+### Three defects fixed, and a fourth found by running the thing
+
+Planning found three defects in existing daemon code, all recorded as F21–F23:
+
+- **The server key was left unwiped on two listener-failure paths.** They did
+  `free(slots); return 1;` while the decrypted ML-DSA secret was live in secure
+  memory — a Req 2 violation — while the four sibling paths for the local
+  sockets correctly `goto listener_failed`, whose epilogue wipes and frees
+  everything. An inconsistency, not a missing epilogue.
+- **`admin.sock` was 0660**, where §8 says 0600. The uid allowlist still refused
+  a stranger, so nothing was exploitable; the second layer is the point.
+- **A configuration failure exited 1**, where §13 says 3.
+
+A fourth appeared only when the new `backup` command was run and its output
+looked at: `store_backup` used `VACUUM INTO`, which creates the destination with
+the **daemon's** umask — 0644 from an interactive shell. A backup is a
+byte-for-byte copy of the credential database. It is now 0600, like the store it
+copies (F24).
+
+`R1`, the mutation for the key-wiping fix, could not rest on a leak detector:
+LSan does not run under macOS ASan, and this project's campaigns run locally.
+What the epilogue *also* does is close and unlink every socket it already
+created, and that is observable on both platforms and true exactly when it ran.
+The e2e starts a daemon whose admin socket path is a regular file — a realistic
+leftover after a crash, which passes every configuration check because its
+directory exists — and requires the other two sockets to be gone afterwards.
+
+### One config validator with two entry points
+
+§13 lists `--check-config` under `authd_admin`; the daemon already had it. The
+answer is not a second implementation: two validators drift, and the one an
+operator runs before starting the service would then approve a configuration the
+one that matters rejects. `authd_admin --check-config` calls the same
+`authd_config_load()`, and both binaries call a new shared
+`authd_config_check_paths()`.
+
+That function exists for one case in particular. `AUTHD_PATH_MAX` is 255 while
+`sun_path` is 104 bytes on macOS and 108 on Linux, so a configuration with a
+long socket path passed every byte-level check, `--check-config` said "valid",
+and the daemon then failed to bind (F28). Mutation `C2` gives `authd_admin` its
+own parser; it is killed by comparing both binaries' exit code *and* the exact
+status name across six different malformed configurations, because a second
+parser agreeing accidentally on one input is the whole failure mode.
+
+### Responses are printed as hex, on purpose
+
+Identifiers and labels are hex on the wire and this tool prints them back as
+hex. Spec §3.2 calls them attacker-influenced strings that must be escaped
+anywhere they are displayed; printing the hex means there is no display decoder
+to get wrong and no terminal-escape hazard at all. It is worse to read and
+`xxd -r -p` decodes one value when an operator wants it. This is also why V4-9b
+adds **no fuzz target**: the only new parse is `localcli`'s response reader,
+whose input is the local daemon over a 0600/0660 socket on the same host, and it
+is deliberately shaped so there is nothing to get wrong — bounded lines, `END`
+compared as a whole line rather than as a substring (`detail=` is the one field
+`localapi` does not hex-encode), and the first token deciding the exit code.
+
+### The handle is the authority, not the file
+
+`enroll-operator` requires `--handle` and validates the `.pub` against it, so a
+`.pub` whose embedded id disagrees is `id-mismatch`. This is V2-9's rule —
+migration must not be the one path that trusts a file's own label — applied to
+enrollment: taking the handle from the file would let a renamed or swapped
+`.pub` silently enroll a different device under the operator's user. Mutation
+`E1` does exactly that, and the check asserts the **status name**, because
+"non-zero" also means "file not found".
+
+### Not done, and named
+
+`authd_client rotate` and the recovery flow are V4-9c, so the subcommand is
+absent rather than stubbed; the usage string says which step brings it. There is
+no `ping` subcommand: §13 does not list one, and `list-users` serves as the
+end-to-end script's readiness probe without inventing a command the spec does
+not have. Five further spec gaps are recorded as F25–F29 rather than resolved by
+editing the spec — including F29, that `store_audit_verify()` is reachable from
+nothing, so a deployed operator cannot check their own audit chain. That one
+deserves the errata step's attention most.
+
+### The first campaign run had four survivors, and all four were mine
+
+Reported because the pattern is worth more than the outcome. None of the four
+was a defect in the code under test; each was an error in how the campaign was
+written, and two of them repeat mistakes this file already records.
+
+- **C1** — the expected-failure text began with `--check-config`, and the runner
+  matches expectations with `grep -F "$w"`, which read the leading `--` as an
+  option and errored out. V2-7's R3 established "no expectation string begins
+  with a dash" and it is written down in `tools/README.md`. Writing it down was
+  not enough; the fix is that the string no longer starts with one.
+- **K1** — the mutation wrote its forbidden plaintext key to `/tmp`, while every
+  Req 10 scan looks inside the directory under test. A mutation that lands
+  outside the observer's field of view is not a weak check, it is no check. It
+  now writes the copy beside the sealed key, which is also the defect a real
+  implementation would have.
+- **P1** — the expectation named `init` returning 0, but the mutation leaves
+  `init` succeeding: it corrupts the passphrase buffer *after* the read-back and
+  then uses that same buffer for its own verification reopen, so init verifies
+  against the corruption and is satisfied. The check that actually
+  distinguishes it is the test's INDEPENDENT reopen with the bytes the file
+  holds — which is the check written for exactly this, aimed at the wrong
+  target in the spec.
+- **P2** — writing the passphrase file 0644 is caught *earlier* than intended,
+  because `init` reads the file back through the same custody-checking reader
+  the daemon uses, so the file is refused before anything is sealed and the
+  e2e's mode assertion never runs. That is the system working; the spec now
+  names the refusal that happens rather than the one that was predicted.
+
+C1 and P1 are both the recurring shape named in V4-9a — *a check only tests what
+it can distinguish* — arriving from the other side: not a check that passes for
+a second reason, but a spec entry pointed at a check that cannot see the
+difference. The campaign catching all four before the commit is what the
+campaign is for; a mutation suite whose first run is perfect is usually a
+mutation suite that is not asking anything.
+
+### The Linux gate found three more, and one of them only at `-O0`
+
+The pre-push Linux matrix — clang and gcc, `-O0` Debug and
+`-O2 -D_FORTIFY_SOURCE=2` Release — refused this step's first two attempts.
+All three defects were in code written for V4-9b, none was visible on macOS, and
+two of them are classes this file already names:
+
+- `tests/test_authd_cli.c`, `(void)fread(...)`: **the `(void)` cast does not
+  silence gcc's `warn_unused_result`.** That is F0, verbatim, from V4-5 — where
+  the same mistake was found in `(void)system(...)`. The fix is the same: use
+  the result. Here it became a real assertion, because a short read would have
+  compared uninitialised bytes against spec §12's parameters and the test would
+  have been lying about what it checked.
+- `tests/authd_harness.h`, `snprintf(a.sun_path, …, "%s", path)`:
+  `-Werror=format-truncation` at `-O2`. That is F19's class, and gcc is right —
+  a truncated `sun_path` connects to a *different socket*. Replaced with an
+  explicit bound, the same one `net_connect_unix()` applies.
+- `tests/test_authd_cli.c:413`, another `-Werror=format-truncation` — and this
+  one fired at **`-O0` but not at `-O2`**, because gcc's value-range analysis
+  differs between them. It is the single best argument for checking both
+  optimisation levels rather than assuming the stricter one subsumes the other.
+
+The invocation itself also improved. Earlier steps passed `-DCMAKE_C_FLAGS` and
+left `CMAKE_BUILD_TYPE` at its default; this run sets Debug and Release
+explicitly, which is what the deployment actually builds and what surfaced two
+of the three. The gcc Release suite is now run on Linux as well, not just built.

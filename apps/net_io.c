@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #if defined(MSG_NOSIGNAL)
@@ -75,6 +76,23 @@ static void loopback_addr(struct sockaddr_in *sa, uint16_t port) {
     sa->sin_family = AF_INET;
     sa->sin_port = htons(port);
     sa->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+/* The AF_UNIX variant. Deliberately NOT configure_stream(): TCP_NODELAY is a
+ * TCP-level option and setsockopt returns ENOPROTOOPT for it on a Unix socket,
+ * so reusing that helper would fail every local connection. Everything else --
+ * non-blocking, SIGPIPE suppressed -- is identical. */
+static int configure_unix_stream(int fd) {
+    if (set_nonblock(fd) != 0) {
+        return -1;
+    }
+#if defined(SO_NOSIGPIPE)
+    const int one = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) != 0) {
+        return -1;
+    }
+#endif
+    return 0;
 }
 
 /* ---- deadline-bounded waiting --------------------------------------------- */
@@ -189,6 +207,55 @@ net_status_t net_connect_loopback(uint16_t port, uint64_t deadline_ms, net_conn_
     if (connect(fd, (const struct sockaddr *)&sa, sizeof(sa)) != 0) {
         if (errno == EINTR) {
             out->stats.eintr_retries++; /* the connect continues asynchronously */
+        } else if (errno != EINPROGRESS) {
+            net_close_fd(&fd);
+            return NET_ERR_IO;
+        }
+        const net_status_t w = wait_io(fd, POLLOUT, deadline_ms, &out->stats);
+        if (w != NET_OK) {
+            net_close_fd(&fd);
+            return w;
+        }
+        int err = 0;
+        socklen_t el = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el) != 0 || err != 0) {
+            net_close_fd(&fd);
+            return NET_ERR_IO;
+        }
+    }
+    out->fd = fd;
+    return NET_OK;
+}
+
+net_status_t net_connect_unix(const char *path, uint64_t deadline_ms, net_conn_t *out) {
+    if (out == NULL || path == NULL || path[0] == '\0') {
+        return NET_ERR_INVALID_ARG;
+    }
+    net_conn_init(out);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sun_family = AF_UNIX;
+    /* sun_path is 104 bytes on macOS and 108 on Linux, while AUTHD_PATH_MAX is
+     * 255: a path that every other layer accepts can still not fit here. The
+     * check is explicit and BEFORE the copy, because strncpy into sun_path
+     * would silently truncate and connect to a different socket. */
+    const size_t n = strlen(path);
+    if (n >= sizeof(sa.sun_path)) {
+        return NET_ERR_INVALID_ARG;
+    }
+    memcpy(sa.sun_path, path, n + 1u);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return NET_ERR_IO;
+    }
+    if (set_cloexec(fd) != 0 || configure_unix_stream(fd) != 0) {
+        net_close_fd(&fd);
+        return NET_ERR_IO;
+    }
+    if (connect(fd, (const struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        if (errno == EINTR) {
+            out->stats.eintr_retries++;
         } else if (errno != EINPROGRESS) {
             net_close_fd(&fd);
             return NET_ERR_IO;

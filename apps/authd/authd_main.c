@@ -22,12 +22,10 @@
 
 #include <sodium.h>
 
-#include <fcntl.h>
-#include <sys/stat.h>
-
 #include "authd_config.h"
 #include "authd_conn.h"
 #include "authd_log.h"
+#include "authd_secret.h"
 #include "conn_io.h"
 #include "evloop.h"
 #include "keyfile.h"
@@ -56,61 +54,6 @@ static uint64_t now_ms(void)
     }
 #endif
     return 0u;
-}
-
-/* Reads the passphrase file into secure memory. Refuses anything that is not
- * a regular 0600 file of at most AUTHD_PASSPHRASE_MAX bytes: a passphrase that
- * any other user can read is not a passphrase. A single trailing newline is
- * stripped, because every editor and `systemd-creds` adds one and an operator
- * should not have to know that. Caller wipes and frees. */
-static uint8_t *read_passphrase(const char *path, size_t *len_out)
-{
-    *len_out = 0;
-    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
-        fprintf(stderr, "mldsa-authd: passphrase file %s: cannot open\n", path);
-        return NULL;
-    }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        fprintf(stderr, "mldsa-authd: passphrase file %s: not a regular file\n", path);
-        (void)close(fd);
-        return NULL;
-    }
-    if ((st.st_mode & 077) != 0) {
-        fprintf(stderr, "mldsa-authd: passphrase file %s: mode must be 0600\n", path);
-        (void)close(fd);
-        return NULL;
-    }
-    if (st.st_size <= 0 || (uintmax_t)st.st_size > (uintmax_t)AUTHD_PASSPHRASE_MAX) {
-        fprintf(stderr, "mldsa-authd: passphrase file %s: empty or over %u bytes\n",
-                path, (unsigned)AUTHD_PASSPHRASE_MAX);
-        (void)close(fd);
-        return NULL;
-    }
-    uint8_t *buf = secure_mem_alloc((size_t)st.st_size);
-    if (buf == NULL) {
-        (void)close(fd);
-        return NULL;
-    }
-    size_t got = 0;
-    while (got < (size_t)st.st_size) {
-        const ssize_t n = read(fd, buf + got, (size_t)st.st_size - got);
-        if (n <= 0) {
-            break;
-        }
-        got += (size_t)n;
-    }
-    (void)close(fd);
-    if (got != (size_t)st.st_size) {
-        secure_mem_free(buf, (size_t)st.st_size);
-        return NULL;
-    }
-    if (got > 0u && buf[got - 1u] == (uint8_t)'\n') {
-        got--;
-    }
-    *len_out = got;
-    return buf;
 }
 
 static void usage(const char *prog)
@@ -159,7 +102,22 @@ int main(int argc, char **argv)
             fprintf(stderr, " at line %zu", err_line);
         }
         fprintf(stderr, "\n");
-        return 1;
+        /* Spec 13: 3 = configuration error, distinct from 1 = operation
+         * failed. An operator's start-up script can tell "your config is
+         * wrong" from "the key would not open" without parsing prose. */
+        return 3;
+    }
+    /* The filesystem half of validation, shared with authd_admin --check-config
+     * so there is ONE validator with two entry points. It catches the case
+     * AUTHD_PATH_MAX (255) makes possible and sun_path (104/108) makes fatal:
+     * a socket path every byte-level check accepts and no kernel can bind. */
+    {
+        char detail[AUTHD_CONFIG_DETAIL_MAX];
+        const authd_config_status_t ps = authd_config_check_paths(&cfg, detail, sizeof detail);
+        if (ps != AUTHD_CFG_OK) {
+            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg_path, detail);
+            return 3;
+        }
     }
     if (check_only) {
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
@@ -206,15 +164,18 @@ int main(int argc, char **argv)
     }
     {
         size_t pass_len = 0;
-        uint8_t *pass = read_passphrase(cfg.key_passphrase_file, &pass_len);
-        if (pass == NULL) {
+        uint8_t *pass = NULL;
+        const authd_secret_status_t ps = authd_secret_read(cfg.key_passphrase_file, &pass, &pass_len);
+        if (ps != AUTHD_SECRET_OK) {
+            fprintf(stderr, "mldsa-authd: passphrase file %s: %s\n",
+                    cfg.key_passphrase_file, authd_secret_status_name(ps));
             secure_mem_free(kek, STORE_KEK_BYTES);
             free(slots); free(conns);
-            return 1;
+            return 3;
         }
         const keyfile_status_t ks = keyfile_open(cfg.key_path, cfg.server_id, cfg.server_id_len,
                                                  (const char *)pass, pass_len, &server_kp, kek);
-        secure_mem_free(pass, pass_len);
+        authd_secret_free(pass, pass_len);
         if (ks != KEYFILE_OK) {
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(ks));
             secure_mem_free(kek, STORE_KEK_BYTES);
@@ -284,41 +245,52 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int tcp_fd = -1, unix_fd = -1;
+    /* All four listener fds and paths are declared TOGETHER, before the first
+     * failure path that can jump to listener_failed. Declaring the local pair
+     * further down would mean a goto from the protocol listeners jumped over
+     * their initialisers, and the epilogue would then close indeterminate
+     * descriptors -- a worse bug than the leak this epilogue exists to fix. */
+    int tcp_fd = -1, unix_fd = -1, site_fd = -1, admin_fd = -1;
     const char *unix_path = (cfg.listen_unix[0] != '\0') ? cfg.listen_unix : NULL;
+    const char *site_path = (cfg.site_socket[0] != '\0') ? cfg.site_socket : NULL;
+    const char *admin_path = (cfg.admin_socket[0] != '\0') ? cfg.admin_socket : NULL;
 
     if (cfg.listen_port != 0u) {
         uint16_t bound = 0;
         const listener_status_t ls = listener_open_loopback(cfg.listen_port, 64, &tcp_fd, &bound);
         if (ls != LISTENER_OK) {
             fprintf(stderr, "mldsa-authd: loopback listener: %s\n", listener_status_name(ls));
-            free(slots);
-            return 1;
+            goto listener_failed;
         }
-        (void)evloop_add_listener(&ev, tcp_fd, (uid_t)-1);
+        /* Checked, like the two local listeners below. AUTHD_MAX_LISTENERS is
+         * finite and a silent -1 here would leave a bound socket that nothing
+         * ever polls: the daemon would log "listening" and serve nobody. That
+         * exact defect cost V4-9a a debugging session when the limit was 2. */
+        if (evloop_add_listener(&ev, tcp_fd, (uid_t)-1) != 0) {
+            fprintf(stderr, "mldsa-authd: cannot register the loopback listener\n");
+            goto listener_failed;
+        }
         authd_log_num(AUTHD_LOG_INFO, "listening-loopback", "port", (uint64_t)bound);
     }
     if (unix_path != NULL) {
-        const listener_status_t ls = listener_open_unix(unix_path, 64, &unix_fd);
+        const listener_status_t ls = listener_open_unix(unix_path, 64, LISTENER_MODE_GROUP, &unix_fd);
         if (ls != LISTENER_OK) {
             fprintf(stderr, "mldsa-authd: unix listener %s: %s\n", unix_path, listener_status_name(ls));
-            listener_close(&tcp_fd, NULL);
-            free(slots);
-            return 1;
+            goto listener_failed;
         }
-        /* V4-8b adds the proxy uid check; V4-8a relies on the 0660 mode. */
-        (void)evloop_add_listener(&ev, unix_fd, (uid_t)-1);
+        /* V4-10 adds the proxy uid check; today this relies on the 0660 mode. */
+        if (evloop_add_listener(&ev, unix_fd, (uid_t)-1) != 0) {
+            fprintf(stderr, "mldsa-authd: cannot register the unix listener\n");
+            goto listener_failed;
+        }
         authd_log_event(AUTHD_LOG_INFO, "listening-unix");
     }
 
-    /* The two local sockets. Each is 0660 with its own uid allowlist; the
-     * admin table is simply not reachable from the site socket. */
-    int site_fd = -1, admin_fd = -1;
-    const char *site_path = (cfg.site_socket[0] != '\0') ? cfg.site_socket : NULL;
-    const char *admin_path = (cfg.admin_socket[0] != '\0') ? cfg.admin_socket : NULL;
-
+    /* The two local sockets. site.sock is 0660 (the site's group), admin.sock
+     * is 0600 (spec 8), and each has its own uid allowlist; the admin table is
+     * simply not reachable from the site socket. */
     if (site_path != NULL) {
-        const listener_status_t ls = listener_open_unix(site_path, 16, &site_fd);
+        const listener_status_t ls = listener_open_unix(site_path, 16, LISTENER_MODE_GROUP, &site_fd);
         if (ls != LISTENER_OK) {
             fprintf(stderr, "mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
             goto listener_failed;
@@ -330,7 +302,7 @@ int main(int argc, char **argv)
         authd_log_event(AUTHD_LOG_INFO, "listening-site");
     }
     if (admin_path != NULL) {
-        const listener_status_t ls = listener_open_unix(admin_path, 16, &admin_fd);
+        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);
         if (ls != LISTENER_OK) {
             fprintf(stderr, "mldsa-authd: admin socket %s: %s\n", admin_path, listener_status_name(ls));
             goto listener_failed;

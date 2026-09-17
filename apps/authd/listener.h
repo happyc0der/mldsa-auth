@@ -36,10 +36,20 @@ const char *listener_status_name(listener_status_t st);
 /* Binds 127.0.0.1:port (port 0 = pick one; *bound_port receives it). */
 listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, uint16_t *bound_port);
 
-/* Binds a Unix stream socket at `path`, mode 0660. An existing socket file at
+/* Binds a Unix stream socket at `path` with `mode`. An existing socket file at
  * that path is removed first (a stale socket after a crash must not wedge the
- * service); anything else at that path is refused rather than unlinked. */
-listener_status_t listener_open_unix(const char *path, int backlog, int *fd);
+ * service); anything else at that path is refused rather than unlinked.
+ *
+ * The mode is a PARAMETER because spec 8 gives the two local sockets different
+ * ones: site.sock is 0660 (owner plus the site's group) while admin.sock is
+ * 0600, root only. Until V4-9b every socket was chmod 0660 unconditionally,
+ * which made the admin socket group-reachable -- the uid allowlist still
+ * refused such a peer, but defence in depth is exactly what a second layer is
+ * for, and the spec said 0600. Only these two are permitted; anything else is
+ * LISTENER_ERR_PATH, so a future caller cannot invent 0666. */
+#define LISTENER_MODE_PRIVATE 0600  /* admin.sock */
+#define LISTENER_MODE_GROUP   0660  /* site.sock and the proxy-facing listener */
+listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode, int *fd);
 
 /* The peer of a Unix-socket connection. Spec 8 requires every local-API
  * request to be logged with the peer's uid AND pid; both are portable --

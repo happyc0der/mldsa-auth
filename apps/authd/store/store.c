@@ -1,4 +1,6 @@
 #include "store.h"
+
+#include <sys/stat.h>
 #include "schema.sql.h"
 
 #include <sqlite3.h>
@@ -1632,5 +1634,14 @@ store_status_t store_backup(store_t *s, const char *dest_path)
         r = STORE_ERR_IO;   /* destination exists, or is not writable */
     }
     sqlite3_finalize(st);
+    /* VACUUM INTO creates the destination with the DAEMON'S umask, which is
+     * whatever the service manager set -- 0022 in an interactive shell. A
+     * backup is a byte-for-byte copy of the credential database: token hashes,
+     * the audit chain and every enrolled public key. It gets the store's own
+     * mode, not the umask's opinion. Found by running the V4-9b backup command
+     * and looking at the file, not by reading the code. */
+    if (r == STORE_OK && chmod(dest_path, 0600) != 0) {
+        r = STORE_ERR_IO;
+    }
     return r;
 }
