@@ -11,6 +11,7 @@
 /* Keys. Required ones must appear; the rest have documented defaults. */
 #define K_STORE      "store_path"
 #define K_KEY        "key_path"
+#define K_PASS       "key_passphrase_file"
 #define K_SERVER_ID  "server_id"
 #define K_UNIX       "listen_unix"
 #define K_PORT       "listen_port"
@@ -20,7 +21,7 @@
 #define K_BUCKET     "pad_bucket"
 
 /* bit index per key, for duplicate and missing detection */
-enum { B_STORE, B_KEY, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET, B_COUNT };
+enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET, B_COUNT };
 
 const char *authd_config_status_name(authd_config_status_t st)
 {
@@ -194,6 +195,7 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
         int bit = -1;
         if (key_is(k, kn, K_STORE))          { bit = B_STORE; }
         else if (key_is(k, kn, K_KEY))       { bit = B_KEY; }
+        else if (key_is(k, kn, K_PASS))      { bit = B_PASS; }
         else if (key_is(k, kn, K_UNIX))      { bit = B_UNIX; }
         else if (key_is(k, kn, K_SERVER_ID)) { bit = B_SERVER_ID; }
         else if (key_is(k, kn, K_PORT))      { bit = B_PORT; }
@@ -220,6 +222,8 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
             r = copy_str(v, vn, cfg.store_path, sizeof cfg.store_path);
         } else if (bit == B_KEY) {
             r = copy_str(v, vn, cfg.key_path, sizeof cfg.key_path);
+        } else if (bit == B_PASS) {
+            r = copy_str(v, vn, cfg.key_passphrase_file, sizeof cfg.key_passphrase_file);
         } else if (bit == B_UNIX) {
             r = copy_str(v, vn, cfg.listen_unix, sizeof cfg.listen_unix);
         } else if (bit == B_SERVER_ID) {
@@ -269,7 +273,7 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
     }
 
     /* required keys */
-    const int required[] = { B_STORE, B_KEY, B_SERVER_ID };
+    const int required[] = { B_STORE, B_KEY, B_PASS, B_SERVER_ID };
     for (size_t j = 0; j < sizeof required / sizeof required[0]; j++) {
         if ((seen & (1u << required[j])) == 0u) {
             return AUTHD_CFG_ERR_MISSING;

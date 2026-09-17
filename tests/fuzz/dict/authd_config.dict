@@ -3,6 +3,7 @@
 # seriously; values are covered by the seeds and the bounds.
 k_store="store_path"
 k_key="key_path"
+k_passfile="key_passphrase_file"
 k_server_id="server_id"
 k_listen_unix="listen_unix"
 k_listen_port="listen_port"

@@ -25,6 +25,7 @@
 #define AUTHD_CONFIG_MAX_LINE    1024u
 #define AUTHD_PATH_MAX           255u
 #define AUTHD_ID_MAX             64u      /* WIRE_ID_MAX_LEN */
+#define AUTHD_PASSPHRASE_MAX     4096u    /* a passphrase file larger than this is refused */
 
 /* Bounds. Each is enforced by the parser, and each has a mutation. */
 #define AUTHD_SLOTS_MIN          1u
@@ -48,6 +49,12 @@ typedef enum {
 typedef struct {
     char     store_path[AUTHD_PATH_MAX + 1u];
     char     key_path[AUTHD_PATH_MAX + 1u];       /* the MLDSAEK1 server key */
+    /* The passphrase that opens key_path, as a FILE -- never an environment
+     * variable and never argv, both of which are readable by other processes.
+     * A systemd credential is a file under $CREDENTIALS_DIRECTORY, so V4-11
+     * points this at the credential and changes nothing else. Must be a
+     * regular file, mode 0600, at most AUTHD_PASSPHRASE_MAX bytes. */
+    char     key_passphrase_file[AUTHD_PATH_MAX + 1u];
     char     listen_unix[AUTHD_PATH_MAX + 1u];    /* proxy-facing Unix socket; "" = disabled */
     uint8_t  server_id[AUTHD_ID_MAX];
     size_t   server_id_len;

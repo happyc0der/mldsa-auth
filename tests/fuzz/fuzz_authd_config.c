@@ -123,12 +123,14 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_str(emit, ctx, "minimal-valid",
              "store_path = /var/lib/mldsa-authd/store.sqlite3\n"
              "key_path = /var/lib/mldsa-authd/server.ek\n"
+             "key_passphrase_file = /run/credentials/mldsa-authd/pass\n"
              "server_id = authd-server\n"
              "listen_port = 8443\n");
     emit_str(emit, ctx, "full-valid",
              "# a comment\n"
              "store_path = /s\n"
              "key_path = /k\n"
+             "key_passphrase_file = /p\n"
              "server_id = s1\n"
              "listen_unix = /run/mldsa-authd/ws.sock\n"
              "listen_port = 1\n"
@@ -138,17 +140,17 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
              "pad_bucket = 4096\n");
     emit_str(emit, ctx, "missing-required", "listen_port = 1\n");
     emit_str(emit, ctx, "no-listener",
-             "store_path = /s\nkey_path = /k\nserver_id = s\n");
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n");
     emit_str(emit, ctx, "unknown-key",
-             "store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 1\nnope = 1\n");
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\nnope = 1\n");
     emit_str(emit, ctx, "duplicate-key",
-             "store_path = /s\nstore_path = /t\nkey_path = /k\nserver_id = s\nlisten_port = 1\n");
+             "store_path = /s\nstore_path = /t\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n");
     emit_str(emit, ctx, "bucket-32",
-             "store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 1\npad_bucket = 32\n");
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\npad_bucket = 32\n");
     emit_str(emit, ctx, "slots-0",
-             "store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 1\nmax_slots = 0\n");
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\nmax_slots = 0\n");
     emit_str(emit, ctx, "slots-4097",
-             "store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 1\nmax_slots = 4097\n");
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\nmax_slots = 4097\n");
     emit_str(emit, ctx, "port-65536",
              "store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 65536\n");
     emit_str(emit, ctx, "no-equals", "store_path\n");

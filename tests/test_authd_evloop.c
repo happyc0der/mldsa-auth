@@ -50,7 +50,7 @@ static authd_config_status_t parse_str(const char *s, authd_config_t *cfg, size_
     return authd_config_parse((const uint8_t *)s, strlen(s), cfg, line);
 }
 
-#define BASE "store_path = /s\nkey_path = /k\nserver_id = sid\nlisten_port = 9\n"
+#define BASE "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\nlisten_port = 9\n"
 
 static void test_config(void)
 {
@@ -68,7 +68,7 @@ static void test_config(void)
     /* strictness */
     CHECK(parse_str("listen_port = 9\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
           "cfg: a missing required key is refused");
-    CHECK(parse_str("store_path = /s\nkey_path = /k\nserver_id = s\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
           "cfg: a config with no listener at all is refused");
     CHECK(parse_str(BASE "nope = 1\n", &cfg, &line) == AUTHD_CFG_ERR_UNKNOWN_KEY,
           "cfg: an unknown key is refused");
@@ -96,9 +96,18 @@ static void test_config(void)
           "cfg: pad_bucket 4096 is accepted");
     CHECK(parse_str(BASE "listen_port = 65536\n", &cfg, &line) == AUTHD_CFG_ERR_DUPLICATE_KEY,
           "cfg: duplicate detection precedes range checking");
-    CHECK(parse_str("store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 99999999999\n",
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 99999999999\n",
                     &cfg, &line) == AUTHD_CFG_ERR_RANGE,
           "cfg: a number that would overflow is refused");
+
+    /* the passphrase file is required: the daemon cannot open its key without
+     * one, and V4-8b deliberately offers no env/argv alternative */
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 9\n", &cfg, &line)
+              == AUTHD_CFG_ERR_MISSING,
+          "cfg: key_passphrase_file is required");
+    CHECK(parse_str(BASE, &cfg, &line) == AUTHD_CFG_OK &&
+          strcmp(cfg.key_passphrase_file, "/p") == 0,
+          "cfg: key_passphrase_file is parsed into its own field");
 
     /* the contract the fuzzer found broken: a failed parse applies nothing */
     {
@@ -111,19 +120,19 @@ static void test_config(void)
 
     /* comments, blanks, no trailing newline, CRLF */
     CHECK(parse_str("# c\n\n" BASE, &cfg, &line) == AUTHD_CFG_OK, "cfg: comments and blank lines");
-    CHECK(parse_str("store_path = /s\nkey_path = /k\nserver_id = s\nlisten_port = 9", &cfg, &line) == AUTHD_CFG_OK,
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 9", &cfg, &line) == AUTHD_CFG_OK,
           "cfg: a final line without a newline still parses");
-    CHECK(parse_str("store_path = /s\r\nkey_path = /k\r\nserver_id = s\r\nlisten_port = 9\r\n", &cfg, &line)
+    CHECK(parse_str("store_path = /s\r\nkey_path = /k\r\nkey_passphrase_file = /p\r\nserver_id = s\r\nlisten_port = 9\r\n", &cfg, &line)
               == AUTHD_CFG_OK,
           "cfg: CRLF line endings are accepted");
     CHECK(parse_str(BASE "server_id = \n", &cfg, &line) == AUTHD_CFG_ERR_DUPLICATE_KEY,
           "cfg: an empty value on a duplicate key still reports the duplicate");
-    CHECK(parse_str("store_path = /s\nkey_path = /k\nserver_id = \nlisten_port = 9\n", &cfg, &line)
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = \nlisten_port = 9\n", &cfg, &line)
               == AUTHD_CFG_ERR_VALUE,
           "cfg: an empty required value is refused");
     /* a NUL inside a value must not be stored and handed to open() later */
     {
-        const char raw[] = "store_path = /a\0b\nkey_path = /k\nserver_id = s\nlisten_port = 9\n";
+        const char raw[] = "store_path = /a\0b\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 9\n";
         CHECK(authd_config_parse((const uint8_t *)raw, sizeof raw - 1u, &cfg, &line) == AUTHD_CFG_ERR_VALUE,
               "cfg: a NUL byte inside a value is refused");
     }

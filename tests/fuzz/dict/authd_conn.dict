@@ -1,0 +1,15 @@
+# fuzz_authd_conn: the application op bytes and the frame-length prefixes the
+# harness uses to split its input into frames. Handshake messages are far too
+# structured to reach by mutation -- the seeds carry a real ClientHello -- so
+# the tokens here are the bytes that steer the STATE MACHINE, not the crypto.
+op_login_code="\x10"
+op_rotate="\x11"
+op_rotate_ack="\x12"
+op_error="\x1f"
+op_bye="\x20"
+version_01="\x01"
+err_not_permitted="\x02"
+len_1="\x00\x01"
+len_43="\x00\x2b"
+len_281="\x01\x19"
+len_1330="\x05\x32"

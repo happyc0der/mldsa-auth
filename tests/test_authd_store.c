@@ -446,7 +446,8 @@ int main(void)
     {
         char cmd[640];
         snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
-        (void)system(cmd);
+        /* see the note in test_authd_conn.c: (void) does not silence gcc here */
+        if (system(cmd) != 0) { /* best-effort cleanup */ }
     }
 
     printf("%s: test_authd_store (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);

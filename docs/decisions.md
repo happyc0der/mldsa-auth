@@ -3569,3 +3569,171 @@ fuzz targets, green on the first run, with all 21 new mutations KILLED on Linux
 under `objdump`-based fingerprinting. The control (v48a's D1 expectation rotted
 to text no check prints) turned that row and only that row red with
 `SURVIVED(BAD:)`, then was reverted byte-exactly.
+
+## V4-8b — the connection state machine, and the first login the daemon serves
+
+V4-8a's daemon accepted, reassembled, timed out and drained, then closed every
+frame unserved. V4-8b puts the protocol on it. At the end of this step an
+enrolled operator connects, authenticates with the real library handshake, and
+receives a login code — **milestone A, locally.**
+
+### The decoy flow is what makes the pin a daemon decision
+
+Spec §7.3 / Req 6 require an unknown, revoked, superseded or disabled identity
+to be indistinguishable from a known identity whose signature is wrong. The
+library refuses an unknown id at `accept_client_hello()` with
+`UNKNOWN_IDENTITY` — before any ServerHello — which is precisely the
+enumeration channel. So the daemon chooses the pin *first*: it peeks the
+ClientHello with `decode_client_hello()` (public, and already used this way at
+`apps/demo_app.c:260`), asks `store_lookup_active()`, and pins either the real
+key or the store's decoy into a per-slot scratch keystore. V4-7's three-join
+lookup is what makes this cheap to get right: unknown, revoked, superseded and
+disabled all collapse to one `STORE_ERR_NOT_FOUND`, so there is exactly one
+branch to be uniform about and no way to add a fifth case that forgets.
+
+`accept_client_hello()` can therefore never return `UNKNOWN_IDENTITY` in the
+daemon, and **no library code changed** (V4 decision 3 held).
+
+The test measures the property rather than asserting it: a known handle signing
+with the wrong key and an unknown handle reach the same client-side outcome,
+neither receives a record, and — the canary that stops it being trivially true
+— the unknown handle still gets a ServerHello it can *verify*, so both sides
+really did complete the same exchange. The decoy branch is deliberately not
+distinguished in the log either; that would reopen the channel one layer up.
+
+### 64 KB of keystore per slot, accepted with the number written down
+
+A slot is ~91 KiB, of which the scratch `keystore_t` is 64 552 B — 69 %, to
+hold exactly one of its 32 entries. At the default `max_slots = 256` that is
+23.9 MB total and unremarkable; at the 4 096 ceiling it is 382 MB, of which
+264 MB is dead keystore. The alternative — a ~45-line lookup callback in
+`handshake.h` — would be the first change to the verified handshake since
+v2.0.0, so it is deferred to **V4-12**, which already opens `handshake.{h,c}`
+for the ledger and can re-verify both edits in one campaign. The number is
+recorded here so `max_slots` is a budget an operator can compute rather than a
+surprise.
+
+### One clock, pushed in
+
+`evloop_run_once()` already took `now_ms`; rather than widen the callback
+signature, `authd_app_t` carries `now_ms`/`now_unix` and the main loop sets
+them immediately before each iteration with the same values it gives the loop.
+The pending ledger and the session both take the library's
+`handshake_clock_fn` pointed at that field, so ledger expiry, session limits
+and login-code expiry cannot disagree, and the test drives all of them exactly.
+
+**A plan item that turned out to be a tautology, removed rather than faked:**
+V4-8b's plan promised a startup check that `handshake_timeout_ms` does not
+exceed the ledger TTL. But the daemon sets the TTL *to* the handshake timeout,
+so the invariant holds by construction and a test for it would assert
+`x <= x`. The check is not implemented and no test pretends to cover it.
+
+### The login code
+
+The first record is the confirmation record (spec-v2 §6.4.4 permits content),
+carrying `LOGIN_CODE`: 43 bytes of content, a 281-byte record at bucket 256 —
+both pinned by `_Static_assert` against the spec's own numbers rather than
+retyped. The store receives `SHA-256(code)` (Req 4) bound to
+`{user, handle, handshake_id, SHA-256(state)}` (Req 5); the code itself exists
+only inside the sealed record and is wiped immediately after. `code_expires` is
+`now + 60 s` — Req 5's ceiling, expressed as the constant
+`AUTHD_LOGIN_CODE_TTL_S` so it cannot drift below by accident.
+
+On the raw/tunnel listener `state` is the **empty string**: §7.1 puts `state`
+on the WebSocket URL, which a tunnelled operator CLI has no equivalent of, and
+login-CSRF is a browser threat. The *mechanism* is built and tested now — a
+code issued against one state is refused against another — and V4-10 gives the
+WebSocket listener a real value. Only the raw listener's value is fixed.
+
+After the login code the daemon accepts exactly `BYE`. A well-formed `ROTATE`
+gets `ERROR(0x02 not permitted)` and a close, because rotation is V4-9's: a
+half-implemented rotation that answered would be worse than one that refuses.
+
+### The passphrase is a file, and that is a security decision
+
+`key_passphrase_file` is a required config key. Environment variables and argv
+are readable by other processes; a file is not, and a systemd credential *is* a
+file under `$CREDENTIALS_DIRECTORY`, so V4-11 points this at the credential and
+changes nothing else. The daemon refuses anything that is not a regular 0600
+file of at most 4 KiB, strips one trailing newline (every editor and
+`systemd-creds` adds one), reads it into secure memory and wipes it the moment
+`keyfile_open` returns. The KEK it returns is passed to `store_open` for the
+audit key and wiped immediately after.
+
+### The fuzz oracle was weak, and the probe is what found it
+
+`fuzz_authd_conn` drives one slot in-process. Its oracle is the state machine's
+invariants, not a re-implementation — predicting the stage for arbitrary bytes
+would mean re-implementing `decode_client_hello` and the responder handshake,
+which is two copies of one misunderstanding. The invariants: the stage never
+moves backwards or skips a step; `SERVING` is unreachable by a decoy or without
+a resolved user id (a decoy reaching `SERVING` would hand a login code to an
+unauthenticated peer); a login is counted only on entering `SERVING`; and a
+closed connection retains nothing.
+
+The non-vacuity probe earned its keep. Deleting the handle wipe from
+`conn_reset()` **did not** fail the oracle: the check tested `handle_len == 0`,
+which the mutation left true, while the bytes stayed in the buffer. The oracle
+now asserts `sodium_is_zero()` over the handle and user-id buffers themselves,
+and the same probe fails it immediately. A wipe check that only reads the
+length is not a wipe check.
+
+### Three survivors in the first v48b run — three different things
+
+Reported as the campaign actually ran. None was re-run to green, and the three
+needed three different answers, which is the point of reading a survivor rather
+than reacting to it.
+
+**C4 (the `state` binding broken) SURVIVED — my SPEC was wrong, not the test.**
+Zeroing `state_hash` still makes the code refuse a *different* state, so the
+check the spec named kept passing. What actually breaks is the very next check:
+consuming with the correct `SHA-256("")` now mismatches, so the code cannot be
+redeemed at all. The spec now names that check. A mutation that is killed by a
+test other than the one the spec names is a bookkeeping error, and the fix is
+to the bookkeeping.
+
+**C6 (the handshake not wiped on release) SURVIVED — a real gap in the test,
+the same shape as V4-8a's D4.** The wipe test used a *successful* connection,
+and on that path `session_init_from_handshake()` has already consumed the
+handshake context, so `handshake_ctx_wipe()` is a no-op and its removal cannot
+be observed. The path where it matters is a connection abandoned
+**mid-handshake**: the context is still live, and wiping it is what CANCELS its
+pending-ledger entry. That is not tidiness — at a 256-entry ledger, an
+abandoned handshake holding capacity until its TTL is a denial-of-service
+lever. The test now opens a connection, sends only the ClientHello, confirms
+the ledger holds exactly one entry (canary), abandons it, and requires the
+entry to be released immediately. C6 kills against that.
+
+Twice now — D4 and C6 — a wipe has survived because the test exercised the path
+where the wipe was redundant. The lesson is specific and worth stating: **test a
+wipe on the path where something is still there to wipe.**
+
+**C8 (the `decoy || no-user-id` guard before issuing a code) SURVIVED — an
+equivalent mutant, and the guard stays.** It protects a state the rest of the
+design makes unreachable: a decoy pin has no secret key, so no `sig_A` over it
+can ever verify, and `store_lookup_active` never returns OK with an empty user
+id. Nothing reachable through the daemon's interface can distinguish its
+removal. Absent from `spec_v48b.txt` for the same reason N7 and D7 are, with
+the reasoning in the campaign header so nobody "restores" it later. The
+`fuzz_authd_conn` oracle asserts the same property as an invariant, which is
+where it would be caught if a future change ever made the state reachable.
+
+### What the pre-push Linux check found this time
+
+V4-8a's lesson was "verify on Linux before pushing, not after". Doing that here
+caught a real gcc error before CI ever saw it: `(void)system(...)` does **not**
+silence gcc's `warn_unused_result` — the identical trap V4-5 fixed for
+`symlink()` (finding F0). It was in the new `test_authd_conn.c` and, once
+looked for, in two files already on `main`
+(`test_authd_keyfile.c`, `test_authd_store.c`) that CI's gcc had not flagged.
+All three now consume the result. Fixing the two out-of-scope files rather than
+leaving known landmines is a deliberate departure from the declared file list,
+reported here rather than buried in the diff.
+
+Running the same check at `-O2 -D_FORTIFY_SOURCE=2` — which CI does not build
+for gcc — surfaced a second, pre-existing issue: a `-Werror=format-truncation`
+error in a V4-6 test helper. It is **not** fixed in V4-8b, because it belongs
+to neither this step's code nor its scope; it is recorded as audit finding
+**F19** and owned by V4-11, where a Release+gcc build is actually required.
+The honest summary is that the project has a configuration nothing builds
+today, and two findings now live in it.

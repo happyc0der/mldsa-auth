@@ -161,7 +161,9 @@ int main(void) {
       } }
 
     secure_mem_free(img, ilen);
-    { char cmd[300]; snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir); (void)system(cmd); }
+    { char cmd[300]; snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
+      /* see the note in test_authd_conn.c: (void) does not silence gcc here */
+      if (system(cmd) != 0) { /* best-effort cleanup */ } }
     printf(g_fail ? "\nFAILED\n" : "\nAll checks passed\n");
     return g_fail;
 }

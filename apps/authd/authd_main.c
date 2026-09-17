@@ -22,11 +22,18 @@
 
 #include <sodium.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
 #include "authd_config.h"
+#include "authd_conn.h"
 #include "authd_log.h"
 #include "conn_io.h"
 #include "evloop.h"
+#include "keyfile.h"
 #include "listener.h"
+#include "secure_mem.h"
+#include "store.h"
 
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
  * happens in the handler -- no logging, no allocation, no close(). */
@@ -49,13 +56,59 @@ static uint64_t now_ms(void)
     return 0u;
 }
 
-static ev_action_t frame_not_implemented(void *user, authd_slot_t *slot,
-                                         const uint8_t *payload, size_t len)
+/* Reads the passphrase file into secure memory. Refuses anything that is not
+ * a regular 0600 file of at most AUTHD_PASSPHRASE_MAX bytes: a passphrase that
+ * any other user can read is not a passphrase. A single trailing newline is
+ * stripped, because every editor and `systemd-creds` adds one and an operator
+ * should not have to know that. Caller wipes and frees. */
+static uint8_t *read_passphrase(const char *path, size_t *len_out)
 {
-    (void)user; (void)payload;
-    authd_log_num(AUTHD_LOG_WARN, "frame-not-implemented", "bytes", (uint64_t)len);
-    authd_log_slot(AUTHD_LOG_INFO, "closing-unserved", slot->index);
-    return EV_ACTION_CLOSE;
+    *len_out = 0;
+    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "mldsa-authd: passphrase file %s: cannot open\n", path);
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "mldsa-authd: passphrase file %s: not a regular file\n", path);
+        (void)close(fd);
+        return NULL;
+    }
+    if ((st.st_mode & 077) != 0) {
+        fprintf(stderr, "mldsa-authd: passphrase file %s: mode must be 0600\n", path);
+        (void)close(fd);
+        return NULL;
+    }
+    if (st.st_size <= 0 || (uintmax_t)st.st_size > (uintmax_t)AUTHD_PASSPHRASE_MAX) {
+        fprintf(stderr, "mldsa-authd: passphrase file %s: empty or over %u bytes\n",
+                path, (unsigned)AUTHD_PASSPHRASE_MAX);
+        (void)close(fd);
+        return NULL;
+    }
+    uint8_t *buf = secure_mem_alloc((size_t)st.st_size);
+    if (buf == NULL) {
+        (void)close(fd);
+        return NULL;
+    }
+    size_t got = 0;
+    while (got < (size_t)st.st_size) {
+        const ssize_t n = read(fd, buf + got, (size_t)st.st_size - got);
+        if (n <= 0) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    (void)close(fd);
+    if (got != (size_t)st.st_size) {
+        secure_mem_free(buf, (size_t)st.st_size);
+        return NULL;
+    }
+    if (got > 0u && buf[got - 1u] == (uint8_t)'\n') {
+        got--;
+    }
+    *len_out = got;
+    return buf;
 }
 
 static void usage(const char *prog)
@@ -114,19 +167,100 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Slots: one allocation, at startup, sized by the operator's budget. After
-     * this the loop allocates nothing. */
+    /* The pending ledger caps CONCURRENT handshakes at HANDSHAKE_PENDING_MAX
+     * (256) regardless of max_slots, until V4-12's init_ext. Its TTL is the
+     * handshake timeout, and the library requires the timeout not to exceed
+     * the TTL -- the same invariant demo_app.c enforces -- so a config that
+     * violates it is refused HERE rather than producing expired entries under
+     * load. */
+    const size_t ledger_cap = ((size_t)cfg.max_slots < (size_t)HANDSHAKE_PENDING_MAX)
+                                  ? (size_t)cfg.max_slots
+                                  : (size_t)HANDSHAKE_PENDING_MAX;
+
+    /* Slots and connections: two allocations, at startup, sized by the
+     * operator's budget. After this neither the loop nor the connection layer
+     * allocates anything per connection. */
     authd_slot_t *slots = calloc((size_t)cfg.max_slots, sizeof *slots);
-    if (slots == NULL) {
+    authd_conn_t *conns = calloc((size_t)cfg.max_slots, sizeof *conns);
+    if (slots == NULL || conns == NULL) {
         fprintf(stderr, "mldsa-authd: cannot allocate %u slots\n", cfg.max_slots);
+        free(slots); free(conns);
         return 1;
     }
+
+    /* The server identity: opened from its MLDSAEK1 envelope with the
+     * passphrase file, returning the KEK so the store can derive its audit
+     * key (spec 9.2.4). The passphrase and the KEK are wiped as soon as they
+     * have done their jobs; the secret key stays in secure memory. */
+    static authd_app_t app;
+    memset(&app, 0, sizeof app);
+
+    mldsa_keypair_t server_kp;
+    memset(&server_kp, 0, sizeof server_kp);
+    uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+    if (kek == NULL) {
+        free(slots); free(conns);
+        return 1;
+    }
+    {
+        size_t pass_len = 0;
+        uint8_t *pass = read_passphrase(cfg.key_passphrase_file, &pass_len);
+        if (pass == NULL) {
+            secure_mem_free(kek, STORE_KEK_BYTES);
+            free(slots); free(conns);
+            return 1;
+        }
+        const keyfile_status_t ks = keyfile_open(cfg.key_path, cfg.server_id, cfg.server_id_len,
+                                                 (const char *)pass, pass_len, &server_kp, kek);
+        secure_mem_free(pass, pass_len);
+        if (ks != KEYFILE_OK) {
+            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(ks));
+            secure_mem_free(kek, STORE_KEK_BYTES);
+            free(slots); free(conns);
+            return 1;
+        }
+    }
+
+    store_t *store = NULL;
+    {
+        const store_status_t ss = store_open(cfg.store_path, kek, &store);
+        secure_mem_free(kek, STORE_KEK_BYTES);   /* the store holds its own derived key now */
+        kek = NULL;
+        if (ss != STORE_OK) {
+            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.store_path, store_status_name(ss));
+            mldsa_keypair_free(&server_kp);
+            free(slots); free(conns);
+            return 1;
+        }
+    }
+
+    app.conns = conns;
+    app.n_conns = (size_t)cfg.max_slots;
+    app.store = store;
+    app.server_kp = &server_kp;
+    app.server_id = cfg.server_id;
+    app.server_id_len = cfg.server_id_len;
+    app.pad_bucket = cfg.pad_bucket;
+    app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
+    app.now_ms = now_ms();
+    app.now_unix = (int64_t)time(NULL);
+
+    static handshake_pending_store_t pending;
+    if (handshake_pending_store_init(&pending, ledger_cap, (uint64_t)cfg.handshake_timeout_ms,
+                                     authd_app_clock, &app) != PENDING_OK) {
+        fprintf(stderr, "mldsa-authd: pending ledger init failed\n");
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns);
+        return 1;
+    }
+    app.pending = &pending;
 
     evloop_t ev;
     if (evloop_init(&ev, slots, (size_t)cfg.max_slots,
                     cfg.handshake_timeout_ms, cfg.idle_timeout_ms,
-                    frame_not_implemented, NULL, NULL) != 0) {
-        free(slots);
+                    authd_conn_on_frame, authd_conn_on_close, &app) != 0) {
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns);
         fprintf(stderr, "mldsa-authd: event loop init failed\n");
         return 1;
     }
@@ -177,7 +311,12 @@ int main(int argc, char **argv)
         if (draining && evloop_active(&ev) == 0u) {
             break;
         }
-        if (evloop_run_once(&ev, draining ? 50 : 1000, now_ms()) < 0) {
+        /* One clock, pushed to both: the loop and the connection layer see
+         * the same instant, so ledger expiry, session limits and login-code
+         * expiry cannot disagree. */
+        app.now_ms = now_ms();
+        app.now_unix = (int64_t)time(NULL);
+        if (evloop_run_once(&ev, draining ? 50 : 1000, app.now_ms) < 0) {
             if (errno == EINTR) {
                 continue;
             }
@@ -187,9 +326,15 @@ int main(int argc, char **argv)
     }
 
     authd_log_num(AUTHD_LOG_INFO, "stopped", "accepted", ev.accepted);
+    authd_log_num(AUTHD_LOG_INFO, "stopped", "logins", app.logins_issued);
     evloop_close_all(&ev);
     listener_close(&tcp_fd, NULL);
     listener_close(&unix_fd, unix_path);
+    handshake_pending_store_wipe(&pending);
+    store_close(store);
+    mldsa_keypair_free(&server_kp);
+    sodium_memzero(conns, (size_t)cfg.max_slots * sizeof *conns);
+    free(conns);
     free(slots);
     return 0;
 }
