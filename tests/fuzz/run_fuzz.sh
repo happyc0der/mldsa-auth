@@ -23,8 +23,22 @@ case "$MODE" in
 esac
 [ -n "$BUILD" ] || { echo "usage: $0 smoke|local <build-fuzz-dir> [targets...]"; exit 2; }
 shift 2
-TARGETS="${*:-wire handshake session frame keys}"
 HERE=$(cd "$(dirname "$0")" && pwd)
+# The default target list is SINGLE-SOURCED from CMakeLists.txt's FUZZ_TARGETS.
+# It used to be hardcoded here, and when V4-6 added `envelope` to CMake this
+# line was not updated -- so `run_fuzz.sh smoke` (which is exactly what CI
+# runs, with no target arguments) silently exercised five targets and never the
+# sixth. Deriving it means a target added to the build can never be skipped
+# here again. If the parse ever yields nothing, that is a hard failure rather
+# than a silent empty run.
+default_targets() {
+    sed -n 's/^[[:space:]]*set(FUZZ_TARGETS[[:space:]]\{1,\}\([^)]*\)).*/\1/p' "$HERE/CMakeLists.txt"
+}
+TARGETS="${*:-$(default_targets)}"
+if [ -z "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ]; then
+    echo "FAIL: could not determine the fuzz target list from $HERE/CMakeLists.txt"
+    exit 2
+fi
 BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "SKIP: build directory not found"; exit 0; }
 
 maxlen() {
