@@ -111,8 +111,8 @@ int main(void)
     }
 
     char dbp[512];
-    uint8_t pkA[STORE_PK_BYTES], pkB[STORE_PK_BYTES], pkC[STORE_PK_BYTES];
-    make_pk(pkA, 1); make_pk(pkB, 2); make_pk(pkC, 3);
+    uint8_t pkA[STORE_PK_BYTES], pkB[STORE_PK_BYTES], pkC[STORE_PK_BYTES], pkD[STORE_PK_BYTES];
+    make_pk(pkA, 1); make_pk(pkB, 2); make_pk(pkC, 3); make_pk(pkD, 4);
 
     /* ---- open, meta, audit on a virgin store ---------------------------- */
     {
@@ -220,21 +220,33 @@ int main(void)
 
         const uint8_t hsid[16] = {9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9};
         uint8_t got[STORE_PK_BYTES];
+        int64_t rot_at = 0;
 
         /* happy path */
-        CHECK(store_rotate_key(s, H1, sizeof H1, pkB, hsid, sizeof hsid, 0) == STORE_OK, "rotate succeeds");
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkB, NULL, hsid, sizeof hsid, 0, 1000, &rot_at, NULL) == STORE_OK,
+              "rotate succeeds");
         CHECK(store_lookup_active(s, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_OK &&
               memcmp(got, pkB, STORE_PK_BYTES) == 0,
               "after rotation the NEW key is the active one");
-        CHECK(store_rotate_key(s, H1, sizeof H1, pkA, hsid, sizeof hsid, 0) == STORE_ERR_CONFLICT,
+        CHECK(rot_at == 1000, "rotate stamps the caller's clock, not its own wall time");
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkA, NULL, hsid, sizeof hsid, 0, 1000, NULL, NULL) == STORE_ERR_CONFLICT,
               "rotating back to a superseded key is refused (pk unique forever)");
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkB, NULL, hsid, sizeof hsid, 0, 1000, NULL, NULL) == STORE_ERR_STATE,
+              "rotating to the key already active is STATE, distinct from a duplicate");
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkC, NULL, hsid, 15u, 0, 1000, NULL, NULL) == STORE_ERR_ARG,
+              "a handshake_id that is not 16 bytes is refused before any bind");
+        {
+            int64_t vf = 0;
+            CHECK(store_active_key_age(s, H1, sizeof H1, &vf) == STORE_OK && vf == 1000,
+                  "the active key's valid_from is readable for the rotation_due hint");
+        }
 
         /* ---- the atomicity proof ----
          * Arm the fault so it fires at the point between "old key superseded"
          * and "new key inserted". Without one transaction the store would be
          * left with NO active key for this handle. */
         store_fault_arm(0);
-        store_status_t rr = store_rotate_key(s, H1, sizeof H1, pkC, hsid, sizeof hsid, 0);
+        store_status_t rr = store_rotate_key(s, H1, sizeof H1, pkC, NULL, hsid, sizeof hsid, 0, 1000, NULL, NULL);
         CHECK(rr != STORE_OK, "a fault injected mid-rotation makes the rotation fail");
         store_fault_arm(-1);
 
@@ -251,11 +263,48 @@ int main(void)
                   memcmp(got, pkB, STORE_PK_BYTES) == 0,
                   "a half-rotation is impossible: after reopen the old key is still active");
             /* the abandoned new key must not be anywhere */
-            CHECK(store_rotate_key(s2, H1, sizeof H1, pkC, hsid, sizeof hsid, 0) == STORE_OK,
+            CHECK(store_rotate_key(s2, H1, sizeof H1, pkC, NULL, hsid, sizeof hsid, 0, 1000, NULL, NULL) == STORE_OK,
                   "the rolled-back key was never inserted, so it is still enrollable");
             CHECK(store_audit_verify(s2) == STORE_OK, "audit chain verifies after a rolled-back rotation");
             store_close(s2);
         }
+    }
+
+    /* Rotation must be refused for a device or a user that is no longer active,
+     * and refused INSIDE the transaction rather than by whoever calls it: the
+     * daemon and authd_admin are different processes writing the same file, so
+     * a caller-side pre-check is a race, and Req 9 says revocation is
+     * immediate. All three not-active outcomes answer NOT_FOUND so nothing
+     * downstream can tell them apart. */
+    {
+        char dbp[512];
+        store_t *s = fresh_store("d.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open d\n"); return 1; }
+        static const uint8_t H2[] = { 'd','1','b','b' };
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK, "rev-rot: add_user");
+        CHECK(store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK,
+              "rev-rot: enroll one");
+        CHECK(store_enroll_device(s, H2, sizeof H2, U1, sizeof U1, pkB, "site", "admin", NULL, 0) == STORE_OK,
+              "rev-rot: enroll two");
+        const uint8_t hsid[16] = {7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7};
+
+        /* Present canary: this handle CAN rotate right now, so the refusals
+         * below are caused by the status change and not by the fixture. */
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkC, NULL, hsid, sizeof hsid, 0, 2000, NULL, NULL) == STORE_OK,
+              "rev-rot: an active device rotates (canary)");
+
+        CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK,
+              "rev-rot: revoke the device");
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkD, NULL, hsid, sizeof hsid, 0, 2200, NULL, NULL)
+                  == STORE_ERR_NOT_FOUND,
+              "a revoked device cannot rotate its key");
+
+        CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK,
+              "rev-rot: disable the user");
+        CHECK(store_rotate_key(s, H2, sizeof H2, pkD, NULL, hsid, sizeof hsid, 0, 2400, NULL, NULL)
+                  == STORE_ERR_NOT_FOUND,
+              "a disabled user's device cannot rotate its key");
+        store_close(s);
     }
 
     /* ---- tokens and login codes ----------------------------------------- */

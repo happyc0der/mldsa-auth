@@ -95,4 +95,16 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
                               const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                               uint8_t *kek_out);
 
+/* Atomically replaces `to` with `from` (rename(2)), after checking `from`'s
+ * custody the way keyfile_open does: O_NOFOLLOW, a regular file, owned by this
+ * euid, no group or other permission bits.
+ *
+ * This is the ONLY function here that clobbers. Rotation needs it: spec 10.2
+ * has the client write <handle>.ek.next and rename it over <handle>.ek when
+ * the daemon acknowledges, and any non-atomic version leaves a window with two
+ * key files and no way to know which one the server accepted. Do not reach for
+ * it anywhere else -- keyfile_seal's refuse-if-exists is the rule, and this is
+ * the documented exception. */
+keyfile_status_t keyfile_promote(const char *from, const char *to);
+
 #endif

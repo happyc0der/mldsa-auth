@@ -36,6 +36,8 @@
 #define AUTHD_SLOTS_MAX          4096u
 #define AUTHD_TIMEOUT_MS_MIN     100u
 #define AUTHD_TIMEOUT_MS_MAX     600000u
+#define AUTHD_ROTATION_AGE_MAX   (10u * 365u * 24u * 3600u)   /* ten years */
+#define AUTHD_ROTATION_AGE_DEFAULT (180u * 24u * 3600u)       /* 180 days */
 
 typedef enum {
     AUTHD_CFG_OK = 0,
@@ -76,6 +78,11 @@ typedef struct {
     uint32_t handshake_timeout_ms;
     uint32_t idle_timeout_ms;
     uint32_t pad_bucket;
+    /* How old an active device key may get before LOGIN_CODE sets its
+     * rotation_due hint. Spec 6.2 defines the flag; neither 10.2 nor 17
+     * defines a cadence, so this is an operator policy with a default rather
+     * than an invented protocol constant. 0 disables the hint entirely. */
+    uint32_t rotation_due_age_s;
 } authd_config_t;
 
 /* Fills `out` with the documented defaults for the optional keys. */

@@ -24,7 +24,18 @@ campaigns, the full fuzz corpus, clang-tidy, scan-build and `-Weverything`.
 What that verification does and does not establish is recorded in
 [docs/decisions.md](docs/decisions.md) under *V2-10*.
 
-Since then the verification has been **automated rather than changed**: the
+Since `v2.0.0` the repository has grown a second artefact: **`mldsa-authd`**, a
+daemon that turns the protocol into a login system — a device authenticates
+with the post-quantum handshake and receives a single-use login code, which a
+site exchanges over a local Unix socket for an opaque session token. Devices can
+be enrolled, revoked, and **rotate their keys** while keeping their identity.
+It has its own specification ([docs/mldsa-authd-spec.md](docs/mldsa-authd-spec.md)),
+its own store, its own CLIs, and nothing in it changes a byte on the wire. It is
+**not deployed**: WebSocket, rate limiting, the systemd unit and the operational
+runbook are still ahead. See *The authentication daemon* below for what works
+today and what does not.
+
+Since `v2.0.0` the verification has been **automated rather than changed**: the
 library, the reference apps and the build are byte-identical to the `v2.0.0`
 tag, and what was a one-off retrospective now runs on every push and every
 night (see *How this is verified*). That work carries its own `v3-step*` tags
@@ -110,7 +121,7 @@ cmake --build build-fuzz -j8
 ctest --test-dir build --output-on-failure
 ```
 
-27 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+28 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
@@ -179,7 +190,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, the 59 must-kill mutations in
+at 03:17 UTC every day, and on demand, the committed must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub
@@ -384,6 +395,18 @@ node /tmp/authd-demo/site.mjs "<the code from step 5>"
 kill %1
 ```
 
+```sh
+# 7. Replace this device's key, keeping its identity. The new key is sealed to
+#    <key>.next BEFORE anything is sent and renamed over <key> only when the
+#    daemon acknowledges, so an interrupted rotation is always recoverable --
+#    the next login asks the daemon which key is live and finishes the job.
+"$REPO/build/apps/authd/authd_client" rotate \
+    --handle "$HANDLE" --key "/tmp/authd-demo/dev/$HANDLE.ek" \
+    --passphrase-file /tmp/authd-demo/opass \
+    --server-id authd --server-pub /tmp/authd-demo/data/server.pub \
+    --unix /tmp/authd-demo/p.sock
+```
+
 Identifiers and labels are hex on the wire and are printed back as hex: they
 are attacker-influenced strings, and a tool that decodes them for display is a
 tool with a terminal-escape hazard. `xxd -r -p` decodes one when you want it.
@@ -392,8 +415,7 @@ tool with a terminal-escape hazard. `xxd -r -p` decodes one when you want it.
 environment are readable by other processes on the same host. The file must be
 mode 0600 and owned by you; anything else is a configuration error (exit 3).
 
-Not yet, and named rather than implied: `authd_client rotate` and the recovery
-flow are V4-9c; WebSocket, the client IP behind a proxy and rate limiting are
+Not yet, and named rather than implied: the recovery flow is V4-9d; WebSocket, the client IP behind a proxy and rate limiting are
 V4-10; the systemd unit, the hardening flags and the runbook are V4-11. Until
 those land this is a working milestone, not a deployment.
 
@@ -543,7 +565,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | 59 mutations as 9 campaigns against fresh ASan trees — 8 on Linux, and one on macOS for the campaign whose mutations live in macOS-only code — plus 600 s per fuzz target with crash artifacts kept — ~20 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | every committed campaign against fresh ASan trees — the architecture-independent ones on Linux, and one on macOS for the campaign whose mutations live in macOS-only code — plus 600 s per fuzz target with crash artifacts kept — ~20 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
@@ -560,12 +582,12 @@ inactivity still shows its last green run — check the date, not the colour.
 | `src/crypto/` | Thin wrappers over liboqs and libsodium: ML-DSA, X25519, HKDF, AEAD |
 | `src/protocol/` | Wire format and transcripts, handshake state machine, pending ledger, keystore, session record layer |
 | `src/util/` | Secure memory, integer encoding |
-| `apps/` | Reference transport (socket I/O, framing, demo key files) and the `auth_client` / `auth_server` binaries |
+| `apps/` | Reference transport (socket I/O, framing, demo key files) and the `auth_client` / `auth_server` demo binaries; `apps/authd/` is the authentication daemon — its store, key envelope, local API and the `authd_admin` / `authd_client` tools |
 | `tests/` | Deterministic test suite; `tests/fuzz/` holds the fuzz targets, corpora and regressions |
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 59 committed mutations in `tools/mutations/`, and three checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 122 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 

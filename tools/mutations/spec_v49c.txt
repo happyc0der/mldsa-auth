@@ -1,0 +1,12 @@
+W1|^test_authd_conn$|a ROTATE whose flags byte changed after signing is REJECTED
+W2|^test_authd_conn$|the digest matches the hand-built spec 6.3 vector for both labels
+W3|^test_authd_conn$|a ROTATE whose sig_new is by the OLD key is REJECTED
+W4|^test_authd_conn$|that session's ROTATE is REJECTED
+W5|^test_authd_conn$|a ROTATE captured from one session is REJECTED on a second
+W7|^test_authd_store$|a revoked device cannot rotate its key
+W8|^test_authd_store$|rotate stamps the caller's clock, not its own wall time
+W9|^test_authd_conn$|a SECOND ROTATE on the same session is refused with ERROR(0x02)
+W11|^test_authd_conn$|pk-in-use and bad-signature produce the SAME error code
+W12|^test_authd_conn$|the login code never appears in the daemon's log
+W13|^test_authd_conn$|a ROTATE with one trailing byte is REJECTED
+W14|^test_authd_cli$|an unreadable .ek never causes .ek.next to be deleted

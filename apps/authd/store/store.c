@@ -785,18 +785,93 @@ store_status_t store_enroll_device(store_t *s,
     return tx_commit(s);
 }
 
+/* The user a handle belongs to. Used only to attribute an audit row. */
+static store_status_t user_of_handle(store_t *s, const uint8_t *handle, size_t handle_len,
+                                     uint8_t *out, size_t cap, size_t *out_len)
+{
+    *out_len = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT user_id FROM devices WHERE handle=?1 LIMIT 1;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_ERR_NOT_FOUND;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else if (sqlite3_step(st) == SQLITE_ROW) {
+        const void *b = sqlite3_column_blob(st, 0);
+        const int n = sqlite3_column_bytes(st, 0);
+        if (b != NULL && n > 0 && (size_t)n <= cap) {
+            memcpy(out, b, (size_t)n);
+            *out_len = (size_t)n;
+            r = STORE_OK;
+        }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+/* Is this handle's device AND its user active? The three-join predicate, run
+ * INSIDE the caller's transaction.
+ *
+ * store_rotate_key used to resolve the key with active_key_of alone, which
+ * joins nothing -- so it would happily rotate the key of a revoked device or a
+ * disabled user, and spec 6.3's "re-read the store and confirm device and user
+ * are still active" could only be honoured by a caller-side pre-check. That is
+ * a cross-process TOCTOU: authd_admin writes this same file, so an operator
+ * disabling a user between the daemon's check and this call would have the
+ * rotation committed anyway. Req 9 says revocation is immediate; the predicate
+ * belongs in the transaction that commits. */
+static store_status_t device_and_user_active(store_t *s, const uint8_t *handle, size_t handle_len,
+                                             int *active_out)
+{
+    *active_out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT 1 FROM devices d JOIN users u ON u.user_id = d.user_id "
+            "WHERE d.handle=?1 AND d.status='active' AND u.status='active' LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { *active_out = 1; }
+        else if (rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
 store_status_t store_rotate_key(store_t *s,
                                 const uint8_t *handle, size_t handle_len,
                                 const uint8_t new_pk[STORE_PK_BYTES],
+                                const uint8_t expect_old_pk[STORE_PK_BYTES],
                                 const uint8_t *hsid, size_t hsid_len,
-                                int drop_tokens)
+                                int drop_tokens, int64_t now,
+                                int64_t *rotated_at_out, size_t *dropped_out)
 {
+    if (rotated_at_out != NULL) { *rotated_at_out = 0; }
+    if (dropped_out != NULL)    { *dropped_out = 0; }
     if (s == NULL || !id_ok(handle, handle_len) || new_pk == NULL) {
+        return STORE_ERR_ARG;
+    }
+    /* Validated BEFORE the size_t -> int narrowing the bind below performs. */
+    if (hsid != NULL && hsid_len != STORE_HSID_BYTES) {
         return STORE_ERR_ARG;
     }
 
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
+
+    int live = 0;
+    r = device_and_user_active(s, handle, handle_len, &live);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+    /* NOT_FOUND for every not-active outcome, so the caller cannot tell a
+     * revoked device from a disabled user from an unknown handle. */
+    if (!live) { tx_rollback(s); return STORE_ERR_NOT_FOUND; }
 
     uint8_t cur[STORE_PK_BYTES];
     int64_t cur_id = 0;
@@ -805,12 +880,31 @@ store_status_t store_rotate_key(store_t *s,
     if (r != STORE_OK) { tx_rollback(s); return r; }
     if (!have) { tx_rollback(s); return STORE_ERR_NOT_FOUND; }
 
+    /* Rotating to the key you already hold is not a rotation. Distinct from
+     * CONFLICT so a unit test can tell the two refusals apart -- the daemon
+     * maps both to one coarse wire code. */
+    if (sodium_memcmp(cur, new_pk, STORE_PK_BYTES) == 0) {
+        tx_rollback(s);
+        return STORE_ERR_STATE;
+    }
+
+    /* The caller may pin WHICH key it believes it is replacing, and that is
+     * checked in this transaction rather than before it.
+     *
+     * Spec 6.3 binds the digest to one exact old->new edge by hashing pk_old.
+     * Without this check the edge is only as true as the caller's memory: a
+     * session that authenticated with key A, and is still holding A as its
+     * pin, could rotate AFTER some other session already moved the handle to
+     * key B -- superseding B, which its signatures say nothing about. */
+    if (expect_old_pk != NULL && sodium_memcmp(cur, expect_old_pk, STORE_PK_BYTES) != 0) {
+        tx_rollback(s);
+        return STORE_ERR_STATE;
+    }
+
     int dup = 0;
     r = pk_exists(s, new_pk, &dup);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     if (dup) { tx_rollback(s); return STORE_ERR_CONFLICT; }
-
-    int64_t now = now_unix();
 
     /* Supersede FIRST: the partial unique index permits only one active key per
      * handle, so the new row cannot be inserted while the old one is active. */
@@ -869,14 +963,26 @@ store_status_t store_rotate_key(store_t *s,
         if (sqlite3_bind_blob(dt, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
             sqlite3_step(dt) != SQLITE_DONE) {
             r = STORE_ERR_DB;
+        } else if (dropped_out != NULL) {
+            *dropped_out = (size_t)sqlite3_changes(s->db);
         }
         sqlite3_finalize(dt);
         if (r != STORE_OK) { tx_rollback(s); return r; }
     }
 
-    r = audit_append(s, "key-rotate", NULL, 0, handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept");
+    /* The audit row carries the user, like device-enroll does: spec 15 wants
+     * rotations attributable, and a NULL user_id makes them anonymous. */
+    uint8_t uid[STORE_ID_MAX];
+    size_t uid_len = 0;
+    if (user_of_handle(s, handle, handle_len, uid, sizeof uid, &uid_len) != STORE_OK) {
+        uid_len = 0;
+    }
+    r = audit_append(s, "key-rotate", (uid_len > 0u) ? uid : NULL, uid_len,
+                     handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept");
     if (r != STORE_OK) { tx_rollback(s); return r; }
-    return tx_commit(s);
+    r = tx_commit(s);
+    if (r == STORE_OK && rotated_at_out != NULL) { *rotated_at_out = now; }
+    return r;
 }
 
 store_status_t store_revoke_device(store_t *s,
@@ -1643,5 +1749,29 @@ store_status_t store_backup(store_t *s, const char *dest_path)
     if (r == STORE_OK && chmod(dest_path, 0600) != 0) {
         r = STORE_ERR_IO;
     }
+    return r;
+}
+
+store_status_t store_active_key_age(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                    int64_t *valid_from_out)
+{
+    if (valid_from_out != NULL) { *valid_from_out = 0; }
+    if (s == NULL || !id_ok(handle, handle_len) || valid_from_out == NULL) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT valid_from FROM device_keys WHERE handle=?1 AND status='active' LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_ERR_NOT_FOUND;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else if (sqlite3_step(st) == SQLITE_ROW) {
+        *valid_from_out = sqlite3_column_int64(st, 0);
+        r = STORE_OK;
+    }
+    sqlite3_finalize(st);
     return r;
 }

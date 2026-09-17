@@ -62,8 +62,18 @@ typedef struct {
     uint8_t  user_id[STORE_ID_MAX];
     size_t   user_id_len;
 
+    /* The session's handshake_id, kept because ROTATE's digest binds to it
+     * (spec 6.3) and session_init_from_handshake CONSUMES the handshake
+     * context. session_t holds a copy but every field of it is private to
+     * session.c, and V4 decision 3 rules out changing the library for
+     * milestone A -- so this copy is paid for honestly: wiped in conn_reset,
+     * probed by the wipe test, and carrying its own mutation. */
+    uint8_t  handshake_id[STORE_HSID_BYTES];
+    int      hsid_set;
+
     int      decoy;             /* 1 = the pin is the decoy, not a real key */
     int      hs_live;           /* a handshake_ctx_t needs wiping */
+    int      rotated;           /* one ROTATE per session; see authd_conn.c */
 } authd_conn_t;
 
 /* Everything the connection layer needs that is not per-connection. One
@@ -85,6 +95,7 @@ typedef struct {
     evloop_t *ev;
 
     uint32_t pad_bucket;
+    uint32_t rotation_due_age_s;   /* 0 = never hint; spec defines no cadence */
     uint32_t code_ttl_s;
     uint64_t started_ms;      /* for PING's uptime */
     uint64_t next_sweep_ms;
@@ -99,6 +110,7 @@ typedef struct {
 
     /* observable counters (tests and operators) */
     uint64_t logins_issued;
+    uint64_t rotations;
     uint64_t decoy_pins;
     uint64_t handshakes_failed;
     uint64_t swept_tokens;

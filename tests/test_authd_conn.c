@@ -186,6 +186,9 @@ typedef struct {
     session_t       sess;
     keystore_t      pins;
     int             established;
+    /* Captured BEFORE session_init consumes the handshake context, because
+     * ROTATE's digest binds to it and nothing else can hand it back. */
+    uint8_t         hsid[STORE_HSID_BYTES];
 } client_t;
 
 /* Runs the handshake as the real library initiator. `kp` is the device key it
@@ -219,6 +222,7 @@ static int client_handshake(daemon_t *d, client_t *c, const uint8_t *handle, siz
     if (handshake_initiator_create_client_auth(&c->hs, buf, sizeof buf, &n) != HANDSHAKE_OK) { return -1; }
     if (send_frame(c->fd, buf, n) != 0) { return -1; }
     if (handshake_initiator_finish(&c->hs) != HANDSHAKE_OK) { return -1; }
+    if (handshake_get_handshake_id(&c->hs, c->hsid) != HANDSHAKE_OK) { return -1; }
 
     session_limits_t lim;
     session_default_limits(&lim);
@@ -410,18 +414,24 @@ static void test_not_permitted(void)
     uint8_t pt[AUTHD_MAX_RECORD]; size_t pl = 0;
     CHECK(session_open(&c.sess, rec, n, pt, sizeof pt, &pl) == SESSION_OK, "notperm: open it");
 
-    /* a syntactically plausible ROTATE */
-    uint8_t rot[8]; rot[0] = AUTHMSG_OP_ROTATE; rot[1] = 0x01u; memset(rot + 2, 0, 6);
+    /* LOGIN_CODE is daemon->client ONLY, so a client sending one is a state
+     * error, not a malformed message. This used to be ROTATE; V4-9c serves
+     * ROTATE, so the check moved to an op that is still genuinely not
+     * permitted -- the property being guarded is unchanged. */
+    uint8_t notp[AUTHMSG_LOGIN_CODE_CONTENT_LEN];
+    memset(notp, 0, sizeof notp);
+    notp[0] = AUTHMSG_OP_LOGIN_CODE; notp[1] = 0x01u;
     size_t out_len = 0;
-    CHECK(session_seal(&c.sess, rot, sizeof rot, rec, sizeof rec, &out_len) == SESSION_OK, "notperm: seal ROTATE");
-    CHECK(send_frame(c.fd, rec, out_len) == 0, "notperm: send ROTATE");
+    CHECK(session_seal(&c.sess, notp, sizeof notp, rec, sizeof rec, &out_len) == SESSION_OK,
+          "notperm: seal a client-sent LOGIN_CODE");
+    CHECK(send_frame(c.fd, rec, out_len) == 0, "notperm: send it");
 
     size_t er = 0;
     CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &er) == 0, "notperm: the daemon replies");
     CHECK(session_open(&c.sess, rec, er, pt, sizeof pt, &pl) == SESSION_OK, "notperm: the reply authenticates");
     uint8_t code = 0;
     CHECK(authmsg_decode_error(pt, pl, &code) == AUTHMSG_OK && code == AUTHMSG_ERR_NOT_PERMITTED,
-          "notperm: ROTATE is refused with ERROR(0x02 not permitted), not served");
+          "notperm: a daemon-only op from the client is refused with ERROR(0x02), not served");
     CHECK(PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u), "notperm: the connection is closed after ERROR");
 
     client_close(&c);
@@ -518,6 +528,367 @@ static void test_abandoned_handshake_frees_ledger(void)
     daemon_stop(&d);
 }
 
+/* --- rotation (spec 6.3) -------------------------------------------------- */
+
+/* Builds a ROTATE the daemon should accept, then lets the caller corrupt it.
+ * `sign_flags` is what goes INTO the digest and `wire_flags` what goes on the
+ * wire -- normally equal; differing them is how the flags binding is tested. */
+static size_t build_rotate(uint8_t *out, size_t cap,
+                           const uint8_t hsid[STORE_HSID_BYTES],
+                           uint8_t sign_flags, uint8_t wire_flags,
+                           const uint8_t *handle, size_t hl,
+                           const mldsa_keypair_t *old_kp, const mldsa_keypair_t *new_kp,
+                           const mldsa_keypair_t *sig_new_signer,
+                           const char *label_old, const char *label_new)
+{
+    uint8_t d_old[32], d_new[32];
+    uint8_t s_old[MLDSA_SIGNATURE_MAX_BYTES], s_new[MLDSA_SIGNATURE_MAX_BYTES];
+    size_t sol = 0, snl = 0, n = 0;
+    if (authmsg_rotate_digest(d_old, label_old, hsid, sign_flags, handle, hl,
+                              old_kp->public_key, new_kp->public_key) != AUTHMSG_OK ||
+        authmsg_rotate_digest(d_new, label_new, hsid, sign_flags, handle, hl,
+                              old_kp->public_key, new_kp->public_key) != AUTHMSG_OK) {
+        return 0;
+    }
+    if (mldsa_sign(s_old, &sol, d_old, sizeof d_old, old_kp) != 0 ||
+        mldsa_sign(s_new, &snl, d_new, sizeof d_new, sig_new_signer) != 0) {
+        return 0;
+    }
+    if (authmsg_encode_rotate(out, cap, &n, wire_flags, handle, hl, new_kp->public_key,
+                              s_old, sol, s_new, snl) != AUTHMSG_OK) {
+        return 0;
+    }
+    return n;
+}
+
+/* Sends `content` as a sealed record and returns the daemon's decrypted reply.
+ * Returns the reply length, or 0 if nothing came back. */
+static size_t exchange_record(daemon_t *d, client_t *c, const uint8_t *content, size_t len,
+                              uint8_t *reply, size_t reply_cap)
+{
+    uint8_t rec[AUTHD_MAX_RECORD];
+    size_t n = 0, got = 0, pl = 0;
+    if (session_seal(&c->sess, content, len, rec, sizeof rec, &n) != SESSION_OK) { return 0; }
+    if (send_frame(c->fd, rec, n) != 0) { return 0; }
+    if (recv_frame(d, c->fd, rec, sizeof rec, &got) != 0) { return 0; }
+    if (session_open(&c->sess, rec, got, reply, reply_cap, &pl) != SESSION_OK) { return 0; }
+    return pl;
+}
+
+static uint8_t reply_error_code(const uint8_t *pt, size_t len)
+{
+    uint8_t code = 0xffu;
+    if (authmsg_decode_error(pt, len, &code) != AUTHMSG_OK) { return 0xfeu; }
+    return code;
+}
+
+/* A fresh session, through the login code, ready to send one application
+ * record. Every rejected ROTATE is TERMINAL -- fail_with_error closes the
+ * connection -- so each negative case needs its own session; reusing one would
+ * write into a closed socket. */
+static int rotate_session(daemon_t *d, client_t *c, const mldsa_keypair_t *kp)
+{
+    if (client_handshake(d, c, HANDLE1, sizeof HANDLE1, kp) != 0) { return -1; }
+    uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
+    size_t n = 0, pl = 0;
+    if (recv_frame(d, c->fd, rec, sizeof rec, &n) != 0) { return -1; }
+    if (session_open(&c->sess, rec, n, pt, sizeof pt, &pl) != SESSION_OK) { return -1; }
+    sodium_memzero(pt, sizeof pt);
+    return 0;
+}
+
+static void test_rotate(void)
+{
+    daemon_t d; client_t c;
+    mldsa_keypair_t old_kp, new_kp, other_kp, spare_kp;
+    static const uint8_t HANDLE2[] = { 'd','1','b','b' };
+        /* Room for a session PER CASE. Each rejected ROTATE is terminal, and the
+     * injected clock never advances, so a consumed ledger entry is never
+     * reclaimed -- capacity has to cover every handshake this test makes. */
+    CHECK(daemon_start(&d, 32, "rotate.sqlite3") == 0, "rotate: daemon starts");
+    CHECK(mldsa_keypair_generate(&old_kp) == 0, "rotate: old key");
+    CHECK(mldsa_keypair_generate(&new_kp) == 0, "rotate: new key");
+    CHECK(mldsa_keypair_generate(&other_kp) == 0, "rotate: a third key");
+    CHECK(mldsa_keypair_generate(&spare_kp) == 0, "rotate: a fourth key, enrolled nowhere");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &old_kp);
+    enroll(&d, HANDLE2, sizeof HANDLE2, &other_kp);
+
+    uint8_t pt[AUTHD_MAX_RECORD];
+    uint8_t rot[AUTHMSG_ROTATE_MAX_CONTENT];
+    size_t pl = 0, rl = 0;
+
+    /* The digest, against a vector built HERE from the spec's field order and
+     * literal label bytes -- not by calling the function under test. A round
+     * trip proves only that both sides agree; this proves they agree with the
+     * SPEC, which is the only thing that matters when both sides share one
+     * implementation. */
+    CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session for the digest vector");
+    {
+        static const char lo[] = { 'm','l','d','s','a','-','a','u','t','h','d','/','v','1','/',
+                                   'r','o','t','a','t','e','-','o','l','d' };
+        uint8_t want[32], got_d[32], other_d[32];
+        const uint8_t sep = 0x00, flags = 0x00u, hl = (uint8_t)sizeof HANDLE1;
+        crypto_hash_sha256_state st;
+        crypto_hash_sha256_init(&st);
+        crypto_hash_sha256_update(&st, (const unsigned char *)lo, sizeof lo);
+        crypto_hash_sha256_update(&st, &sep, 1);
+        crypto_hash_sha256_update(&st, c.hsid, sizeof c.hsid);
+        crypto_hash_sha256_update(&st, &flags, 1);
+        crypto_hash_sha256_update(&st, &hl, 1);
+        crypto_hash_sha256_update(&st, HANDLE1, sizeof HANDLE1);
+        crypto_hash_sha256_update(&st, old_kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+        crypto_hash_sha256_update(&st, new_kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+        crypto_hash_sha256_final(&st, want);
+        CHECK(authmsg_rotate_digest(got_d, AUTHMSG_LABEL_ROTATE_OLD, c.hsid, 0u,
+                                    HANDLE1, sizeof HANDLE1,
+                                    old_kp.public_key, new_kp.public_key) == AUTHMSG_OK &&
+              memcmp(got_d, want, 32) == 0,
+              "rotate: the digest matches the hand-built spec 6.3 vector for both labels");
+        CHECK(authmsg_rotate_digest(other_d, AUTHMSG_LABEL_ROTATE_NEW, c.hsid, 0u,
+                                    HANDLE1, sizeof HANDLE1,
+                                    old_kp.public_key, new_kp.public_key) == AUTHMSG_OK &&
+              memcmp(other_d, want, 32) != 0,
+              "rotate: the two labels produce different digests");
+    }
+    client_close(&c);
+
+#define ROT_CASE(desc_ok, sign_f, wire_f, hnd, hlen, signer, lab_o, lab_n, extra, want_code, msg) \
+    do {                                                                                     \
+        CHECK(rotate_session(&d, &c, &old_kp) == 0, desc_ok);                                 \
+        rl = build_rotate(rot, sizeof rot, c.hsid, (sign_f), (wire_f), (hnd), (hlen),         \
+                          &old_kp, &new_kp, (signer), (lab_o), (lab_n));                      \
+        CHECK(rl > 0, desc_ok);                                                               \
+        rl += (size_t)(extra);                                                                \
+        pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);                                 \
+        CHECK(pl > 0 && reply_error_code(pt, pl) == (want_code), msg);                        \
+        client_close(&c);                                                                     \
+    } while (0)
+
+    /* flags changed after signing: the wire flags are what the daemon digests,
+     * so a signature over different flags must fail. The ONLY check that can
+     * see `flags` leaving the digest. */
+    ROT_CASE("rotate: session (flags)", 0x00u, AUTHMSG_FLAG_ROTATE_DROP_TOKENS,
+             HANDLE1, sizeof HANDLE1, &new_kp,
+             AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
+             "rotate: a ROTATE whose flags byte changed after signing is REJECTED");
+
+    /* sig_new by the OLD key: no proof of possession of the incoming key. */
+    ROT_CASE("rotate: session (sig_new by old)", 0u, 0u, HANDLE1, sizeof HANDLE1, &old_kp,
+             AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
+             "rotate: a ROTATE whose sig_new is by the OLD key is REJECTED");
+
+    /* Both signatures under the same label: the separation is what stops one
+     * key's signature standing in for the other's. */
+    ROT_CASE("rotate: session (same label)", 0u, 0u, HANDLE1, sizeof HANDLE1, &new_kp,
+             AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_OLD, 0, AUTHMSG_ERR_REJECTED,
+             "rotate: sig_new signed under the rotate-old label is REJECTED");
+
+    /* A different handle that EXISTS and is ACTIVE, so the refusal comes from
+     * the handle check rather than from the store failing to find it. */
+    ROT_CASE("rotate: session (wrong handle)", 0u, 0u, HANDLE2, sizeof HANDLE2, &new_kp,
+             AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
+             "rotate: a ROTATE naming a DIFFERENT enrolled handle is REJECTED");
+
+    /* One trailing byte. Strict decode, spec 6. */
+    ROT_CASE("rotate: session (trailing byte)", 0u, 0u, HANDLE1, sizeof HANDLE1, &new_kp,
+             AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 1, AUTHMSG_ERR_MALFORMED,
+             "rotate: a ROTATE with one trailing byte is REJECTED");
+#undef ROT_CASE
+
+    /* A ROTATE captured from one session, replayed on another. handshake_id is
+     * what makes it useless elsewhere (Req 8) -- the code-side twin of the
+     * model's rot_hsid control. */
+    {
+        client_t a, b;
+        CHECK(rotate_session(&d, &a, &old_kp) == 0, "rotate: session A for the replay");
+        rl = build_rotate(rot, sizeof rot, a.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                          &old_kp, &new_kp, &new_kp,
+                          AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        CHECK(rl > 0, "rotate: built a ROTATE bound to session A");
+        CHECK(rotate_session(&d, &b, &old_kp) == 0, "rotate: session B for the replay");
+        pl = exchange_record(&d, &b, rot, rl, pt, sizeof pt);
+        CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
+              "rotate: a ROTATE captured from one session is REJECTED on a second");
+        client_close(&b);
+        client_close(&a);
+    }
+
+    /* Rotating to a key that is already enrolled elsewhere answers the SAME
+     * code as a bad signature -- otherwise an authenticated peer could probe
+     * the deployment's whole key set. The rejections above are the canary that
+     * 0x03 really is what a bad signature produces. */
+    {
+        CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session (pk in use)");
+        uint8_t dig_o[32], dig_n[32], so[MLDSA_SIGNATURE_MAX_BYTES], sn[MLDSA_SIGNATURE_MAX_BYTES];
+        size_t sol = 0, snl = 0;
+        (void)authmsg_rotate_digest(dig_o, AUTHMSG_LABEL_ROTATE_OLD, c.hsid, 0u,
+                                    HANDLE1, sizeof HANDLE1, old_kp.public_key, other_kp.public_key);
+        (void)authmsg_rotate_digest(dig_n, AUTHMSG_LABEL_ROTATE_NEW, c.hsid, 0u,
+                                    HANDLE1, sizeof HANDLE1, old_kp.public_key, other_kp.public_key);
+        CHECK(mldsa_sign(so, &sol, dig_o, sizeof dig_o, &old_kp) == 0 &&
+              mldsa_sign(sn, &snl, dig_n, sizeof dig_n, &other_kp) == 0, "rotate: sign for pk-in-use");
+        CHECK(authmsg_encode_rotate(rot, sizeof rot, &rl, 0u, HANDLE1, sizeof HANDLE1,
+                                    other_kp.public_key, so, sol, sn, snl) == AUTHMSG_OK,
+              "rotate: encode for pk-in-use");
+        pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+        CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
+              "rotate: pk-in-use and bad-signature produce the SAME error code");
+        client_close(&c);
+    }
+
+    /* The happy path LAST: it changes the active key, so nothing after it can
+     * authenticate with old_kp. */
+    {
+        CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session for the happy path");
+        rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                          &old_kp, &new_kp, &new_kp,
+                          AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        CHECK(rl > 0, "rotate: built a valid ROTATE");
+        pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+        authmsg_rotate_ack_t ack;
+        CHECK(pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK,
+              "rotate: the daemon answers ROTATE_ACK");
+        uint8_t fp[32];
+        crypto_hash_sha256(fp, new_kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+        CHECK(ack.handle_len == sizeof HANDLE1 &&
+              memcmp(ack.handle, HANDLE1, sizeof HANDLE1) == 0 &&
+              memcmp(ack.fp_new, fp, 32) == 0,
+              "rotate: the ACK names this handle and the NEW key's fingerprint");
+        CHECK(ack.rotated_at == (uint64_t)d.app.now_unix,
+              "rotate: ROTATE_ACK's rotated_at equals the daemon's injected clock");
+
+        uint8_t active[STORE_PK_BYTES];
+        CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, active, NULL, 0, NULL, NULL)
+                  == STORE_OK && memcmp(active, new_kp.public_key, STORE_PK_BYTES) == 0,
+              "rotate: the NEW key is the active one afterwards");
+
+        /* A second ROTATE on the same session. Without this the holder of the
+         * key being rotated AWAY from could keep rotating: sig_old still
+         * verifies, because the slot still pins that key. */
+        uint8_t rot2[AUTHMSG_ROTATE_MAX_CONTENT];
+        const size_t r2 = build_rotate(rot2, sizeof rot2, c.hsid, 0u, 0u,
+                                       HANDLE1, sizeof HANDLE1, &old_kp, &other_kp, &other_kp,
+                                       AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        CHECK(r2 > 0, "rotate: built a second ROTATE");
+        pl = exchange_record(&d, &c, rot2, r2, pt, sizeof pt);
+        CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_NOT_PERMITTED,
+              "rotate: a SECOND ROTATE on the same session is refused with ERROR(0x02)");
+        client_close(&c);
+    }
+
+
+    /* A session that authenticated BEFORE someone else rotated the handle must
+     * not be able to rotate afterwards. Its signatures name an old->new edge
+     * the store is no longer on, so committing them would supersede a key they
+     * say nothing about. The store pins the expected old key inside its OWN
+     * transaction, so this is not a race with another process either.
+     *
+     * Runs after the happy path because a superseded key can never be
+     * reinstated (pk is unique forever), so the fixture cannot be rewound. */
+    {
+        client_t stale;
+        int64_t at = 0;
+        CHECK(rotate_session(&d, &stale, &new_kp) == 0, "rotate: a session before the rotation");
+        CHECK(store_rotate_key(d.store, HANDLE1, sizeof HANDLE1, spare_kp.public_key,
+                               new_kp.public_key, NULL, 0, 0, d.app.now_unix, &at, NULL)
+                  == STORE_OK, "rotate: the handle moves under the live session");
+        {
+            mldsa_keypair_t yet;
+            CHECK(mldsa_keypair_generate(&yet) == 0, "rotate: a key for the stale attempt");
+            rl = build_rotate(rot, sizeof rot, stale.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                              &new_kp, &yet, &yet,
+                              AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+            CHECK(rl > 0, "rotate: built a ROTATE from the stale session");
+            pl = exchange_record(&d, &stale, rot, rl, pt, sizeof pt);
+            CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
+                  "rotate: after the active key changes under a live session, "
+                  "that session's ROTATE is REJECTED");
+            mldsa_keypair_free(&yet);
+        }
+        client_close(&stale);
+    }
+
+    /* And the old key no longer authenticates at all: there is no overlap
+     * window in which two keys work (spec 10.2). */
+    {
+        /* The client cannot be TOLD that its key is stale -- Req 6 makes a
+         * superseded key indistinguishable from an unknown one, so the
+         * ServerHello still verifies and the handshake still completes on this
+         * side. What it never gets is a login code: the daemon pinned the
+         * decoy, so ClientAuth fails there and the session is abandoned. That
+         * is exactly the "no overlap window" spec 10.2 promises, observed the
+         * only way an honest client can observe it. */
+        client_t z;
+        CHECK(rotate_session(&d, &z, &old_kp) != 0,
+              "rotate: the OLD key gets no login code after the rotation (no overlap window)");
+        client_close(&z);
+    }
+
+    mldsa_keypair_free(&old_kp);
+    mldsa_keypair_free(&new_kp);
+    mldsa_keypair_free(&other_kp);
+    mldsa_keypair_free(&spare_kp);
+    daemon_stop(&d);
+}
+
+/* The login code must not reach the journal.
+ *
+ * This used to be argued rather than tested: authd_log.h had no function
+ * taking a byte buffer, so the leak was said to be unrepresentable. V4-9a
+ * added authd_log_fp(lvl, event, const uint8_t fp[32]) -- and in C that
+ * parameter is a POINTER, while a login code is exactly 32 bytes, so
+ * authd_log_fp(..., m.code) compiles and dumps it. The argument stopped being
+ * true and nothing noticed, because it lived in prose. Now it is a check. */
+static void test_log_has_no_code(void)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/daemon.log", g_dir);
+    FILE *lf = fopen(path, "w+");
+    CHECK(lf != NULL, "logscan: capture file");
+    if (lf == NULL) { return; }
+    authd_log_init(lf, AUTHD_LOG_INFO);
+
+    daemon_t d; client_t c;
+    mldsa_keypair_t kp;
+    CHECK(daemon_start(&d, 4, "logscan.sqlite3") == 0, "logscan: daemon starts");
+    CHECK(mldsa_keypair_generate(&kp) == 0, "logscan: key");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &kp);
+    CHECK(client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "logscan: handshake");
+
+    uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
+    size_t n = 0, pl = 0;
+    CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) == 0, "logscan: login code");
+    CHECK(session_open(&c.sess, rec, n, pt, sizeof pt, &pl) == SESSION_OK, "logscan: open it");
+    authmsg_login_code_t m;
+    CHECK(authmsg_decode_login_code(pt, pl, &m) == AUTHMSG_OK, "logscan: decode it");
+
+    char hex[65];
+    (void)sodium_bin2hex(hex, sizeof hex, m.code, sizeof m.code);
+    fflush(lf);
+
+    /* Present canary: the log DOES carry this connection's identity, so a
+     * "code not found" result cannot be explained by an empty log. */
+    long sz = 0;
+    char *buf = NULL;
+    if (fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 && fseek(lf, 0, SEEK_SET) == 0) {
+        buf = (char *)calloc((size_t)sz + 1u, 1u);
+        if (buf != NULL && fread(buf, 1u, (size_t)sz, lf) != (size_t)sz) { buf[0] = '\0'; }
+    }
+    CHECK(buf != NULL && strstr(buf, "event=login") != NULL,
+          "logscan: the log records the login (canary: it is not empty)");
+    CHECK(buf != NULL && strstr(buf, hex) == NULL,
+          "logscan: the login code never appears in the daemon's log");
+
+    free(buf);
+    sodium_memzero(&m, sizeof m);
+    sodium_memzero(hex, sizeof hex);
+    client_close(&c);
+    mldsa_keypair_free(&kp);
+    daemon_stop(&d);
+    (void)fclose(lf);
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+}
+
 int main(void)
 {
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
@@ -529,6 +900,8 @@ int main(void)
     test_uniform_responder();
     test_revoked();
     test_not_permitted();
+    test_rotate();
+    test_log_has_no_code();
     test_wipe_on_close();
     test_abandoned_handshake_frees_ledger();
 

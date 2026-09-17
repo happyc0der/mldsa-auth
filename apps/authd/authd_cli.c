@@ -804,6 +804,221 @@ int authd_cli_admin(int argc, char **argv)
 
 /* ---- authd_client -------------------------------------------------------- */
 
+/* The library exports no handshake_status_name(); spec 13 requires a failure to
+ * print a name from the same enum the daemon logs, not an integer an operator
+ * would have to look up. */
+static const char *hs_name(handshake_status_t st)
+{
+    switch (st) {
+    case HANDSHAKE_OK:                        return "ok";
+    case HANDSHAKE_ERR_INVALID_ARG:           return "invalid-argument";
+    case HANDSHAKE_ERR_UNEXPECTED_STATE:      return "unexpected-state";
+    case HANDSHAKE_ERR_MALFORMED:             return "malformed";
+    case HANDSHAKE_ERR_UNKNOWN_IDENTITY:      return "unknown-identity";
+    case HANDSHAKE_ERR_IDENTITY_KEY_MISMATCH: return "identity-key-mismatch";
+    case HANDSHAKE_ERR_PEER_IDENTITY_MISMATCH:return "peer-identity-mismatch";
+    case HANDSHAKE_ERR_SESSION_ID_MISMATCH:   return "session-id-mismatch";
+    case HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH: return "handshake-id-mismatch";
+    case HANDSHAKE_ERR_REPLAY:                return "replay";
+    case HANDSHAKE_ERR_EXPIRED:               return "expired";
+    case HANDSHAKE_ERR_SIGNATURE:             return "signature";
+    case HANDSHAKE_ERR_AUTH_FAILURE_LIMIT:    return "auth-failure-limit";
+    case HANDSHAKE_ERR_KEX:                   return "kex";
+    case HANDSHAKE_ERR_RESOURCE_EXHAUSTED:    return "resource-exhausted";
+    case HANDSHAKE_ERR_INTERNAL:              return "internal";
+    }
+    return "unknown";
+}
+
+/* ---- one authenticated session, shared by login and rotate --------------- */
+
+typedef struct {
+    net_conn_t  conn;
+    session_t   sess;
+    keystore_t  pins;
+    uint64_t    deadline;
+    uint8_t     hsid[AUTHMSG_HANDSHAKE_ID_BYTES];
+    authmsg_login_code_t code;
+    int         live;
+} client_session_t;
+
+static void client_session_close(client_session_t *cs)
+{
+    sodium_memzero(&cs->code, sizeof cs->code);
+    sodium_memzero(cs->hsid, sizeof cs->hsid);
+    session_wipe(&cs->sess);
+    keystore_wipe(&cs->pins);
+    net_close(&cs->conn);
+    cs->live = 0;
+}
+
+/* Handshake, then receive the LOGIN_CODE the daemon sends as its first record.
+ * Returns EX_OK with `cs` live, or an exit status with everything wiped.
+ *
+ * `quiet` suppresses the diagnostics, because rotate PROBES with keys it fully
+ * expects to fail -- a probe that printed an error for every attempt would
+ * make a normal interrupted-rename recovery look like a fault. */
+static int client_open_session(const char *prog, const char *sub, int quiet,
+                               const mldsa_keypair_t *kp,
+                               const uint8_t *hid, size_t hid_len,
+                               const uint8_t *sid, size_t sid_len,
+                               const uint8_t *server_pk,
+                               const char *unix_path, uint16_t port,
+                               client_session_t *cs)
+{
+    memset(cs, 0, sizeof *cs);
+    net_conn_init(&cs->conn);
+    keystore_init(&cs->pins);
+    cs->deadline = net_deadline_in(LOGIN_TIMEOUT_MS);
+
+    if (keystore_add(&cs->pins, sid, sid_len, server_pk) != KEYSTORE_OK) {
+        keystore_wipe(&cs->pins);
+        return EX_FAIL;
+    }
+    const net_status_t ns = (unix_path != NULL)
+                                ? net_connect_unix(unix_path, cs->deadline, &cs->conn)
+                                : net_connect_loopback(port, cs->deadline, &cs->conn);
+    if (ns != NET_OK) {
+        if (!quiet) {
+            fprintf(stderr, "%s %s: cannot connect: %s\n", prog, sub, net_status_name(ns));
+        }
+        keystore_wipe(&cs->pins);
+        return EX_FAIL;
+    }
+
+    static uint8_t tx[FRAME_BUF_BYTES];
+    static uint8_t rx[FRAME_BUF_BYTES];
+    static uint8_t pt[SESSION_MAX_PLAINTEXT_BYTES];
+    handshake_ctx_t hs;
+    memset(&hs, 0, sizeof hs);
+    size_t out_len = 0, len = 0;
+    const char *stage = "init";
+    int rc = EX_FAIL;
+
+    handshake_status_t hst = handshake_initiator_init(&hs, hid, hid_len, kp, &cs->pins, sid, sid_len);
+    if (hst != HANDSHAKE_OK) { goto fail; }
+    stage = "client-hello";
+    hst = handshake_initiator_create_client_hello(&hs, tx + FRAME_HEADER_BYTES,
+                                                  FRAME_MAX_PAYLOAD, &out_len);
+    if (hst != HANDSHAKE_OK) { goto fail; }
+    if (frame_send(&cs->conn, tx, out_len, cs->deadline) != FRAME_OK) { goto fail_io; }
+    stage = "server-hello";
+    if (frame_recv(&cs->conn, rx, 1u, FRAME_MAX_SERVER_HELLO, &len, cs->deadline) != FRAME_OK) {
+        goto fail_io;
+    }
+    hst = handshake_initiator_verify_server_hello(&hs, rx + FRAME_HEADER_BYTES, len);
+    if (hst != HANDSHAKE_OK) { goto fail; }
+    stage = "client-auth";
+    hst = handshake_initiator_create_client_auth(&hs, tx + FRAME_HEADER_BYTES,
+                                                 FRAME_MAX_PAYLOAD, &out_len);
+    if (hst != HANDSHAKE_OK) { goto fail; }
+    if (frame_send(&cs->conn, tx, out_len, cs->deadline) != FRAME_OK) { goto fail_io; }
+    hst = handshake_initiator_finish(&hs);
+    if (hst != HANDSHAKE_OK) { goto fail; }
+    /* Captured BEFORE session_init consumes the context: ROTATE's digest binds
+     * to it and nothing else can hand it back. */
+    if (handshake_get_handshake_id(&hs, cs->hsid) != HANDSHAKE_OK) { goto fail_io; }
+
+    {
+        session_limits_t lim;
+        session_default_limits(&lim);
+        if (session_init_from_handshake(&cs->sess, &hs, &lim, NULL, NULL) != SESSION_OK) {
+            stage = "session-init";
+            goto fail_io;
+        }
+    }
+    stage = "login-code";
+    if (frame_recv(&cs->conn, rx, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, &len, cs->deadline)
+            != FRAME_OK) {
+        goto fail_io;
+    }
+    {
+        size_t pt_len = 0;
+        if (session_open(&cs->sess, rx + FRAME_HEADER_BYTES, len, pt,
+                         SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX), &pt_len) != SESSION_OK) {
+            goto fail_io;
+        }
+        const authmsg_status_t as = authmsg_decode_login_code(pt, pt_len, &cs->code);
+        sodium_memzero(pt, sizeof pt);
+        if (as != AUTHMSG_OK) {
+            if (!quiet) {
+                fprintf(stderr, "%s %s: %s: %s\n", prog, sub, stage, authmsg_status_name(as));
+            }
+            goto fail_io;
+        }
+    }
+    cs->live = 1;
+    handshake_ctx_wipe(&hs);
+    return EX_OK;
+
+fail:
+    if (!quiet) {
+        fprintf(stderr, "%s %s: %s: %s\n", prog, sub, stage, hs_name(hst));
+    }
+fail_io:
+    if (!quiet && hst == HANDSHAKE_OK) {
+        fprintf(stderr, "%s %s: failed at %s\n", prog, sub, stage);
+    }
+    sodium_memzero(pt, sizeof pt);
+    handshake_ctx_wipe(&hs);
+    client_session_close(cs);
+    return rc;
+}
+
+/* Sends BYE so the daemon releases the slot now rather than at its idle
+ * deadline, then closes. Best effort: nothing depends on it arriving. */
+static void client_say_bye(client_session_t *cs)
+{
+    uint8_t body[AUTHMSG_BYE_CONTENT_LEN];
+    static uint8_t tx[FRAME_BUF_BYTES];
+    size_t n = 0, sealed = 0;
+    if (cs->live && authmsg_encode_bye(body, sizeof body, &n) == AUTHMSG_OK &&
+        session_seal(&cs->sess, body, n, tx + FRAME_HEADER_BYTES, FRAME_MAX_PAYLOAD,
+                     &sealed) == SESSION_OK) {
+        (void)frame_send(&cs->conn, tx, sealed, cs->deadline);
+    }
+    client_session_close(cs);
+}
+
+/* ---- the .ek.next state machine (spec 10.2) ------------------------------ */
+
+/* What to do about a leftover <handle>.ek.next.
+ *
+ * Spec 10.2 says: "if it is unknown, the server never committed". That rule
+ * CANNOT BE IMPLEMENTED, and implementing it as written would be dangerous.
+ * Req 6 and 7.3 guarantee a client cannot distinguish an unknown key from a
+ * revoked one from a wrong signature -- every one of them pins the decoy and
+ * fails at the same point. "Unknown" is not observable, so "unknown therefore
+ * the server never committed" is an inference from something the client never
+ * learns.
+ *
+ * The sound rule is the contrapositive on the OTHER file, and it is stronger:
+ *
+ *     .ek authenticating PROVES the server did not commit -- there is exactly
+ *     one active key per handle (the one_active_key index, spec 9.1) -- and
+ *     only then may .ek.next be discarded. .ek.next failing proves nothing.
+ *
+ * So this never deletes on ambiguity. A stale file costs one confusing entry
+ * in a directory; a wrong delete costs the only copy of a live key, and there
+ * is no recovery path from that but re-enrolment by an administrator.
+ *
+ * Recorded as errata against 10.2 rather than silently deviated from. */
+/* `ek_ok` / `next_ok` are "this file opened AND the daemon accepted it".
+ * `next_present` distinguishes "no .ek.next" from "one that did not work".
+ *
+ * Exported (authd_cli.h) ONLY so a test can drive every combination without a
+ * network round trip nobody can crash in the middle of. */
+key_plan_t client_key_plan(int ek_ok, int next_present, int next_ok)
+{
+    if (ek_ok) {
+        return KEY_PLAN_USE_EK;
+    }
+    if (next_present && next_ok) {
+        return KEY_PLAN_PROMOTE_NEXT;
+    }
+    return KEY_PLAN_REFUSE;
+}
+
 static int cmd_client_keygen(int argc, char **argv, const char *prog)
 {
     const char *dir = NULL, *pass_path = NULL;
@@ -860,59 +1075,147 @@ static int cmd_client_keygen(int argc, char **argv, const char *prog)
     return EX_OK;
 }
 
-/* The library exports no handshake_status_name(); spec 13 requires a failure to
- * print a name from the same enum the daemon logs, not an integer an operator
- * would have to look up. */
-static const char *hs_name(handshake_status_t st)
+/* Shared option parsing for login and rotate: they take the same connection
+ * and identity arguments, and differ only in what they do with the session. */
+typedef struct {
+    const uint8_t *hid; size_t hid_len;
+    const uint8_t *sid; size_t sid_len;
+    const char *key_path;
+    const char *pass_path;
+    const char *server_pub;
+    const char *unix_path;
+    uint16_t port;
+} client_args_t;
+
+static int parse_client_args(int argc, char **argv, const char *prog, const char *sub,
+                             client_args_t *a)
 {
-    switch (st) {
-    case HANDSHAKE_OK:                        return "ok";
-    case HANDSHAKE_ERR_INVALID_ARG:           return "invalid-argument";
-    case HANDSHAKE_ERR_UNEXPECTED_STATE:      return "unexpected-state";
-    case HANDSHAKE_ERR_MALFORMED:             return "malformed";
-    case HANDSHAKE_ERR_UNKNOWN_IDENTITY:      return "unknown-identity";
-    case HANDSHAKE_ERR_IDENTITY_KEY_MISMATCH: return "identity-key-mismatch";
-    case HANDSHAKE_ERR_PEER_IDENTITY_MISMATCH:return "peer-identity-mismatch";
-    case HANDSHAKE_ERR_SESSION_ID_MISMATCH:   return "session-id-mismatch";
-    case HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH: return "handshake-id-mismatch";
-    case HANDSHAKE_ERR_REPLAY:                return "replay";
-    case HANDSHAKE_ERR_EXPIRED:               return "expired";
-    case HANDSHAKE_ERR_SIGNATURE:             return "signature";
-    case HANDSHAKE_ERR_AUTH_FAILURE_LIMIT:    return "auth-failure-limit";
-    case HANDSHAKE_ERR_KEX:                   return "kex";
-    case HANDSHAKE_ERR_RESOURCE_EXHAUSTED:    return "resource-exhausted";
-    case HANDSHAKE_ERR_INTERNAL:              return "internal";
+    const char *handle = NULL, *server_id = NULL, *port_s = NULL;
+    memset(a, 0, sizeof *a);
+    for (int i = 2; i < argc; i++) {
+        const int has = (i + 1 < argc);
+        if (strcmp(argv[i], "--handle") == 0 && has)               { handle = argv[++i]; }
+        else if (strcmp(argv[i], "--key") == 0 && has)             { a->key_path = argv[++i]; }
+        else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { a->pass_path = argv[++i]; }
+        else if (strcmp(argv[i], "--server-id") == 0 && has)       { server_id = argv[++i]; }
+        else if (strcmp(argv[i], "--server-pub") == 0 && has)      { a->server_pub = argv[++i]; }
+        else if (strcmp(argv[i], "--unix") == 0 && has)            { a->unix_path = argv[++i]; }
+        else if (strcmp(argv[i], "--port") == 0 && has)            { port_s = argv[++i]; }
+        else { return unexpected(prog, sub, argv[i]); }
     }
-    return "unknown";
+    uint64_t port = 0;
+    if (handle == NULL || a->key_path == NULL || a->pass_path == NULL || server_id == NULL ||
+        a->server_pub == NULL || (a->unix_path == NULL) == (port_s == NULL) ||
+        demo_parse_id(handle, &a->hid, &a->hid_len) != 0 ||
+        demo_parse_id(server_id, &a->sid, &a->sid_len) != 0 ||
+        (port_s != NULL && demo_parse_u64(port_s, 1u, 65535u, &port) != 0)) {
+        return need(prog, sub,
+                    "--handle H --key H.ek --passphrase-file PATH --server-id ID "
+                    "--server-pub server.pub (--unix PATH | --port N)");
+    }
+    a->port = (uint16_t)port;
+    return EX_OK;
+}
+
+/* Decides which key file is live, completing an interrupted rename if that is
+ * what happened, and returns the opened keypair.
+ *
+ * The probe is a REAL handshake against the daemon, not a local check: whether
+ * a key is current is a fact the server holds, and "decrypts" says nothing
+ * about it. That makes this the slow path -- but it only runs at all when a
+ * .ek.next exists, which is the aftermath of an interrupted rotation.
+ *
+ * Only .ek authenticating lets the caller discard .ek.next. See
+ * client_key_plan for why the spec's own wording cannot be used. */
+static int client_resolve_key(const char *prog, const char *sub, const client_args_t *a,
+                              const char *pass, size_t pass_len, const uint8_t *server_pk,
+                              char *next_path, size_t next_cap, mldsa_keypair_t *kp_out)
+{
+    memset(kp_out, 0, sizeof *kp_out);
+    if (snprintf(next_path, next_cap, "%s.next", a->key_path) < 0) {
+        return EX_FAIL;
+    }
+    const int next_present = path_exists(next_path);
+
+    /* The ordinary case: no interrupted rotation, so open .ek and go. */
+    if (!next_present) {
+        const keyfile_status_t ks = keyfile_open(a->key_path, a->hid, a->hid_len,
+                                                 pass, pass_len, kp_out, NULL);
+        if (ks != KEYFILE_OK) {
+            return failed(prog, sub, a->key_path, keyfile_status_name(ks));
+        }
+        return EX_OK;
+    }
+
+    fprintf(stderr, "%s %s: %s exists -- a rotation was interrupted; asking the daemon "
+                    "which key is live\n", prog, sub, next_path);
+
+    int ek_ok = 0, next_ok = 0;
+    mldsa_keypair_t ek_kp, next_kp;
+    memset(&ek_kp, 0, sizeof ek_kp);
+    memset(&next_kp, 0, sizeof next_kp);
+    client_session_t probe;
+
+    if (keyfile_open(a->key_path, a->hid, a->hid_len, pass, pass_len, &ek_kp, NULL) == KEYFILE_OK) {
+        if (client_open_session(prog, sub, 1, &ek_kp, a->hid, a->hid_len, a->sid, a->sid_len,
+                                server_pk, a->unix_path, a->port, &probe) == EX_OK) {
+            ek_ok = 1;
+            client_say_bye(&probe);
+        }
+    }
+    if (!ek_ok &&
+        keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL) == KEYFILE_OK) {
+        if (client_open_session(prog, sub, 1, &next_kp, a->hid, a->hid_len, a->sid, a->sid_len,
+                                server_pk, a->unix_path, a->port, &probe) == EX_OK) {
+            next_ok = 1;
+            client_say_bye(&probe);
+        }
+    }
+
+    const key_plan_t plan = client_key_plan(ek_ok, next_present, next_ok);
+    int rc = EX_FAIL;
+    switch (plan) {
+    case KEY_PLAN_USE_EK:
+        /* .ek is live, so the server never committed .ek.next. THIS is the only
+         * proof that makes discarding it safe -- and the caller does the
+         * discarding, because login should not delete files. */
+        fprintf(stderr, "%s %s: %s is still the live key; %s was never committed\n",
+                prog, sub, a->key_path, next_path);
+        memcpy(kp_out, &ek_kp, sizeof ek_kp);
+        memset(&ek_kp, 0, sizeof ek_kp);
+        rc = EX_OK;
+        break;
+    case KEY_PLAN_PROMOTE_NEXT:
+        /* The server committed and the rename was interrupted. Finish it. */
+        if (keyfile_promote(next_path, a->key_path) != KEYFILE_OK) {
+            (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
+            break;
+        }
+        fprintf(stderr, "%s %s: completed the interrupted rotation; %s now holds the live key\n",
+                prog, sub, a->key_path);
+        memcpy(kp_out, &next_kp, sizeof next_kp);
+        memset(&next_kp, 0, sizeof next_kp);
+        rc = EX_OK;
+        break;
+    case KEY_PLAN_REFUSE:
+    default:
+        /* Neither worked. Deleting either one now would be guessing with the
+         * only copies of the identity, so nothing is touched. */
+        fprintf(stderr, "%s %s: neither %s nor %s authenticates. NOTHING has been deleted; "
+                        "an administrator must re-enrol this device.\n",
+                prog, sub, a->key_path, next_path);
+        break;
+    }
+    mldsa_keypair_free(&ek_kp);
+    mldsa_keypair_free(&next_kp);
+    return rc;
 }
 
 static int cmd_client_login(int argc, char **argv, const char *prog)
 {
-    const char *handle = NULL, *key = NULL, *pass_path = NULL;
-    const char *server_id = NULL, *server_pub = NULL, *unix_path = NULL, *port_s = NULL;
-    for (int i = 2; i < argc; i++) {
-        const int has = (i + 1 < argc);
-        if (strcmp(argv[i], "--handle") == 0 && has)               { handle = argv[++i]; }
-        else if (strcmp(argv[i], "--key") == 0 && has)             { key = argv[++i]; }
-        else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { pass_path = argv[++i]; }
-        else if (strcmp(argv[i], "--server-id") == 0 && has)       { server_id = argv[++i]; }
-        else if (strcmp(argv[i], "--server-pub") == 0 && has)      { server_pub = argv[++i]; }
-        else if (strcmp(argv[i], "--unix") == 0 && has)            { unix_path = argv[++i]; }
-        else if (strcmp(argv[i], "--port") == 0 && has)            { port_s = argv[++i]; }
-        else { return unexpected(prog, "login", argv[i]); }
-    }
-    const uint8_t *hid = NULL, *sid = NULL;
-    size_t hid_len = 0, sid_len = 0;
-    uint64_t port = 0;
-    if (handle == NULL || key == NULL || pass_path == NULL || server_id == NULL ||
-        server_pub == NULL || (unix_path == NULL) == (port_s == NULL) ||
-        demo_parse_id(handle, &hid, &hid_len) != 0 ||
-        demo_parse_id(server_id, &sid, &sid_len) != 0 ||
-        (port_s != NULL && demo_parse_u64(port_s, 1u, 65535u, &port) != 0)) {
-        return need(prog, "login",
-                    "--handle H --key H.ek --passphrase-file PATH --server-id ID "
-                    "--server-pub server.pub (--unix PATH | --port N)");
-    }
+    client_args_t a;
+    int rc = parse_client_args(argc, argv, prog, "login", &a);
+    if (rc != EX_OK) { return rc; }
 
     /* The pinned server key, loaded BEFORE anything is sent. Spec 4: a client
      * MUST reject a ServerHello that is not signed by the pinned key -- that
@@ -920,157 +1223,235 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
      * WebAuthn gets from origin binding. A login without a pin would
      * authenticate this device to whatever answered the socket. */
     static uint8_t server_pk[MLDSA_PUBLIC_KEY_BYTES];
-    const demo_keys_status_t ps = demo_keys_load_public(server_pub, sid, sid_len, server_pk);
+    const demo_keys_status_t ps = demo_keys_load_public(a.server_pub, a.sid, a.sid_len, server_pk);
     if (ps != DEMO_KEYS_OK) {
-        return failed(prog, "login", server_pub, demo_keys_status_name(ps));
+        return failed(prog, "login", a.server_pub, demo_keys_status_name(ps));
     }
-
     uint8_t *pass = NULL;
     size_t pass_len = 0;
-    int rc = read_pass(prog, "login", pass_path, &pass, &pass_len);
+    rc = read_pass(prog, "login", a.pass_path, &pass, &pass_len);
+    if (rc != EX_OK) { return rc; }
+
+    /* Every invocation of this tool is a "startup", so the interrupted-rename
+     * recovery runs here too -- and in practice this is the command that
+     * discovers one, not rotate. */
+    char next_path[PATH_MAX];
+    mldsa_keypair_t kp;
+    rc = client_resolve_key(prog, "login", &a, (const char *)pass, pass_len, server_pk,
+                            next_path, sizeof next_path, &kp);
+    authd_secret_free(pass, pass_len);
+    if (rc != EX_OK) { return rc; }
+
+    client_session_t cs;
+    rc = client_open_session(prog, "login", 0, &kp, a.hid, a.hid_len, a.sid, a.sid_len,
+                             server_pk, a.unix_path, a.port, &cs);
+    mldsa_keypair_free(&kp);
+    if (rc != EX_OK) { return rc; }
+
+    /* Base64url, spec 13: this is pasted into the site's form by a human, and
+     * 43 unpadded URL-safe characters survive that trip where hex would be 64
+     * and standard base64 would carry '+', '/' and '='. */
+    char b64[sodium_base64_ENCODED_LEN(AUTHMSG_CODE_BYTES,
+                                       sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
+    (void)sodium_bin2base64(b64, sizeof b64, cs.code.code, sizeof cs.code.code,
+                            sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+    printf("%s\n", b64);
+    sodium_memzero(b64, sizeof b64);
+    if ((cs.code.flags & AUTHMSG_FLAG_ROTATION_DUE) != 0u) {
+        fprintf(stderr, "%s login: this key is due for rotation -- run `%s rotate`\n", prog, prog);
+    }
+    fprintf(stderr, "%s login: code valid for %lld more seconds; single use\n", prog,
+            (long long)cs.code.code_expires - (long long)time(NULL));
+    client_say_bye(&cs);
+    return EX_OK;
+}
+
+static int cmd_client_rotate(int argc, char **argv, const char *prog)
+{
+    client_args_t a;
+    int rc = parse_client_args(argc, argv, prog, "rotate", &a);
+    if (rc != EX_OK) { return rc; }
+
+    static uint8_t server_pk[MLDSA_PUBLIC_KEY_BYTES];
+    const demo_keys_status_t ps = demo_keys_load_public(a.server_pub, a.sid, a.sid_len, server_pk);
+    if (ps != DEMO_KEYS_OK) {
+        return failed(prog, "rotate", a.server_pub, demo_keys_status_name(ps));
+    }
+    uint8_t *pass = NULL;
+    size_t pass_len = 0;
+    rc = read_pass(prog, "rotate", a.pass_path, &pass, &pass_len);
+    if (rc != EX_OK) { return rc; }
+
+    char next_path[PATH_MAX];
+    mldsa_keypair_t old_kp;
+    rc = client_resolve_key(prog, "rotate", &a, (const char *)pass, pass_len, server_pk,
+                            next_path, sizeof next_path, &old_kp);
     if (rc != EX_OK) {
+        authd_secret_free(pass, pass_len);
         return rc;
     }
-    mldsa_keypair_t kp;
-    memset(&kp, 0, sizeof kp);
-    const keyfile_status_t ks = keyfile_open(key, hid, hid_len, (const char *)pass, pass_len,
-                                             &kp, NULL);
+
+    /* A leftover .ek.next that the probe did NOT promote is stale -- .ek
+     * authenticated, which proves the server never committed it. Only now, on
+     * that proof, is deleting it safe; never on the probe failing. */
+    if (path_exists(next_path)) {
+        (void)unlink(next_path);
+    }
+
+    /* Seal the new key BEFORE sending anything (spec 10.2). If everything
+     * after this dies, the next invocation's probe decides which key is live
+     * and completes or discards the rename -- there is no state in which the
+     * only copy of a live key is gone. The new key is sealed under the SAME
+     * passphrase: the probe has only one, and changing a passphrase during a
+     * rotation is a different operation (`authd_admin rewrap`). */
+    uint8_t new_pk[MLDSA_PUBLIC_KEY_BYTES];
+    /* THIS DEVICE's public half, beside its own key -- derived from --key, not
+     * from --server-pub, which names someone else's file in someone else's
+     * directory. It is published only after the daemon accepts, so a failed
+     * rotation never leaves a .pub claiming to be current. */
+    char pub_path[PATH_MAX], pub_tmp[PATH_MAX];
+    {
+        const size_t kl = strlen(a.key_path);
+        const int has_ek = (kl > 3u && strcmp(a.key_path + kl - 3u, ".ek") == 0);
+        if (snprintf(pub_path, sizeof pub_path, "%.*s.pub",
+                     (int)(has_ek ? kl - 3u : kl), a.key_path) < 0) {
+            authd_secret_free(pass, pass_len);
+            mldsa_keypair_free(&old_kp);
+            return EX_FAIL;
+        }
+    }
+    /* snprintf's return is CHECKED, not discarded: gcc refuses the discard at
+     * both optimisation levels (-Werror=format-truncation), and it is right to
+     * -- a truncated temp path would collide with something else. */
+    {
+        const int pn = snprintf(pub_tmp, sizeof pub_tmp, "%s.newpub.%ld",
+                                next_path, (long)getpid());
+        if (pn < 0 || (size_t)pn >= sizeof pub_tmp) {
+            authd_secret_free(pass, pass_len);
+            mldsa_keypair_free(&old_kp);
+            return failed(prog, "rotate", next_path, "path-too-long");
+        }
+    }
+    rc = seal_new_identity(prog, "rotate", next_path, pub_tmp, a.hid, a.hid_len,
+                           (const char *)pass, pass_len, KDF_OPS_OPERATOR, KDF_MEM_256MIB,
+                           new_pk);
+    if (rc != EX_OK) {
+        authd_secret_free(pass, pass_len);
+        mldsa_keypair_free(&old_kp);
+        return rc;
+    }
+
+    mldsa_keypair_t new_kp;
+    memset(&new_kp, 0, sizeof new_kp);
+    const keyfile_status_t ks = keyfile_open(next_path, a.hid, a.hid_len,
+                                             (const char *)pass, pass_len, &new_kp, NULL);
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
-        return failed(prog, "login", key, keyfile_status_name(ks));
+        mldsa_keypair_free(&old_kp);
+        return failed(prog, "rotate", next_path, keyfile_status_name(ks));
     }
 
-    static keystore_t pins;
-    keystore_init(&pins);
-    if (keystore_add(&pins, sid, sid_len, server_pk) != KEYSTORE_OK) {
-        mldsa_keypair_free(&kp);
-        return failed(prog, "login", server_pub, "cannot-pin-server-key");
+    client_session_t cs;
+    rc = client_open_session(prog, "rotate", 0, &old_kp, a.hid, a.hid_len, a.sid, a.sid_len,
+                             server_pk, a.unix_path, a.port, &cs);
+    if (rc != EX_OK) {
+        mldsa_keypair_free(&old_kp);
+        mldsa_keypair_free(&new_kp);
+        return rc;
     }
 
-    net_conn_t conn;
-    net_conn_init(&conn);
-    const uint64_t deadline = net_deadline_in(LOGIN_TIMEOUT_MS);
-    const net_status_t ns = (unix_path != NULL)
-                                ? net_connect_unix(unix_path, deadline, &conn)
-                                : net_connect_loopback((uint16_t)port, deadline, &conn);
-    if (ns != NET_OK) {
-        mldsa_keypair_free(&kp);
-        keystore_wipe(&pins);
-        return failed(prog, "login", (unix_path != NULL) ? unix_path : port_s,
-                      net_status_name(ns));
-    }
-
+    static uint8_t body[AUTHMSG_ROTATE_MAX_CONTENT];
     static uint8_t tx[FRAME_BUF_BYTES];
     static uint8_t rx[FRAME_BUF_BYTES];
     static uint8_t pt[SESSION_MAX_PLAINTEXT_BYTES];
-    /* handshake.h: "Init must be called on fresh (or handshake_ctx_wipe'd)
-     * storage." Zeroed here rather than relying on init to do it, because
-     * every failure path below runs handshake_ctx_wipe on this struct. */
-    handshake_ctx_t hs;
-    session_t sess;
-    memset(&hs, 0, sizeof hs);
-    memset(&sess, 0, sizeof sess);
-    size_t out_len = 0, len = 0;
-    const char *stage = "init";
+    uint8_t dig[crypto_hash_sha256_BYTES];
+    uint8_t sig_old[MLDSA_SIGNATURE_MAX_BYTES], sig_new[MLDSA_SIGNATURE_MAX_BYTES];
+    size_t sol = 0, snl = 0, n = 0, sealed = 0, len = 0;
     rc = EX_FAIL;
 
-    handshake_status_t hst = handshake_initiator_init(&hs, hid, hid_len, &kp, &pins, sid, sid_len);
-    if (hst != HANDSHAKE_OK) { goto hs_done; }
-    stage = "client-hello";
-    hst = handshake_initiator_create_client_hello(&hs, tx + FRAME_HEADER_BYTES,
-                                                  FRAME_MAX_PAYLOAD, &out_len);
-    if (hst != HANDSHAKE_OK) { goto hs_done; }
-    if (frame_send(&conn, tx, out_len, deadline) != FRAME_OK) {
-        stage = "client-hello-send";
-        goto io_done;
+    if (authmsg_rotate_digest(dig, AUTHMSG_LABEL_ROTATE_OLD, cs.hsid, 0u,
+                              a.hid, a.hid_len, old_kp.public_key, new_pk) != AUTHMSG_OK ||
+        mldsa_sign(sig_old, &sol, dig, sizeof dig, &old_kp) != 0 ||
+        authmsg_rotate_digest(dig, AUTHMSG_LABEL_ROTATE_NEW, cs.hsid, 0u,
+                              a.hid, a.hid_len, old_kp.public_key, new_pk) != AUTHMSG_OK ||
+        mldsa_sign(sig_new, &snl, dig, sizeof dig, &new_kp) != 0 ||
+        authmsg_encode_rotate(body, sizeof body, &n, 0u, a.hid, a.hid_len, new_pk,
+                              sig_old, sol, sig_new, snl) != AUTHMSG_OK) {
+        (void)failed(prog, "rotate", next_path, "cannot-build-rotate");
+        goto out;
     }
-    stage = "server-hello";
-    if (frame_recv(&conn, rx, 1u, FRAME_MAX_SERVER_HELLO, &len, deadline) != FRAME_OK) {
-        goto io_done;
+    if (session_seal(&cs.sess, body, n, tx + FRAME_HEADER_BYTES, FRAME_MAX_PAYLOAD,
+                     &sealed) != SESSION_OK ||
+        frame_send(&cs.conn, tx, sealed, cs.deadline) != FRAME_OK) {
+        (void)failed(prog, "rotate", next_path, "cannot-send-rotate");
+        goto out;
     }
-    hst = handshake_initiator_verify_server_hello(&hs, rx + FRAME_HEADER_BYTES, len);
-    if (hst != HANDSHAKE_OK) { goto hs_done; }
-    stage = "client-auth";
-    hst = handshake_initiator_create_client_auth(&hs, tx + FRAME_HEADER_BYTES,
-                                                 FRAME_MAX_PAYLOAD, &out_len);
-    if (hst != HANDSHAKE_OK) { goto hs_done; }
-    if (frame_send(&conn, tx, out_len, deadline) != FRAME_OK) {
-        stage = "client-auth-send";
-        goto io_done;
-    }
-    hst = handshake_initiator_finish(&hs);
-    if (hst != HANDSHAKE_OK) { goto hs_done; }
-
-    {
-        session_limits_t lim;
-        session_default_limits(&lim);
-        if (session_init_from_handshake(&sess, &hs, &lim, NULL, NULL) != SESSION_OK) {
-            stage = "session-init";
-            goto io_done;
-        }
-    }
-    /* The daemon's FIRST record is the confirmation record, and spec 6.2 makes
-     * it carry LOGIN_CODE. Its size depends on the daemon's pad_bucket, which
-     * this client neither knows nor needs to: the receiver never knows the
-     * sender's bucket, so the accepted range is the record layer's own
-     * confirmation bounds. */
-    stage = "login-code";
-    if (frame_recv(&conn, rx, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, &len, deadline) != FRAME_OK) {
-        goto io_done;
+    if (frame_recv(&cs.conn, rx, FRAME_MIN_RECORD, FRAME_MAX_RECORD, &len, cs.deadline)
+            != FRAME_OK) {
+        /* No answer is NOT proof that nothing happened -- the daemon may have
+         * committed and died before sealing the ACK. .ek.next stays. */
+        fprintf(stderr, "%s rotate: no reply; %s is KEPT so the next run can resolve it\n",
+                prog, next_path);
+        goto out;
     }
     {
-        size_t pt_len = 0;
-        if (session_open(&sess, rx + FRAME_HEADER_BYTES, len, pt,
-                         SESSION_OPEN_CAP_FOR(FRAME_CONFIRM_MAX), &pt_len) != SESSION_OK) {
-            goto io_done;
+        size_t pl = 0;
+        if (session_open(&cs.sess, rx + FRAME_HEADER_BYTES, len, pt, sizeof pt, &pl)
+                != SESSION_OK) {
+            fprintf(stderr, "%s rotate: the reply did not authenticate; %s is KEPT\n",
+                    prog, next_path);
+            goto out;
         }
-        authmsg_login_code_t lc;
-        const authmsg_status_t as = authmsg_decode_login_code(pt, pt_len, &lc);
-        sodium_memzero(pt, sizeof pt);
-        if (as != AUTHMSG_OK) {
-            fprintf(stderr, "%s login: %s: %s\n", prog, stage, authmsg_status_name(as));
-            goto io_done;
+        authmsg_rotate_ack_t ack;
+        if (authmsg_decode_rotate_ack(pt, pl, &ack) != AUTHMSG_OK) {
+            uint8_t code = 0;
+            if (authmsg_decode_error(pt, pl, &code) == AUTHMSG_OK) {
+                fprintf(stderr, "%s rotate: the daemon refused the rotation (error 0x%02x)\n",
+                        prog, code);
+            } else {
+                fprintf(stderr, "%s rotate: unexpected reply\n", prog);
+            }
+            /* A refusal is not proof either -- the codes are coarse by design
+             * (spec 6.5) and a daemon that committed then crashed answers
+             * nothing at all. Keep the file; the probe decides next time. */
+            fprintf(stderr, "%s rotate: %s is KEPT so the next run can resolve it\n",
+                    prog, next_path);
+            goto out;
         }
-        /* Base64url, spec 13: this is pasted into the site's form by a human,
-         * and 43 unpadded URL-safe characters survive that trip where hex
-         * would be 64 and standard base64 would carry '+', '/' and '='. */
-        char b64[sodium_base64_ENCODED_LEN(AUTHMSG_CODE_BYTES,
-                                           sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
-        (void)sodium_bin2base64(b64, sizeof b64, lc.code, sizeof lc.code,
-                                sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-        printf("%s\n", b64);
-        sodium_memzero(b64, sizeof b64);
-        if ((lc.flags & AUTHMSG_FLAG_ROTATION_DUE) != 0u) {
-            fprintf(stderr, "%s login: this key is due for rotation\n", prog);
+        /* The ACK must name THIS handle and the key we actually sealed.
+         * Constant-time, because Req 3 says every digest comparison is. */
+        uint8_t want_fp[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(want_fp, new_pk, MLDSA_PUBLIC_KEY_BYTES);
+        if (ack.handle_len != a.hid_len ||
+            sodium_memcmp(ack.handle, a.hid, a.hid_len) != 0 ||
+            sodium_memcmp(ack.fp_new, want_fp, sizeof want_fp) != 0) {
+            fprintf(stderr, "%s rotate: the ACK names a different handle or key -- "
+                            "NOT promoting %s\n", prog, next_path);
+            goto out;
         }
-        fprintf(stderr, "%s login: code valid for %lld more seconds; single use\n", prog,
-                (long long)lc.code_expires - (long long)time(NULL));
-        sodium_memzero(&lc, sizeof lc);
+        if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
+            (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
+            goto out;
+        }
+        /* Replace the device's own .pub so it does not go on naming a key the
+         * server no longer accepts. Public data, so a plain rename: the
+         * custody rules keyfile_promote enforces are about secrets. */
+        if (rename(pub_tmp, pub_path) != 0) {
+            fprintf(stderr, "%s rotate: the key rotated but %s could not be updated; "
+                            "it still names the OLD key\n", prog, pub_path);
+        }
+        printf("%s\n", a.key_path);
+        fprintf(stderr, "%s rotate: %s now holds the new key; the old one no longer "
+                        "authenticates\n", prog, a.key_path);
+        rc = EX_OK;
     }
-    /* Say goodbye rather than dropping the socket: the daemon then closes the
-     * slot immediately instead of holding it until the idle deadline. */
-    if (authmsg_encode_bye(pt, sizeof pt, &out_len) == AUTHMSG_OK) {
-        size_t sealed = 0;
-        if (session_seal(&sess, pt, out_len, tx + FRAME_HEADER_BYTES, FRAME_MAX_PAYLOAD,
-                         &sealed) == SESSION_OK) {
-            (void)frame_send(&conn, tx, sealed, deadline);
-        }
-    }
-    rc = EX_OK;
-    goto io_done;
-
-hs_done:
-    fprintf(stderr, "%s login: %s: %s\n", prog, stage, hs_name(hst));
-io_done:
-    if (rc != EX_OK && hst == HANDSHAKE_OK) {
-        fprintf(stderr, "%s login: failed at %s\n", prog, stage);
-    }
+out:
+    (void)unlink(pub_tmp);
+    sodium_memzero(dig, sizeof dig);
     sodium_memzero(pt, sizeof pt);
-    session_wipe(&sess);
-    handshake_ctx_wipe(&hs);
-    keystore_wipe(&pins);
-    mldsa_keypair_free(&kp);
-    net_close(&conn);
+    mldsa_keypair_free(&old_kp);
+    mldsa_keypair_free(&new_kp);
+    client_say_bye(&cs);
     return rc;
 }
 
@@ -1081,13 +1462,19 @@ static void client_usage(const char *prog)
             "  %s keygen --dir DIR --passphrase-file PATH\n"
             "  %s login  --handle H --key H.ek --passphrase-file PATH\n"
             "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
+            "  %s rotate --handle H --key H.ek --passphrase-file PATH\n"
+            "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
             "\n"
             "keygen prints the new device handle on stdout; login prints the login code as\n"
-            "base64url, for pasting into the site's form. `rotate` arrives in V4-9c.\n"
+            "base64url, for pasting into the site's form. rotate replaces this device's key\n"
+            "and keeps its identity: the new key is sealed to <key>.next BEFORE anything is\n"
+            "sent, and renamed over <key> only when the daemon acknowledges. If a rotation\n"
+            "is interrupted, the next login or rotate asks the daemon which key is live and\n"
+            "finishes the job; nothing is ever deleted on a guess.\n"
             "Passphrases are FILES (mode 0600, owned by you): argv and the environment are\n"
             "readable by other processes on this machine.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",
-            prog, prog);
+            prog, prog, prog);
 }
 
 int authd_cli_client(int argc, char **argv)
@@ -1099,6 +1486,7 @@ int authd_cli_client(int argc, char **argv)
     }
     if (strcmp(argv[1], "keygen") == 0) { return cmd_client_keygen(argc, argv, prog); }
     if (strcmp(argv[1], "login") == 0)  { return cmd_client_login(argc, argv, prog); }
+    if (strcmp(argv[1], "rotate") == 0) { return cmd_client_rotate(argc, argv, prog); }
     fprintf(stderr, "%s: unknown subcommand '%s'\n", prog, argv[1]);
     client_usage(prog);
     return EX_USAGE;

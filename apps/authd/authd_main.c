@@ -204,6 +204,7 @@ int main(int argc, char **argv)
     app.server_id = cfg.server_id;
     app.server_id_len = cfg.server_id_len;
     app.pad_bucket = cfg.pad_bucket;
+    app.rotation_due_age_s = cfg.rotation_due_age_s;
     app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
     app.now_ms = now_ms();
     app.now_unix = (int64_t)time(NULL);

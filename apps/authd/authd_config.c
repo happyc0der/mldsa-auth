@@ -26,10 +26,11 @@
 #define K_SITE_UIDS  "site_uids"
 #define K_ADMIN_UIDS "admin_uids"
 #define K_LOCAL_SLOTS "max_local_slots"
+#define K_ROT_AGE    "rotation_due_age_s"
 
 /* bit index per key, for duplicate and missing detection */
 enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET,
-       B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_COUNT };
+       B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_ROT_AGE, B_COUNT };
 
 const char *authd_config_status_name(authd_config_status_t st)
 {
@@ -58,6 +59,7 @@ void authd_config_defaults(authd_config_t *out)
     out->handshake_timeout_ms = 10000u;
     out->idle_timeout_ms = 60000u;
     out->pad_bucket = SESSION_PAD_BUCKET_DEFAULT;
+    out->rotation_due_age_s = AUTHD_ROTATION_AGE_DEFAULT;
     out->max_local_slots = 8u;
     /* The admin socket defaults to root only; the site socket has no default
      * allowlist, so a deployment must name the uid that may reach it. */
@@ -253,6 +255,7 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
         else if (key_is(k, kn, K_SITE_UIDS)) { bit = B_SITE_UIDS; }
         else if (key_is(k, kn, K_ADMIN_UIDS)){ bit = B_ADMIN_UIDS; }
         else if (key_is(k, kn, K_LOCAL_SLOTS)) { bit = B_LOCAL_SLOTS; }
+        else if (key_is(k, kn, K_ROT_AGE))   { bit = B_ROT_AGE; }
         else {
             if (err_line != NULL) { *err_line = line_no; }
             return AUTHD_CFG_ERR_UNKNOWN_KEY;
@@ -307,6 +310,9 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
             r = parse_u32(v, vn, AUTHD_TIMEOUT_MS_MIN, AUTHD_TIMEOUT_MS_MAX, &cfg.handshake_timeout_ms);
         } else if (bit == B_IDLE_MS) {
             r = parse_u32(v, vn, AUTHD_TIMEOUT_MS_MIN, AUTHD_TIMEOUT_MS_MAX, &cfg.idle_timeout_ms);
+        } else if (bit == B_ROT_AGE) {
+            /* 0 is legal and means "never hint", so the minimum is 0, not 1. */
+            r = parse_u32(v, vn, 0u, AUTHD_ROTATION_AGE_MAX, &cfg.rotation_due_age_s);
         } else {
             r = parse_u32(v, vn, 1u, SESSION_PAD_BUCKET_MAX, &u);
             if (r == AUTHD_CFG_OK) {

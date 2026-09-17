@@ -4159,3 +4159,141 @@ SQL, so the string it patched exists nowhere, and the property it guarded is
 now guarded by v49a's T3 against the replacement check. Re-pointing it would
 have produced a duplicate of T3, which proves nothing twice. The committed
 total is therefore 110, not 111.
+
+## V4-9c — key rotation, and what the spec could not say
+
+A device's key was permanent. Suspecting a laptop key had leaked meant
+revoke-and-re-enrol: a new handle, an administrator, every token gone. V4-9c
+lets a device replace its key and keep its identity, with proof of possession
+of both keys and no window in which two keys authenticate.
+
+This is the step `formal/authd.pv` was written for. P5 —
+`inj-event(rotated) ⟹ inj-event(rotateRequested)` — was proven in V4-4 with two
+ablation controls (`rot_hsid.pv`, `rot_sigold.pv`) that make it fail. V4-9c's
+job was to make the C match that model. Worth noting where the model is
+*weaker* than the spec: its `mrot` is `(hsid, A, pk_old, pk_new)` and omits
+`flags` and `handle_len`, which §6.3's `M` includes. The model therefore proves
+nothing about those two fields, and mutation W1 exists because of it.
+
+### The digest cannot be tested by a round trip
+
+The client that signs and the daemon that verifies share one
+`authmsg_rotate_digest`. Any error in it moves both sides together and they
+still agree — so a "rotation works end to end" test kills no digest mutation at
+all. What kills them is a hand-built literal vector, spelled out field by field
+from §6.3 with the label as literal characters, and a test that transmits
+something different from what was signed. Both are in `test_authd_conn`, and
+W1, W2 and W5 are the mutations that would otherwise have sailed through.
+
+### Two of the spec's acceptance steps are unimplementable as separate checks
+
+`pk_exists` is `SELECT 1 FROM device_keys WHERE pk=?1` across **all** states.
+It therefore already covers "`pk_new` unused by any device, in any state" and,
+because `pk_old` is itself a row, "`pk_new ≠ pk_old`". A daemon-side pre-check
+for either would be a branch no end-to-end test could distinguish: delete it and
+the request still fails, with the same coarse code, closing the same way. The
+daemon has neither, and the campaign declares both as equivalent mutants rather
+than pretending to kill them — the register v48a's D7 and v48b's C8 established.
+
+### Every rejection is one error code, and the residual is recorded
+
+Handle mismatch, key already in use, either signature, the store's refusals —
+all `ERROR(0x03)`. A distinct code for "that public key is already enrolled"
+would hand any authenticated user an oracle for the deployment's whole key set:
+the cross-device twin of the enumeration §7.3's decoy flow closes. The
+fine-grained reason goes to the operator's journal and never to the peer.
+
+What that does **not** fix is timing: §6.3 orders the cheap store query before
+the ~100 µs signature verification, so "in use" is still distinguishable by
+elapsed time. Reordering would contradict the spec, so it is recorded as F37
+rather than silently deviated from.
+
+### Three defects the design walked into, and one found by running it
+
+- **`store_rotate_key` would have rotated a revoked device's key** (F30).
+  `active_key_of` joins nothing, so §6.3's "confirm device and user are still
+  active" could only have been a caller-side pre-check — and `authd_admin` is a
+  *different process* writing the same file, so that is a race, not a check.
+  **Req 9 would have failed.** The predicate now runs inside the transaction
+  that commits.
+- **A session established before a rotation could rotate afterwards** (F31),
+  superseding a key its signatures said nothing about. Found while writing the
+  mutation table: W4 had no way to fail, which meant the property it was
+  supposed to guard did not exist. `store_rotate_key` now pins the expected old
+  key inside its transaction.
+- **8612 is not the maximum ROTATE.** The spec quotes it "with a 34-byte
+  handle"; `handle_len` is 1..64, so the real maximum is 8642, and a buffer
+  sized from the quoted figure overruns by thirty bytes. Both constants are
+  pinned, under names that say which is which.
+- **The first working `rotate` wrote the device's new public key into the
+  *server's* directory** and left the device's own `.pub` naming the old key.
+  Found by rotating a key and looking at the files, not by reading the code —
+  the same way V4-9b found the world-readable backup.
+
+### `.ek.next`: the spec's rule inverted, because the spec's rule is unobservable
+
+§10.2 says: "if it is unknown, the server never committed". Req 6 and §7.3
+guarantee the client **cannot** tell unknown from revoked from bad-signature —
+every one of them pins the decoy and fails at the same point. "Unknown" is not
+observable, so that inference is drawn from something the client never learns.
+
+The implemented rule is the contrapositive on the other file, and it is
+stronger:
+
+> **`.ek` authenticating proves the server did not commit** — there is exactly
+> one active key per handle — and only then may `.ek.next` be discarded.
+> **`.ek.next` failing proves nothing.**
+
+So nothing is ever deleted on ambiguity. The asymmetry is the whole argument: a
+stale file costs one confusing directory entry; a wrong delete costs the only
+copy of a live key, and there is no recovery from that but re-enrolment. Both
+crash windows were exercised by hand — a `.ek.next` the server never saw (the
+client falls back and keeps it) and a `.ek.next` the server committed (the next
+`login` completes the rename). `login` runs the probe too, because every
+invocation of a CLI *is* a startup, and `login` is the command that will
+actually find an interrupted rotation.
+
+`keyfile_promote` is the one function in this project that overwrites a key
+file. §12 says "never in place, never clobbering" and §10.2 says "renames it
+over the current file"; the more specific rule wins here, and the contradiction
+is recorded as F34 rather than resolved by editing either section.
+
+### `rotation_due` is config, not an invented constant
+
+§6.2 defines the flag; neither §10.2 nor §17 defines a cadence. Rather than
+hardcode a number and bury it in a comment, `rotation_due_age_s` is an operator
+policy with a default of 180 days and `0` meaning "never hint" — so the
+invented number is visible, bounded by the config parser, covered by
+`fuzz_authd_config` for free, and recorded as F36. Its input comes from a
+separate `store_active_key_age()` rather than a widened `store_lookup_active`,
+because that function runs on an *unauthenticated* ClientHello on the code path
+whose entire job is to look identical for a real and a decoy identity.
+
+### One exit, one wipe
+
+`on_record` now dispatches to a handler with eight rejection paths. If each
+returned directly, each would be a separate place to forget
+`sodium_memzero(pt, …)`, and a mutation deleting one of them would be
+unkillable by any test and invisible to a sanitizer. There is one `goto done`
+and one wipe. That is also why no mutation targets it: with the single-exit
+shape there is nothing observable to break, and the shape *is* the mitigation.
+
+### One mutation survived, and it was the right kind
+
+`W6` removed the explicit handle-equality check from `on_rotate` and the
+campaign still killed nothing. That is not a gap; it is the design being
+stronger than the check.
+
+The daemon digests `c->handle` — the handle that **authenticated this session**
+— never `m.handle` from the message. A ROTATE naming a different handle
+therefore produces a digest over the session's handle, which the peer's
+signature (made over the handle it named) cannot match, and it is rejected one
+step later by `sig_old`. **The handle binding is cryptographic, not a
+comparison.** The explicit check remains, because it gives the operator a
+precise journal line and skips a pointless ~100 µs signature verification — but
+nothing observable changes without it, so it is recorded as an equivalent
+mutant rather than campaigned, in the register v48a's D7 and v48b's C8 set.
+
+The mutation that *would* be meaningful — digesting `m.handle` instead of
+`c->handle` — is not a defect in this code but a different and worse design: it
+would let the peer choose what its own signature is bound to.

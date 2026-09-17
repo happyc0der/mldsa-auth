@@ -73,6 +73,16 @@ static keyfile_status_t derive_key(uint8_t *key, const char *pass, size_t pass_l
 /* Atomic publish: temp file with O_EXCL, fsync, link() to the final name, then
  * fsync the directory -- the demo_keys.c idiom, so the envelope is never
  * written in place and never clobbers. */
+/* fsync the directory so a new or renamed entry is durable. */
+static void fsync_parent_dir(const char *path) {
+    char dir[4096];
+    snprintf(dir, sizeof(dir), "%s", path);
+    char *slash = strrchr(dir, '/');
+    const char *d = slash ? (slash == dir ? "/" : (*slash = '\0', dir)) : ".";
+    const int dfd = open(d, O_RDONLY | O_CLOEXEC);
+    if (dfd >= 0) { (void)fsync(dfd); (void)close(dfd); }
+}
+
 static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp)) {
@@ -96,13 +106,7 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
     }
     (void)unlink(tmp);
     if (r == KEYFILE_OK) {
-        /* fsync the directory so the link is durable. */
-        char dir[4096];
-        snprintf(dir, sizeof(dir), "%s", path);
-        char *slash = strrchr(dir, '/');
-        const char *d = slash ? (slash == dir ? "/" : (*slash = '\0', dir)) : ".";
-        const int dfd = open(d, O_RDONLY | O_CLOEXEC);
-        if (dfd >= 0) { (void)fsync(dfd); (void)close(dfd); }
+        fsync_parent_dir(path);
     }
     return r;
 }
@@ -259,4 +263,41 @@ freebufs:
 done:
     (void)close(fd);
     return r;
+}
+
+keyfile_status_t keyfile_promote(const char *from, const char *to) {
+    if (from == NULL || to == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    /* Custody first: never promote something that is not ours, is not a
+     * regular file, or that anyone else can read. The same three checks
+     * keyfile_open applies -- a rename does not get to skip them. */
+    struct stat st;
+    const int fd = open(from, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return KEYFILE_ERR_IO;
+    }
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        (void)close(fd);
+        return KEYFILE_ERR_IO;
+    }
+    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {
+        (void)close(fd);
+        return KEYFILE_ERR_PERMISSIONS;
+    }
+    (void)close(fd);
+
+    /* THE ONE PLACE in this project that overwrites a key file, and it is
+     * deliberate. Spec 12 says "never in place, never clobbering"; spec 10.2
+     * says rotation "renames it over the current file". 10.2 is the more
+     * specific rule and wins here, because the alternative -- publish beside,
+     * then unlink -- has a window with two files and no way to tell which the
+     * server accepted. rename(2) is atomic: after it there is exactly one key
+     * file and it is the new one. (The contradiction between the two sections
+     * is recorded as errata rather than resolved by editing either.) */
+    if (rename(from, to) != 0) {
+        return KEYFILE_ERR_IO;
+    }
+    fsync_parent_dir(to);
+    return KEYFILE_OK;
 }

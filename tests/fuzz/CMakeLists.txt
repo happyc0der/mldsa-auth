@@ -9,7 +9,7 @@
 # The deterministic test-only RNG in fuzz_common.c is linked ONLY into these
 # executables.
 
-set(FUZZ_TARGETS wire handshake session frame keys envelope authd_config authd_conn localapi)
+set(FUZZ_TARGETS wire handshake session frame keys envelope authd_config authd_conn localapi authmsg)
 
 # CI smoke budget (deterministic fallback mutations per target).
 set(FUZZ_ITER_wire 20000)
@@ -21,9 +21,11 @@ set(FUZZ_ITER_envelope 5000)
 set(FUZZ_ITER_authd_config 20000)
 set(FUZZ_ITER_authd_conn 300)
 set(FUZZ_ITER_localapi 5000)
+set(FUZZ_ITER_authmsg 20000)
 
 # libFuzzer -max_len per target (the harnesses enforce the same bound).
 set(FUZZ_MAXLEN_envelope 8192)
+set(FUZZ_MAXLEN_authmsg 9216)
 set(FUZZ_MAXLEN_authd_config 4096)
 set(FUZZ_MAXLEN_authd_conn 16384)
 set(FUZZ_MAXLEN_localapi 8192)

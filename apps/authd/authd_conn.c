@@ -53,9 +53,12 @@ static void conn_reset(authd_conn_t *c)
     keystore_wipe(&c->ks);
     sodium_memzero(c->handle, sizeof c->handle);
     sodium_memzero(c->user_id, sizeof c->user_id);
+    sodium_memzero(c->handshake_id, sizeof c->handshake_id);
     c->handle_len = 0;
     c->user_id_len = 0;
+    c->hsid_set = 0;
     c->decoy = 0;
+    c->rotated = 0;
     c->stage = CONN_STAGE_FREE;
 }
 
@@ -199,6 +202,27 @@ static ev_action_t on_client_hello(authd_app_t *app, authd_slot_t *slot, authd_c
 
 /* --- AWAIT_CA ------------------------------------------------------------ */
 
+/* Is this device's active key older than the configured cadence?
+ *
+ * The threshold is CONFIG, not a constant: spec 6.2 defines the flag but
+ * neither 10.2 nor 17 defines a cadence, so rather than invent a number and
+ * bury it in a comment the daemon takes one from the operator, with 0 meaning
+ * "never hint". The read happens here, AFTER authentication -- not in
+ * store_lookup_active, which runs on an unauthenticated ClientHello on the
+ * path whose whole job (7.3, Req 6) is to look identical for a real and a
+ * decoy identity. */
+static int rotation_due(const authd_app_t *app, const authd_conn_t *c)
+{
+    if (app->rotation_due_age_s == 0u) {
+        return 0;
+    }
+    int64_t valid_from = 0;
+    if (store_active_key_age(app->store, c->handle, c->handle_len, &valid_from) != STORE_OK) {
+        return 0;
+    }
+    return (app->now_unix - valid_from) >= (int64_t)app->rotation_due_age_s;
+}
+
 /* Issues the login code as the session's FIRST record. spec-v2 6.4.4 allows
  * the responder's confirmation record to carry content, and spec 6.2 makes it
  * this message -- so confirmation and the login code are one record, not two. */
@@ -218,10 +242,14 @@ static int issue_login_code(authd_app_t *app, authd_slot_t *slot, authd_conn_t *
     }
     /* session_init consumed (wiped) the handshake context. */
     c->hs_live = 0;
+    /* Kept for ROTATE's digest: after this point the handshake context is gone
+     * and session_t's copy is private to session.c. */
+    memcpy(c->handshake_id, hsid, sizeof c->handshake_id);
+    c->hsid_set = 1;
 
     authmsg_login_code_t m;
     memset(&m, 0, sizeof m);
-    m.flags = 0u;                                   /* rotation_due is V4-9 policy */
+    m.flags = rotation_due(app, c) ? AUTHMSG_FLAG_ROTATION_DUE : 0u;
     randombytes_buf(m.code, sizeof m.code);
     m.code_expires = (uint64_t)(app->now_unix + (int64_t)app->code_ttl_s);
 
@@ -306,10 +334,148 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
 
 /* --- SERVING -------------------------------------------------------------- */
 
+/* --- ROTATE (spec 6.3) ---------------------------------------------------- */
+
+/* Handles one ROTATE, already decrypted into `pt`.
+ *
+ * ACCEPTANCE ORDER is the spec's, first failure wins, nothing written until
+ * all of it passes. What the PEER learns is one bit: it failed. Every
+ * rejection below answers ERROR(0x03 REJECTED) -- handle mismatch, key in use,
+ * either signature, the store's refusals -- because a distinct code for "that
+ * public key is already enrolled" would hand any authenticated user an oracle
+ * for the whole deployment's key set: the cross-device twin of the enumeration
+ * 7.3's decoy flow exists to close. The fine-grained reason goes to the
+ * operator's journal through `why`, which never reaches the wire.
+ *
+ * Known residual, recorded in docs/v4/audit.md rather than silently deviated
+ * from: 6.3 orders the cheap store query BEFORE the ~100 us signature
+ * verification, so "in use" is still distinguishable by TIMING even with a
+ * uniform code. Reordering would contradict the spec. */
+static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c,
+                             const uint8_t *pt, size_t pt_len)
+{
+    const char *why = "rotate-rejected";
+    uint8_t code = AUTHMSG_ERR_REJECTED;
+
+    /* One ROTATE per session. The spec does not say so, and without it the
+     * holder of the key being rotated AWAY from can keep rotating: sig_old is
+     * still valid because the slot still pins that key. Recorded as errata. */
+    if (c->rotated) {
+        return fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED, "rotate-already-done");
+    }
+    if (!c->hsid_set || c->decoy) {
+        return fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED, "rotate-no-session-binding");
+    }
+
+    authmsg_rotate_t m;
+    const authmsg_status_t ds = authmsg_decode_rotate(pt, pt_len, &m);
+    if (ds != AUTHMSG_OK) {
+        return fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "rotate-malformed");
+    }
+
+    /* The pinned key that authenticated this session IS pk_old: it is what
+     * sig_old must verify under, and what the digest binds to. Taking it from
+     * the store instead would let a rotation that happened underneath this
+     * session be signed by a key that is no longer current. */
+    const uint8_t *pk_old = NULL;
+    if (keystore_lookup(&c->ks, c->handle, c->handle_len, &pk_old) != KEYSTORE_OK ||
+        pk_old == NULL) {
+        return fail_with_error(slot, c, AUTHMSG_ERR_INTERNAL, "rotate-no-pin");
+    }
+
+    ev_action_t act;
+    uint8_t digest[crypto_hash_sha256_BYTES];
+    uint8_t fp[crypto_hash_sha256_BYTES];
+    int64_t rotated_at = 0;
+    size_t dropped = 0;
+
+    if (m.handle_len != c->handle_len ||
+        sodium_memcmp(m.handle, c->handle, c->handle_len) != 0) {
+        why = "rotate-wrong-handle";
+        goto reject;
+    }
+    /* sig_old under the OLD label, against the session's pinned key. */
+    if (authmsg_rotate_digest(digest, AUTHMSG_LABEL_ROTATE_OLD, c->handshake_id, m.flags,
+                              c->handle, c->handle_len, pk_old, m.pk_new) != AUTHMSG_OK) {
+        why = "rotate-digest";
+        goto reject;
+    }
+    if (mldsa_verify(digest, sizeof digest, m.sig_old, m.sig_old_len, pk_old) != 0) {
+        why = "rotate-sig-old";
+        goto reject;
+    }
+    /* sig_new under the NEW label, against the INCOMING key -- proof the peer
+     * holds the private half of what it is asking us to trust. */
+    if (authmsg_rotate_digest(digest, AUTHMSG_LABEL_ROTATE_NEW, c->handshake_id, m.flags,
+                              c->handle, c->handle_len, pk_old, m.pk_new) != AUTHMSG_OK) {
+        why = "rotate-digest";
+        goto reject;
+    }
+    if (mldsa_verify(digest, sizeof digest, m.sig_new, m.sig_new_len, m.pk_new) != 0) {
+        why = "rotate-sig-new";
+        goto reject;
+    }
+
+    /* store_rotate_key re-reads device and user status INSIDE its transaction
+     * and rejects a duplicate or unchanged key there, so the daemon does not
+     * duplicate either check: a second copy here would be a branch no test
+     * could distinguish, and a pre-check would be a race with authd_admin. */
+    {
+        const int drop = (m.flags & AUTHMSG_FLAG_ROTATE_DROP_TOKENS) != 0;
+        /* pk_old is pinned: the store commits only if the handle's active key
+         * is still the one this session authenticated with and signed over. */
+        const store_status_t rs = store_rotate_key(app->store, c->handle, c->handle_len,
+                                                   m.pk_new, pk_old, c->handshake_id,
+                                                   sizeof c->handshake_id, drop,
+                                                   app->now_unix, &rotated_at, &dropped);
+        if (rs != STORE_OK) {
+            why = (rs == STORE_ERR_DB) ? "rotate-store-error" : "rotate-store-refused";
+            if (rs == STORE_ERR_DB) { code = AUTHMSG_ERR_INTERNAL; }
+            goto reject;
+        }
+    }
+
+    /* Spec 15: every rotation is logged, with the handle and both
+     * fingerprints. The handshake_id 15 also asks for has no carrier in
+     * authd_log.h -- recorded as errata rather than widened here, because the
+     * never-list is a property of that API's shape. */
+    crypto_hash_sha256(fp, pk_old, MLDSA_PUBLIC_KEY_BYTES);
+    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-old", fp);
+    crypto_hash_sha256(fp, m.pk_new, MLDSA_PUBLIC_KEY_BYTES);
+    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", fp);
+    authd_log_slot_id(AUTHD_LOG_INFO, "rotate", slot->index, c->handle, c->handle_len);
+    if (dropped > 0u) {
+        authd_log_num(AUTHD_LOG_INFO, "rotate-tokens-dropped", "count", (uint64_t)dropped);
+    }
+
+    {
+        uint8_t ack[AUTHMSG_ROTATE_ACK_CONTENT_LEN(STORE_ID_MAX)];
+        size_t n = 0;
+        if (authmsg_encode_rotate_ack(ack, sizeof ack, &n, c->handle, c->handle_len, fp,
+                                      (uint64_t)rotated_at) != AUTHMSG_OK ||
+            queue_sealed(slot, &c->sess, ack, n) != 0) {
+            sodium_memzero(ack, sizeof ack);
+            act = fail_with_error(slot, c, AUTHMSG_ERR_INTERNAL, "rotate-ack-failed");
+            goto done;
+        }
+        sodium_memzero(ack, sizeof ack);
+    }
+    c->rotated = 1;
+    app->rotations++;
+    act = EV_ACTION_CONTINUE;
+    goto done;
+
+reject:
+    act = fail_with_error(slot, c, code, why);
+done:
+    sodium_memzero(digest, sizeof digest);
+    sodium_memzero(&m, sizeof m);
+    return act;
+}
+
 static ev_action_t on_record(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c,
                              const uint8_t *payload, size_t len)
 {
-    (void)app;
     if (len > AUTHD_MAX_RECORD) {
         return fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "record-over-cap");
     }
@@ -325,24 +491,30 @@ static ev_action_t on_record(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
         return EV_ACTION_CLOSE;
     }
 
+    /* ONE exit, ONE wipe. The ROTATE handler has eight rejection paths; if each
+     * returned directly, each would be a separate place to forget this
+     * memzero, and a mutation deleting one of them would be unkillable by any
+     * test and invisible to a sanitizer. */
+    ev_action_t act;
     uint8_t op = 0;
     const authmsg_status_t as = authmsg_peek_op(pt, pt_len, &op);
-    sodium_memzero(pt, sizeof pt);
     if (as != AUTHMSG_OK) {
-        return fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "empty-content");
-    }
-    if (op == AUTHMSG_OP_BYE) {
+        act = fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "empty-content");
+    } else if (op == AUTHMSG_OP_BYE) {
         if (pt_len != AUTHMSG_BYE_CONTENT_LEN) {
-            return fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "bye-bad-length");
+            act = fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "bye-bad-length");
+        } else {
+            authd_log_slot(AUTHD_LOG_INFO, "bye", slot->index);
+            c->stage = CONN_STAGE_CLOSING;
+            act = EV_ACTION_CLOSE;
         }
-        authd_log_slot(AUTHD_LOG_INFO, "bye", slot->index);
-        c->stage = CONN_STAGE_CLOSING;
-        return EV_ACTION_CLOSE;
+    } else if (op == AUTHMSG_OP_ROTATE) {
+        act = on_rotate(app, slot, c, pt, pt_len);
+    } else {
+        act = fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED, "op-not-permitted");
     }
-    /* ROTATE is V4-9's. Refusing it as "not permitted in this state" is the
-     * honest answer; serving a half-implemented rotation would be worse. */
-    return fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED,
-                           (op == AUTHMSG_OP_ROTATE) ? "rotate-not-implemented" : "op-not-permitted");
+    sodium_memzero(pt, sizeof pt);
+    return act;
 }
 
 /* --- dispatch ------------------------------------------------------------- */

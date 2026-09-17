@@ -509,6 +509,34 @@ static void test_framing_rule(void)
     h_stop(&d);
 }
 
+/* Every combination of the .ek.next decision, without a network round trip.
+ *
+ * The rule under test is deliberately NOT spec 10.2's wording: that says "if
+ * it is unknown, the server never committed", and Req 6 guarantees a client
+ * cannot tell unknown from revoked from bad-signature. Only .ek
+ * authenticating proves the server did not commit -- there is one active key
+ * per handle -- so that is the only case in which discarding .ek.next is safe.
+ * The asymmetry is the point: a stale file costs a confusing directory entry,
+ * a wrong delete costs the identity. */
+static void test_key_plan(void)
+{
+    CHECK(client_key_plan(1, 0, 0) == KEY_PLAN_USE_EK,
+          "key-plan: no .ek.next and .ek works -- use it");
+    CHECK(client_key_plan(1, 1, 0) == KEY_PLAN_USE_EK,
+          "key-plan: .ek works, so .ek.next was never committed");
+    CHECK(client_key_plan(1, 1, 1) == KEY_PLAN_USE_EK,
+          "key-plan: .ek works, so .ek.next is stale even if it also opens");
+    CHECK(client_key_plan(0, 1, 1) == KEY_PLAN_PROMOTE_NEXT,
+          "key-plan: .ek is dead and .ek.next lives -- complete the rename");
+    CHECK(client_key_plan(0, 1, 0) == KEY_PLAN_REFUSE,
+          "key-plan: an unreadable .ek never causes .ek.next to be deleted");
+    CHECK(client_key_plan(0, 0, 0) == KEY_PLAN_REFUSE,
+          "key-plan: nothing works and there is nothing to promote -- refuse");
+    /* next_ok without next_present is nonsense; it must not promote. */
+    CHECK(client_key_plan(0, 0, 1) == KEY_PLAN_REFUSE,
+          "key-plan: a missing .ek.next is never promoted");
+}
+
 int main(void)
 {
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
@@ -520,6 +548,7 @@ int main(void)
     test_client_keygen();
     test_check_config();
     test_framing_rule();
+    test_key_plan();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

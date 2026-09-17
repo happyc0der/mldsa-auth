@@ -1,4 +1,4 @@
-# The two gates that do not fit a push: the 87-mutation suite (one campaign
+# The two gates that do not fit a push: the committed mutation suite (one campaign
 # per step, tools/mutations/) and the 600 s fuzz budgets. Both had only ever
 # run by hand on one laptop before V3-4; the campaigns themselves were not
 # even in the repository until this workflow needed them.

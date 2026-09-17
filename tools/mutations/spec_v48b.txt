@@ -4,4 +4,4 @@ C3|^test_authd_conn$|login: the code expires in at most 60 s (Req 5)
 C4|^test_authd_conn$|login: the code is bound to the right user and handle
 C5|^test_authd_conn$|login: the first record is LOGIN_CODE (0x10)
 C6|^test_authd_conn$|abandon: closing mid-handshake RELEASES the ledger entry immediately
-C7|^test_authd_conn$|notperm: ROTATE is refused with ERROR(0x02 not permitted), not served
+C7|^test_authd_conn$|notperm: a daemon-only op from the client is refused with ERROR(0x02), not served

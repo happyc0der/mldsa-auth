@@ -29,6 +29,7 @@
 #define STORE_HASH_BYTES        32u                       /* SHA-256 of a token/code/ticket/state */
 #define STORE_AUDIT_MAC_BYTES   32u                       /* crypto_auth output */
 #define STORE_KEK_BYTES         32u
+#define STORE_HSID_BYTES        16u                       /* WIRE_HANDSHAKE_ID_LEN */
 
 /* The schema version this build writes and requires; PING reports it so an
  * operator can see what the running daemon expects. The DDL itself lives in
@@ -101,8 +102,18 @@ store_status_t store_enroll_device(store_t *s,
 store_status_t store_rotate_key(store_t *s,
                                 const uint8_t *handle, size_t handle_len,
                                 const uint8_t new_pk[STORE_PK_BYTES],
+                                const uint8_t expect_old_pk[STORE_PK_BYTES],
                                 const uint8_t *hsid, size_t hsid_len,
-                                int drop_tokens);
+                                int drop_tokens, int64_t now,
+                                int64_t *rotated_at_out, size_t *dropped_out);
+
+/* `valid_from` of the handle's ACTIVE key, for the rotation_due hint (spec
+ * 6.2). A separate read rather than an out-param on store_lookup_active,
+ * because that one runs on an UNAUTHENTICATED ClientHello on the path whose
+ * whole job is to look identical for a real and a decoy identity; this runs
+ * after authentication. NOT_FOUND when the handle has no active key. */
+store_status_t store_active_key_age(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                    int64_t *valid_from_out);
 
 /* Revoke a device: device and its active key -> revoked, delete its tokens,
  * one transaction + audit. */

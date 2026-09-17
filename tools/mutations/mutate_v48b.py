@@ -22,7 +22,25 @@ of the design makes unreachable: a decoy pin has no secret key, so no sig_A
 over it can ever verify, and store_lookup_active never returns OK with an
 empty user id. Nothing reachable through the daemon's own interface can
 distinguish its removal, and a documented survivor must not be a pass
-criterion. The guard stays in the code."""
+criterion. The guard stays in the code.
+
+C7's anchor was RE-POINTED in V4-9c. It used to patch the line that refused
+ROTATE as "not implemented"; V4-9c serves ROTATE, so that line is gone. The
+property C7 guards -- an op the state machine does not expect must be REFUSED,
+not silently served -- is unchanged, and so is the shape of the mutation; only
+the text it patches and the op the test uses (now LOGIN_CODE, which is
+daemon->client only) have moved.
+
+THE DOCSTRING BELOW WAS WRONG FROM V4-9a UNTIL V4-9c, and the correction is
+worth more than the original claim. It argued that leaking the login code to
+the journal was UNREPRESENTABLE because authd_log.h had no function taking a
+byte buffer. V4-9a added authd_log_fp(lvl, event, const uint8_t fp[32]) -- and
+in C that parameter is a pointer, while AUTHMSG_CODE_BYTES is exactly 32, so
+authd_log_fp(AUTHD_LOG_INFO, "x", m.code) compiles and dumps the code. The leak
+became representable the moment that function existed, and nothing noticed
+because the claim lived in prose. It is now mutation W12 in v49c, with a named
+check that captures the log and greps for the code.
+"""
 import sys, pathlib
 REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
 CN = "apps/authd/authd_conn.c"
@@ -46,8 +64,8 @@ M = {
  "C6": (CN, [("    if (c->hs_live) {\n        handshake_ctx_wipe(&c->hs);\n        c->hs_live = 0;\n    }",
               "    /* MUTATION C6: handshake not wiped on release */")]),
  # anything after the login code is served rather than refused
- "C7": (CN, [("    return fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED,\n                           (op == AUTHMSG_OP_ROTATE) ? \"rotate-not-implemented\" : \"op-not-permitted\");",
-              "    (void)op; return EV_ACTION_CONTINUE; /* MUTATION C7: unexpected op served */")]),
+ "C7": (CN, [("    } else {\n        act = fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED, \"op-not-permitted\");\n    }",
+              "    } else {\n        act = EV_ACTION_CONTINUE; /* MUTATION C7: unexpected op served */\n    }")]),
 }
 path, edits = M[MID]
 f = REPO / path; s = f.read_text()
