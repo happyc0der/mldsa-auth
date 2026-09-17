@@ -31,7 +31,16 @@ static const char PASS[] = "correct horse battery staple";
 #define MEM (8u * 1024u * 1024u)
 
 static char g_dir[256];
-static void path(char *out, size_t cap, const char *name) { snprintf(out, cap, "%s/%s", g_dir, name); }
+/* The return IS checked. gcc at -O2 -D_FORTIFY_SOURCE=2 cannot prove
+ * "%s/%s" fits when g_dir is as large as the destination, and promotes it to
+ * -Werror=format-truncation; clang does not, and CI builds gcc at -O0, so no
+ * gate saw it until a Release+gcc sweep did (audit finding F19). A truncated
+ * fixture path is a test bug, so it aborts rather than proceeding on a
+ * silently shortened name. */
+static void path(char *out, size_t cap, const char *name) {
+    const int n = snprintf(out, cap, "%s/%s", g_dir, name);
+    if (n < 0 || (size_t)n >= cap) { fprintf(stderr, "fixture path truncated\n"); abort(); }
+}
 
 /* Build a fresh, valid MLDSASK2 image in secure memory. */
 static uint8_t *fresh_image(size_t *len_out) {

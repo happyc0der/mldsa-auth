@@ -59,9 +59,13 @@ static int raw_sql(const char *db, const char *sql)
 
 static char g_dir[512];
 
+/* The return IS checked -- see the note in test_authd_keyfile.c (audit finding
+ * F19): gcc at -O2 -D_FORTIFY_SOURCE=2 promotes this to
+ * -Werror=format-truncation, and a truncated fixture path is a test bug. */
 static void path(char *out, size_t cap, const char *leaf)
 {
-    snprintf(out, cap, "%s/%s", g_dir, leaf);
+    const int n = snprintf(out, cap, "%s/%s", g_dir, leaf);
+    if (n < 0 || (size_t)n >= cap) { fprintf(stderr, "fixture path truncated\n"); abort(); }
 }
 
 /* A fresh store on a fresh file; the KEK is fixed so the audit key is

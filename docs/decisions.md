@@ -3737,3 +3737,27 @@ to neither this step's code nor its scope; it is recorded as audit finding
 **F19** and owned by V4-11, where a Release+gcc build is actually required.
 The honest summary is that the project has a configuration nothing builds
 today, and two findings now live in it.
+
+### GitHub's scheduled runs lag by hours on this repository — measured
+
+The nightly's cron is `17 3 * * *` (UTC). Observed, twice:
+
+| cron slot | run actually created | lag |
+|---|---|---|
+| 2026-09-16 03:17 | 2026-09-16 **08:34** | 5 h 17 m |
+| 2026-09-17 03:17 | not created within 2 h of watching | ≥ 2 h |
+
+This is GitHub's documented behaviour — scheduled workflows are queued on a
+best-effort basis and are delayed, or dropped entirely, when the hosted-runner
+pool is busy; low-activity repositories are delayed the most. It is **not** a
+configuration fault, and the cron path itself is proven: the 2026-09-16 run
+fired and went green.
+
+It is recorded because the failure mode is misreading it. A missing 03:17 run
+is not evidence that the nightly is broken, and equally "the badge is green"
+is not evidence that it ran *today*. Two things already guard against drawing
+comfort from a nightly that silently stopped: the README's note that GitHub
+disables a schedule after 60 days without a commit, and the fact that every
+matrix row is also exercised by a push-triggered bring-up before it is merged.
+When a nightly result is actually needed on demand, `workflow_dispatch` is the
+reliable trigger, not the clock.
