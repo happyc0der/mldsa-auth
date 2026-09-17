@@ -84,7 +84,15 @@ keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, si
 /* Opens an MLDSAEK1 file and returns the validated keypair (secret key in
  * secure memory). Runs the shared MLDSASK2 validator after decryption, so a
  * wrong id is ID_MISMATCH-in-image (KEYFILE_ERR_IMAGE) and so on. */
+/* `kek_out`, when non-NULL, receives the 32-byte envelope KEK (the Argon2id
+ * output) on success. The store derives its audit-chain key from it
+ * (key_audit = HKDF(ikm=KEK, salt=store_id, info="mldsa-authd/v1/audit-mac"),
+ * spec 9.2.4), and store_id only exists after the store is created, so the
+ * KEK -- not a pre-derived key -- is what must cross this boundary. It is
+ * secret: the caller SHOULD pass secure memory and wipe it. On EVERY failure
+ * path it is zeroed, never left holding a partial derivation. */
 keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, size_t id_len,
-                              const char *passphrase, size_t pass_len, mldsa_keypair_t *kp);
+                              const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                              uint8_t *kek_out);
 
 #endif

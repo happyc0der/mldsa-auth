@@ -122,7 +122,9 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
 | `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, asymmetric pad buckets on the wire (27/281/4121-byte confirmation records), and legacy-key migration |
 | `demo_e2e` | The full client/server demo end to end — three times: default padding, mismatched `--pad-bucket` policies, and a migrated legacy key authenticating against the original pin — including a check that no key material reaches any log |
-| `fuzz_replay_*` (5) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
+| `test_authd_keyfile` | The `MLDSAEK1` key-at-rest envelope: seal/open round trip, header-as-AAD, KDF parameter bounds on both sides, a tamper sweep over every header field, `O_NOFOLLOW`, and the KEK out-parameter (filled on success, identical on re-derive, zeroed on failure) |
+| `test_authd_store` | The daemon's SQLite store: schema-enforced invariants (one active key per handle, a public key unique forever), the three-join active lookup, Req 7 re-enrollment refusal, rotation atomicity proven by injecting a fault mid-rotation and reopening, audit-chain MAC verification with tamper and truncation detection, token/login-code lifetimes and the login-CSRF state binding, and backup/restore |
+| `fuzz_replay_*` (6) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
 | `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on sixteen built-in controls before every scan |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
 | `bench_smoke` | Every benchmark binary at tiny iteration counts, so bench code cannot rot |
@@ -285,6 +287,7 @@ system packages are used, so a clean checkout builds identical bits.
 |---|---|---|
 | [liboqs](https://github.com/open-quantum-safe/liboqs) | **0.16.0** | Fetched at `GIT_TAG 0.16.0`, then **verified against commit `5a1a854b0dc9f2141bdc771c555ee60c37950183`** — at population and again at every configure (`cmake/VerifyLiboqsCommit.cmake`) |
 | [libsodium](https://github.com/jedisct1/libsodium) | **1.0.22** | Release tarball pinned byte-exact by `URL_HASH` SHA-256 `adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349`; resolved commit `77e1ce5d6dee871c49ef211222ba18ef0c486bda` |
+| [SQLite](https://sqlite.org/) (amalgamation) | **3.53.4** | The daemon's store (V4-7). Amalgamation pinned byte-exact by `URL_HASH` **SHA3-256** `628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e` (2 946 650 B), the digest sqlite.org publishes; built in-tree with `SQLITE_THREADSAFE=0`, `SQLITE_OMIT_LOAD_EXTENSION`, `SQLITE_DQS=0` |
 
 liboqs is built with `OQS_MINIMAL_BUILD="SIG_ml_dsa_65;KEM_ml_kem_768"`:
 exactly one signature algorithm and one KEM, so the library's algorithm

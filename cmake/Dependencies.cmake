@@ -161,3 +161,50 @@ set_target_properties(sodium PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES ${LIBSODIUM_INCLUDE_DIR}
 )
 add_dependencies(sodium libsodium_ext)
+
+# --- SQLite 3.53.4 (amalgamation) --------------------------------------------
+# The daemon's store (V4-7). Pinned like the other dependencies: the exact
+# amalgamation artifact is verified bit-for-bit by its published SHA3-256
+# (sqlite.org's PRODUCT line: 2026/sqlite-amalgamation-3530400.zip, 2946650 B).
+# URL_HASH runs the check at population time, before any of the source is used,
+# so a substituted archive never reaches the compiler. The amalgamation is a
+# single C file with no build system of its own -- no Autotools, so the
+# path-with-spaces libtool bug that forces libsodium out to $TMPDIR does not
+# apply here; it builds straight in the build tree as pure CMake.
+set(MLDSA_SQLITE_SHA3 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e)
+FetchContent_Declare(
+  sqlite3_amalg
+  URL      https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+  URL_HASH SHA3_256=${MLDSA_SQLITE_SHA3}
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(sqlite3_amalg)
+
+# The zip carries a single top-level directory; find sqlite3.c/.h beneath the
+# populated source dir rather than hardcoding the versioned folder name, so a
+# future version bump touches only the URL and the hash above.
+file(GLOB_RECURSE _mldsa_sqlite_c   "${sqlite3_amalg_SOURCE_DIR}/*/sqlite3.c" "${sqlite3_amalg_SOURCE_DIR}/sqlite3.c")
+file(GLOB_RECURSE _mldsa_sqlite_hdr "${sqlite3_amalg_SOURCE_DIR}/*/sqlite3.h" "${sqlite3_amalg_SOURCE_DIR}/sqlite3.h")
+list(GET _mldsa_sqlite_c 0 MLDSA_SQLITE_C)
+list(GET _mldsa_sqlite_hdr 0 MLDSA_SQLITE_H)
+get_filename_component(MLDSA_SQLITE_INCLUDE_DIR "${MLDSA_SQLITE_H}" DIRECTORY)
+if(NOT MLDSA_SQLITE_C OR NOT EXISTS "${MLDSA_SQLITE_C}")
+  message(FATAL_ERROR "sqlite3.c not found under ${sqlite3_amalg_SOURCE_DIR}")
+endif()
+
+# Build options (spec 9): no threading (the daemon is single event loop),
+# no extension loading (no dlopen surface), no double-quoted string literals
+# (DQS=0 makes a mistyped identifier an error, not a silent string), foreign
+# keys on by default. Third-party code, so the project's -Wall -Wextra -Werror
+# is NOT applied: it is compiled with warnings off and its own hardening only.
+add_library(sqlite3 STATIC "${MLDSA_SQLITE_C}")
+target_include_directories(sqlite3 PUBLIC "${MLDSA_SQLITE_INCLUDE_DIR}")
+target_compile_definitions(sqlite3 PRIVATE
+  SQLITE_THREADSAFE=0
+  SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_DQS=0
+  SQLITE_DEFAULT_MEMSTATUS=0
+  SQLITE_DEFAULT_FOREIGN_KEYS=1
+)
+target_compile_options(sqlite3 PRIVATE -w)
+set_target_properties(sqlite3 PROPERTIES POSITION_INDEPENDENT_CODE ON)

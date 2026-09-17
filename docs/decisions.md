@@ -3294,3 +3294,128 @@ per input. It is therefore built on a pure `keyfile_parse_header()` extraction
 (everything before the KDF), fuzzed with an independent model, while the
 KDF/AEAD/image path stays covered by the low-parameter unit test. Landed as the
 closing piece of the step.
+
+## V4-7 — the store: a pinned SQLite, atomic operations and an audit chain
+
+The daemon's persistence layer. It is the first V4 step with a third-party
+dependency and the first with an on-disk format that is not a key file, so the
+decisions below are mostly about what is enforced *where*.
+
+### SQLite is pinned by artifact, not by version string
+
+`sqlite.org` publishes a SHA3-256 for every amalgamation, so the pin is the
+exact archive: `2026/sqlite-amalgamation-3530400.zip`, 2 946 650 bytes,
+SHA3-256 `628a44cf…934e`, verified by `URL_HASH SHA3_256=` at population time
+— before any of the source reaches a compiler. That is stronger than the
+libsodium pin's mechanism only in hash family; the property is the same one
+this project has required since V2-2, and CMake's cache key already hashes
+`cmake/Dependencies.cmake`, so bumping the pin invalidates the CI cache
+automatically (the V3-3 rule) with no extra work.
+
+`file(SHA3_256)` was **checked, not assumed**: CMake 4.4.3 computes the
+published digest of `"abc"` correctly, and SHA3 has been in CMake since 3.8, so
+the planned "bundled fallback if unavailable" was dropped as unnecessary rather
+than carried as dead code.
+
+The plan proposed 3.47.x; the current release is 3.53.4, and pinning the
+current stable is the conservative choice for an auth store, so that is what
+landed. The amalgamation has no build system of its own, so — unlike libsodium
+— it is **not** affected by the Autotools path-with-spaces bug (A31/F13) and
+builds straight in the build tree. It is compiled with `SQLITE_THREADSAFE=0`
+(the daemon is one event loop), `SQLITE_OMIT_LOAD_EXTENSION` (no `dlopen`
+surface), `SQLITE_DQS=0` (a mistyped identifier is an error, not a silent
+string), `DEFAULT_FOREIGN_KEYS=1`, and with the project's `-Werror` explicitly
+**not** applied: it is third-party code, and bending 9.5 MB of it to this
+project's warning set would be pretending to a review that did not happen.
+
+### The invariants live in the schema, not in C
+
+Spec §9.2's two hardest invariants are enforced by the DDL: `CREATE UNIQUE
+INDEX one_active_key ON device_keys(handle) WHERE status='active'` makes "at
+most one active key per handle" unrepresentable, and `pk BLOB UNIQUE` makes a
+public key unique across every device and every state, forever. A bug in
+`store.c` therefore cannot violate either one silently. This also decided the
+order inside `store_rotate_key`: the old key must be superseded *before* the
+new one is inserted, because the index would otherwise reject the insert.
+
+A consequence worth recording rather than hiding: the duplicate-public-key rule
+is guarded **twice**, by `pk_exists()` and by the schema. Removing either alone
+leaves the other catching it, so neither is independently mutation-killable.
+That is defense in depth working, not a coverage gap, and `mutate_v47.py` says
+so in its header instead of shipping a mutation that would prove nothing.
+
+### One transaction per operation, proven by injecting a fault
+
+Req 14 says a partially applied lifecycle change is impossible. Asserting that
+is easy; the step proves it. `store.c` carries a fault hook compiled in **only**
+under `MLDSA_STORE_FAULT_HOOK`, which the test target defines and no normal
+build does. The test arms it to fire in the one window that matters — between
+superseding the old key and inserting the new one — then **closes and reopens
+the store** and requires the handle to still have exactly its old active key.
+The reopen is the point: an in-process assertion would only prove a cached view,
+not durability.
+
+`tools/check_store_fault_hook.sh` keeps the affordance where it belongs. It
+requires the symbol to be **absent** from the shipped library and every shipped
+executable *and* **present** in the test binary — because an "absent everywhere"
+check that no longer matches the symbol name would pass vacuously forever. All
+three of its failure modes were demonstrated (hook leaked into the archive;
+test binary without the symbol; empty build directory), each exiting 1.
+
+### The audit chain, and what "fields" had to mean
+
+Spec §9.2.4 fixes `mac_i = crypto_auth(key_audit, prev_mac || seq || at ||
+event || 0x00 || fields)` but leaves `fields` abstract. An implementation has to
+choose, so `audit_mac_input()` fixes a length-prefixed encoding (u8 user_id, u8
+handle, u16 detail) which is **injective** over the row: no two distinct rows
+can produce the same MAC input by shifting a delimiter. That is now part of the
+on-disk format and cannot change without a schema version bump, which is why it
+is written down here and in the source rather than left implicit.
+
+`key_audit = HKDF-SHA256(ikm = envelope KEK, salt = store_id, info =
+"mldsa-authd/v1/audit-mac")`, and `store_id` only exists once the store has been
+created — so the derivation has to happen inside `store_open`, and the **KEK
+itself** must cross the boundary. Hence the one approved change to V4-6's
+surface: `keyfile_open` gained an optional `kek_out`. It is zeroed on entry so
+every failure path leaves it clean, filled only on success, and the envelope
+test now pins all three properties (filled on success, identical on re-derive,
+zeroed on a wrong passphrase) so the new parameter is not a blind spot.
+
+Tamper and truncation are both demonstrated against a real database file, using
+the test's own `sqlite3` handle rather than the `sqlite3` CLI — the first draft
+shelled out and would have **silently SKIPped** on any runner without the CLI,
+which is exactly the class of hollow gate this project keeps finding. Each has a
+present-canary control: the edit is asserted to have actually happened before
+the detection is asserted.
+
+### Scope held
+
+V4-7 delivers correct, atomic building blocks. The policy that sequences them —
+recovery lockout counting, ticket and token TTL rules, the decoy flow — is
+V4-9's, and `store.h` says so. No fuzz target was added: nothing here parses
+attacker-controlled bytes (the daemon and local API validate lengths before the
+store sees them), and adding a target to fuzz our own callers would be
+ceremony. If V4-8/V4-9 expose a parse, that is where the target belongs.
+
+### What V4-7's verification found in V4-6
+
+Two defects in the step before this one, both of the same shape — a list that
+had to be updated by hand and was not:
+
+1. **`run_fuzz.sh` never ran the envelope fuzzer.** Its default target list was
+   the literal `wire handshake session frame keys`. V4-6 added `envelope` to
+   `FUZZ_TARGETS` in CMake but not to that line, and CI's fuzz job invokes
+   `run_fuzz.sh smoke build-fuzz` with **no target arguments** — so the
+   per-push smoke exercised five targets and never the sixth. The V4-6 exit
+   report's green CI therefore said less than it appeared to. The list is now
+   derived from `CMakeLists.txt`'s `FUZZ_TARGETS` with a hard failure if the
+   parse yields nothing, so a target added to the build cannot be skipped by
+   the runner again.
+2. **The README's `fuzz_replay_* (5)` was stale** (there are six), and
+   `test_authd_keyfile` had no row in the test table at all.
+
+Neither is exotic. Both are the "a human-maintained list drifted from the
+machine-readable one" failure this project has now hit three times (V3-4's
+untracked campaigns, V3-6's four stale counts, and these). The fix applied here
+is the same one that worked before: derive the list, and make an empty
+derivation a failure rather than a quiet no-op.

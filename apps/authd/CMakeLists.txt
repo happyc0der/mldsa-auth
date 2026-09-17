@@ -2,9 +2,12 @@
 # envelope; later steps add the store, the event loop and the local API.
 add_library(mldsa_authd STATIC
   keyfile.c
+  store/store.c
 )
-target_include_directories(mldsa_authd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mldsa_authd PUBLIC mldsa_demo)
+target_include_directories(mldsa_authd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
+# sqlite3 is PRIVATE: the store's API is pure C types, so no consumer of
+# mldsa_authd needs sqlite3.h on its include path.
+target_link_libraries(mldsa_authd PUBLIC mldsa_demo PRIVATE sqlite3)
 target_compile_options(mldsa_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_authd PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd PUBLIC ${MLDSA_SANITIZE_FLAGS})

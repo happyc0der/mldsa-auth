@@ -184,8 +184,13 @@ keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, si
 }
 
 keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, size_t id_len,
-                              const char *passphrase, size_t pass_len, mldsa_keypair_t *kp) {
+                              const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                              uint8_t *kek_out) {
     struct stat st;
+    if (kek_out != NULL) {
+        /* zeroed up front, so every failure path below leaves it clean */
+        sodium_memzero(kek_out, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+    }
     if (kp == NULL) {
         return KEYFILE_ERR_ARG;
     }
@@ -243,6 +248,9 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
          * loader; map any image failure to a single coarse status. */
         r = (demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp) == DEMO_KEYS_OK)
                 ? KEYFILE_OK : KEYFILE_ERR_IMAGE;
+        if (r == KEYFILE_OK && kek_out != NULL) {
+            memcpy(kek_out, key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+        }
     }
 freebufs:
     if (img) { secure_mem_free(img, ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES); }

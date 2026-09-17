@@ -96,6 +96,19 @@ target_compile_definitions(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_authd_keyfile PRIVATE ${MLDSA_SANITIZE_FLAGS})
 add_test(NAME test_authd_keyfile COMMAND test_authd_keyfile)
 
+# V4-7: the store. This target compiles store.c ITSELF with the fault hook so
+# the atomicity of a rotation can be proven by injecting a failure mid-way; the
+# shipped mldsa_authd carries the same source WITHOUT the hook, and a
+# structural check keeps it that way. It therefore links mldsa_demo + sqlite3
+# directly rather than mldsa_authd (which would duplicate store.o).
+add_executable(test_authd_store test_authd_store.c ${PROJECT_SOURCE_DIR}/apps/authd/store/store.c)
+target_include_directories(test_authd_store PRIVATE ${PROJECT_SOURCE_DIR}/apps/authd/store)
+target_link_libraries(test_authd_store PRIVATE mldsa_demo sqlite3)
+target_compile_definitions(test_authd_store PRIVATE ${MLDSA_HARDENING_DEFS} MLDSA_STORE_FAULT_HOOK=1)
+target_compile_options(test_authd_store PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_store PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_store COMMAND test_authd_store)
+
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/demo_e2e.sh $<TARGET_FILE:auth_server> $<TARGET_FILE:auth_client>

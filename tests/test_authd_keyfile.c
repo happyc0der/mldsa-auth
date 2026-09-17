@@ -69,22 +69,40 @@ int main(void) {
       CHECK(n == 8 && memcmp(magic, KEYFILE_MAGIC, 8) == 0, "file begins with the MLDSAEK1 magic"); }
 
     mldsa_keypair_t kp;
-    CHECK(keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp) == KEYFILE_OK,
+    uint8_t kek[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    uint8_t kek2[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    memset(kek, 0xAA, sizeof(kek));
+    CHECK(keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp, kek) == KEYFILE_OK,
           "open recovers the identity with the right passphrase");
+    /* V4-7: the KEK out-param. It must be filled on success (not left at the
+     * 0xAA pre-fill, and not all-zero), and it must be DETERMINISTIC for the
+     * same passphrase+salt -- the store's audit key is derived from it. */
+    { int all_aa = 1, all_00 = 1;
+      for (size_t i = 0; i < sizeof(kek); i++) { if (kek[i] != 0xAA) all_aa = 0; if (kek[i] != 0) all_00 = 0; }
+      CHECK(!all_aa && !all_00, "open fills the KEK out-param on success"); }
     /* the recovered key really works */
     { uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES]; size_t sl = 0; const uint8_t m[3] = {1,2,3};
       CHECK(kp.secret_key != NULL && mldsa_sign(sig, &sl, m, 3, &kp) == 0 &&
             mldsa_verify(m, 3, sig, sl, kp.public_key) == 0, "the recovered keypair signs and verifies");
       mldsa_keypair_free(&kp); }
 
+    memset(kek2, 0xAA, sizeof(kek2));
+    CHECK(keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp, kek2) == KEYFILE_OK &&
+          memcmp(kek, kek2, sizeof(kek)) == 0,
+          "the KEK is re-derived identically from the same passphrase and salt");
+    mldsa_keypair_free(&kp);
+
     /* wrong passphrase */
-    CHECK(keyfile_open(ek, ID_A, IDLEN, "wrong pass", 10, &kp) == KEYFILE_ERR_DECRYPT,
+    memset(kek2, 0xAA, sizeof(kek2));
+    CHECK(keyfile_open(ek, ID_A, IDLEN, "wrong pass", 10, &kp, kek2) == KEYFILE_ERR_DECRYPT,
           "a wrong passphrase is rejected (DECRYPT), no keypair");
     CHECK(kp.secret_key == NULL, "no secret key is returned on a failed open");
+    { int zeroed = 1; for (size_t i = 0; i < sizeof(kek2); i++) { if (kek2[i] != 0) zeroed = 0; }
+      CHECK(zeroed, "a failed open zeroes the KEK out-param"); }
 
     /* wrong expected id -> the shared validator rejects the decrypted image */
     { const uint8_t bob[] = {'b','o','b'};
-      CHECK(keyfile_open(ek, bob, 3, PASS, strlen(PASS), &kp) == KEYFILE_ERR_IMAGE,
+      CHECK(keyfile_open(ek, bob, 3, PASS, strlen(PASS), &kp, NULL) == KEYFILE_ERR_IMAGE,
             "the right passphrase but a wrong expected id -> IMAGE (validator rejects)");
       CHECK(kp.secret_key == NULL, "no key returned on an id mismatch"); }
 
@@ -108,7 +126,7 @@ int main(void) {
       b[10] = 0; b[11] = 0; b[12] = 0; b[13] = (uint8_t)(KEYFILE_OPSLIMIT_MAX + 1u); /* opslimit BE32 @ off 10 */
       char bad[256]; path(bad, sizeof(bad), "badops.ek"); (void)unlink(bad);
       FILE *g = fopen(bad, "wb"); fwrite(b,1,(size_t)total,g); fclose(g); chmod(bad, 0600); free(b);
-      CHECK(keyfile_open(bad, ID_A, IDLEN, PASS, strlen(PASS), &kp) == KEYFILE_ERR_PARAMS,
+      CHECK(keyfile_open(bad, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL) == KEYFILE_ERR_PARAMS,
             "open rejects a header opslimit over the ceiling -> PARAMS (before the KDF)");
       (void)unlink(bad); }
 
@@ -128,7 +146,7 @@ int main(void) {
           (void)n; b[spots[i]] ^= 0x01u;
           char t[256]; path(t, sizeof(t), "tampered.ek");
           (void)unlink(t); FILE *g = fopen(t, "wb"); fwrite(b,1,(size_t)total,g); fclose(g); chmod(t, 0600);
-          keyfile_status_t s = keyfile_open(t, ID_A, IDLEN, PASS, strlen(PASS), &kp);
+          keyfile_status_t s = keyfile_open(t, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL);
           if (s == KEYFILE_OK) { printf("  (tamper at %s opened!)\n", names[i]); all = 0; if (kp.secret_key) mldsa_keypair_free(&kp); }
           free(b); (void)unlink(t);
       }
@@ -137,7 +155,7 @@ int main(void) {
     /* symlink is refused (O_NOFOLLOW) */
     { char lnk[256]; path(lnk, sizeof(lnk), "link.ek");
       if (symlink(ek, lnk) == 0) {
-          CHECK(keyfile_open(lnk, ID_A, IDLEN, PASS, strlen(PASS), &kp) == KEYFILE_ERR_IO,
+          CHECK(keyfile_open(lnk, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL) == KEYFILE_ERR_IO,
                 "a symlinked envelope is refused (O_NOFOLLOW)");
           (void)unlink(lnk);
       } }
