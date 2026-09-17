@@ -3537,3 +3537,35 @@ script's header so the next person to read it does not "fix" the omission.
 The distinction between the two matters and is worth stating plainly: D4 was a
 weakness in the tests and was fixed there; D7 is a property of the code that no
 test at this interface can see, and is recorded rather than papered over.
+
+### The nightly gap, and closing it
+
+V4-6, V4-7 and V4-8a each committed a campaign that was not added to the
+nightly matrix at the time. That was a deliberate cost trade-off -- one
+bring-up costs a multi-hour nightly dispatch, so three steps' worth of rows
+were batched into one -- and it was recorded in `tools/README.md` rather than
+left implicit. It is worth being precise about what it did and did not cost,
+because the answer is not "nothing":
+
+The per-push CI was never blind. The full suite, both sanitizers, gcc and the
+60 s smoke over every target ran on Linux on every push, so a functional
+regression in the store or the event loop would have been caught. What was
+suspended is narrower and more important: **the mutation campaigns ran
+nowhere automatically.** They existed as committed files plus one agent's
+assertion that they passed locally -- which is exactly the condition V3-4
+diagnosed and committed the campaigns to the repository to end. A test that has
+quietly stopped being able to fail is the defect this project's whole
+verification method exists to catch, and for three steps nothing was checking
+for it.
+
+The deferral was also open-ended, with no trigger condition, which is how a
+deferral becomes permanent. The honest lesson is not "batching was wrong" --
+batching saved two dispatches and the batch was green on the first try -- but
+that a deferral of an assurance gate needs a stated expiry, and this one did
+not have one until it was questioned.
+
+Closed in one bring-up: eleven Linux campaigns + v35 on macOS + seven 600 s
+fuzz targets, green on the first run, with all 21 new mutations KILLED on Linux
+under `objdump`-based fingerprinting. The control (v48a's D1 expectation rotted
+to text no check prints) turned that row and only that row red with
+`SURVIVED(BAD:)`, then was reverted byte-exactly.
