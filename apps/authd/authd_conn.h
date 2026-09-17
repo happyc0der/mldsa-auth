@@ -78,8 +78,16 @@ typedef struct {
     size_t                     server_id_len;
     handshake_pending_store_t *pending;       /* borrowed */
 
+    /* The loop, so the API can close the connections a revocation invalidates
+     * (Req 9). The daemon owns both the store and the slots, so this needs no
+     * "store hook": revoking a row and closing its sessions happen in one
+     * process, in one thread, in that order. */
+    evloop_t *ev;
+
     uint32_t pad_bucket;
     uint32_t code_ttl_s;
+    uint64_t started_ms;      /* for PING's uptime */
+    uint64_t next_sweep_ms;
 
     /* TIME IS PUSHED IN, not read: the main loop sets these immediately
      * before each evloop_run_once() with the same values it gives the loop,
@@ -93,6 +101,9 @@ typedef struct {
     uint64_t logins_issued;
     uint64_t decoy_pins;
     uint64_t handshakes_failed;
+    uint64_t swept_tokens;
+    uint64_t swept_codes;
+    uint64_t swept_tickets;
 } authd_app_t;
 
 /* Clock adaptor for the pending store and the session: both take the
@@ -108,5 +119,15 @@ ev_action_t authd_conn_on_frame(void *user, authd_slot_t *slot, const uint8_t *p
 void        authd_conn_on_close(void *user, authd_slot_t *slot);
 
 const char *authd_conn_stage_name(conn_stage_t s);
+
+/* Closes every live protocol connection authenticated as `handle` / belonging
+ * to `user`, and returns how many were closed. Req 9's "live connections MUST
+ * be closed" half: revoking the row is not enough while a session is open. */
+size_t authd_app_close_handle(authd_app_t *app, const uint8_t *handle, size_t handle_len);
+size_t authd_app_close_user(authd_app_t *app, const uint8_t *user_id, size_t user_id_len);
+
+/* Runs the periodic sweep when due (TOKEN_SWEEP_INTERVAL_MS), logging the
+ * counts (spec 11, 15). Cheap and idempotent; call once per loop iteration. */
+void authd_app_maybe_sweep(authd_app_t *app);
 
 #endif /* MLDSA_AUTHD_CONN_H */

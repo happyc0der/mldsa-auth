@@ -606,6 +606,40 @@ store_status_t store_enable_user(store_t *s, const uint8_t *user_id, size_t user
     return set_user_status(s, user_id, user_id_len, "active", by, NULL, 0, 0, "user-enable");
 }
 
+store_status_t store_get_user(const store_t *s, const uint8_t *user_id, size_t user_id_len,
+                              store_role_t *role_out, char *status_out, size_t status_cap)
+{
+    if (s == NULL || !id_ok(user_id, user_id_len)) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT role, status FROM users WHERE user_id=?1 LIMIT 1;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            if (role_out != NULL) {
+                r = role_from_text(sqlite3_column_text(st, 0), role_out);
+            }
+            if (r == STORE_OK && status_out != NULL && status_cap > 0u) {
+                const unsigned char *t = sqlite3_column_text(st, 1);
+                snprintf(status_out, status_cap, "%s", (t != NULL) ? (const char *)t : "");
+            }
+        } else if (rc == SQLITE_DONE) {
+            r = STORE_ERR_NOT_FOUND;
+        } else {
+            r = STORE_ERR_DB;
+        }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* --- devices / keys ------------------------------------------------------ */
 
 static void pk_fingerprint(const uint8_t pk[STORE_PK_BYTES], uint8_t out[crypto_hash_sha256_BYTES])
@@ -1007,47 +1041,127 @@ store_status_t store_add_token(store_t *s, const uint8_t token_hash[STORE_HASH_B
 }
 
 store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES], int64_t now,
-                                  uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out)
+                                  uint32_t idle_ttl_s,
+                                  store_token_verdict_t *verdict, store_token_info_t *info)
 {
-    if (s == NULL || token_hash == NULL) { return STORE_ERR_ARG; }
+    if (s == NULL || token_hash == NULL || verdict == NULL) {
+        return STORE_ERR_ARG;
+    }
+    *verdict = STORE_TOKEN_UNKNOWN;
+    if (info != NULL) {
+        memset(info, 0, sizeof *info);
+    }
+
+    /* One query joins the device and the user, so the distinction between
+     * "expired", "device revoked" and "user disabled" comes from the same
+     * consistent read rather than three racing ones. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "SELECT user_id FROM tokens WHERE token_hash=?1 AND expires_at>?2 AND idle_expires_at>?2 LIMIT 1;",
-            -1, &st, NULL) != SQLITE_OK) {
+            "SELECT t.user_id, t.handle, t.issued_at, t.expires_at, t.idle_expires_at,"
+            "       u.role, d.status, u.status"
+            "  FROM tokens t"
+            "  LEFT JOIN devices d ON d.handle = t.handle"
+            "  LEFT JOIN users   u ON u.user_id = t.user_id"
+            " WHERE t.token_hash = ?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
         return STORE_ERR_DB;
     }
     store_status_t r = STORE_OK;
-    if (sqlite3_bind_blob(st, 1, token_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, now) != SQLITE_OK) {
+    int found = 0;
+    int64_t expires = 0, idle = 0;
+    const char *dev_status = NULL, *usr_status = NULL;
+    char dev_buf[16] = {0}, usr_buf[16] = {0};
+
+    if (sqlite3_bind_blob(st, 1, token_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else {
-        int rc = sqlite3_step(st);
+        const int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
-            if (user_id_out != NULL) { r = copy_blob_col(st, 0, user_id_out, user_id_cap, user_id_len_out); }
-        } else if (rc == SQLITE_DONE) {
-            r = STORE_ERR_NOT_FOUND;
-        } else {
+            found = 1;
+            if (info != NULL) {
+                (void)copy_blob_col(st, 0, info->user_id, sizeof info->user_id, &info->user_id_len);
+                (void)copy_blob_col(st, 1, info->handle, sizeof info->handle, &info->handle_len);
+                info->issued_at = sqlite3_column_int64(st, 2);
+            }
+            expires = sqlite3_column_int64(st, 3);
+            idle = sqlite3_column_int64(st, 4);
+            if (info != NULL) {
+                info->expires_at = expires;
+                info->idle_expires_at = idle;
+                const unsigned char *role_t = sqlite3_column_text(st, 5);
+                if (role_t != NULL) { (void)role_from_text(role_t, &info->role); }
+            }
+            const unsigned char *d = sqlite3_column_text(st, 6);
+            const unsigned char *u = sqlite3_column_text(st, 7);
+            if (d != NULL) { snprintf(dev_buf, sizeof dev_buf, "%s", (const char *)d); dev_status = dev_buf; }
+            if (u != NULL) { snprintf(usr_buf, sizeof usr_buf, "%s", (const char *)u); usr_status = usr_buf; }
+        } else if (rc != SQLITE_DONE) {
             r = STORE_ERR_DB;
         }
     }
     sqlite3_finalize(st);
-    if (r != STORE_OK) { return r; }
+    if (r != STORE_OK) {
+        return r;
+    }
+    if (!found) {
+        *verdict = STORE_TOKEN_UNKNOWN;
+        return STORE_OK;
+    }
 
+    /* Order matters and is the order the site wants to hear: a revoked device
+     * or disabled user is reported even if the token also happens to have
+     * expired, because that is the actionable fact. */
+    if (dev_status == NULL || strcmp(dev_status, "active") != 0) {
+        *verdict = STORE_TOKEN_DEVICE_REVOKED;
+        return STORE_OK;
+    }
+    if (usr_status == NULL || strcmp(usr_status, "active") != 0) {
+        *verdict = STORE_TOKEN_USER_DISABLED;
+        return STORE_OK;
+    }
+    if (now >= expires) {
+        *verdict = STORE_TOKEN_EXPIRED;
+        return STORE_OK;
+    }
+    if (now >= idle) {
+        *verdict = STORE_TOKEN_IDLE_EXPIRED;
+        return STORE_OK;
+    }
+
+    /* Slide the idle window, capped by the absolute lifetime. */
+    int64_t new_idle = idle;
+    if (idle_ttl_s > 0u) {
+        new_idle = now + (int64_t)idle_ttl_s;
+        if (new_idle > expires) {
+            new_idle = expires;
+        }
+    }
     sqlite3_stmt *up = NULL;
-    if (sqlite3_prepare_v2(s->db, "UPDATE tokens SET last_verified_at=?2 WHERE token_hash=?1;", -1, &up, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(s->db,
+            "UPDATE tokens SET last_verified_at=?2, idle_expires_at=?3 WHERE token_hash=?1;",
+            -1, &up, NULL) != SQLITE_OK) {
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(up, 1, token_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK ||
         sqlite3_bind_int64(up, 2, now) != SQLITE_OK ||
+        sqlite3_bind_int64(up, 3, new_idle) != SQLITE_OK ||
         sqlite3_step(up) != SQLITE_DONE) {
         r = STORE_ERR_DB;
     }
     sqlite3_finalize(up);
-    return r;
+    if (r != STORE_OK) {
+        return r;
+    }
+    if (info != NULL) {
+        info->idle_expires_at = new_idle;
+    }
+    *verdict = STORE_TOKEN_OK;
+    return STORE_OK;
 }
 
-static store_status_t delete_where_blob(store_t *s, const char *sql, const uint8_t *key, size_t key_len)
+static store_status_t delete_where_blob(store_t *s, const char *sql, const uint8_t *key, size_t key_len,
+                                        size_t *n_out)
 {
+    if (n_out != NULL) { *n_out = 0u; }
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db, sql, -1, &st, NULL) != SQLITE_OK) {
         return STORE_ERR_DB;
@@ -1056,27 +1170,30 @@ static store_status_t delete_where_blob(store_t *s, const char *sql, const uint8
     if (sqlite3_bind_blob(st, 1, key, (int)key_len, SQLITE_TRANSIENT) != SQLITE_OK ||
         sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
+    } else if (n_out != NULL) {
+        const int ch = sqlite3_changes(s->db);
+        *n_out = (ch > 0) ? (size_t)ch : 0u;
     }
     sqlite3_finalize(st);
     return r;
 }
 
-store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES])
+store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES], size_t *n_out)
 {
     if (s == NULL || token_hash == NULL) { return STORE_ERR_ARG; }
-    return delete_where_blob(s, "DELETE FROM tokens WHERE token_hash=?1;", token_hash, STORE_HASH_BYTES);
+    return delete_where_blob(s, "DELETE FROM tokens WHERE token_hash=?1;", token_hash, STORE_HASH_BYTES, n_out);
 }
 
-store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len)
+store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len, size_t *n_out)
 {
     if (s == NULL || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
-    return delete_where_blob(s, "DELETE FROM tokens WHERE handle=?1;", handle, handle_len);
+    return delete_where_blob(s, "DELETE FROM tokens WHERE handle=?1;", handle, handle_len, n_out);
 }
 
-store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len)
+store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len, size_t *n_out)
 {
     if (s == NULL || !id_ok(user_id, user_id_len)) { return STORE_ERR_ARG; }
-    return delete_where_blob(s, "DELETE FROM tokens WHERE user_id=?1;", user_id, user_id_len);
+    return delete_where_blob(s, "DELETE FROM tokens WHERE user_id=?1;", user_id, user_id_len, n_out);
 }
 
 /* --- login codes ---------------------------------------------------------- */
@@ -1121,49 +1238,60 @@ store_status_t store_add_login_code(store_t *s, const uint8_t code_hash[STORE_HA
     return tx_commit(s);
 }
 
-store_status_t store_consume_login_code(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
-                                        const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
-                                        uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
-                                        uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out)
+store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
+                                           const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
+                                           store_code_verdict_t *verdict,
+                                           uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
+                                           uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out)
 {
-    if (s == NULL || code_hash == NULL || state_hash == NULL) { return STORE_ERR_ARG; }
+    if (s == NULL || code_hash == NULL || state_hash == NULL || verdict == NULL) {
+        return STORE_ERR_ARG;
+    }
+    *verdict = STORE_CODE_UNKNOWN;
 
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
 
+    /* Read the row WITHOUT the used/expiry filters, so the four outcomes can
+     * be told apart instead of collapsing into "not found". */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "SELECT user_id, handle, state_hash FROM login_codes"
-            " WHERE code_hash=?1 AND used_at IS NULL AND expires_at>?2 LIMIT 1;",
-            -1, &st, NULL) != SQLITE_OK) {
+            "SELECT user_id, handle, state_hash, expires_at, used_at FROM login_codes"
+            " WHERE code_hash=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
     }
+    int found = 0, used = 0;
+    int64_t expires = 0;
     uint8_t stored_state[STORE_HASH_BYTES];
     size_t n_state = 0;
-    if (sqlite3_bind_blob(st, 1, code_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, now) != SQLITE_OK) {
+
+    if (sqlite3_bind_blob(st, 1, code_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else {
-        int rc = sqlite3_step(st);
+        const int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
+            found = 1;
             if (user_id_out != NULL) { r = copy_blob_col(st, 0, user_id_out, user_id_cap, user_id_len_out); }
             if (r == STORE_OK && handle_out != NULL) { r = copy_blob_col(st, 1, handle_out, handle_cap, handle_len_out); }
             if (r == STORE_OK) { r = copy_blob_col(st, 2, stored_state, sizeof stored_state, &n_state); }
-        } else if (rc == SQLITE_DONE) {
-            r = STORE_ERR_NOT_FOUND;
-        } else {
+            expires = sqlite3_column_int64(st, 3);
+            used = (sqlite3_column_type(st, 4) != SQLITE_NULL);
+        } else if (rc != SQLITE_DONE) {
             r = STORE_ERR_DB;
         }
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
 
-    /* login-CSRF binding: the code is only good for the `state` it was issued
-     * against (§5). Constant-time compare, like every other secret compare. */
-    if (n_state != STORE_HASH_BYTES || sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {
+    if (!found)            { tx_rollback(s); *verdict = STORE_CODE_UNKNOWN; return STORE_OK; }
+    if (used)              { tx_rollback(s); *verdict = STORE_CODE_USED;    return STORE_OK; }
+    if (now >= expires)    { tx_rollback(s); *verdict = STORE_CODE_EXPIRED; return STORE_OK; }
+    if (n_state != STORE_HASH_BYTES ||
+        sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {
         tx_rollback(s);
-        return STORE_ERR_CONFLICT;
+        *verdict = STORE_CODE_STATE_MISMATCH;   /* the login-CSRF binding (Req 5) */
+        return STORE_OK;
     }
 
     st = NULL;
@@ -1178,7 +1306,31 @@ store_status_t store_consume_login_code(store_t *s, const uint8_t code_hash[STOR
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
-    return tx_commit(s);
+
+    r = tx_commit(s);
+    if (r == STORE_OK) { *verdict = STORE_CODE_OK; }
+    return r;
+}
+
+/* The original coarse form, kept because V4-8b's tests pin its behaviour:
+ * OK, CONFLICT for a state mismatch, NOT_FOUND for anything else. */
+store_status_t store_consume_login_code(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
+                                        const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
+                                        uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
+                                        uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out)
+{
+    store_code_verdict_t v = STORE_CODE_UNKNOWN;
+    const store_status_t r = store_consume_login_code_ex(s, code_hash, state_hash, now, &v,
+                                                         user_id_out, user_id_cap, user_id_len_out,
+                                                         handle_out, handle_cap, handle_len_out);
+    if (r != STORE_OK) {
+        return r;
+    }
+    switch (v) {
+    case STORE_CODE_OK:             return STORE_OK;
+    case STORE_CODE_STATE_MISMATCH: return STORE_ERR_CONFLICT;
+    default:                        return STORE_ERR_NOT_FOUND;
+    }
 }
 
 /* --- recovery codes / tickets --------------------------------------------- */
@@ -1308,6 +1460,156 @@ store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
+}
+
+/* --- sweep and enumeration ------------------------------------------------ */
+
+static store_status_t sweep_one(store_t *s, const char *sql, int64_t now, size_t *n)
+{
+    *n = 0u;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_int64(st, 1, now) != SQLITE_OK || sqlite3_step(st) != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    } else {
+        const int ch = sqlite3_changes(s->db);
+        *n = (ch > 0) ? (size_t)ch : 0u;
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_sweep(store_t *s, int64_t now, store_sweep_counts_t *counts)
+{
+    if (s == NULL || counts == NULL) {
+        return STORE_ERR_ARG;
+    }
+    memset(counts, 0, sizeof *counts);
+
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    /* One transaction for all three: a sweep that half-ran would leave the
+     * counts it logged disagreeing with what is actually in the store. */
+    if ((r = sweep_one(s, "DELETE FROM tokens WHERE expires_at<=?1 OR idle_expires_at<=?1;",
+                       now, &counts->tokens)) == STORE_OK &&
+        (r = sweep_one(s, "DELETE FROM login_codes WHERE expires_at<=?1;",
+                       now, &counts->login_codes)) == STORE_OK) {
+        r = sweep_one(s, "DELETE FROM enroll_tickets WHERE expires_at<=?1;", now, &counts->tickets);
+    }
+    if (r != STORE_OK) {
+        tx_rollback(s);
+        memset(counts, 0, sizeof *counts);
+        return r;
+    }
+    return tx_commit(s);
+}
+
+store_status_t store_list_users(const store_t *s, store_user_fn fn, void *ctx)
+{
+    if (s == NULL || fn == NULL) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT user_id, role, status, created_at FROM users ORDER BY created_at ASC, user_id ASC;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        uint8_t uid[STORE_ID_MAX];
+        size_t uid_len = 0;
+        if (copy_blob_col(st, 0, uid, sizeof uid, &uid_len) != STORE_OK) { r = STORE_ERR_DB; break; }
+        store_role_t role = STORE_ROLE_USER;
+        (void)role_from_text(sqlite3_column_text(st, 1), &role);
+        const unsigned char *status = sqlite3_column_text(st, 2);
+        if (fn(ctx, uid, uid_len, role, (const char *)status, sqlite3_column_int64(st, 3)) != 0) {
+            break;                      /* caller stopped the walk (size bound) */
+        }
+    }
+    if (r == STORE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) { r = STORE_ERR_DB; }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_list_devices(const store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                  store_device_fn fn, void *ctx)
+{
+    if (s == NULL || fn == NULL || !id_ok(user_id, user_id_len)) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    /* The device's CURRENT key fingerprint, which is the one an operator wants
+     * to compare against what their client prints. */
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT d.handle, d.label, d.status, d.enrolled_at, d.last_seen,"
+            "       (SELECT dk.pk_fp FROM device_keys dk"
+            "         WHERE dk.handle = d.handle AND dk.status='active' LIMIT 1)"
+            "  FROM devices d WHERE d.user_id = ?1 ORDER BY d.enrolled_at ASC;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        int rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            uint8_t h[STORE_ID_MAX], label[STORE_ID_MAX], fp[64];
+            size_t hl = 0, ll = 0, fl = 0;
+            if (copy_blob_col(st, 0, h, sizeof h, &hl) != STORE_OK) { r = STORE_ERR_DB; break; }
+            if (copy_blob_col(st, 1, label, sizeof label, &ll) != STORE_OK) { ll = 0; }
+            if (copy_blob_col(st, 5, fp, sizeof fp, &fl) != STORE_OK) { fl = 0; }
+            const unsigned char *status = sqlite3_column_text(st, 2);
+            if (fn(ctx, h, hl, label, ll, (const char *)status,
+                   sqlite3_column_int64(st, 3), sqlite3_column_int64(st, 4), fp, fl) != 0) {
+                break;
+            }
+        }
+        if (r == STORE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_audit_tail(const store_t *s, size_t n, store_audit_fn fn, void *ctx)
+{
+    if (s == NULL || fn == NULL || n == 0u) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    /* The newest n, re-ordered oldest-first so the output reads like a log. */
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT seq, at, event, user_id, handle, detail FROM ("
+            "  SELECT seq, at, event, user_id, handle, detail FROM audit ORDER BY seq DESC LIMIT ?1"
+            ") ORDER BY seq ASC;", -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_int64(st, 1, (int64_t)n) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        int rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            uint8_t uid[STORE_ID_MAX], h[STORE_ID_MAX];
+            size_t ul = 0, hl = 0;
+            (void)copy_blob_col(st, 3, uid, sizeof uid, &ul);
+            (void)copy_blob_col(st, 4, h, sizeof h, &hl);
+            if (fn(ctx, sqlite3_column_int64(st, 0), sqlite3_column_int64(st, 1),
+                   (const char *)sqlite3_column_text(st, 2), uid, ul, h, hl,
+                   (const char *)sqlite3_column_text(st, 5)) != 0) {
+                break;
+            }
+        }
+        if (r == STORE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
 }
 
 /* --- backup ---------------------------------------------------------------- */

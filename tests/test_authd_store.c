@@ -270,22 +270,53 @@ int main(void)
         memset(th, 0x5a, sizeof th);
         CHECK(store_add_token(s, th, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 200, 200) == STORE_OK,
               "add_token");
-        uint8_t uid[STORE_ID_MAX]; size_t uid_len = 0;
-        CHECK(store_verify_token(s, th, 150, uid, sizeof uid, &uid_len) == STORE_OK &&
-              uid_len == sizeof U1 && memcmp(uid, U1, sizeof U1) == 0,
-              "verify_token inside its lifetime returns the bound user");
-        CHECK(store_verify_token(s, th, 250, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
-              "verify_token after expiry is NOT_FOUND");
-        CHECK(store_delete_tokens_for_handle(s, H1, sizeof H1) == STORE_OK, "delete tokens for handle");
-        CHECK(store_verify_token(s, th, 150, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
+        store_token_verdict_t v = STORE_TOKEN_UNKNOWN;
+        store_token_info_t ti;
+        CHECK(store_verify_token(s, th, 150, 0u, &v, &ti) == STORE_OK && v == STORE_TOKEN_OK &&
+              ti.user_id_len == sizeof U1 && memcmp(ti.user_id, U1, sizeof U1) == 0 &&
+              ti.handle_len == sizeof H1 && memcmp(ti.handle, H1, sizeof H1) == 0,
+              "verify_token inside its lifetime returns the bound user and handle");
+        CHECK(store_verify_token(s, th, 250, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_EXPIRED,
+              "verify_token past its absolute lifetime is EXPIRED");
+
+        /* V4-9a: the idle window slides, but never past the absolute expiry. */
+        CHECK(store_verify_token(s, th, 150, 30u, &v, &ti) == STORE_OK && v == STORE_TOKEN_OK &&
+              ti.idle_expires_at == 180, "verify_token slides the idle window forward");
+        /* now=175 is inside the idle window (180) but 175+30 would overshoot the
+         * absolute expiry (200), so the slide must be clamped to 200. */
+        CHECK(store_verify_token(s, th, 175, 30u, &v, &ti) == STORE_OK && v == STORE_TOKEN_OK &&
+              ti.idle_expires_at == 200,
+              "the slide is CAPPED by expires_at: refreshing cannot outlive the token");
+        { /* an idle window that has already passed is reported as such */
+          uint8_t th3[STORE_HASH_BYTES]; memset(th3, 0x33, sizeof th3);
+          CHECK(store_add_token(s, th3, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 900, 120) == STORE_OK,
+                "add a token with a short idle window");
+          CHECK(store_verify_token(s, th3, 150, 30u, &v, NULL) == STORE_OK && v == STORE_TOKEN_IDLE_EXPIRED,
+                "an idle-expired token is distinguished from an expired one");
+          CHECK(store_delete_token(s, th3, NULL) == STORE_OK, "cleanup"); }
+
+        size_t ndel = 0;
+        CHECK(store_delete_tokens_for_handle(s, H1, sizeof H1, &ndel) == STORE_OK && ndel == 1u,
+              "delete tokens for handle reports the count");
+        CHECK(store_verify_token(s, th, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
               "a deleted token no longer verifies");
 
         /* revocation deletes tokens */
         CHECK(store_add_token(s, th, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 200, 200) == STORE_OK,
               "re-add token");
         CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK, "revoke device");
-        CHECK(store_verify_token(s, th, 150, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
+        CHECK(store_verify_token(s, th, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
               "revoking a device deletes its tokens");
+
+        /* A token that OUTLIVES its device -- only reachable by adding one
+         * after the revoke -- must report device-revoked, not a generic miss:
+         * that distinction is what the site shows the person. */
+        { uint8_t th4[STORE_HASH_BYTES]; memset(th4, 0x44, sizeof th4);
+          CHECK(store_add_token(s, th4, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 900, 900) == STORE_OK,
+                "token on a revoked device");
+          CHECK(store_verify_token(s, th4, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_DEVICE_REVOKED,
+                "a token whose device was revoked reports DEVICE_REVOKED");
+          CHECK(store_delete_token(s, th4, NULL) == STORE_OK, "cleanup"); }
 
         /* disabling a user drops that user's tokens too */
         { uint8_t th2[STORE_HASH_BYTES]; memset(th2, 0x7e, sizeof th2);
@@ -294,9 +325,10 @@ int main(void)
                 "tok: enroll a second device");
           CHECK(store_add_token(s, th2, U1, sizeof U1, H3, sizeof H3, NULL, 0, 100, 200, 200) == STORE_OK,
                 "tok: token on the second device");
-          CHECK(store_verify_token(s, th2, 150, NULL, 0, NULL) == STORE_OK, "tok: it verifies before disable");
+          CHECK(store_verify_token(s, th2, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_OK,
+                "tok: it verifies before disable");
           CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK, "tok: disable the user");
-          CHECK(store_verify_token(s, th2, 150, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
+          CHECK(store_verify_token(s, th2, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
                 "disabling a user deletes that user's tokens");
           CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK, "tok: re-enable"); }
 
@@ -309,8 +341,10 @@ int main(void)
               "add_login_code");
         CHECK(store_consume_login_code(s, ch, wrong, 150, NULL, 0, NULL, NULL, 0, NULL) == STORE_ERR_CONFLICT,
               "a login code presented with the WRONG state is refused (login-CSRF binding)");
-        CHECK(store_consume_login_code(s, ch, stateh, 150, uid, sizeof uid, &uid_len, NULL, 0, NULL) == STORE_OK,
-              "a login code with the right state is consumed");
+        { uint8_t uid[STORE_ID_MAX]; size_t uid_len = 0;
+          CHECK(store_consume_login_code(s, ch, stateh, 150, uid, sizeof uid, &uid_len, NULL, 0, NULL) == STORE_OK &&
+                uid_len == sizeof U1 && memcmp(uid, U1, sizeof U1) == 0,
+                "a login code with the right state is consumed, and returns its user"); }
         CHECK(store_consume_login_code(s, ch, stateh, 150, NULL, 0, NULL, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
               "a login code is single-use");
         store_close(s);

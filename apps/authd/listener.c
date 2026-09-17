@@ -156,16 +156,20 @@ listener_status_t listener_open_unix(const char *path, int backlog, int *fd)
     return LISTENER_OK;
 }
 
-/* Reads the connecting peer's uid. Returns 0 and sets *uid on success. */
-static int peer_uid(int fd, uid_t *uid)
+/* Reads the connecting peer's credentials. Returns 0 on success. pid is left
+ * 0 where the platform does not offer it. */
+static int peer_creds(int fd, listener_peer_t *p)
 {
+    p->uid = (uid_t)-1;
+    p->pid = 0;
 #if defined(__linux__)
     struct ucred c;
     socklen_t l = sizeof c;
     if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &c, &l) != 0) {
         return -1;
     }
-    *uid = c.uid;
+    p->uid = c.uid;
+    p->pid = c.pid;
     return 0;
 #elif defined(__APPLE__)
     uid_t u = 0;
@@ -173,20 +177,33 @@ static int peer_uid(int fd, uid_t *uid)
     if (getpeereid(fd, &u, &g) != 0) {
         return -1;
     }
-    *uid = u;
+    p->uid = u;
+    /* LOCAL_PEERPID (sys/un.h) is best-effort: a failure leaves pid 0, which
+     * the log renders as unavailable rather than inventing a number. */
+    pid_t pp = 0;
+    socklen_t pl = sizeof pp;
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pp, &pl) == 0) {
+        p->pid = pp;
+    }
     return 0;
 #else
-    (void)fd; (void)uid;
+    (void)fd;
     return -1;
 #endif
 }
 
-listener_status_t listener_accept(int listen_fd, uid_t require_uid, int *out_fd)
+listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n_allow,
+                                     int *out_fd, listener_peer_t *peer_out)
 {
-    if (out_fd == NULL || listen_fd < 0) {
+    if (out_fd == NULL || listen_fd < 0 || (n_allow > 0u && allow == NULL) ||
+        n_allow > LISTENER_MAX_ALLOW) {
         return LISTENER_ERR_ARG;
     }
     *out_fd = -1;
+    if (peer_out != NULL) {
+        peer_out->uid = (uid_t)-1;
+        peer_out->pid = 0;
+    }
     int c;
     do {
         c = accept(listen_fd, NULL, NULL);
@@ -202,15 +219,36 @@ listener_status_t listener_accept(int listen_fd, uid_t require_uid, int *out_fd)
         (void)close(c);
         return LISTENER_ERR_SOCKET;
     }
-    if (require_uid != (uid_t)-1) {
-        uid_t got = 0;
-        if (peer_uid(c, &got) != 0 || got != require_uid) {
+    if (n_allow > 0u) {
+        listener_peer_t p;
+        if (peer_creds(c, &p) != 0) {
+            (void)close(c);
+            return LISTENER_ERR_PEER;   /* fail closed: no credentials, no service */
+        }
+        int ok = 0;
+        for (size_t i = 0; i < n_allow; i++) {
+            if (allow[i] == p.uid) { ok = 1; break; }
+        }
+        if (!ok) {
             (void)close(c);
             return LISTENER_ERR_PEER;
         }
+        if (peer_out != NULL) { *peer_out = p; }
+    } else if (peer_out != NULL) {
+        /* No allowlist: still report what we can, for the log. */
+        (void)peer_creds(c, peer_out);
     }
     *out_fd = c;
     return LISTENER_OK;
+}
+
+listener_status_t listener_accept(int listen_fd, uid_t require_uid, int *out_fd)
+{
+    if (require_uid == (uid_t)-1) {
+        return listener_accept_ex(listen_fd, NULL, 0u, out_fd, NULL);
+    }
+    const uid_t one[1] = { require_uid };
+    return listener_accept_ex(listen_fd, one, 1u, out_fd, NULL);
 }
 
 void listener_close(int *fd, const char *unix_path)

@@ -32,6 +32,8 @@
 #include "evloop.h"
 #include "keyfile.h"
 #include "listener.h"
+#include "localapi.h"
+#include "tokens.h"
 #include "secure_mem.h"
 #include "store.h"
 
@@ -244,6 +246,7 @@ int main(int argc, char **argv)
     app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
     app.now_ms = now_ms();
     app.now_unix = (int64_t)time(NULL);
+    app.started_ms = app.now_ms;
 
     static handshake_pending_store_t pending;
     if (handshake_pending_store_init(&pending, ledger_cap, (uint64_t)cfg.handshake_timeout_ms,
@@ -255,13 +258,29 @@ int main(int argc, char **argv)
     }
     app.pending = &pending;
 
+    /* The local API gets its own pool, so a burst of handshakes can never lock
+     * the site out of EXCHANGE (spec 8 / V4-9a decision 1). */
+    authd_slot_t *local_slots = calloc((size_t)cfg.max_local_slots, sizeof *local_slots);
+    if (local_slots == NULL) {
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns);
+        return 1;
+    }
+
     evloop_t ev;
     if (evloop_init(&ev, slots, (size_t)cfg.max_slots,
                     cfg.handshake_timeout_ms, cfg.idle_timeout_ms,
                     authd_conn_on_frame, authd_conn_on_close, &app) != 0) {
         store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns);
+        free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: event loop init failed\n");
+        return 1;
+    }
+    app.ev = &ev;
+    if (evloop_set_local(&ev, local_slots, (size_t)cfg.max_local_slots, localapi_on_line) != 0) {
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns); free(local_slots);
+        fprintf(stderr, "mldsa-authd: local pool init failed\n");
         return 1;
     }
 
@@ -292,6 +311,37 @@ int main(int argc, char **argv)
         authd_log_event(AUTHD_LOG_INFO, "listening-unix");
     }
 
+    /* The two local sockets. Each is 0660 with its own uid allowlist; the
+     * admin table is simply not reachable from the site socket. */
+    int site_fd = -1, admin_fd = -1;
+    const char *site_path = (cfg.site_socket[0] != '\0') ? cfg.site_socket : NULL;
+    const char *admin_path = (cfg.admin_socket[0] != '\0') ? cfg.admin_socket : NULL;
+
+    if (site_path != NULL) {
+        const listener_status_t ls = listener_open_unix(site_path, 16, &site_fd);
+        if (ls != LISTENER_OK) {
+            fprintf(stderr, "mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
+            goto listener_failed;
+        }
+        if (evloop_add_local_listener(&ev, site_fd, cfg.site_uids, cfg.n_site_uids, 0) != 0) {
+            fprintf(stderr, "mldsa-authd: cannot register the site listener\n");
+            goto listener_failed;
+        }
+        authd_log_event(AUTHD_LOG_INFO, "listening-site");
+    }
+    if (admin_path != NULL) {
+        const listener_status_t ls = listener_open_unix(admin_path, 16, &admin_fd);
+        if (ls != LISTENER_OK) {
+            fprintf(stderr, "mldsa-authd: admin socket %s: %s\n", admin_path, listener_status_name(ls));
+            goto listener_failed;
+        }
+        if (evloop_add_local_listener(&ev, admin_fd, cfg.admin_uids, cfg.n_admin_uids, 1) != 0) {
+            fprintf(stderr, "mldsa-authd: cannot register the admin listener\n");
+            goto listener_failed;
+        }
+        authd_log_event(AUTHD_LOG_INFO, "listening-admin");
+    }
+
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
@@ -316,6 +366,7 @@ int main(int argc, char **argv)
          * expiry cannot disagree. */
         app.now_ms = now_ms();
         app.now_unix = (int64_t)time(NULL);
+        authd_app_maybe_sweep(&app);
         if (evloop_run_once(&ev, draining ? 50 : 1000, app.now_ms) < 0) {
             if (errno == EINTR) {
                 continue;
@@ -330,11 +381,25 @@ int main(int argc, char **argv)
     evloop_close_all(&ev);
     listener_close(&tcp_fd, NULL);
     listener_close(&unix_fd, unix_path);
+    listener_close(&site_fd, site_path);
+    listener_close(&admin_fd, admin_path);
     handshake_pending_store_wipe(&pending);
     store_close(store);
     mldsa_keypair_free(&server_kp);
     sodium_memzero(conns, (size_t)cfg.max_slots * sizeof *conns);
     free(conns);
     free(slots);
+    free(local_slots);
     return 0;
+
+listener_failed:
+    listener_close(&site_fd, site_path);
+    listener_close(&admin_fd, admin_path);
+    listener_close(&tcp_fd, NULL);
+    listener_close(&unix_fd, unix_path);
+    handshake_pending_store_wipe(&pending);
+    store_close(store);
+    mldsa_keypair_free(&server_kp);
+    free(conns); free(slots); free(local_slots);
+    return 1;
 }

@@ -41,6 +41,33 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
  * service); anything else at that path is refused rather than unlinked. */
 listener_status_t listener_open_unix(const char *path, int backlog, int *fd);
 
+/* The peer of a Unix-socket connection. Spec 8 requires every local-API
+ * request to be logged with the peer's uid AND pid; both are portable --
+ * Linux carries them in SO_PEERCRED's struct ucred, macOS has getpeereid()
+ * plus LOCAL_PEERPID. A pid of 0 means "not available on this platform",
+ * which is logged as such rather than as a real pid. */
+typedef struct {
+    uid_t uid;
+    pid_t pid;
+} listener_peer_t;
+
+#define LISTENER_MAX_ALLOW 8u
+
+/* Accepts one connection without blocking, enforcing a uid ALLOWLIST rather
+ * than a single uid, and reporting the peer.
+ *
+ * `n_allow == 0` disables the check (the protocol listeners, which are
+ * reached through the proxy and authenticated by the handshake, not by uid).
+ * Otherwise the peer's uid must appear in `allow[0..n_allow)`, or the
+ * connection is closed and LISTENER_ERR_PEER returned.
+ *
+ * An allowlist rather than one uid because the site and the daemon are not
+ * always the same user in a real deployment, and "root only" for the admin
+ * socket is a DEFAULT, not a constant -- a gate that only root can exercise
+ * is a gate that never gets tested. */
+listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n_allow,
+                                     int *out_fd, listener_peer_t *peer_out);
+
 /* Accepts one connection without blocking. On LISTENER_OK *out_fd is a
  * non-blocking CLOEXEC fd. LISTENER_AGAIN means nothing was pending.
  *

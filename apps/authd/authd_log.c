@@ -88,6 +88,49 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
     fflush(out());
 }
 
+void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
+                     unsigned long uid, long pid, const char *detail)
+{
+    if (!enabled(lvl)) {
+        return;
+    }
+    /* The command name is matched against a fixed table before it reaches
+     * here, so it is one of a closed set of literals -- but it is escaped
+     * anyway, because a malformed request reports "?" and the day someone
+     * passes the raw token through, this should still not inject a line. */
+    char safe[32];
+    size_t j = 0;
+    for (size_t i = 0; cmd != NULL && cmd[i] != '\0' && j + 1u < sizeof safe; i++) {
+        const unsigned char ch = (unsigned char)cmd[i];
+        safe[j++] = (ch >= 0x20u && ch <= 0x7eu && ch != ' ') ? (char)ch : '.';
+    }
+    safe[j] = '\0';
+    if (pid > 0) {
+        fprintf(out(), "%s event=%s cmd=%s uid=%lu pid=%ld detail=%s\n",
+                level_name(lvl), event ? event : "?", safe, uid, pid, detail ? detail : "-");
+    } else {
+        fprintf(out(), "%s event=%s cmd=%s uid=%lu pid=unavailable detail=%s\n",
+                level_name(lvl), event ? event : "?", safe, uid, detail ? detail : "-");
+    }
+    fflush(out());
+}
+
+void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32])
+{
+    if (!enabled(lvl) || fp == NULL) {
+        return;
+    }
+    static const char hexd[] = "0123456789abcdef";
+    char hex[65];
+    for (size_t i = 0; i < 32u; i++) {
+        hex[i * 2u] = hexd[(fp[i] >> 4) & 0x0fu];
+        hex[i * 2u + 1u] = hexd[fp[i] & 0x0fu];
+    }
+    hex[64] = '\0';
+    fprintf(out(), "%s event=%s fp=%s\n", level_name(lvl), event ? event : "?", hex);
+    fflush(out());
+}
+
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value)
 {
     if (!enabled(lvl)) {

@@ -19,9 +19,15 @@
 #define K_HS_MS      "handshake_timeout_ms"
 #define K_IDLE_MS    "idle_timeout_ms"
 #define K_BUCKET     "pad_bucket"
+#define K_SITE_SOCK  "site_socket"
+#define K_ADMIN_SOCK "admin_socket"
+#define K_SITE_UIDS  "site_uids"
+#define K_ADMIN_UIDS "admin_uids"
+#define K_LOCAL_SLOTS "max_local_slots"
 
 /* bit index per key, for duplicate and missing detection */
-enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET, B_COUNT };
+enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET,
+       B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_COUNT };
 
 const char *authd_config_status_name(authd_config_status_t st)
 {
@@ -50,6 +56,12 @@ void authd_config_defaults(authd_config_t *out)
     out->handshake_timeout_ms = 10000u;
     out->idle_timeout_ms = 60000u;
     out->pad_bucket = SESSION_PAD_BUCKET_DEFAULT;
+    out->max_local_slots = 8u;
+    /* The admin socket defaults to root only; the site socket has no default
+     * allowlist, so a deployment must name the uid that may reach it. */
+    out->admin_uids[0] = (uid_t)0;
+    out->n_admin_uids = 1u;
+    out->n_site_uids = 0u;
     out->listen_port = 0u;           /* raw listener disabled unless configured */
 }
 
@@ -85,6 +97,37 @@ static authd_config_status_t parse_u32(const uint8_t *v, size_t n, uint32_t lo, 
         return AUTHD_CFG_ERR_RANGE;
     }
     *out = (uint32_t)acc;
+    return AUTHD_CFG_OK;
+}
+
+/* A comma-separated uid allowlist: "33,1001". Empty is refused -- a socket
+ * with an empty allowlist would serve nobody, which is almost certainly a typo
+ * rather than an intention. */
+static authd_config_status_t parse_uids(const uint8_t *v, size_t n, uid_t *out, size_t *n_out)
+{
+    *n_out = 0u;
+    if (n == 0u) {
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    size_t i = 0;
+    while (i < n) {
+        size_t start = i;
+        while (i < n && v[i] != ',') {
+            i++;
+        }
+        const size_t len = i - start;
+        if (len == 0u || *n_out >= AUTHD_MAX_UIDS) {
+            return (len == 0u) ? AUTHD_CFG_ERR_VALUE : AUTHD_CFG_ERR_RANGE;
+        }
+        uint32_t u = 0;
+        const authd_config_status_t r = parse_u32(v + start, len, 0u, 0x7fffffffu, &u);
+        if (r != AUTHD_CFG_OK) {
+            return r;
+        }
+        out[*n_out] = (uid_t)u;
+        (*n_out)++;
+        if (i < n) { i++; }         /* step over the comma */
+    }
     return AUTHD_CFG_OK;
 }
 
@@ -203,6 +246,11 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
         else if (key_is(k, kn, K_HS_MS))     { bit = B_HS_MS; }
         else if (key_is(k, kn, K_IDLE_MS))   { bit = B_IDLE_MS; }
         else if (key_is(k, kn, K_BUCKET))    { bit = B_BUCKET; }
+        else if (key_is(k, kn, K_SITE_SOCK)) { bit = B_SITE_SOCK; }
+        else if (key_is(k, kn, K_ADMIN_SOCK)){ bit = B_ADMIN_SOCK; }
+        else if (key_is(k, kn, K_SITE_UIDS)) { bit = B_SITE_UIDS; }
+        else if (key_is(k, kn, K_ADMIN_UIDS)){ bit = B_ADMIN_UIDS; }
+        else if (key_is(k, kn, K_LOCAL_SLOTS)) { bit = B_LOCAL_SLOTS; }
         else {
             if (err_line != NULL) { *err_line = line_no; }
             return AUTHD_CFG_ERR_UNKNOWN_KEY;
@@ -224,6 +272,16 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
             r = copy_str(v, vn, cfg.key_path, sizeof cfg.key_path);
         } else if (bit == B_PASS) {
             r = copy_str(v, vn, cfg.key_passphrase_file, sizeof cfg.key_passphrase_file);
+        } else if (bit == B_SITE_SOCK) {
+            r = copy_str(v, vn, cfg.site_socket, sizeof cfg.site_socket);
+        } else if (bit == B_ADMIN_SOCK) {
+            r = copy_str(v, vn, cfg.admin_socket, sizeof cfg.admin_socket);
+        } else if (bit == B_SITE_UIDS) {
+            r = parse_uids(v, vn, cfg.site_uids, &cfg.n_site_uids);
+        } else if (bit == B_ADMIN_UIDS) {
+            r = parse_uids(v, vn, cfg.admin_uids, &cfg.n_admin_uids);
+        } else if (bit == B_LOCAL_SLOTS) {
+            r = parse_u32(v, vn, AUTHD_LOCAL_SLOTS_MIN, AUTHD_LOCAL_SLOTS_MAX, &cfg.max_local_slots);
         } else if (bit == B_UNIX) {
             r = copy_str(v, vn, cfg.listen_unix, sizeof cfg.listen_unix);
         } else if (bit == B_SERVER_ID) {

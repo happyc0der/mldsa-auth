@@ -52,6 +52,23 @@ void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot
 void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
                        const uint8_t *id, size_t id_len);
 
+/* A local-API request (spec 8: "every request is logged with the peer's uid
+ * and pid"). `cmd` is the command NAME only -- never the line, never a value:
+ * the values carry tokens and login codes, which the never-list forbids.
+ * `detail` is a literal ("site"/"admin"/"malformed"). */
+void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
+                     unsigned long uid, long pid, const char *detail);
+
+/* A 32-byte PUBLIC-KEY FINGERPRINT, hex-encoded.
+ *
+ * This is the one function here that takes a byte buffer, and it is
+ * deliberately shaped so it cannot become a leak: the length is fixed at 32 by
+ * the prototype, so it can encode a SHA-256 fingerprint and nothing else --
+ * not a key, not a token, not a record. It exists because spec 15 REQUIRES
+ * fingerprints on every enrollment and every Req 7 rejection; without it the
+ * daemon could not log what the spec says it must. */
+void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32]);
+
 /* An event with one unsigned number (a count, a port, a millisecond figure). */
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value);
 

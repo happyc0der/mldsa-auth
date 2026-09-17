@@ -28,7 +28,12 @@
 #define STORE_STORE_ID_BYTES    16u
 #define STORE_HASH_BYTES        32u                       /* SHA-256 of a token/code/ticket/state */
 #define STORE_AUDIT_MAC_BYTES   32u                       /* crypto_auth output */
-#define STORE_KEK_BYTES         32u                       /* envelope KEK fed to store_open */
+#define STORE_KEK_BYTES         32u
+
+/* The schema version this build writes and requires; PING reports it so an
+ * operator can see what the running daemon expects. The DDL itself lives in
+ * schema.sql.h, which stays private to the store. */
+#define STORE_SCHEMA_VERSION_PUBLIC 1                       /* envelope KEK fed to store_open */
 
 typedef enum {
     STORE_OK = 0,
@@ -71,6 +76,11 @@ store_status_t store_add_user(store_t *s, const uint8_t *user_id, size_t user_id
 store_status_t store_disable_user(store_t *s, const uint8_t *user_id, size_t user_id_len,
                                   const char *by, const uint8_t *reason, size_t reason_len);
 store_status_t store_enable_user(store_t *s, const uint8_t *user_id, size_t user_id_len, const char *by);
+
+/* Reads one user's role and status. NOT_FOUND when absent. `status_out` (if
+ * given) receives "active" or "disabled" NUL-terminated. */
+store_status_t store_get_user(const store_t *s, const uint8_t *user_id, size_t user_id_len,
+                              store_role_t *role_out, char *status_out, size_t status_cap);
 
 /* --- devices / keys ---------------------------------------------------- */
 /* Enroll a fresh handle with its first active key. Rejects a pk already present
@@ -122,11 +132,79 @@ store_status_t store_add_token(store_t *s, const uint8_t token_hash[STORE_HASH_B
 /* Verifies a token hash is present and unexpired at `now`; on OK updates
  * last_verified_at and slides idle_expires_at by (idle_expires_at-issued...) is
  * a policy concern -- V4-7 only refreshes last_verified_at. Fills out fields. */
+/* Why a token failed. The local API reports these distinctly (spec 8's
+ * VERIFY row), so the site can tell "log in again" from "your device was
+ * revoked" -- and they are NOT an oracle: a caller already holding the token
+ * learns only about its own session. */
+typedef enum {
+    STORE_TOKEN_OK = 0,
+    STORE_TOKEN_UNKNOWN,
+    STORE_TOKEN_EXPIRED,        /* past its absolute lifetime */
+    STORE_TOKEN_IDLE_EXPIRED,
+    STORE_TOKEN_DEVICE_REVOKED,
+    STORE_TOKEN_USER_DISABLED
+} store_token_verdict_t;
+
+typedef struct {
+    uint8_t  user_id[STORE_ID_MAX];
+    size_t   user_id_len;
+    uint8_t  handle[STORE_ID_MAX];
+    size_t   handle_len;
+    store_role_t role;
+    int64_t  issued_at;
+    int64_t  expires_at;
+    int64_t  idle_expires_at;
+} store_token_info_t;
+
+/* Verifies a token and, on STORE_TOKEN_OK, SLIDES its idle window forward by
+ * `idle_ttl_s` -- never past expires_at, so refreshing can extend a session
+ * only within its absolute lifetime (spec 11). The device and user status are
+ * joined in, so a revoked device or disabled user is reported as such rather
+ * than as a generic failure. Pass idle_ttl_s == 0 to check without refreshing.
+ *
+ * Returns STORE_OK with *verdict set for every outcome the token itself
+ * explains; a non-OK return means the query failed. */
 store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES], int64_t now,
-                                  uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out);
-store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES]);
-store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len);
-store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len);
+                                  uint32_t idle_ttl_s,
+                                  store_token_verdict_t *verdict, store_token_info_t *info);
+/* The delete calls report how many rows went, because the local API answers
+ * `OK deleted=` / `OK count=` with exactly that (spec 8). `n_out` may be NULL. */
+store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES], size_t *n_out);
+store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len, size_t *n_out);
+store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len, size_t *n_out);
+
+/* --- sweep and enumeration ---------------------------------------------- */
+
+typedef struct {
+    size_t tokens;
+    size_t login_codes;
+    size_t tickets;
+} store_sweep_counts_t;
+
+/* Deletes every expired token, login code and enrollment ticket in ONE
+ * transaction and reports the counts (spec 11, logged per spec 15). */
+store_status_t store_sweep(store_t *s, int64_t now, store_sweep_counts_t *counts);
+
+/* Enumeration for LIST-USERS / LIST-DEVICES / AUDIT-TAIL. Callback style, so
+ * the store never allocates a result array and the caller streams straight
+ * into its response buffer. Returning non-zero from the callback stops the
+ * walk (used to enforce the response-size bound). */
+typedef int (*store_user_fn)(void *ctx, const uint8_t *user_id, size_t user_id_len,
+                             store_role_t role, const char *status, int64_t created_at);
+store_status_t store_list_users(const store_t *s, store_user_fn fn, void *ctx);
+
+typedef int (*store_device_fn)(void *ctx, const uint8_t *handle, size_t handle_len,
+                               const uint8_t *label, size_t label_len, const char *status,
+                               int64_t enrolled_at, int64_t last_seen,
+                               const uint8_t *pk_fp, size_t pk_fp_len);
+store_status_t store_list_devices(const store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                  store_device_fn fn, void *ctx);
+
+typedef int (*store_audit_fn)(void *ctx, int64_t seq, int64_t at, const char *event,
+                              const uint8_t *user_id, size_t user_id_len,
+                              const uint8_t *handle, size_t handle_len, const char *detail);
+/* The LAST `n` rows, oldest-first within that window. */
+store_status_t store_audit_tail(const store_t *s, size_t n, store_audit_fn fn, void *ctx);
 
 /* --- login codes ------------------------------------------------------- */
 store_status_t store_add_login_code(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
@@ -135,6 +213,26 @@ store_status_t store_add_login_code(store_t *s, const uint8_t code_hash[STORE_HA
                                     const uint8_t *hsid, size_t hsid_len,
                                     const uint8_t state_hash[STORE_HASH_BYTES],
                                     int64_t issued_at, int64_t expires_at);
+/* Why a login code could not be consumed. spec 8's EXCHANGE row distinguishes
+ * these, and the site is the trusted relying party, so collapsing them would
+ * make a legitimate "your code timed out, try again" indistinguishable from a
+ * forged code. */
+typedef enum {
+    STORE_CODE_OK = 0,
+    STORE_CODE_UNKNOWN,
+    STORE_CODE_EXPIRED,
+    STORE_CODE_USED,
+    STORE_CODE_STATE_MISMATCH
+} store_code_verdict_t;
+
+/* As store_consume_login_code, but reports WHY. On STORE_CODE_OK the code is
+ * marked used in the same transaction. */
+store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
+                                           const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
+                                           store_code_verdict_t *verdict,
+                                           uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
+                                           uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out);
+
 /* Single-use consume: the code must exist, be unused and unexpired at `now`,
  * and its stored state_hash must equal `state_hash` (login-CSRF binding). On OK
  * it is marked used (one transaction) and the bound user/handle/hsid returned. */

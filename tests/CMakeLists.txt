@@ -125,6 +125,34 @@ target_compile_definitions(test_authd_conn PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_
 target_link_options(test_authd_conn PRIVATE ${MLDSA_SANITIZE_FLAGS})
 add_test(NAME test_authd_conn COMMAND test_authd_conn)
 
+# V4-9a: the local socket protocol, tokens and revocation reaching live
+# sessions. Shares tests/authd_harness.h with test_authd_conn so both drive
+# the same in-process daemon.
+add_executable(test_authd_localapi test_authd_localapi.c)
+target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
+target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_localapi COMMAND test_authd_localapi)
+
+# A real daemon for the Node reference handler to talk to. Not a CTest itself:
+# it is spawned by examples/site-node/authd.test.mjs.
+add_executable(authd_node_fixture authd_node_fixture.c)
+target_link_libraries(authd_node_fixture PRIVATE mldsa_authd)
+target_compile_options(authd_node_fixture PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(authd_node_fixture PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(authd_node_fixture PRIVATE ${MLDSA_SANITIZE_FLAGS})
+
+# The Node reference handler, against that daemon. Skips with a named reason if
+# node is absent -- never passes vacuously.
+find_program(MLDSA_NODE node)
+if(MLDSA_NODE)
+  add_test(NAME site_node_handler
+    COMMAND ${MLDSA_NODE} --test ${CMAKE_CURRENT_SOURCE_DIR}/../examples/site-node/authd.test.mjs)
+  set_tests_properties(site_node_handler PROPERTIES
+    ENVIRONMENT "AUTHD_FIXTURE=$<TARGET_FILE:authd_node_fixture>")
+endif()
+
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/demo_e2e.sh $<TARGET_FILE:auth_server> $<TARGET_FILE:auth_client>

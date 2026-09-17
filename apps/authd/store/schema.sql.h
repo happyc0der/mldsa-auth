@@ -1,6 +1,8 @@
 #ifndef MLDSA_AUTHD_STORE_SCHEMA_H
 #define MLDSA_AUTHD_STORE_SCHEMA_H
 
+#include "store.h"   /* STORE_SCHEMA_VERSION_PUBLIC */
+
 /*
  * The store schema, verbatim from the deployment spec (docs/mldsa-authd-spec.md
  * §9.1). It is a single C string so the DDL that runs is the DDL under review:
@@ -15,7 +17,7 @@
  * than silently mis-read.
  */
 
-#define STORE_SCHEMA_VERSION 1
+#define STORE_SCHEMA_VERSION STORE_SCHEMA_VERSION_PUBLIC
 
 static const char STORE_SCHEMA_SQL[] =
     "CREATE TABLE IF NOT EXISTS meta("

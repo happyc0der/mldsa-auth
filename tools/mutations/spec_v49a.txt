@@ -1,0 +1,11 @@
+T1|^test_authd_localapi$|verify: a fresh token verifies
+T2|^test_authd_localapi$|verify: the token survives past its ORIGINAL idle window, so VERIFY really slid it
+T3|^test_authd_store$|verify_token past its absolute lifetime is EXPIRED
+T4|^test_authd_localapi$|logout: a second logout reports deleted=0
+T5|^test_authd_localapi$|sweep: an expired login code is removed and counted
+A1|^test_authd_localapi$|tables: an ADMIN command on site.sock is refused (Req 11, by construction)
+A2|^test_authd_localapi$|log: the peer's uid is logged (spec 8)
+X1|^test_authd_localapi$|grammar: a duplicate key is malformed
+X2|^test_authd_localapi$|grammar: an unknown key is malformed, not ignored
+V1|^test_authd_localapi$|revoke: the live session was CLOSED, not just the row updated (Req 9)
+V2|^test_authd_localapi$|enroll: a byte-identical re-enrollment is idempotent

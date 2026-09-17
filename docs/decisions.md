@@ -3761,3 +3761,125 @@ disables a schedule after 60 days without a commit, and the fact that every
 matrix row is also exercised by a push-triggered bring-up before it is merged.
 When a nightly result is actually needed on demand, `workflow_dispatch` is the
 reliable trigger, not the clock.
+
+## V4-9a — the local API, tokens, and the first thing a site can actually call
+
+V4-8b made the daemon serve a login code. Nothing could use it: no way to
+exchange it, no way to verify a token, no way to enroll or revoke without
+writing C against `store.h`. V4-9a closes that. A site can now `EXCHANGE` a
+code for a token and `VERIFY` that token on every request, and the reference
+handler under `examples/site-node/` does exactly that against a real daemon.
+
+V4-9 is being built as **three sub-steps** (9a the API and tokens, 9b the two
+CLIs and the e2e script, 9c rotation and recovery). One step carrying fourteen
+socket commands, fifteen CLI subcommands, a new wire message and ~30 mutations
+would not be reviewable, which is the same reason V4-8 was split.
+
+### A second framing mode in the same loop
+
+Spec §8 is line-oriented; the protocol listeners are frame-oriented. Rather
+than a second loop or a thread, `conn_io` gained a MODE and the event loop a
+second slot pool. The mode is not cosmetic: in FRAME mode the first four bytes
+are a length, in LINE mode they are the start of a command, and confusing them
+would make `PING` a 1 347 375 947-byte frame.
+
+The local pool is **separate on purpose**. Sharing one would let a burst of
+256 handshakes occupy every slot and lock the site out of `EXCHANGE` — the
+site would be unable to finish a login exactly when logins are busiest. Two
+pools make that impossible rather than unlikely.
+
+`AUTHD_MAX_LISTENERS` went 2 → 4, and that was found by a test rather than by
+reading: the daemon now needs loopback, proxy, site and admin, and the fifth
+`add_local_listener` silently returned -1 while the socket file still existed,
+so connections were accepted by the kernel and never served. The daemon now
+prints which listener it could not register.
+
+### Two dispatch tables, not one table and a flag
+
+Req 11 says operator enrollment must be impossible from the site's uid **by
+construction**. So `ADMIN_TABLE` and `SITE_TABLE` are separate arrays and an
+administrative command is simply *absent* from the site one. There is no
+conditional anyone can later invert. The refusal is deliberately identical to
+the answer for a nonsense command, so the site socket is not an oracle for
+which administrative commands exist — the test asserts the two responses are
+byte-identical.
+
+The uid allowlist is **config, not a constant**: `admin_uids` defaults to root
+but can be set. An admin socket only root can reach is an admin socket that
+never gets tested, and an untested gate rots.
+
+### Hex everywhere, and what that buys
+
+Every binary value on the wire is lowercase hex, including labels and reasons.
+That means the protocol has **no escaping rules at all** — one decoder to get
+right, one decoder to fuzz, and no way for a label to contain a newline and
+split a response. `fuzz_localapi` asserts exactly that as invariant 2.
+
+### Three spec gaps, recorded rather than invented away
+
+1. **`not-permitted`** is returned for an unknown command and for an admin
+   command on the site socket. §8 lists per-command codes and says "refused"
+   without naming one.
+2. **`ENROLL` has no `role=`**, so a new `user=` becomes a `user`-role user and
+   `ENROLL-OPERATOR` an operator; an existing user is never silently re-roled
+   (`role-mismatch`).
+3. **List responses are bounded** at `AUTHD_LIST_MAX` (24) because a list is
+   built in one buffer and sent as one reply; exceeding it answers
+   `ERR code=too-many` rather than truncating. Streaming is a V4-10/V4-11
+   option if a deployment needs it.
+
+All three are recorded in `docs/v4/audit.md`. The spec is not edited to match
+the code — that rule has held since V2-1 and holds here.
+
+### What the tests and the fuzzer found
+
+**The fuzz oracle was wrong before the code was.** Its first run reported a
+"missing END line" on a perfectly correct `REVOKE-TOKENS` reply. The cause is
+a real property of §8: `REVOKE-TOKENS` answers a single-line `OK count=N`, and
+a list answers `OK count=N` … `END`. The prefix alone is ambiguous, and a
+client must know which command it sent. The oracle is now command-aware, and
+the Node handler decides the same way — which is exactly why it has a
+`LIST_COMMANDS` set rather than sniffing the reply.
+
+**The Node handler hung on that ambiguity for real.** A refused list command
+answers one `ERR` line with no `END`, and the first version waited for `END`
+forever — 24 seconds, until the fixture daemon exited. Found only because the
+Node tests run against a real daemon rather than a mock.
+
+**The fixture mixed two clocks.** The harness starts on a fixed fake clock
+(which is what makes the C tests exact); the Node fixture then advanced real
+time, so every login code was stamped in 2023 and instantly `expired`. It now
+switches to real time *before* issuing anything.
+
+**The audit-chain invariant was proven non-vacuous before being trusted** —
+V4-8b's lesson, applied up front this time. A probe that made every refusal
+also write an audit row fired the invariant with the right message. The first
+placement of that probe was never reached (the seed failed on a short `pk`
+before it), which is its own reminder that a probe must be shown to execute.
+
+### Three survivors in the first v49a run — all three were the TESTS
+
+Reported as it ran. None was re-run to green, and all three had the same
+shape: the check passed for a *second* reason, so the mutation changed nothing
+it could observe.
+
+- **T2 (`VERIFY` never slides the idle window).** The test advanced past the
+  original window and asserted expiry — but an unrefreshed token expires there
+  too, so the assertion held either way. The discriminating moment is *after*
+  the original window and *inside* the refreshed one: only a token whose window
+  was actually slid survives it. That check now exists, and T2 dies on it.
+- **X1 (duplicate keys accepted).** `VERIFY token=aa token=bb` is malformed
+  because `aa` is not a 32-byte token, with or without duplicate detection. The
+  test now duplicates a *well-formed* token, so the duplication is the only
+  fault — and it carries a canary asserting that the same token alone is merely
+  `unknown`, which is what makes the first assertion discriminating.
+- **X2 (unknown keys ignored).** `VERIFY nosuchkey=aa` has no `token=` at all,
+  so it is malformed either way. The test now sends a valid `token=` *plus* an
+  unknown key.
+
+The pattern is now familiar enough to name: **V4-8a's D4, V4-8b's C6, and these
+three all survived because the test exercised a path where the mutation was
+redundant.** A check only tests what it can distinguish. Writing the negative
+case is not enough — the negative case has to fail for the reason under test
+and no other, and the cheapest way to confirm that is a canary asserting the
+same input fails *differently* when the rule is not the thing at fault.

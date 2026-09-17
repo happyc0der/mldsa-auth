@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 /*
  * The daemon's configuration (V4-8a): a strict `key = value` file, parsed
@@ -26,6 +27,9 @@
 #define AUTHD_PATH_MAX           255u
 #define AUTHD_ID_MAX             64u      /* WIRE_ID_MAX_LEN */
 #define AUTHD_PASSPHRASE_MAX     4096u    /* a passphrase file larger than this is refused */
+#define AUTHD_MAX_UIDS           8u       /* == LISTENER_MAX_ALLOW */
+#define AUTHD_LOCAL_SLOTS_MIN    1u
+#define AUTHD_LOCAL_SLOTS_MAX    64u
 
 /* Bounds. Each is enforced by the parser, and each has a mutation. */
 #define AUTHD_SLOTS_MIN          1u
@@ -56,6 +60,15 @@ typedef struct {
      * regular file, mode 0600, at most AUTHD_PASSPHRASE_MAX bytes. */
     char     key_passphrase_file[AUTHD_PATH_MAX + 1u];
     char     listen_unix[AUTHD_PATH_MAX + 1u];    /* proxy-facing Unix socket; "" = disabled */
+    /* The local API (spec 8). Two sockets so an administrative command is
+     * unreachable from the site's uid by construction, not by a flag. */
+    char     site_socket[AUTHD_PATH_MAX + 1u];
+    char     admin_socket[AUTHD_PATH_MAX + 1u];
+    uid_t    site_uids[AUTHD_MAX_UIDS];
+    size_t   n_site_uids;
+    uid_t    admin_uids[AUTHD_MAX_UIDS];
+    size_t   n_admin_uids;
+    uint32_t max_local_slots;
     uint8_t  server_id[AUTHD_ID_MAX];
     size_t   server_id_len;
     uint16_t listen_port;                          /* raw loopback listener; 0 = disabled */

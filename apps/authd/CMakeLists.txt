@@ -5,6 +5,8 @@ add_library(mldsa_authd STATIC
   store/store.c
   authd_config.c
   authmsg.c
+  tokens.c
+  localapi.c
   authd_conn.c
   conn_io.c
   evloop.c

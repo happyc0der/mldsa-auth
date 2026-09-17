@@ -6,6 +6,7 @@
 #include <sys/types.h>
 
 #include "conn_io.h"
+#include "listener.h"
 
 /*
  * The daemon's single-threaded poll() event loop and its fixed slot pool
@@ -33,8 +34,17 @@ typedef enum {
     SLOT_DRAINING     /* flush what is queued, then close */
 } slot_state_t;
 
+/* Which pool a slot belongs to, and therefore how its bytes are framed. */
+typedef enum {
+    SLOT_KIND_PROTO = 0,   /* framed: the handshake/record listeners */
+    SLOT_KIND_LOCAL        /* line-oriented: the local API sockets (spec 8) */
+} slot_kind_t;
+
 typedef struct {
     int          fd;            /* -1 when free */
+    slot_kind_t  kind;
+    listener_peer_t peer;       /* LOCAL only: uid/pid, for the log (spec 8) */
+    int          is_admin;      /* LOCAL only: which dispatch table applies */
     slot_state_t state;
     conn_io_t    io;
     uint64_t     deadline_ms;   /* absolute; 0 = none */
@@ -53,10 +63,20 @@ typedef enum {
 typedef ev_action_t (*evloop_on_frame_fn)(void *user, authd_slot_t *slot,
                                           const uint8_t *payload, size_t len);
 
+/* Called for each complete LF-terminated request line on a LOCAL slot. Same
+ * contract as on_frame: queue at most one reply, never block. */
+typedef ev_action_t (*evloop_on_line_fn)(void *user, authd_slot_t *slot,
+                                         const uint8_t *line, size_t len);
+
 /* Called when a slot is released, so V4-8b can wipe its handshake state. */
 typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 
-#define AUTHD_MAX_LISTENERS 2u
+/* Four: the loopback/tunnel listener, the proxy-facing Unix socket, and the
+ * two local-API sockets (site + admin). V4-8a sized this at 2 when only the
+ * protocol listeners existed; the local API needs two more, and exceeding it
+ * is a silent no-service rather than an error, so the number is stated here
+ * next to what occupies it. */
+#define AUTHD_MAX_LISTENERS 4u
 
 /* Upper bound on slots the loop will poll in one iteration. Equal to
  * AUTHD_SLOTS_MAX in authd_config.h; the poll arrays are static and sized from
@@ -64,12 +84,23 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 #define AUTHD_SLOTS_POLL_MAX 4096u
 
 typedef struct {
-    authd_slot_t *slots;
+    authd_slot_t *slots;         /* PROTO pool */
     size_t        n_slots;
     size_t        in_use;
 
-    int    listen_fd[AUTHD_MAX_LISTENERS];
-    uid_t  listen_uid[AUTHD_MAX_LISTENERS];   /* (uid_t)-1 = no peer check */
+    /* The local API gets its OWN pool. Sharing one would let a burst of
+     * handshakes occupy every slot and lock the site out of EXCHANGE -- the
+     * site would be unable to complete a login precisely when logins are
+     * busiest. Separate pools make that impossible rather than unlikely. */
+    authd_slot_t *local_slots;
+    size_t        n_local_slots;
+    size_t        local_in_use;
+
+    int         listen_fd[AUTHD_MAX_LISTENERS];
+    slot_kind_t listen_kind[AUTHD_MAX_LISTENERS];
+    int         listen_is_admin[AUTHD_MAX_LISTENERS];
+    uid_t       listen_allow[AUTHD_MAX_LISTENERS][LISTENER_MAX_ALLOW];
+    size_t      listen_n_allow[AUTHD_MAX_LISTENERS];
     size_t n_listeners;
 
     uint32_t handshake_timeout_ms;   /* deadline applied to a fresh connection */
@@ -78,6 +109,7 @@ typedef struct {
     int stopping;                    /* set by evloop_stop(): drain, accept no more */
 
     evloop_on_frame_fn on_frame;
+    evloop_on_line_fn  on_line;
     evloop_on_close_fn on_close;
     void *user;
 
@@ -87,6 +119,8 @@ typedef struct {
     uint64_t closed_deadline;
     uint64_t closed_protocol;
     uint64_t closed_peer;
+    uint64_t local_accepted;
+    uint64_t local_refused_no_slot;
 } evloop_t;
 
 /* `slots` must have room for `n_slots` and outlive the loop. */
@@ -94,9 +128,21 @@ int evloop_init(evloop_t *ev, authd_slot_t *slots, size_t n_slots,
                 uint32_t handshake_timeout_ms, uint32_t idle_timeout_ms,
                 evloop_on_frame_fn on_frame, evloop_on_close_fn on_close, void *user);
 
-/* Registers a listening fd. `require_uid` other than (uid_t)-1 enforces the
- * peer's uid (the proxy socket). At most AUTHD_MAX_LISTENERS. */
+/* Registers a framed listener (no peer check). At most AUTHD_MAX_LISTENERS. */
 int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid);
+
+/* Registers a LINE-oriented local-API listener: its connections come from the
+ * local pool, are dispatched to on_line, and are accepted only from a uid in
+ * `allow`. `is_admin` selects the dispatch table -- admin commands are absent
+ * from the site table rather than refused by a flag (Req 11). */
+int evloop_add_local_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n_allow, int is_admin);
+
+/* Attaches the local pool and the line callback. Both are required before a
+ * local listener is added. */
+int evloop_set_local(evloop_t *ev, authd_slot_t *local_slots, size_t n_local_slots,
+                     evloop_on_line_fn on_line);
+
+size_t evloop_local_active(const evloop_t *ev);
 
 /* One iteration: poll, accept, read, dispatch frames, write, expire deadlines.
  * `poll_timeout_ms` is passed to poll() (-1 blocks). Returns the number of

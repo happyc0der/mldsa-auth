@@ -8,6 +8,7 @@
 #include "authmsg.h"
 #include "conn_io.h"
 #include "transcript.h"
+#include "tokens.h"
 
 const char *authd_conn_stage_name(conn_stage_t s)
 {
@@ -362,5 +363,65 @@ ev_action_t authd_conn_on_frame(void *user, authd_slot_t *slot, const uint8_t *p
     case CONN_STAGE_AWAIT_CA: return on_client_auth(app, slot, c, payload, len);
     case CONN_STAGE_SERVING:  return on_record(app, slot, c, payload, len);
     default:                  return EV_ACTION_CLOSE;
+    }
+}
+
+/* --- revocation reaches live sessions, not just rows --------------------- */
+
+static size_t close_matching(authd_app_t *app, const uint8_t *id, size_t id_len, int by_user)
+{
+    if (app == NULL || app->ev == NULL || id == NULL || id_len == 0u) {
+        return 0u;
+    }
+    size_t closed = 0u;
+    for (size_t i = 0; i < app->n_conns && i < app->ev->n_slots; i++) {
+        authd_conn_t *c = &app->conns[i];
+        if (c->stage == CONN_STAGE_FREE) {
+            continue;
+        }
+        const uint8_t *have = by_user ? c->user_id : c->handle;
+        const size_t have_len = by_user ? c->user_id_len : c->handle_len;
+        if (have_len != id_len || sodium_memcmp(have, id, id_len) != 0) {
+            continue;
+        }
+        evloop_close_slot(app->ev, &app->ev->slots[i]);
+        closed++;
+    }
+    return closed;
+}
+
+size_t authd_app_close_handle(authd_app_t *app, const uint8_t *handle, size_t handle_len)
+{
+    return close_matching(app, handle, handle_len, 0);
+}
+
+size_t authd_app_close_user(authd_app_t *app, const uint8_t *user_id, size_t user_id_len)
+{
+    return close_matching(app, user_id, user_id_len, 1);
+}
+
+void authd_app_maybe_sweep(authd_app_t *app)
+{
+    if (app == NULL || app->store == NULL) {
+        return;
+    }
+    if (app->next_sweep_ms != 0u && app->now_ms < app->next_sweep_ms) {
+        return;
+    }
+    app->next_sweep_ms = app->now_ms + (uint64_t)TOKEN_SWEEP_INTERVAL_MS;
+
+    store_sweep_counts_t sc;
+    if (store_sweep(app->store, app->now_unix, &sc) != STORE_OK) {
+        authd_log_event(AUTHD_LOG_WARN, "sweep-failed");
+        return;
+    }
+    app->swept_tokens += sc.tokens;
+    app->swept_codes += sc.login_codes;
+    app->swept_tickets += sc.tickets;
+    if (sc.tokens != 0u || sc.login_codes != 0u || sc.tickets != 0u) {
+        /* spec 15: the sweep counts are logged. */
+        authd_log_num(AUTHD_LOG_INFO, "swept", "tokens", (uint64_t)sc.tokens);
+        authd_log_num(AUTHD_LOG_INFO, "swept", "codes", (uint64_t)sc.login_codes);
+        authd_log_num(AUTHD_LOG_INFO, "swept", "tickets", (uint64_t)sc.tickets);
     }
 }

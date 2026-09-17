@@ -16,6 +16,18 @@ const char *conn_io_status_name(conn_io_status_t st)
     }
 }
 
+void conn_io_set_mode(conn_io_t *c, conn_io_mode_t mode)
+{
+    if (c != NULL) {
+        c->mode = mode;
+    }
+}
+
+size_t conn_io_out_capacity(void)
+{
+    return (size_t)AUTHD_FRAME_MAX;
+}
+
 void conn_io_reset(conn_io_t *c)
 {
     if (c == NULL) {
@@ -29,6 +41,24 @@ void conn_io_reset(conn_io_t *c)
 static uint32_t be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/* LINE mode's only structural rule: a line must terminate within
+ * AUTHD_LINE_MAX bytes. Buffering past that without an LF is a protocol error
+ * and is sticky, exactly as an illegal frame length is -- otherwise a peer
+ * could hold a slot open forever by never sending a terminator. */
+static conn_io_status_t note_line_cap(conn_io_t *c)
+{
+    for (size_t i = 0; i < c->in_len; i++) {
+        if (c->in[i] == (uint8_t)'\n') {
+            return CONN_IO_OK;          /* a complete line is present */
+        }
+    }
+    if (c->in_len >= AUTHD_LINE_MAX) {
+        c->failed = 1;
+        return CONN_IO_ERR_PROTOCOL;
+    }
+    return CONN_IO_OK;
 }
 
 /* Reads the header once enough bytes are present and validates the declared
@@ -57,7 +87,7 @@ conn_io_status_t conn_io_push(conn_io_t *c, const uint8_t *data, size_t n)
         return CONN_IO_ERR_PROTOCOL;
     }
     if (n == 0u) {
-        return note_header(c);
+        return (c->mode == CONN_IO_MODE_LINE) ? note_line_cap(c) : note_header(c);
     }
     if (n > sizeof c->in - c->in_len) {
         c->failed = 1;
@@ -65,7 +95,43 @@ conn_io_status_t conn_io_push(conn_io_t *c, const uint8_t *data, size_t n)
     }
     memcpy(c->in + c->in_len, data, n);
     c->in_len += n;
-    return note_header(c);
+    return (c->mode == CONN_IO_MODE_LINE) ? note_line_cap(c) : note_header(c);
+}
+
+int conn_io_next_line(conn_io_t *c, const uint8_t **line, size_t *len)
+{
+    if (c == NULL || line == NULL || len == NULL || c->failed || c->mode != CONN_IO_MODE_LINE) {
+        return 0;
+    }
+    for (size_t i = 0; i < c->in_len; i++) {
+        if (c->in[i] != (uint8_t)'\n') {
+            continue;
+        }
+        c->line_total = i + 1u;             /* including the LF */
+        size_t n = i;
+        if (n > 0u && c->in[n - 1u] == (uint8_t)'\r') {
+            n--;                            /* tolerate CRLF */
+        }
+        *line = c->in;
+        *len = n;
+        return 1;
+    }
+    return 0;
+}
+
+void conn_io_consume_line(conn_io_t *c)
+{
+    if (c == NULL || c->line_total == 0u || c->in_len < c->line_total) {
+        return;
+    }
+    const size_t total = c->line_total;
+    const size_t rest = c->in_len - total;
+    if (rest > 0u) {
+        memmove(c->in, c->in + total, rest);
+    }
+    sodium_memzero(c->in + rest, c->in_len - rest);
+    c->in_len = rest;
+    c->line_total = 0u;
 }
 
 int conn_io_next_frame(conn_io_t *c, const uint8_t **payload, size_t *len)
@@ -117,6 +183,13 @@ conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len)
     }
     if (c->out_len != c->out_sent) {
         return CONN_IO_ERR_BUSY;
+    }
+    if (c->mode == CONN_IO_MODE_LINE) {
+        /* verbatim: the caller's bytes already carry their own terminators */
+        memcpy(c->out, payload, len);
+        c->out_len = len;
+        c->out_sent = 0u;
+        return CONN_IO_OK;
     }
     c->out[0] = (uint8_t)((len >> 24) & 0xffu);
     c->out[1] = (uint8_t)((len >> 16) & 0xffu);
