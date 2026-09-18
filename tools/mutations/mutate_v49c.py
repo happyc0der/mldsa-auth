@@ -52,6 +52,13 @@ quietly deleted:
   The mutation that WOULD be meaningful here -- digesting `m.handle` instead of
   `c->handle` -- is not a defect in the current code but a different design,
   and one that breaks the binding rather than merely duplicating it.
+
+W15 pins a defect that was FOUND BY RUNNING THE THING, not by reading it: the
+first working `rotate` left the device's own .pub naming the superseded key (and
+wrote the new one into the SERVER's directory). Nothing in a C test could see
+it -- the rotation succeeds, the daemon is correct, the next login works. Only
+the end-to-end script, which compares the .pub's fingerprint against what the
+store reports, can. It is the one v49c mutation killed by authd_e2e.
 """
 import sys, pathlib
 REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
@@ -99,6 +106,9 @@ M = {
  # a failed probe is taken as licence to delete the other key
  "W14": (CL, [("    if (next_present && next_ok) {\n        return KEY_PLAN_PROMOTE_NEXT;\n    }\n    return KEY_PLAN_REFUSE;",
                "    if (next_present) {\n        return KEY_PLAN_PROMOTE_NEXT;   /* MUTATION W14 */\n    }\n    return KEY_PLAN_REFUSE;")]),
+ # rotate leaves the device's .pub naming the superseded key
+ "W15": (CL, [("        if (rename(pub_tmp, pub_path) != 0) {\n            fprintf(stderr, \"%s rotate: the key rotated but %s could not be updated; \"\n                            \"it still names the OLD key\\n\", prog, pub_path);\n        }",
+               "        /* MUTATION W15: the device .pub is never updated */")]),
 }
 path, edits = M[MID]
 f = REPO / path; s = f.read_text()

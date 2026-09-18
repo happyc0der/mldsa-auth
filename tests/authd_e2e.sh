@@ -203,6 +203,8 @@ echo "PASS: E2E: a .pub whose embedded id differs from --handle is refused"
     || fail "enroll-operator exited nonzero"
 grep -q '^OK fp=' "$TMP/enroll.txt" || fail "enroll-operator did not return a fingerprint"
 echo "PASS: E2E: the operator device is enrolled"
+# Keep a copy of the pre-rotation key: after the rotation it must NOT work.
+cp "$TMP/dev/$HANDLE.ek" "$TMP/save-old.ek"
 
 # An administrative command must be unreachable from the site socket, and must
 # say the same thing a nonsense command would -- so the site socket is not an
@@ -249,6 +251,76 @@ if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
 else
     echo "SKIP: E2E: node not found, so the EXCHANGE/VERIFY leg did not run"
 fi
+
+# ----------------------------------------------------------- rotation
+
+# The device replaces its key and keeps its identity, with the shipped
+# binaries as real processes. The fingerprint the daemon reports is the
+# independent witness: it comes out of the store, not out of the client.
+FP_BEFORE=$("$ADMIN" list-devices --socket "$TMP/a.sock" --user alice | sed -n 's/.*fp=//p')
+[ -n "$FP_BEFORE" ] || fail "could not read the device fingerprint before rotation"
+
+"$CLIENT" rotate --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" > "$TMP/rotate.txt" 2> "$TMP/rotate.err" \
+    || fail "client rotate exited nonzero"
+
+FP_AFTER=$("$ADMIN" list-devices --socket "$TMP/a.sock" --user alice | sed -n 's/.*fp=//p')
+[ -n "$FP_AFTER" ] || fail "could not read the device fingerprint after rotation"
+[ "$FP_BEFORE" != "$FP_AFTER" ] || fail "the active key did not change: rotation did nothing"
+echo "PASS: E2E: rotation replaced the device's active key in the store"
+
+# The handle is the identity, and it survives.
+"$ADMIN" list-devices --socket "$TMP/a.sock" --user alice > "$TMP/devrot.txt" || fail "list-devices after rotation failed"
+grep -q "$(printf '%s' "$HANDLE" | od -An -tx1 | tr -d ' \n')" "$TMP/devrot.txt" \
+    || fail "the handle changed across the rotation"
+grep -q '^OK count=1' "$TMP/devrot.txt" || fail "rotation created a second device instead of rotating one"
+echo "PASS: E2E: the handle is unchanged and there is still exactly one device"
+
+# The device's own .pub must name the NEW key, or the next administrator to
+# enrol from it would install a key the server has already superseded.
+# dd, not xxd: demo_e2e.sh avoids xxd on purpose -- it is a vim package, not a
+# base tool, and is absent from minimal images. MLDSAPK1 is magic(8) +
+# id_len(1) + id + pk(1952).
+PUBFP=$(dd if="$TMP/dev/$HANDLE.pub" bs=1 skip=$((9 + ${#HANDLE})) count=1952 2>/dev/null \
+        | shasum -a 256 | cut -d' ' -f1)
+[ "$PUBFP" = "$FP_AFTER" ] || fail "the device .pub still names the OLD key after rotation"
+echo "PASS: E2E: the device's .pub was updated to the new key"
+
+# No .ek.next may survive a rotation the daemon acknowledged.
+[ ! -e "$TMP/dev/$HANDLE.ek.next" ] || fail "an acknowledged rotation left .ek.next behind"
+echo "PASS: E2E: no .ek.next survives an acknowledged rotation"
+
+# The new key logs in.
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" > "$TMP/code3.txt" 2>> "$TMP/login.err" \
+    || fail "login with the rotated key failed"
+[ "$(wc -c < "$TMP/code3.txt" | tr -d ' ')" -eq 44 ] || fail "the rotated key's login code is not 43 characters"
+echo "PASS: E2E: the rotated key logs in"
+
+# And the OLD key does not. A client cannot be TOLD its key is stale -- Req 6
+# makes a superseded key look like an unknown one -- so what it observes is
+# that no login code ever arrives.
+cp "$TMP/dev/$HANDLE.ek" "$TMP/current.ek"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/save-old.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" > /dev/null 2> "$TMP/oldkey.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "the SUPERSEDED key still obtained a login code: there is an overlap window"
+echo "PASS: E2E: the superseded key gets no login code (no overlap window, spec 10.2)"
+
+# The rotation is audited, and attributed to a user.
+"$ADMIN" audit-tail --socket "$TMP/a.sock" --n 10 > "$TMP/audit2.txt" || fail "audit-tail after rotation failed"
+grep -q 'event=key-rotate' "$TMP/audit2.txt" || fail "the rotation was not audited"
+grep -q 'event=key-rotate user=[0-9a-f][0-9a-f]' "$TMP/audit2.txt" \
+    || fail "the rotation audit row has no user attributed to it"
+echo "PASS: E2E: the rotation is audited and attributed to its user"
+
+# Spec 15: both fingerprints are logged, and neither is a secret.
+grep -q "event=rotate-fp-old fp=$FP_BEFORE" "$TMP/authd.log" || fail "the daemon did not log the OLD fingerprint"
+grep -q "event=rotate-fp-new fp=$FP_AFTER" "$TMP/authd.log" || fail "the daemon did not log the NEW fingerprint"
+echo "PASS: E2E: the daemon logged both fingerprints (spec 15)"
 
 # ------------------------------------------------------- admin queries
 

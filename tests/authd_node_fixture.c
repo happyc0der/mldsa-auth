@@ -26,9 +26,26 @@ int main(int argc, char **argv)
     if (sodium_init() < 0) { return 1; }
     authd_log_init(stderr, AUTHD_LOG_ERROR);
 
+    /* mkdtemp, NOT a pid-keyed name.
+     *
+     * This used to be "/tmp/authd-node-<pid>" with a best-effort rm -rf at the
+     * end, so every run that was killed leaked a directory -- and once the OS
+     * reused that pid, mkdir failed and the test died in about a second. It is
+     * not hypothetical: a mutation campaign left 1,214 of them behind and then
+     * failed its own CLEAN suite on an unmutated tree, which is the worst way
+     * for a gate to fail, because it looks like a real regression.
+     *
+     * mkdtemp makes the name unique by construction rather than by hoping the
+     * cleanup ran -- the same reason demo_e2e.sh and authd_e2e.sh use
+     * `mktemp -d`. */
     char dir[256];
-    snprintf(dir, sizeof dir, "/tmp/authd-node-%ld", (long)getpid());
-    if (mkdir(dir, 0700) != 0) { fprintf(stderr, "mkdir failed\n"); return 1; }
+    const char *tmpdir = getenv("TMPDIR");
+    if (tmpdir == NULL || tmpdir[0] == '\0') { tmpdir = "/tmp"; }
+    if (snprintf(dir, sizeof dir, "%s/authd-node-XXXXXX", tmpdir) < 0 ||
+        mkdtemp(dir) == NULL) {
+        fprintf(stderr, "mkdtemp failed\n");
+        return 1;
+    }
 
     static h_daemon_t d;
     if (h_start(&d, dir, "node.sqlite3", 1) != 0) { fprintf(stderr, "h_start failed\n"); return 1; }

@@ -4297,3 +4297,48 @@ mutant rather than campaigned, in the register v48a's D7 and v48b's C8 set.
 The mutation that *would* be meaningful — digesting `m.handle` instead of
 `c->handle` — is not a defect in this code but a different and worse design: it
 would let the peer choose what its own signature is bound to.
+
+
+### The end-to-end script gains the one rotation check no C test could make
+
+`authd_e2e.sh` now rotates a key with the shipped binaries as real processes:
+the store's reported fingerprint changes, the handle does not, there is still
+exactly one device, the rotated key logs in, the superseded one gets no login
+code, the rotation is audited **with a user attributed to it**, and the daemon
+logged both fingerprints per §15.
+
+One of those checks exists because of a defect found by running the thing
+rather than by reading it: the first working `rotate` left the device's own
+`.pub` naming the superseded key. Nothing in a C test can see that — the
+rotation succeeds, the daemon is correct, the next login works — and the next
+administrator to enrol from that file would install a key the server has
+already superseded. It is now mutation **W15**, the one v49c row killed by the
+end-to-end script.
+
+The `.pub` fingerprint is extracted with `dd`, not `xxd`: `demo_e2e.sh` avoids
+`xxd` deliberately, because it ships in a vim package rather than a base image.
+
+### A flaky gate is worse than a missing one, and this one had been leaking for three steps
+
+Re-running v49c after the e2e rotation leg landed, mutation W4 reported
+`CLEAN-SUITE=FAIL(BAD)`: a test failed on **restored, unmutated** sources. That
+is the single most misleading verdict a campaign can produce, because it looks
+like the step under test broke something.
+
+It had not. `tests/authd_node_fixture.c` built its temp directory as
+`/tmp/authd-node-<pid>` and removed it with a best-effort `rm -rf`, so every run
+that was killed — every interrupted campaign, every `Ctrl-C` — leaked one. Once
+the OS reused that pid, `mkdir` failed and the fixture exited immediately, about
+a second in. There were **1,214** of them on this machine by the time it
+surfaced, accumulated since V4-9a.
+
+The fix is `mkdtemp`: the name is unique *by construction* rather than by hoping
+the cleanup ran, which is exactly why `demo_e2e.sh` and `authd_e2e.sh` use
+`mktemp -d`. The C fixture had been the one place that did it the other way.
+
+Two things worth keeping from this. First, the campaign found it — a flake that
+only shows under load, in a test that passes six times out of six in isolation,
+surfaced because something runs the whole suite a dozen times in a row. Second,
+`restored=clean | CLEAN-SUITE=FAIL(BAD)` is a verdict shape worth recognising on
+sight: the sources are provably back, so the failure is the *suite's*, not the
+mutation's.

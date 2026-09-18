@@ -10,3 +10,4 @@ W11|^test_authd_conn$|pk-in-use and bad-signature produce the SAME error code
 W12|^test_authd_conn$|the login code never appears in the daemon's log
 W13|^test_authd_conn$|a ROTATE with one trailing byte is REJECTED
 W14|^test_authd_cli$|an unreadable .ek never causes .ek.next to be deleted
+W15|^authd_e2e$|the device .pub still names the OLD key after rotation

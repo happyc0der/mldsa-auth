@@ -190,7 +190,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, all 122 must-kill mutations in
+at 03:17 UTC every day, and on demand, all 123 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub
@@ -587,7 +587,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 122 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 123 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 
