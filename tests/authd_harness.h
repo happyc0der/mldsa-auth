@@ -31,6 +31,7 @@
 #include "evloop.h"
 #include "listener.h"
 #include "localapi.h"
+#include "recovery.h"
 #include "localcli.h"
 #include "store.h"
 #include "handshake.h"
@@ -89,6 +90,18 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
     d->app.server_id_len = sizeof H_SERVER_ID;
     d->app.pad_bucket = 256u;
     d->app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
+    /* The KDF is lowered to libsodium's MINIMUM here and ONLY here. At the
+     * spec's 2/64MiB a single RECOVERY-ISSUE of 16 codes costs over a second,
+     * which would make this suite unusably slow while proving nothing
+     * extra: every property under test is about WHICH code matches and what
+     * the store does, not about how expensive the hash is. The daemon's real
+     * parameters are asserted by tools/audit/check_spec_constants.sh. */
+    d->app.recovery_ops = crypto_pwhash_OPSLIMIT_MIN;
+    d->app.recovery_mem = crypto_pwhash_MEMLIMIT_MIN;
+    d->app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;
+    d->app.recovery_lock_seconds = RECOVERY_LOCK_SECONDS;
+    d->app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
+
     d->app.now_ms = 1000u;
     d->app.now_unix = 1700000000;
     d->app.started_ms = 1000u;

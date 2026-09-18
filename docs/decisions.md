@@ -4342,3 +4342,158 @@ surfaced because something runs the whole suite a dozen times in a row. Second,
 `restored=clean | CLEAN-SUITE=FAIL(BAD)` is a verdict shape worth recognising on
 sight: the sources are provably back, so the failure is the *suite's*, not the
 mutation's.
+
+## V4-9d — recovery, and the cost of being able to get back in
+
+A device's key could be replaced (V4-9c) but only from a device that still
+worked. Lose it and the identity was gone: for the operator who *is* the
+administrator, a locked door with the key inside. §10.3's answer is recovery
+codes — 80 bits on paper, one of which buys a ten-minute enrollment ticket.
+
+### The blocking KDF is accepted, and now it has a number
+
+§10.3 puts recovery codes behind `crypto_pwhash_str` at ops 2 / 64 MiB. The
+daemon is one process, one thread, one `poll()` loop (V4 decision 2), and
+`localapi_on_line` runs inline from `slot_readable` — so a verification loop
+stops the world while it runs. That was accepted in planning on condition it be
+measured. Measured, natively, at the spec's parameters (Apple M4 Pro, `-O2`):
+
+| | |
+|---|---|
+| one `crypto_pwhash_str` | **53.8 ms** |
+| one `crypto_pwhash_str_verify` | **51.4 ms** |
+| `RECOVERY-ISSUE count=16` | **0.86 s** |
+| `RECOVERY-USE`, worst case (16 unused, no match) | **0.82 s** |
+| `RECOVERY-USE`, typical (10 codes, match at the 5th) | **0.26 s** |
+
+The only figure the project had before this was **111.5 ms for Argon2id(3,
+64 MiB) in wasm** (V4-2 S6) — a different parameter set on a different runtime,
+and no basis for a claim about the daemon.
+
+What makes 0.82 s defensible is not its size but that it is *bounded*, on three
+independent sides, each of which is a mutation:
+
+* **at most 16 unused codes**, because issuing supersedes the previous
+  generation. Left additive — which is what §10.3 literally permits, since it
+  says nothing — the loop would grow by `count` on every re-issue and the
+  measurement above would describe nothing. (G9)
+* **at most 5 attempts per hour**, the §10.3 lockout. (G5, G6)
+* **the lockout is read before any hashing**, so a locked user costs zero. A
+  lockout enforced after the loop returns the identical error code while still
+  spending the second — which is the entire thing it exists to prevent. No
+  status can tell those apart, so `authd_app_t` carries `recovery_kdf_calls`
+  and the test asserts on the counter. (G4)
+
+Remove any one and the bound is gone. The honest residual is recorded as
+finding **F39**: a handshake already near its 10 s deadline can be timed out by
+someone else's recovery attempt, because deadlines are judged against a clock
+captured before the handler ran. Threads, a work queue and a KDF helper process
+were all rejected as contradicting V4 decision 2; if the daemon ever serves
+more than operators this is V4-10/V4-11's problem, stated rather than deferred
+silently.
+
+### Crockford base32, and where normalisation lives
+
+§10.3 fixes the shape (10 bytes, 16 characters, 80 bits) and names no alphabet.
+Crockford is chosen because this is the one value in the system a human reads
+off paper and retypes, possibly months later, possibly having just lost their
+only device: it omits I, L, O and U so the confusable shapes are never *issued*,
+and its decoder nevertheless accepts `I`/`l` as 1 and `O` as 0, in either case,
+ignoring `-`. 80 bits is exactly 16 symbols, so there is no padding and a
+16-symbol string decodes and re-encodes to itself — which is why normalisation
+is a per-character map and why there is no `base32_decode()` for the daemon to
+get wrong.
+
+**What is hashed is the canonical string**, and normalisation lives in the
+daemon beside the hash — never in the site's JavaScript. Two sites that
+normalised differently would disagree about what a code *is*, and the user
+would be locked out of their own recovery codes by a bug in a language the
+daemon never sees. `examples/site-node/authd.mjs` says, in as many words, to
+pass the code through verbatim.
+
+The encoder is pinned by literal vectors (`00 44 32 14 c7` → `01234567`, and a
+20-byte vector that renders the alphabet in order), because a round trip cannot
+catch a wrong alphabet: encoder and normaliser share one table, so a wrong one
+moves both together and the code still verifies against its own hash. (G3)
+
+### Base32 text on the wire, and why that does not break §8's one-decoder rule
+
+`localapi.h` states that binary values are lowercase hex so that "there are NO
+escaping rules anywhere in the protocol". §8 nevertheless specifies
+`OK codes=c1,c2,…` and `code=`, which are text. Both hold at once: the
+Crockford charset plus its tolerated confusables is a subset of `[0-9A-Za-z-]`,
+which contains no comma, space, LF or `=`, so a comma-separated list of codes
+is unambiguous without an escaping rule. The header comment now says so rather
+than contradicting the code.
+
+### Verify outside the transaction, mutate inside
+
+§9.3 requires code use to be exactly one transaction. Holding a write
+transaction open across 0.8 s of KDF work would block every other store
+operation for that time, so the verification runs outside and
+`store_recovery_consume` re-checks inside the transaction what the caller
+checked outside it: the row is still unused *and* still this user's. A code
+spent by another connection in the meantime comes back as `invalid`, which is
+also what a wrong code returns — the right answer either way. A fault point
+inside that transaction proves the alternative is impossible: a crash between
+"code spent" and "ticket issued" would cost the user their one way back in and
+hand them nothing. (G7, G8)
+
+### The four V4-7 primitives were deleted, not kept
+
+`store_add_recovery_code`, `store_mark_recovery_used`, `store_add_ticket` and
+`store_consume_ticket` were added in V4-7 as "primitives; policy in V4-9".
+V4-9 decided the policy is transactional, and the pair did not compose in any
+case: the adder returned no `code_id`, the marker required one, and **nothing
+could enumerate a user's unused codes at all** — the one operation
+`RECOVERY-USE` is made of. All four were uncalled by production code and
+untested. Keeping them would have left a second, non-atomic way to do the same
+thing, so they were removed and replaced by six functions that own their own
+transaction boundaries. This is wider than the plan's "delete the two that
+cannot be called safely"; the other two became unreachable for the same reason
+and are recorded here rather than left as dead API.
+
+### An operator's recovery is administrative (Req 11)
+
+Found by the e2e, because its user happened to be an operator. `RECOVERY-ISSUE`
+and `RECOVERY-USE` live in the **site** table — the site is what a locked-out
+user reaches — but `ENROLL-OPERATOR` is deliberately absent from it. Without a
+rule, a compromised site process could issue itself an operator's recovery
+codes, spend one, and redeem the ticket for a device it controls: exactly the
+escalation Req 11 exists to prevent, reached by a different door. Both commands
+now refuse an operator user on the site socket. The ticket's own role check is
+not sufficient on its own, because it refuses only at the last step — by which
+point the codes have been minted. Recorded as **F43**; §10.3 says nothing about
+it and should.
+
+### Two gates found their own defects before the campaign did
+
+`fuzz_localapi`'s standing invariant — an `ERR` never advances the audit chain —
+fires on a failed `RECOVERY-USE`, and correctly: that row *is* the failure count
+the lockout is built on. Rather than punch a hole in the invariant, it was split
+in two: for `RECOVERY-USE` answering `invalid` the chain **must** advance, and
+for everything else it must not. A change that silently stopped counting
+failures — a lockout bypass — now fails the fuzz target. The new assertion was
+then proven non-vacuous against a deliberately broken build.
+
+Its first ASan run immediately found a bug in that new assertion: the condition
+matched `user=` by substring, so the mutated line `user=753167` — a *different*,
+nonexistent user whose hex merely starts with `7531` — satisfied it. Now the
+whole token is compared. A prefix test in an oracle is the same class of defect
+as a prefix test in a parser.
+
+Two vacuous passes were caught by their own present canaries while the tests
+were being written: a store scan that found neither the plaintext nor any
+Argon2id hash (WAL mode — the row was in the `-wal` file), and an `ENROLL`
+request truncated by a 1024-byte buffer against a 3904-character public key,
+which made "via=site with a ticket is malformed" pass for entirely the wrong
+reason.
+
+### What the spec could not say
+
+Four items for the errata step, in addition to V4-9c's four: §8 gives
+`RECOVERY-ISSUE` no error codes (**F42**); §10.3 does not say whether re-issuing
+supersedes (**F44**, decided here); §10.3 does not say that an operator's
+recovery is administrative (**F43**, decided here); and §15 names
+`log_identities` and `log_client_ip`, which exist nowhere, while its promised
+field vocabulary does not match what is emitted (**F46**).

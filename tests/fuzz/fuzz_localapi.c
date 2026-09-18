@@ -34,6 +34,7 @@
 #include "conn_io.h"
 #include "evloop.h"
 #include "localapi.h"
+#include "recovery.h"
 #include "store.h"
 #include "tokens.h"
 #include "handshake.h"
@@ -98,6 +99,32 @@ static size_t drain(authd_slot_t *slot, char *out, size_t cap)
  * client does, including the Node reference handler. The first version of this
  * oracle guessed from the prefix and immediately reported a "missing END" on a
  * perfectly correct REVOKE-TOKENS reply. */
+/* Is `key` present with exactly `val`? A prefix test is NOT good enough: the
+ * mutator produced `user=753167`, whose value merely STARTS with 7531 and
+ * decodes to a different (nonexistent) user, and a substring check called it
+ * a match. Found by this target on its first ASan run. */
+static int kv_equals(const uint8_t *line, size_t len, const char *key, const char *val)
+{
+    const size_t kn = strlen(key), vn = strlen(val);
+    for (size_t i = 0; i + kn <= len; i++) {
+        if (memcmp(line + i, key, kn) != 0) { continue; }
+        if (i > 0 && line[i - 1] != ' ') { continue; }        /* mid-token */
+        const size_t vs = i + kn;
+        if (vs + vn > len || memcmp(line + vs, val, vn) != 0) { continue; }
+        if (vs + vn == len || line[vs + vn] == ' ') { return 1; }
+    }
+    return 0;
+}
+
+/* Does this request line name `cmd`? The command is the first token. */
+static int cmd_is(const uint8_t *line, size_t len, const char *cmd)
+{
+    const size_t n = strlen(cmd);
+    if (len < n) { return 0; }
+    if (memcmp(line, cmd, n) != 0) { return 0; }
+    return (len == n) || (line[n] == ' ');
+}
+
 static int expects_list(const uint8_t *line, size_t len)
 {
     static const char *const LISTY[] = { "LIST-DEVICES", "LIST-USERS", "AUDIT-TAIL" };
@@ -142,6 +169,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     app.server_id_len = sizeof SERVER_ID;
     app.pad_bucket = 256u;
     app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
+    /* The KDF is lowered to libsodium's MINIMUM here and ONLY here. At the
+     * spec's 2/64MiB a single RECOVERY-ISSUE of 16 codes costs over a second,
+     * which would make this fuzz target unusably slow while proving nothing
+     * extra: every property under test is about WHICH code matches and what
+     * the store does, not about how expensive the hash is. The daemon's real
+     * parameters are asserted by tools/audit/check_spec_constants.sh. */
+    app.recovery_ops = crypto_pwhash_OPSLIMIT_MIN;
+    app.recovery_mem = crypto_pwhash_MEMLIMIT_MIN;
+    app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;
+    app.recovery_lock_seconds = RECOVERY_LOCK_SECONDS;
+    app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
+
     app.now_ms = FUZZ_CLOCK_T0;
     app.now_unix = 1700000000;
     app.started_ms = FUZZ_CLOCK_T0;
@@ -198,11 +237,33 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                     "a single-line response contains an embedded newline");
     }
 
-    /* 3. a refusal never moves the audit chain */
+    /* 3. A refusal never moves the audit chain -- with exactly one exception,
+     *    which is asserted rather than excused.
+     *
+     *    RECOVERY-USE answering `invalid` MUST leave a durable trace: that row
+     *    is the failure count the §10.3 lockout is built on, and §15 requires
+     *    failures to be logged. So for that one case the invariant inverts --
+     *    the chain must ADVANCE -- and a change that silently stopped counting
+     *    failures (which is a lockout bypass) fails this target instead of
+     *    slipping through a hole in it. Every other refusal, including
+     *    RECOVERY-USE's own `locked`, `malformed` and `user-disabled`, must
+     *    still leave the store untouched. */
     const int have_after = (store_audit_head_mac(g_store, head_after) == STORE_OK);
     if (strncmp(resp, "ERR code=", 9) == 0 && have_before && have_after) {
-        FUZZ_ASSERT(memcmp(head_before, head_after, sizeof head_before) == 0,
-                    "an ERR response ADVANCED the audit chain: a refused request mutated the store");
+        const int moved = (memcmp(head_before, head_after, sizeof head_before) != 0);
+        if (cmd_is(line, len, "RECOVERY-USE") && strncmp(resp, "ERR code=invalid", 16) == 0) {
+            /* Only for the user this harness actually enrolled ("u1" = 7531):
+             * an UNKNOWN user answers `invalid` too -- deliberately
+             * indistinguishable -- but has no row to count against, so
+             * requiring movement there would be a false alarm, not a finding. */
+            if (kv_equals(line, len, "user=", "7531")) {
+                FUZZ_ASSERT(moved,
+                            "a failed RECOVERY-USE did NOT record the attempt: the lockout cannot count");
+            }
+        } else {
+            FUZZ_ASSERT(!moved,
+                        "an ERR response ADVANCED the audit chain: a refused request mutated the store");
+        }
     }
 
     conn_io_reset(&slot->io);
@@ -213,6 +274,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 static void emit_str(fuzz_emit_fn emit, void *ctx, const char *name, const char *s)
 {
     emit(ctx, name, (const uint8_t *)s, strlen(s));
+}
+
+/* An ENROLL seed with a FULL-LENGTH public key. Without one the request dies
+ * on the pk length check before `via` or `ticket` are examined, so a short-pk
+ * seed cannot reach the enrollment branches at all. */
+static void emit_enroll(fuzz_emit_fn emit, void *ctx, const char *name,
+                        const char *via, const char *ticket)
+{
+    static char line[2u * STORE_PK_BYTES + 256u];
+    static char pkhex[2u * STORE_PK_BYTES + 1u];
+    for (size_t i = 0; i < 2u * STORE_PK_BYTES; i++) { pkhex[i] = "0123456789abcdef"[i % 16u]; }
+    pkhex[2u * STORE_PK_BYTES] = '\0';
+    const int n = snprintf(line, sizeof line, "ENROLL user=7531 handle=64316161 pk=%s via=%s%s%s",
+                           pkhex, via, (ticket != NULL) ? " ticket=" : "",
+                           (ticket != NULL) ? ticket : "");
+    if (n > 0) { emit(ctx, name, (const uint8_t *)line, (size_t)n); }
 }
 
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
@@ -236,12 +313,33 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
     emit_str(emit, ctx, "disable-user", "DISABLE-USER user=7531 reason=6161");
     emit_str(emit, ctx, "enable-user", "ENABLE-USER user=7531");
     emit_str(emit, ctx, "audit-tail", "AUDIT-TAIL n=5");
+    /* recovery (V4-9d). The KDF is at libsodium's minimum in this harness, so
+     * these are cheap; at the spec's parameters one issue of 16 codes would
+     * cost over a second and the target would stop being a fuzzer. */
+    emit_str(emit, ctx, "recovery-issue", "RECOVERY-ISSUE user=7531 count=3");
+    emit_str(emit, ctx, "recovery-issue-max", "RECOVERY-ISSUE user=7531 count=16");
+    emit_str(emit, ctx, "recovery-issue-over", "RECOVERY-ISSUE user=7531 count=17");
+    emit_str(emit, ctx, "recovery-issue-zero", "RECOVERY-ISSUE user=7531 count=0");
+    emit_str(emit, ctx, "recovery-use", "RECOVERY-USE user=7531 code=0123456789ABCDEF");
+    emit_str(emit, ctx, "recovery-use-lower", "RECOVERY-USE user=7531 code=0123-4567-89ab-cdef");
+    emit_str(emit, ctx, "recovery-use-confusable", "RECOVERY-USE user=7531 code=O123456789ABCDEl");
+    emit_str(emit, ctx, "recovery-use-short", "RECOVERY-USE user=7531 code=012");
+    emit_str(emit, ctx, "recovery-use-revoke", "RECOVERY-USE user=7531 code=0123456789ABCDEF revoke=all");
+    emit_str(emit, ctx, "recovery-use-badrevoke", "RECOVERY-USE user=7531 code=0123456789ABCDEF revoke=some");
     emit_str(emit, ctx, "audit-tail-huge", "AUDIT-TAIL n=9999");
     emit_str(emit, ctx, "dup-key", "VERIFY token=00 token=11");
     emit_str(emit, ctx, "unknown-key", "PING nope=1");
     emit_str(emit, ctx, "no-equals", "VERIFY token");
     emit_str(emit, ctx, "empty-key", "VERIFY =aa");
     emit_str(emit, ctx, "odd-hex", "VERIFY token=abc");
-    emit_str(emit, ctx, "enroll-recovery", "ENROLL user=7531 handle=64316161 pk=00 via=recovery");
+    /* NOTE: `pk` must be a full 1952-byte key or the length check refuses the
+     * request before `via` is ever looked at -- which is why the original
+     * pk=00 form of this seed never reached the branch it is named for. The
+     * generator emits a full-length pk so these two actually exercise it. */
+    emit_enroll(emit, ctx, "enroll-recovery-no-ticket", "recovery", NULL);
+    emit_enroll(emit, ctx, "enroll-recovery-ticket", "recovery",
+                "0000000000000000000000000000000000000000000000000000000000000000");
+    emit_enroll(emit, ctx, "enroll-site-with-ticket", "site",
+                "1111111111111111111111111111111111111111111111111111111111111111");
     emit_str(emit, ctx, "backup", "BACKUP path=2f746d702f78");
 }

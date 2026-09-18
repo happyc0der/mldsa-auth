@@ -11,7 +11,7 @@
 # actually perform a login between them. Nothing is written outside a mktemp
 # directory, and every log is scanned for secrets at the end.
 #
-#   sh authd_e2e.sh <authd_admin> <authd_client> <mldsa-authd> [<node> <site.mjs>]
+#   sh authd_e2e.sh <authd_admin> <authd_client> <mldsa-authd> [<node> <site.mjs> <recovery.mjs>]
 set -eu
 
 ADMIN="$1"
@@ -19,6 +19,7 @@ CLIENT="$2"
 DAEMON="$3"
 NODE="${4:-}"
 SITE="${5:-}"
+RECOVERY="${6:-}"
 
 # Socket paths must fit sun_path -- 104 bytes on macOS, 108 on Linux -- and
 # macOS mktemp -d lands under /var/folders/<...>, which is already ~50 of them.
@@ -252,6 +253,58 @@ else
     echo "SKIP: E2E: node not found, so the EXCHANGE/VERIFY leg did not run"
 fi
 
+# ----------------------------------------------------------- recovery
+
+# The device is lost. The user types a recovery code into the site, and a new
+# device takes over the identity. No CLI drives this on purpose: spec 13 gives
+# neither tool a recovery subcommand because the SITE is what a user reaches.
+if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
+    # An ordinary `user`, not the operator alice: recovery is what a member of
+    # the public does on a website, and an operator's recovery is deliberately
+    # NOT reachable from the site socket (asserted inside the script).
+    BOB1=$("$CLIENT" keygen --dir "$TMP/bob" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+        || fail "keygen for bob's first device exited nonzero"
+    BOB2=$("$CLIENT" keygen --dir "$TMP/bob2" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+        || fail "keygen for bob's replacement device exited nonzero"
+    "$NODE" "$RECOVERY" "$TMP/s.sock" bob "$TMP/bob/$BOB1.pub" "$BOB1" \
+        "$BOB2" "$TMP/bob2/$BOB2.pub" "$TMP/codes.txt" alice \
+        > "$TMP/rec.txt" 2> "$TMP/rec.err" \
+        || fail "the recovery flow failed: $(cat "$TMP/rec.err")"
+    grep -q '"operator_recovery_refused_on_site":true' "$TMP/rec.txt" \
+        || fail "an operator's recovery codes were mintable from the site socket (Req 11)"
+    grep -q '"mangled_accepted":true' "$TMP/rec.txt" \
+        || fail "a mistyped-but-equivalent recovery code was not accepted"
+    grep -q '"ticket_single_use":true' "$TMP/rec.txt" || fail "the enrollment ticket was not single-use"
+    grep -q '"code_single_use":true' "$TMP/rec.txt" || fail "the recovery code was not single-use"
+    echo "PASS: E2E: a lost device was recovered with a mistyped code and a single-use ticket"
+
+    # The whole point: the REPLACEMENT device can log in. Everything above
+    # would pass if the enrollment had written a row nobody can authenticate
+    # against, so this is the check that makes the leg mean something.
+    RCODE=$("$CLIENT" login --handle "$BOB2" --key "$TMP/bob2/$BOB2.ek" \
+            --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+            --unix "$TMP/p.sock" 2>> "$TMP/login.err") || fail "the recovered device could not log in"
+    [ "${#RCODE}" -eq 43 ] || fail "the recovered device's login code is ${#RCODE} characters, expected 43"
+    echo "PASS: E2E: the recovered device completes a real post-quantum login"
+
+    # Spec 15 requires issue and use to be logged, and requires the CODE never
+    # to be. Both halves, in that order -- the present canary first, so "no
+    # code in the log" cannot pass because nothing was logged at all.
+    grep -q 'recovery-issue' "$TMP/authd.log" || fail "the recovery issue was not logged at all"
+    grep -q 'recovery-use' "$TMP/authd.log" || fail "the recovery use was not logged at all"
+    while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        ! grep -q "$c" "$TMP/authd.log" || fail "a recovery code reached the daemon log: $c"
+        for f in "$TMP/rec.err" "$TMP/login.err" "$TMP/keygen.err"; do
+            [ -f "$f" ] || continue
+            ! grep -q "$c" "$f" || fail "a recovery code reached $f"
+        done
+    done < "$TMP/codes.txt"
+    echo "PASS: E2E: recovery issue and use are logged, and the codes never are (spec 15)"
+else
+    echo "SKIP: E2E: node not found, so the recovery leg did not run"
+fi
+
 # ----------------------------------------------------------- rotation
 
 # The device replaces its key and keeps its identity, with the shipped
@@ -325,8 +378,15 @@ echo "PASS: E2E: the daemon logged both fingerprints (spec 15)"
 # ------------------------------------------------------- admin queries
 
 "$ADMIN" list-users --socket "$TMP/a.sock" > "$TMP/users.txt" || fail "list-users failed"
-grep -q '^OK count=1' "$TMP/users.txt" || fail "list-users did not report one user"
-grep -q 'role=operator' "$TMP/users.txt" || fail "the enrolled user is not an operator"
+# alice (operator, enrolled by an administrator) plus, when the recovery leg
+# ran, bob (user, created by the site's own first ENROLL -- spec 10.1).
+if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
+    grep -q '^OK count=2' "$TMP/users.txt" || fail "list-users did not report alice and bob"
+    grep -q 'role=user' "$TMP/users.txt" || fail "bob was not created with the user role"
+else
+    grep -q '^OK count=1' "$TMP/users.txt" || fail "list-users did not report one user"
+fi
+grep -q 'role=operator' "$TMP/users.txt" || fail "alice is not an operator"
 grep -q '^END$' "$TMP/users.txt" || fail "list-users did not terminate with END"
 
 "$ADMIN" list-devices --socket "$TMP/a.sock" --user alice > "$TMP/devices.txt" || fail "list-devices failed"

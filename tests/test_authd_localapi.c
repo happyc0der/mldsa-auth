@@ -326,8 +326,46 @@ static void test_enroll(void)
             "enroll: a public key already in use cannot be enrolled elsewhere"); }
 
     snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery", uh, hh, pkh);
-    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
-          "enroll: via=recovery is refused until V4-9c, not silently accepted");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "enroll: via=recovery without a ticket is malformed (the ticket is the authorisation)");
+
+    /* F47: a REFUSED enrollment must leave the store exactly as it was. The
+     * original order created the user first and checked the handle after, so
+     * naming a fresh user with an already-taken handle answered
+     * `exists-different-key` and left that user behind. Both refusals are
+     * checked, because they refuse at different points. */
+    { uint8_t fresh1[] = { 'n','e','w','1' }, fresh2[] = { 'n','e','w','2' };
+      char f1h[160], f2h[160], h9h[160];
+      uint8_t h9[] = { 'd','1','z','z' };
+      hx(f1h, sizeof f1h, fresh1, sizeof fresh1);
+      hx(f2h, sizeof f2h, fresh2, sizeof fresh2);
+      hx(h9h, sizeof h9h, h9, sizeof h9);
+      char users_before[16384], users_after[16384];
+      int adm0 = h_dial_unix(d.admin_path);
+      CHECK(adm0 >= 0, "enroll: connect to admin.sock for the user census");
+      CHECK(h_local_cmd(&d, adm0, "LIST-USERS", users_before, sizeof users_before) == 0,
+            "enroll: user census before the refusals");
+
+      /* (a) a known handle, a different key -- Req 7 */
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", f1h, hh, pk2h);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=exists-different-key"),
+            "enroll: a fresh user with an already-enrolled handle is refused (Req 7)");
+      /* (b) a fresh handle, but a key already in use elsewhere */
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", f2h, h9h, pkh);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=pk-in-use"),
+            "enroll: a fresh user with an already-used public key is refused");
+
+      /* A fresh connection for the second census: the slot the first one used
+       * has since been reclaimed, and reusing it would measure the transport
+       * rather than the store. */
+      (void)close(adm0);
+      int adm1 = h_dial_unix(d.admin_path);
+      CHECK(adm1 >= 0, "enroll: connect to admin.sock for the second census");
+      CHECK(h_local_cmd(&d, adm1, "LIST-USERS", users_after, sizeof users_after) == 0,
+            "enroll: user census after the refusals");
+      CHECK(strcmp(users_before, users_after) == 0,
+            "enroll: NEITHER refusal created a user -- a refused request changes nothing (F47)");
+      (void)close(adm1); }
 
     /* an operator cannot be created from the site socket, and the role of an
      * existing user is never silently changed */
@@ -341,6 +379,38 @@ static void test_enroll(void)
       CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=role-mismatch"),
             "enroll: an existing `user` is not silently promoted to operator");
       mldsa_keypair_free(&kp3); }
+
+    /* F47, the case the fuzzer actually found: a FRESH user name plus a handle
+     * whose USER has been disabled. The daemon's pre-check is the three-join
+     * active lookup and the store's Req 7 check is the key row alone, so this
+     * is exactly where the two disagree -- the pre-check misses, and the old
+     * code created the user before the store refused. */
+    { snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
+      CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+            "enroll: the handle's user is disabled");
+      char before[16384], after[16384];
+      int a1 = h_dial_unix(d.admin_path);
+      CHECK(a1 >= 0 && h_local_cmd(&d, a1, "LIST-USERS", before, sizeof before) == 0,
+            "enroll: census before the disabled-user refusal");
+      (void)close(a1);
+
+      mldsa_keypair_t kp4;
+      CHECK(mldsa_keypair_generate(&kp4) == 0, "enroll: a fourth, unused key");
+      char pk4h[4000], f3h[160];
+      uint8_t fresh3[] = { 'n','e','w','3' };
+      hx(pk4h, sizeof pk4h, kp4.public_key, sizeof kp4.public_key);
+      hx(f3h, sizeof f3h, fresh3, sizeof fresh3);
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", f3h, hh, pk4h);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code="),
+            "enroll: a fresh user with a DISABLED user's handle is refused");
+
+      int a2 = h_dial_unix(d.admin_path);
+      CHECK(a2 >= 0 && h_local_cmd(&d, a2, "LIST-USERS", after, sizeof after) == 0,
+            "enroll: census after the disabled-user refusal");
+      CHECK(strcmp(before, after) == 0,
+            "enroll: that refusal created no user either -- the pre-check and the store may disagree, the store may not be left half-changed (F47)");
+      (void)close(a2);
+      mldsa_keypair_free(&kp4); }
 
     (void)close(fd); (void)close(adm);
     mldsa_keypair_free(&kp); mldsa_keypair_free(&kp2);
@@ -437,6 +507,397 @@ static void test_log_hygiene(void)
     free(buf);
 }
 
+/* ------------------------------------------------------------- recovery */
+
+/* Pulls the first code out of an `OK codes=c1,c2,...` reply. */
+static void first_code(const char *resp, char out[BASE32_CODE_CHARS + 1u])
+{
+    memset(out, 0, BASE32_CODE_CHARS + 1u);
+    const char *p = strstr(resp, "codes=");
+    if (p == NULL) { return; }
+    p += 6;
+    size_t i = 0;
+    while (i < BASE32_CODE_CHARS && p[i] != '\0' && p[i] != ',' && p[i] != '\n') { out[i] = p[i]; i++; }
+}
+
+static size_t count_codes(const char *resp)
+{
+    const char *p = strstr(resp, "codes=");
+    if (p == NULL) { return 0u; }
+    size_t n = 1u;
+    for (p += 6; *p != '\0' && *p != '\n'; p++) { if (*p == ',') { n++; } }
+    return n;
+}
+
+/* The Crockford codec, pinned against LITERAL vectors. A round trip cannot
+ * catch a wrong alphabet -- encode and decode would agree with each other -- so
+ * the expected strings here are computed by hand from the 5-bit groups. */
+static void test_base32(void)
+{
+    char out[40];
+
+    /* 0x00.. -> all zeros; 0xff.. -> all Z (value 31). */
+    { const uint8_t z[BASE32_CODE_BYTES] = {0};
+      CHECK(base32_encode(z, sizeof z, out, sizeof out) == 0 &&
+            strcmp(out, "0000000000000000") == 0, "base32: ten zero bytes encode to sixteen '0'"); }
+    { uint8_t f[BASE32_CODE_BYTES]; memset(f, 0xff, sizeof f);
+      CHECK(base32_encode(f, sizeof f, out, sizeof out) == 0 &&
+            strcmp(out, "ZZZZZZZZZZZZZZZZ") == 0, "base32: ten 0xff bytes encode to sixteen 'Z'"); }
+    /* 0x00 0x44 0x32 0x14 0xc7 = 00000 00001 00010 00011 00100 00101 00110 00111
+     *                          =   0     1     2     3     4     5     6     7  */
+    { const uint8_t v[5] = { 0x00, 0x44, 0x32, 0x14, 0xc7 };
+      CHECK(base32_encode(v, sizeof v, out, sizeof out) == 0 && strcmp(out, "01234567") == 0,
+            "base32: the literal five-byte vector encodes to 01234567"); }
+    /* The alphabet itself, so a single wrong symbol is named rather than
+     * hidden inside a longer string: values 0..31 in order. */
+    { const uint8_t all[20] = { 0x00,0x44,0x32,0x14,0xc7,0x42,0x54,0xb6,0x35,0xcf,
+                                0x84,0x65,0x3a,0x56,0xd7,0xc6,0x75,0xbe,0x77,0xdf };
+      CHECK(base32_encode(all, sizeof all, out, sizeof out) == 0 &&
+            strcmp(out, "0123456789ABCDEFGHJKMNPQRSTVWXYZ") == 0,
+            "base32: values 0..31 render as Crockford's alphabet, in order"); }
+
+    char n[BASE32_CODE_CHARS + 1u];
+    CHECK(base32_normalize("0123456789ABCDEF", 16, n) == 0 && strcmp(n, "0123456789ABCDEF") == 0,
+          "base32: a canonical code normalises to itself");
+    CHECK(base32_normalize("0123456789abcdef", 16, n) == 0 && strcmp(n, "0123456789ABCDEF") == 0,
+          "base32: lower case normalises to upper");
+    CHECK(base32_normalize("0123-4567-89AB-CDEF", 19, n) == 0 && strcmp(n, "0123456789ABCDEF") == 0,
+          "base32: grouping hyphens are ignored");
+    CHECK(base32_normalize("O123456789ABCDEi", 16, n) == 0 && strcmp(n, "0123456789ABCDE1") == 0,
+          "base32: the confusables O and i normalise to 0 and 1");
+    CHECK(base32_normalize("0123456789ABCDEl", 16, n) == 0 && strcmp(n, "0123456789ABCDE1") == 0,
+          "base32: the confusable l normalises to 1");
+    CHECK(base32_normalize("0123456789ABCDEU", 16, n) != 0, "base32: U is not in the alphabet");
+    CHECK(base32_normalize("0123456789ABCDE", 15, n) != 0, "base32: fifteen symbols is not a code");
+    CHECK(base32_normalize("0123456789ABCDEFG", 17, n) != 0, "base32: seventeen symbols is not a code");
+    CHECK(base32_normalize("0123456789ABCDE!", 16, n) != 0, "base32: a character outside the set is refused");
+    { char dirty[BASE32_CODE_CHARS + 1u];
+      memset(dirty, 'X', sizeof dirty);
+      CHECK(base32_normalize("0123456789ABCDE!", 16, dirty) != 0 && dirty[0] == '\0',
+            "base32: a refused code leaves no partial result in the output"); }
+}
+
+static void test_recovery(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery.sqlite3", 1) == 0, "recovery: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "recovery: connect to site.sock");
+
+    mldsa_keypair_t kp;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    char uh[160], req[8192], resp[16384];
+    hx(uh, sizeof uh, U1, sizeof U1);
+
+    /* --- issue --- */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=0", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "recovery: count=0 is malformed");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=17", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "recovery: count above the §10.3 maximum of 16 is malformed");
+    { uint8_t nobody[] = { 'n','o' }; char nh[160]; hx(nh, sizeof nh, nobody, sizeof nobody);
+      snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", nh);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+            "recovery: issuing for an unknown user is refused"); }
+
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=3", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "recovery: RECOVERY-ISSUE returns codes");
+    CHECK(count_codes(resp) == 3u, "recovery: exactly `count` codes come back");
+    char gen1[BASE32_CODE_CHARS + 1u];
+    first_code(resp, gen1);
+    CHECK(strlen(gen1) == BASE32_CODE_CHARS, "recovery: a code is sixteen base32 characters");
+    { char norm[BASE32_CODE_CHARS + 1u];
+      CHECK(base32_normalize(gen1, strlen(gen1), norm) == 0 && strcmp(norm, gen1) == 0,
+            "recovery: an issued code is already canonical"); }
+
+    /* The plaintext is returned once and stored only as an Argon2id hash. */
+    /* WAL mode: a just-written row is in the -wal file, not the database, so
+     * scanning only the database would be a vacuous pass. The canary below is
+     * what makes that impossible -- it failed exactly this way when written. */
+    { static char blob[8u * 1024u * 1024u];
+      size_t got = 0;
+      const char *sfx[] = { "", "-wal" };
+      for (size_t k = 0; k < 2u; k++) {
+          char path[512];
+          snprintf(path, sizeof path, "%s/recovery.sqlite3%s", g_dir, sfx[k]);
+          FILE *f = fopen(path, "rb");
+          if (f == NULL) { continue; }
+          got += fread(blob + got, 1, sizeof blob - got - 1u, f);
+          fclose(f);
+      }
+      blob[got] = '\0';
+      CHECK(memmem(blob, got, "$argon2id$", 10) != NULL,
+            "recovery: the store holds an Argon2id hash (the present canary)");
+      CHECK(memmem(blob, got, gen1, BASE32_CODE_CHARS) == NULL,
+            "recovery: the plaintext code is NOT in the store (Req 4)"); }
+
+    /* --- use --- */
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, "0000000000000000");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "recovery: a wrong code is invalid");
+
+    /* A code typed the way a human would get it wrong still works: lower case,
+     * hyphenated, and with the letter O for the digit zero. */
+    char typed[64];
+    { size_t j = 0;
+      for (size_t i = 0; i < BASE32_CODE_CHARS; i++) {
+          if (i > 0u && (i % 4u) == 0u) { typed[j++] = '-'; }
+          char ch = gen1[i];
+          if (ch >= 'A' && ch <= 'Z') { ch = (char)(ch + ('a' - 'A')); }
+          if (ch == '0') { ch = 'o'; }
+          if (ch == '1') { ch = 'l'; }
+          typed[j++] = ch;
+      }
+      typed[j] = '\0'; }
+    CHECK(strcmp(typed, gen1) != 0, "recovery: the mistyped form really does differ from the issued one");
+
+    const uint64_t kdf_before = d.app.recovery_kdf_calls;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, typed);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "recovery: a lower-case, hyphenated, O-for-0 code is ACCEPTED");
+    CHECK(d.app.recovery_kdf_calls > kdf_before,
+          "recovery: a verification attempt performs Argon2id (the canary for the locked case)");
+
+    char ticket_hex[80] = {0};
+    { const char *t = strstr(resp, "ticket=");
+      if (t != NULL) { sscanf(t + 7, "%79[0-9a-f]", ticket_hex); } }
+    CHECK(strlen(ticket_hex) == 64u, "recovery: the ticket is 32 bytes of hex");
+    long long expires = 0;
+    { const char *e = strstr(resp, "expires=");
+      if (e != NULL) { sscanf(e + 8, "%lld", &expires); } }
+    CHECK(expires == d.app.now_unix + RECOVERY_TICKET_TTL_S,
+          "recovery: the ticket expires ten minutes out (§10.3)");
+
+    /* §15's never-list, for the one entry the logging API cannot enforce by
+     * shape: a ticket hash is 32 bytes, the exact width authd_log_fp takes, so
+     * `authd_log_fp(..., thash)` would compile and leak it. The present canary
+     * is that identities DO appear. */
+    { char logp[512]; snprintf(logp, sizeof logp, "%s/reclog.txt", g_dir);
+      FILE *lf = fopen(logp, "w+");
+      CHECK(lf != NULL, "recovery: log capture opens");
+      if (lf != NULL) {
+          authd_log_init(lf, AUTHD_LOG_INFO);
+          char req2[8192], resp2[16384];
+          snprintf(req2, sizeof req2, "RECOVERY-ISSUE user=%s count=1", uh);
+          (void)h_local_cmd(&d, fd, req2, resp2, sizeof resp2);
+          char c2[BASE32_CODE_CHARS + 1u];
+          first_code(resp2, c2);
+          snprintf(req2, sizeof req2, "RECOVERY-USE user=%s code=%s", uh, c2);
+          (void)h_local_cmd(&d, fd, req2, resp2, sizeof resp2);
+          char t2[80] = {0};
+          { const char *t = strstr(resp2, "ticket=");
+            if (t != NULL) { sscanf(t + 7, "%79[0-9a-f]", t2); } }
+          authd_log_init(stderr, AUTHD_LOG_ERROR);
+          fflush(lf);
+          long n = ftell(lf); if (n < 0) { n = 0; }
+          rewind(lf);
+          char *buf = (char *)calloc((size_t)n + 1u, 1u);
+          if (buf != NULL) { if (fread(buf, 1, (size_t)n, lf) != (size_t)n) { buf[0] = '\0'; } }
+          CHECK(buf != NULL && strstr(buf, "recovery-issue") != NULL &&
+                strstr(buf, "recovery-use") != NULL,
+                "recovery: issue and use ARE logged (§15, the present canary)");
+          /* authd_log_slot_id renders an identity as printable text, not hex. */
+          CHECK(buf != NULL && strstr(buf, "id=u1") != NULL,
+                "recovery: the user id IS logged (identities are not secret)");
+          CHECK(buf != NULL && strlen(c2) == BASE32_CODE_CHARS && strstr(buf, c2) == NULL,
+                "recovery: the recovery CODE never appears in the log (§15)");
+          CHECK(buf != NULL && strlen(t2) == 64u && strstr(buf, t2) == NULL,
+                "recovery: the enrollment TICKET never appears in the log (§15)");
+          free(buf); fclose(lf); } }
+
+    /* single use */
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, gen1);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "recovery: a code cannot be used twice");
+
+    /* --- enroll against the ticket --- */
+    mldsa_keypair_t kp2;
+    CHECK(mldsa_keypair_generate(&kp2) == 0, "recovery: replacement device key");
+    char pk2h[4000], h2h[160];
+    const uint8_t HANDLE2[] = { 'd','1','n','e','w' };
+    hx(pk2h, sizeof pk2h, kp2.public_key, sizeof kp2.public_key);
+    hx(h2h, sizeof h2h, HANDLE2, sizeof HANDLE2);
+
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site ticket=%s", uh, h2h, pk2h, ticket_hex);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "enroll: via=site with a ticket is malformed, not silently ignored");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery", uh, h2h, pk2h);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "enroll: via=recovery without a ticket is malformed");
+    { char bogus[80]; memset(bogus, '0', 64); bogus[64] = '\0';
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h2h, pk2h, bogus);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
+            "enroll: an unknown ticket is ticket-invalid"); }
+
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h2h, pk2h, ticket_hex);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+          "enroll: via=recovery with a valid ticket enrolls the new device");
+    { uint8_t seen[STORE_PK_BYTES];
+      CHECK(store_lookup_active(d.store, HANDLE2, sizeof HANDLE2, seen, NULL, 0, NULL, NULL) == STORE_OK &&
+            memcmp(seen, kp2.public_key, STORE_PK_BYTES) == 0,
+            "enroll: the recovered device is active with the NEW key"); }
+
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h2h, pk2h, ticket_hex);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
+          "enroll: a ticket is single-use");
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&kp2);
+    h_stop(&d);
+}
+
+/* Supersede, lockout and its expiry: each needs its own store, because they
+ * are about counters that the happy path deliberately clears. */
+static void test_recovery_policy(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery2.sqlite3", 1) == 0, "policy: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "policy: connect to site.sock");
+
+    mldsa_keypair_t kp;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    char uh[160], req[8192], resp[16384];
+    hx(uh, sizeof uh, U1, sizeof U1);
+
+    /* --- superseding bounds the verify loop --- */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "policy: first generation issued");
+    char old_code[BASE32_CODE_CHARS + 1u];
+    first_code(resp, old_code);
+
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "policy: second generation issued");
+    char new_code[BASE32_CODE_CHARS + 1u];
+    first_code(resp, new_code);
+
+    const uint64_t before = d.app.recovery_kdf_calls;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, old_code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "policy: a code from the PREVIOUS generation is refused after re-issue");
+    CHECK(d.app.recovery_kdf_calls - before == 2u,
+          "policy: only the current generation is tried -- the loop stays bounded at `count`");
+
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, new_code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "policy: the current generation still works");
+
+    /* --- lockout --- */
+    char wrong[BASE32_CODE_CHARS + 1u];
+    memset(wrong, '0', BASE32_CODE_CHARS); wrong[BASE32_CODE_CHARS] = '\0';
+    for (int i = 0; i < RECOVERY_LOCK_THRESHOLD; i++) {
+        snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, wrong);
+        CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+              "policy: each of the first five wrong codes answers `invalid`");
+    }
+    const uint64_t kdf_at_lock = d.app.recovery_kdf_calls;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, wrong);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=locked"),
+          "policy: the sixth attempt is refused with `locked` (§10.3)");
+    CHECK(d.app.recovery_kdf_calls == kdf_at_lock,
+          "policy: a LOCKED user's attempt performs ZERO Argon2id -- the lockout is checked first");
+
+    /* Even the right code is refused while locked. */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "policy: issuing still works while recovery is locked");
+    char fresh[BASE32_CODE_CHARS + 1u];
+    first_code(resp, fresh);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, fresh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=locked"),
+          "policy: issuing new codes does NOT lift the lockout");
+
+    /* ...and it lifts on its own clock, with a lower bound so "it expired"
+     * cannot pass for "it was never enforced". */
+    d.app.now_unix += RECOVERY_LOCK_SECONDS - 1;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, fresh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=locked"),
+          "policy: one second before the hour is up, still locked");
+    d.app.now_unix += 1;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, fresh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "policy: an hour later the lock has lifted and the code works");
+
+    /* --- an operator's recovery is administrative (Req 11) --- */
+    int adm = h_dial_unix(d.admin_path);
+    CHECK(adm >= 0, "policy: connect to admin.sock");
+    { const uint8_t OP[] = { 'o','p' }; char oph[160];
+      hx(oph, sizeof oph, OP, sizeof OP);
+      CHECK(store_add_user(d.store, OP, sizeof OP, STORE_ROLE_OPERATOR) == STORE_OK,
+            "policy: an operator user exists");
+      snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", oph);
+      CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+            "policy: an operator CAN be issued recovery codes from admin.sock (present canary)");
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+            "policy: an operator's recovery codes are NOT mintable from site.sock (Req 11)");
+      snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", oph);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+            "policy: an operator cannot be recovered from site.sock either"); }
+
+    /* --- a disabled user --- */
+    snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "policy: the user is disabled");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-disabled"),
+          "policy: a disabled user cannot be issued codes");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, fresh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-disabled"),
+          "policy: a disabled user cannot recover");
+
+    (void)close(fd); (void)close(adm);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+/* `revoke=all` is the stolen-device case: the most destructive thing the site
+ * socket can do, so it gets a present canary on both sides. */
+static void test_recovery_revoke_all(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery3.sqlite3", 1) == 0, "revoke-all: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "revoke-all: connect to site.sock");
+
+    mldsa_keypair_t kp;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    char uh[160], req[8192], resp[16384];
+    hx(uh, sizeof uh, U1, sizeof U1);
+
+    { uint8_t seen[STORE_PK_BYTES];
+      CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, seen, NULL, 0, NULL, NULL) == STORE_OK,
+            "revoke-all: the old device is active BEFORE recovery (present canary)"); }
+
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "revoke-all: codes issued");
+    char code[BASE32_CODE_CHARS + 1u];
+    first_code(resp, code);
+
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s revoke=bogus", uh, code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "revoke-all: an unknown revoke= value is malformed, not treated as `none`");
+
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s revoke=all", uh, code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "revoke-all: recovery with revoke=all succeeds");
+    { uint8_t seen[STORE_PK_BYTES];
+      CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, seen, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
+            "revoke-all: the lost device is revoked -- its next handshake gets the decoy"); }
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 int main(void)
 {
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
@@ -451,6 +912,10 @@ int main(void)
     test_enroll();
     test_sweep();
     test_log_hygiene();
+    test_base32();
+    test_recovery();
+    test_recovery_policy();
+    test_recovery_revoke_all();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

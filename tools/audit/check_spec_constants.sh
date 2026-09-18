@@ -59,6 +59,65 @@ check "pk_new field"             "$PK"
 check "signature bound"          "$SIG"
 check "handshake_id in digest"   "$HSID"
 
+# --- recovery codes and tickets (V4-9d, spec §10.3) ----------------------
+#
+# Two different claims are checked here, and only the second could be caught
+# by a test:
+#
+#   1. recovery.h's named constants match the numbers §10.3 states. The text
+#     match is scoped to the §10.3 paragraph, because bare digits like "2" and
+#     "16" appear all over a specification and a whole-file grep would pass
+#     vacuously.
+#   2. authd_main.c assigns those NAMED constants to authd_app_t rather than
+#     literals of its own. This is the only mechanical check there can be:
+#     the fields exist so tests and fuzzing can lower the KDF, so no test can
+#     observe what the daemon itself writes into them.
+
+REC=apps/authd/recovery.h
+R_OPS=$(hdr RECOVERY_OPS_SPEC $REC)
+R_CODES=$(hdr RECOVERY_CODES_MAX $REC)
+R_THRESH=$(hdr RECOVERY_LOCK_THRESHOLD $REC)
+R_LOCK=$(hdr RECOVERY_LOCK_SECONDS $REC)
+R_TTL=$(hdr RECOVERY_TICKET_TTL_S $REC)
+R_BYTES=$(hdr BASE32_CODE_BYTES apps/authd/base32.h)
+R_CHARS=$(hdr BASE32_CODE_CHARS apps/authd/base32.h)
+R_MEM_MIB=$(grep -oE 'RECOVERY_MEM_SPEC[[:space:]]+\(([0-9]+)u \* 1024u \* 1024u\)' $REC | grep -oE '\(([0-9]+)u' | tr -d '(u')
+
+# The §10.3 recovery paragraph only.
+SEC=$(awk '/^### 10.3 /{f=1} f{print} /presents to .ENROLL/{if(f) exit}' "$SPEC")
+in_sec() { case "$SEC" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
+                          *) printf '  FAIL  %-34s derived %s, not in §10.3\n' "$1" "$2"; fail=1;; esac; }
+
+in_sec "recovery: max codes"      "1..$R_CODES"
+in_sec "recovery: code bytes"     "$R_BYTES random bytes"
+in_sec "recovery: code characters" "$R_CHARS base32 characters"
+in_sec "recovery: entropy bits"   "$((R_BYTES * 8)) bits"
+in_sec "recovery: Argon2id ops"   "ops $R_OPS"
+in_sec "recovery: Argon2id memory" "memory $R_MEM_MIB MiB"
+in_sec "recovery: ticket lifetime" "$((R_TTL / 60)) minutes"
+
+# libsodium's own names for the same parameters, so a future bump that changes
+# what INTERACTIVE means cannot silently change what the daemon uses.
+grep -q 'RECOVERY_OPS_SPEC == crypto_pwhash_OPSLIMIT_INTERACTIVE' $REC \
+  && printf '  ok    %-34s %s\n' "recovery: ops pinned to libsodium" "static_assert present" \
+  || { printf '  FAIL  %-34s %s\n' "recovery: ops pinned to libsodium" "no static_assert"; fail=1; }
+grep -q 'RECOVERY_MEM_SPEC == crypto_pwhash_MEMLIMIT_INTERACTIVE' $REC \
+  && printf '  ok    %-34s %s\n' "recovery: mem pinned to libsodium" "static_assert present" \
+  || { printf '  FAIL  %-34s %s\n' "recovery: mem pinned to libsodium" "no static_assert"; fail=1; }
+
+# The daemon must assign the named constants, never numbers of its own.
+for pair in "recovery_ops=RECOVERY_OPS_SPEC" "recovery_mem=RECOVERY_MEM_SPEC" \
+            "recovery_lock_threshold=RECOVERY_LOCK_THRESHOLD" \
+            "recovery_lock_seconds=RECOVERY_LOCK_SECONDS" \
+            "ticket_ttl_s=RECOVERY_TICKET_TTL_S"; do
+  f="${pair%%=*}"; c="${pair##*=}"
+  if grep -qE "app\.$f[[:space:]]*=[[:space:]]*$c;" apps/authd/authd_main.c; then
+    printf '  ok    %-34s %s\n' "daemon assigns $f" "$c"
+  else
+    printf '  FAIL  %-34s the daemon does not assign %s\n' "daemon assigns $f" "$c"; fail=1
+  fi
+done
+
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"

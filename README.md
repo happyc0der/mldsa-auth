@@ -190,7 +190,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, all 123 must-kill mutations in
+at 03:17 UTC every day, and on demand, all 138 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub
@@ -415,7 +415,43 @@ tool with a terminal-escape hazard. `xxd -r -p` decodes one when you want it.
 environment are readable by other processes on the same host. The file must be
 mode 0600 and owned by you; anything else is a configuration error (exit 3).
 
-Not yet, and named rather than implied: the recovery flow is V4-9d; WebSocket, the client IP behind a proxy and rate limiting are
+### Losing the device
+
+Rotation (above) needs a device that still works. For one that does not, the
+site issues **recovery codes** — sixteen Crockford base32 characters, 80 bits,
+stored only as Argon2id hashes and shown exactly once:
+
+```js
+import { Authd, recoveryIssue, recoveryUse, enroll } from './examples/site-node/authd.mjs';
+const authd = await new Authd('/run/mldsa-authd/site.sock').connect();
+
+const codes = await recoveryIssue(authd, 'bob', 10);   // show these ONCE
+// ...later, the user has a new device and one code:
+const { ticket } = await recoveryUse(authd, 'bob', typedCode, { revoke: 'all' });
+await enroll(authd, { user: 'bob', handle: newHandle, pk: newPublicKey, ticket });
+```
+
+Three things are worth knowing before you build a page around it:
+
+* **Pass the typed code through verbatim.** Do not upper-case it, strip its
+  hyphens or correct its `O`/`0` and `l`/`1` — the daemon normalises, and what
+  it hashes is its own canonical form. A site that normalises differently locks
+  its users out of their own codes.
+* **Issuing invalidates the previous generation.** That is what keeps the
+  verification loop bounded, and the loop is not cheap: one code costs ~52 ms,
+  so a worst-case `RECOVERY-USE` blocks the single-threaded daemon for ~0.8 s.
+  Five wrong attempts lock recovery for an hour; put your own rate limit in
+  front of it anyway.
+* **An operator's recovery is not reachable from `site.sock`** — it answers
+  `not-permitted`. Otherwise a compromised site process could mint an
+  operator's codes and enroll itself as one, which is the escalation keeping
+  `ENROLL-OPERATOR` off that socket exists to prevent.
+
+`revoke: 'all'` also revokes every existing device of that user and closes
+their live sessions — the right choice when the device was stolen rather than
+mislaid.
+
+Not yet, and named rather than implied: WebSocket, the client IP behind a proxy and rate limiting are
 V4-10; the systemd unit, the hardening flags and the runbook are V4-11. Until
 those land this is a working milestone, not a deployment.
 
@@ -587,7 +623,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 123 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 138 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 

@@ -1,0 +1,15 @@
+G1|^test_authd_localapi$|a lower-case, hyphenated, O-for-0 code is ACCEPTED
+G2|^test_authd_localapi$|the confusables O and i normalise to 0 and 1
+G3|^test_authd_localapi$|values 0..31 render as Crockford's alphabet, in order
+G4|^test_authd_localapi$|a LOCKED user's attempt performs ZERO Argon2id
+G5|^test_authd_localapi$|the sixth attempt is refused with `locked`
+G6|^test_authd_store$|a SUCCESS clears the accumulated failure count
+G7|^test_authd_store$|a half-consume is impossible
+G8|^test_authd_store$|user B cannot spend user A's code, even by code_id
+G9|^test_authd_localapi$|a code from the PREVIOUS generation is refused after re-issue
+G10|^test_authd_localapi$|the ticket expires ten minutes out
+G11|^test_authd_store$|a ticket is single-use
+G12|^test_authd_localapi$|the enrollment TICKET never appears in the log
+G13|^test_authd_localapi$|via=site with a ticket is malformed, not silently ignored
+G14|^test_authd_localapi$|the lost device is revoked
+G15|^test_authd_localapi$|NEITHER refusal created a user

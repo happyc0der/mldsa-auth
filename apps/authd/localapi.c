@@ -8,7 +8,9 @@
 
 #include "authd_conn.h"
 #include "authd_log.h"
+#include "base32.h"
 #include "conn_io.h"
+#include "recovery.h"
 #include "store.h"
 #include "tokens.h"
 
@@ -268,27 +270,106 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
     if (via == NULL) {
         return send_err(slot, "malformed");
     }
-    if (via->val_len == 8u && memcmp(via->val, "recovery", 8) == 0) {
-        /* V4-9c. Refusing is honest and mutation-visible; a stub that enrolled
-         * without a valid ticket would be a hole. */
-        return send_err(slot, "not-permitted");
+    const int via_recovery = (via->val_len == 8u && memcmp(via->val, "recovery", 8) == 0);
+    const int via_site     = (via->val_len == 4u && memcmp(via->val, "site", 4) == 0);
+    if (!via_recovery && !via_site) {
+        return send_err(slot, "malformed");
     }
-    if (!(via->val_len == 4u && memcmp(via->val, "site", 4) == 0)) {
+    /* `ticket` belongs to via=recovery and to nothing else. Until V4-9d it was
+     * an ALLOWED key that no code path read, so `via=site ticket=...` was
+     * accepted and silently ignored -- exactly the hazard keys_are_known's own
+     * comment warns about. Both halves are errors now. */
+    const kv_t *ticket_kv = kv_get(req, "ticket");
+    if (via_site && ticket_kv != NULL) {
+        return send_err(slot, "malformed");
+    }
+    if (via_recovery && ticket_kv == NULL) {
         return send_err(slot, "malformed");
     }
 
-    /* The user: created on first enrollment (the site is the trusted enroller,
-     * spec 10.1), but never silently re-roled. */
+    if (via_recovery) {
+        uint8_t ticket[RECOVERY_TICKET_BYTES], thash[STORE_HASH_BYTES];
+        size_t ticket_len = 0;
+        if (get_hex(req, "ticket", ticket, sizeof ticket, &ticket_len, RECOVERY_TICKET_BYTES) != 0 ||
+            ticket_len != RECOVERY_TICKET_BYTES) {
+            return send_err(slot, "malformed");
+        }
+        crypto_hash_sha256(thash, ticket, sizeof ticket);
+        sodium_memzero(ticket, sizeof ticket);
+
+        /* The role check the site path applies, applied here too, so recovery
+         * cannot move a handle between the user and operator populations. The
+         * user must already exist: recovery never CREATES one. */
+        store_role_t existing_role = role;
+        char ustatus[16] = {0};
+        const store_status_t gu = store_get_user(app->store, user, user_len, &existing_role,
+                                                 ustatus, sizeof ustatus);
+        if (gu == STORE_ERR_NOT_FOUND) {
+            sodium_memzero(thash, sizeof thash);
+            return send_err(slot, "ticket-invalid");
+        }
+        if (gu != STORE_OK) {
+            sodium_memzero(thash, sizeof thash);
+            return send_err(slot, "internal");
+        }
+        if (existing_role != role) {
+            sodium_memzero(thash, sizeof thash);
+            return send_err(slot, "role-mismatch");
+        }
+        if (strcmp(ustatus, "active") != 0) {
+            sodium_memzero(thash, sizeof thash);
+            return send_err(slot, "user-disabled");
+        }
+
+        const store_status_t es = store_enroll_via_ticket(app->store, thash, user, user_len,
+                                                          handle, handle_len, pk,
+                                                          (label_len > 0u) ? label : NULL, label_len,
+                                                          app->now_unix);
+        sodium_memzero(thash, sizeof thash);
+        if (es == STORE_ERR_NOT_FOUND) { return send_err(slot, "ticket-invalid"); }
+        if (es == STORE_ERR_STATE)     { return send_err(slot, "user-disabled"); }
+        if (es == STORE_ERR_CONFLICT)  {
+            /* Req 7 or a re-used public key. The ticket is NOT spent (the whole
+             * transaction rolled back), so a typo does not cost the user their
+             * one way back in. */
+            return send_err(slot, "pk-in-use");
+        }
+        if (es != STORE_OK) { return send_err(slot, "internal"); }
+
+        uint8_t rfp[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(rfp, pk, sizeof pk);
+        authd_log_slot_id(AUTHD_LOG_WARN, "enroll-recovery", slot->index, handle, handle_len);
+        authd_log_fp(AUTHD_LOG_WARN, "enroll-recovery-fp", rfp);
+
+        resp_t rr;
+        resp_init(&rr);
+        resp_add(&rr, "OK fp=");
+        resp_hex(&rr, rfp, sizeof rfp);
+        resp_add(&rr, "\n");
+        sodium_memzero(pk, sizeof pk);
+        return send_resp(slot, &rr);
+    }
+
+    /* The user is created on first enrollment (the site is the trusted
+     * enroller, spec 10.1) but never silently re-roled -- and, since V4-9d,
+     * never created by a request that is then REFUSED.
+     *
+     * The original order created the user first and checked the handle after,
+     * so `ENROLL` naming a known handle with a different key left a brand-new
+     * user behind (and an audit row for it) while answering
+     * `exists-different-key`. fuzz_localapi's standing invariant -- a refusal
+     * never advances the audit chain -- is exactly the assertion that catches
+     * this, and it went uncaught only because no seed carried a full-length
+     * public key, so the fuzzer had never reached this code at all. Every
+     * refusal that can be known in advance is therefore decided here, before
+     * anything is written. Finding F47. */
     store_role_t existing = role;
     char status[16] = {0};
     const store_status_t us = store_get_user(app->store, user, user_len, &existing, status, sizeof status);
-    if (us == STORE_ERR_NOT_FOUND) {
-        if (store_add_user(app->store, user, user_len, role) != STORE_OK) {
-            return send_err(slot, "internal");
-        }
-    } else if (us != STORE_OK) {
+    if (us != STORE_OK && us != STORE_ERR_NOT_FOUND) {
         return send_err(slot, "internal");
-    } else {
+    }
+    if (us == STORE_OK) {
         if (existing != role) {
             return send_err(slot, "role-mismatch");
         }
@@ -318,15 +399,27 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
     }
 
     if (!idempotent) {
-        const store_status_t es = store_enroll_device(app->store, handle, handle_len,
-                                                      user, user_len, pk, "site", "local-api",
-                                                      (label_len > 0u) ? label : NULL, label_len);
+        /* User creation and enrollment in ONE transaction, so a refused request
+         * cannot leave a user behind (F47). The pre-check above still runs,
+         * but only to choose the ERROR CODE: it uses the three-join active
+         * lookup, the store uses the key row alone, and where they disagree
+         * (a handle whose user is disabled) the store's coarser CONFLICT is
+         * what the caller sees. The two predicates no longer have to agree for
+         * the STORE to stay consistent -- which is the whole point, because
+         * the previous version's correctness depended on exactly that. */
+        int created = 0, store_idem = 0;
+        const store_status_t es = store_enroll_device_ex(app->store, handle, handle_len,
+                                                         user, user_len, role, pk,
+                                                         "site", "local-api",
+                                                         (label_len > 0u) ? label : NULL, label_len,
+                                                         &created, &store_idem);
         if (es == STORE_ERR_CONFLICT) {
             return send_err(slot, "pk-in-use");
         }
         if (es != STORE_OK) {
             return send_err(slot, "internal");
         }
+        idempotent = store_idem;
     }
 
     uint8_t fp[crypto_hash_sha256_BYTES];
@@ -773,10 +866,281 @@ static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *r
     return send_resp(slot, &r);
 }
 
-static ev_action_t h_recovery_later(authd_app_t *app, authd_slot_t *slot, const req_t *req)
+/* --- recovery (V4-9d, spec §8 + §10.3) ----------------------------------- */
+
+/* Revokes every still-active device of a user, one at a time. A fixed array
+ * would silently stop at its bound for a user with more devices than it holds,
+ * so this re-asks the store for "the next active one" until there are none.
+ * Bounded by a counter, not by trust in the store. */
+typedef struct { uint8_t handle[STORE_ID_MAX]; size_t len; int found; } first_active_t;
+
+static int first_active(void *vctx, const uint8_t *handle, size_t handle_len,
+                        const uint8_t *label, size_t label_len, const char *status,
+                        int64_t enrolled_at, int64_t last_seen,
+                        const uint8_t *pk_fp, size_t pk_fp_len)
 {
-    (void)app; (void)req;
-    return send_err(slot, "not-permitted");   /* V4-9c */
+    (void)label; (void)label_len; (void)enrolled_at; (void)last_seen; (void)pk_fp; (void)pk_fp_len;
+    first_active_t *c = (first_active_t *)vctx;
+    if (status == NULL || strcmp(status, "active") != 0 || handle_len > STORE_ID_MAX) {
+        return 0;
+    }
+    memcpy(c->handle, handle, handle_len);
+    c->len = handle_len;
+    c->found = 1;
+    return 1;
+}
+
+static size_t revoke_all_devices(authd_app_t *app, const uint8_t *user, size_t user_len)
+{
+    size_t revoked = 0;
+    for (size_t guard = 0; guard < 1024u; guard++) {
+        first_active_t c = { {0}, 0u, 0 };
+        if (store_list_devices(app->store, user, user_len, first_active, &c) != STORE_OK || !c.found) {
+            break;
+        }
+        if (store_revoke_device(app->store, c.handle, c.len, "recovery",
+                                (const uint8_t *)"recovery revoke=all", 19u) != STORE_OK) {
+            break;
+        }
+        revoked++;
+    }
+    return revoked;
+}
+
+static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const req_t *req)
+{
+    static const char *const allowed[] = { "user", "count" };
+    if (!keys_are_known(req, allowed, 2u)) {
+        return send_err(slot, "malformed");
+    }
+    uint8_t user[STORE_ID_MAX];
+    size_t user_len = 0;
+    if (get_hex(req, "user", user, sizeof user, &user_len, 1u) != 0 || !id_valid(user, user_len)) {
+        return send_err(slot, "malformed");
+    }
+    const kv_t *kv = kv_get(req, "count");
+    if (kv == NULL || kv->val_len == 0u || kv->val_len > 2u) {
+        return send_err(slot, "malformed");
+    }
+    size_t count = 0;
+    for (size_t i = 0; i < kv->val_len; i++) {
+        if (kv->val[i] < '0' || kv->val[i] > '9') {
+            return send_err(slot, "malformed");
+        }
+        count = count * 10u + (size_t)(kv->val[i] - '0');
+    }
+    if (count == 0u || count > RECOVERY_CODES_MAX) {
+        return send_err(slot, "malformed");
+    }
+
+    store_role_t role = STORE_ROLE_USER;
+    char status[16] = {0};
+    const store_status_t us = store_get_user(app->store, user, user_len, &role, status, sizeof status);
+    if (us == STORE_ERR_NOT_FOUND) {
+        /* §8 defines no error code for RECOVERY-ISSUE at all (recorded as a
+         * spec gap); `invalid` is borrowed from RECOVERY-USE's vocabulary
+         * rather than inventing a new one. */
+        return send_err(slot, "invalid");
+    }
+    if (us != STORE_OK) {
+        return send_err(slot, "internal");
+    }
+    if (strcmp(status, "active") != 0) {
+        return send_err(slot, "user-disabled");
+    }
+    /* Req 11, extended to recovery. RECOVERY-ISSUE and RECOVERY-USE live in
+     * the SITE table because the site is what a locked-out user reaches -- but
+     * an OPERATOR's recovery is an administrative act. Without this, a
+     * compromised site process could issue itself an operator's recovery
+     * codes, spend one, and redeem the ticket for a device it controls, which
+     * is exactly the escalation ENROLL-OPERATOR's absence from the site table
+     * is there to prevent. The ticket's role check alone is not enough,
+     * because it only refuses at the last step; refusing here means no code is
+     * ever minted. Discloses nothing new: the site socket can already learn a
+     * user's role from ENROLL's role-mismatch. */
+    if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
+        return send_err(slot, "not-permitted");
+    }
+
+    /* The plaintext codes live only in `codes`, which is wiped at the single
+     * exit below -- after the reply has been built, never before. */
+    char codes[RECOVERY_CODES_MAX][BASE32_CODE_CHARS + 1u];
+    char hashes[RECOVERY_CODES_MAX][crypto_pwhash_STRBYTES];
+    const char *hp[RECOVERY_CODES_MAX];
+    memset(codes, 0, sizeof codes);
+    memset(hashes, 0, sizeof hashes);
+
+    ev_action_t act;
+    resp_t r;
+    resp_init(&r);
+    size_t made = 0;
+    for (; made < count; made++) {
+        if (recovery_make_code(codes[made], hashes[made], app->recovery_ops, app->recovery_mem) != 0) {
+            act = send_err(slot, "internal");
+            goto done;
+        }
+        hp[made] = hashes[made];
+    }
+
+    size_t superseded = 0;
+    const store_status_t rs = store_recovery_replace(app->store, user, user_len, hp, count,
+                                                     app->now_unix, &superseded);
+    if (rs == STORE_ERR_NOT_FOUND) { act = send_err(slot, "invalid");  goto done; }
+    if (rs != STORE_OK)            { act = send_err(slot, "internal"); goto done; }
+
+    resp_add(&r, "OK codes=");
+    for (size_t i = 0; i < count; i++) {
+        resp_add(&r, "%s%s", (i > 0u) ? "," : "", codes[i]);
+    }
+    resp_add(&r, "\n");
+
+    app->recoveries_issued++;
+    authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);
+    authd_log_num(AUTHD_LOG_INFO, "recovery-issue", "count", (uint64_t)count);
+    authd_log_num(AUTHD_LOG_INFO, "recovery-issue", "superseded", (uint64_t)superseded);
+    act = send_resp(slot, &r);
+
+done:
+    sodium_memzero(codes, sizeof codes);
+    sodium_memzero(hashes, sizeof hashes);
+    sodium_memzero(&r, sizeof r);
+    return act;
+}
+
+static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const req_t *req)
+{
+    static const char *const allowed[] = { "user", "code", "revoke" };
+    if (!keys_are_known(req, allowed, 3u)) {
+        return send_err(slot, "malformed");
+    }
+    uint8_t user[STORE_ID_MAX];
+    size_t user_len = 0;
+    if (get_hex(req, "user", user, sizeof user, &user_len, 1u) != 0 || !id_valid(user, user_len)) {
+        return send_err(slot, "malformed");
+    }
+    /* `code` is TEXT, not hex: §8 specifies base32 here, and the Crockford
+     * charset plus its tolerated confusables ([0-9A-Za-z-]) contains no comma,
+     * space, LF or '=', so it needs no escaping rule. Length is bounded
+     * generously because grouping hyphens are allowed. */
+    const kv_t *code = kv_get(req, "code");
+    if (code == NULL || code->val_len == 0u || code->val_len > 64u) {
+        return send_err(slot, "malformed");
+    }
+    int revoke_all = 0;
+    const kv_t *rv = kv_get(req, "revoke");
+    if (rv != NULL) {
+        if (rv->val_len == 3u && memcmp(rv->val, "all", 3) == 0) {
+            revoke_all = 1;
+        } else if (!(rv->val_len == 4u && memcmp(rv->val, "none", 4) == 0)) {
+            return send_err(slot, "malformed");
+        }
+    }
+
+    store_role_t role = STORE_ROLE_USER;
+    char status[16] = {0};
+    const store_status_t us = store_get_user(app->store, user, user_len, &role, status, sizeof status);
+    if (us == STORE_ERR_NOT_FOUND) { return send_err(slot, "invalid"); }
+    if (us != STORE_OK)            { return send_err(slot, "internal"); }
+    if (strcmp(status, "active") != 0) { return send_err(slot, "user-disabled"); }
+    /* Req 11, extended to recovery. RECOVERY-ISSUE and RECOVERY-USE live in
+     * the SITE table because the site is what a locked-out user reaches -- but
+     * an OPERATOR's recovery is an administrative act. Without this, a
+     * compromised site process could issue itself an operator's recovery
+     * codes, spend one, and redeem the ticket for a device it controls, which
+     * is exactly the escalation ENROLL-OPERATOR's absence from the site table
+     * is there to prevent. The ticket's role check alone is not enough,
+     * because it only refuses at the last step; refusing here means no code is
+     * ever minted. Discloses nothing new: the site socket can already learn a
+     * user's role from ENROLL's role-mismatch. */
+    if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
+        return send_err(slot, "not-permitted");
+    }
+
+    /* THE LOCKOUT IS CHECKED FIRST, before any Argon2id work. Enforced after
+     * the loop it would return the same code while costing the same second of
+     * a single-threaded daemon's time -- which is the whole point of having it
+     * (§10.3). recovery_kdf_calls is what makes the difference observable. */
+    int locked = 0;
+    int64_t locked_until = 0;
+    if (store_recovery_lock_state(app->store, user, user_len, app->now_unix,
+                                  &locked, &locked_until, NULL) != STORE_OK) {
+        return send_err(slot, "internal");
+    }
+    if (locked) {
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
+        return send_err(slot, "locked");
+    }
+
+    int64_t code_id = 0;
+    size_t tried = 0;
+    const int m = recovery_find_match(app->store, user, user_len,
+                                      (const char *)code->val, code->val_len, &code_id, &tried);
+    app->recovery_kdf_calls += (uint64_t)tried;
+    if (m < 0) {
+        return send_err(slot, "internal");
+    }
+    if (m == 0) {
+        int now_locked = 0;
+        int64_t until = 0;
+        (void)store_recovery_note_failure(app->store, user, user_len, app->now_unix,
+                                          app->recovery_lock_threshold, app->recovery_lock_seconds,
+                                          &now_locked, &until);
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index,
+                              now_locked ? "invalid (now locked)" : "invalid");
+        return send_err(slot, "invalid");
+    }
+
+    uint8_t ticket[RECOVERY_TICKET_BYTES], thash[STORE_HASH_BYTES];
+    recovery_make_ticket(ticket, thash);
+    const int64_t expires = app->now_unix + (int64_t)app->ticket_ttl_s;
+
+    ev_action_t act;
+    resp_t r;
+    resp_init(&r);
+    const store_status_t cs = store_recovery_consume(app->store, code_id, user, user_len,
+                                                     thash, app->now_unix, expires);
+    if (cs == STORE_ERR_NOT_FOUND) {
+        /* Verification ran outside the transaction, so another connection may
+         * have spent this code in between. Indistinguishable from a wrong
+         * code, which is the right answer to give. */
+        act = send_err(slot, "invalid");
+        goto done;
+    }
+    if (cs != STORE_OK) {
+        act = send_err(slot, "internal");
+        goto done;
+    }
+
+    size_t revoked = 0, closed = 0;
+    if (revoke_all) {
+        revoked = revoke_all_devices(app, user, user_len);
+        closed = authd_app_close_user(app, user, user_len);
+    }
+
+    resp_add(&r, "OK ticket=");
+    resp_hex(&r, ticket, sizeof ticket);
+    resp_add(&r, " expires=%lld\n", (long long)expires);
+
+    app->recoveries_used++;
+    authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok revoke=all" : "ok");
+    if (revoke_all) {
+        authd_log_num(AUTHD_LOG_WARN, "recovery-use", "revoked", (uint64_t)revoked);
+        authd_log_num(AUTHD_LOG_INFO, "recovery-use", "closed", (uint64_t)closed);
+    }
+    act = send_resp(slot, &r);
+
+done:
+    /* The ticket is a bearer credential exactly like a token: it exists in
+     * plaintext only here and in the reply. Its HASH is 32 bytes, the same
+     * width authd_log_fp takes -- which would type-check and leak it. That is
+     * the one never-list entry the logging API cannot enforce by shape, so it
+     * is enforced by a mutation instead (v49d G12). */
+    sodium_memzero(ticket, sizeof ticket);
+    sodium_memzero(thash, sizeof thash);
+    sodium_memzero(&r, sizeof r);
+    return act;
 }
 
 /* --------------------------------------------------------------- dispatch */
@@ -797,8 +1161,8 @@ static const entry_t SITE_TABLE[] = {
     { "REVOKE-TOKENS",   h_revoke_tokens },
     { "REVOKE-DEVICE",   h_revoke_device },
     { "LIST-DEVICES",    h_list_devices },
-    { "RECOVERY-ISSUE",  h_recovery_later },
-    { "RECOVERY-USE",    h_recovery_later },
+    { "RECOVERY-ISSUE",  h_recovery_issue },
+    { "RECOVERY-USE",    h_recovery_use },
 };
 
 static const entry_t ADMIN_TABLE[] = {
@@ -810,8 +1174,8 @@ static const entry_t ADMIN_TABLE[] = {
     { "REVOKE-TOKENS",   h_revoke_tokens },
     { "REVOKE-DEVICE",   h_revoke_device },
     { "LIST-DEVICES",    h_list_devices },
-    { "RECOVERY-ISSUE",  h_recovery_later },
-    { "RECOVERY-USE",    h_recovery_later },
+    { "RECOVERY-ISSUE",  h_recovery_issue },
+    { "RECOVERY-USE",    h_recovery_use },
     { "ENROLL-OPERATOR", h_enroll_operator },
     { "DISABLE-USER",    h_disable_user },
     { "ENABLE-USER",     h_enable_user },

@@ -31,6 +31,7 @@
 #include "keyfile.h"
 #include "listener.h"
 #include "localapi.h"
+#include "recovery.h"
 #include "tokens.h"
 #include "secure_mem.h"
 #include "store.h"
@@ -206,6 +207,14 @@ int main(int argc, char **argv)
     app.pad_bucket = cfg.pad_bucket;
     app.rotation_due_age_s = cfg.rotation_due_age_s;
     app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
+    /* Spec §10.3, by name rather than as literals: these six lines are what
+     * tools/audit/check_spec_constants.sh pins, because no test can observe
+     * what the daemon assigns here (see authd_conn.h). */
+    app.recovery_ops = RECOVERY_OPS_SPEC;
+    app.recovery_mem = RECOVERY_MEM_SPEC;
+    app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;
+    app.recovery_lock_seconds = RECOVERY_LOCK_SECONDS;
+    app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
     app.now_ms = now_ms();
     app.now_unix = (int64_t)time(NULL);
     app.started_ms = app.now_ms;

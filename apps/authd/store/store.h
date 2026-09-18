@@ -115,6 +115,21 @@ store_status_t store_rotate_key(store_t *s,
 store_status_t store_active_key_age(const store_t *s, const uint8_t *handle, size_t handle_len,
                                     int64_t *valid_from_out);
 
+/* Enroll a device, CREATING the user first if it does not exist, in ONE
+ * transaction: either both happen or neither does. Use this rather than
+ * store_add_user + store_enroll_device, which could not be made safe by
+ * ordering — the caller's pre-check and the store's own Req 7 check use
+ * different predicates, so a refused enrollment could leave a user behind
+ * (finding F47). `role` applies only if the user is created. */
+store_status_t store_enroll_device_ex(store_t *s,
+                                      const uint8_t *handle, size_t handle_len,
+                                      const uint8_t *user_id, size_t user_id_len,
+                                      store_role_t role,
+                                      const uint8_t pk[STORE_PK_BYTES],
+                                      const char *via, const char *by,
+                                      const uint8_t *label, size_t label_len,
+                                      int *created_out, int *idempotent_out);
+
 /* Revoke a device: device and its active key -> revoked, delete its tokens,
  * one transaction + audit. */
 store_status_t store_revoke_device(store_t *s,
@@ -252,16 +267,83 @@ store_status_t store_consume_login_code(store_t *s, const uint8_t code_hash[STOR
                                         uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
                                         uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out);
 
-/* --- recovery codes / enrollment tickets (primitives; policy in V4-9) --- */
-store_status_t store_add_recovery_code(store_t *s, const uint8_t *user_id, size_t user_id_len,
-                                       const char *pwhash_str, int64_t issued_at);
-/* Marks a specific recovery code row used (by code_id). */
-store_status_t store_mark_recovery_used(store_t *s, int64_t code_id, const char *used_from, int64_t used_at);
-store_status_t store_add_ticket(store_t *s, const uint8_t ticket_hash[STORE_HASH_BYTES],
-                                const uint8_t *user_id, size_t user_id_len,
-                                int64_t issued_at, int64_t expires_at);
-store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_HASH_BYTES], int64_t now,
-                                    uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out);
+/* --- recovery codes / enrollment tickets (V4-9d, spec §10.3) ---
+ *
+ * These replace V4-7's four primitives (store_add_recovery_code,
+ * store_mark_recovery_used, store_add_ticket, store_consume_ticket), which
+ * were added as "primitives; policy in V4-9" and could not be composed into a
+ * correct caller: the adder returned no code_id, the marker required one, and
+ * there was no way to enumerate a user's unused codes at all -- which is the
+ * one thing RECOVERY-USE must do. §9.3 makes code issue and code use exactly
+ * one transaction each, so the transaction boundary belongs HERE rather than
+ * in a caller that could get it wrong; leaving the old pair in place would
+ * have left a second, non-atomic way to do the same thing. */
+
+/* Lockout state (§10.3: five failures lock recovery for one hour). Read-only
+ * and cheap on purpose: the caller checks this BEFORE any Argon2id work, which
+ * is what bounds the cost of a guessing attempt -- for the attacker and, since
+ * the daemon is single-threaded, for every other connection too. */
+store_status_t store_recovery_lock_state(const store_t *s,
+                                         const uint8_t *user_id, size_t user_id_len,
+                                         int64_t now, int *locked_out,
+                                         int64_t *locked_until_out, int *fail_count_out);
+
+/* Iterates the user's UNUSED codes, newest first. `fn` returns non-zero to
+ * stop, which is how the verify loop stops at the first match. Nothing is
+ * allocated: `pwhash_str` is borrowed for the duration of the callback. */
+typedef int (*store_recovery_code_fn)(void *ctx, int64_t code_id, const char *pwhash_str);
+store_status_t store_list_unused_recovery_codes(const store_t *s,
+                                                const uint8_t *user_id, size_t user_id_len,
+                                                store_recovery_code_fn fn, void *ctx);
+
+/* ONE transaction (§9.3): marks every currently-unused code superseded, then
+ * inserts `n` new ones. Superseding is what BOUNDS the verify loop at `n`
+ * forever -- without it each re-issue would lengthen the loop, and the measured
+ * worst case would mean nothing. Used codes are never deleted (§10.3), so the
+ * superseded rows stay as history with used_from='superseded'.
+ * The lockout is deliberately NOT cleared here: it is a rate limit on guessing,
+ * and clearing it on issue would make issuing a way to bypass it. */
+store_status_t store_recovery_replace(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                      const char *const *pwhash_strs, size_t n,
+                                      int64_t now, size_t *superseded_out);
+
+/* ONE transaction (§9.3): marks `code_id` used -- only if it is still unused
+ * AND belongs to `user_id` -- clears the lockout counters and inserts the
+ * ticket. The Argon2id verification happens OUTSIDE this call by design:
+ * holding a write transaction open across a second of KDF work would block
+ * every other store operation for that second.
+ * NOT_FOUND = already used, or not this user's code. */
+store_status_t store_recovery_consume(store_t *s, int64_t code_id,
+                                      const uint8_t *user_id, size_t user_id_len,
+                                      const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                      int64_t now, int64_t expires_at);
+
+/* ONE transaction: increments the failure count and, on reaching `threshold`,
+ * sets recovery_locked_until = now + lock_seconds and resets the count, so a
+ * user gets a fresh allowance once the lock expires rather than re-locking on
+ * their next mistake. */
+store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                           int64_t now, int threshold, int64_t lock_seconds,
+                                           int *locked_out, int64_t *locked_until_out);
+
+/* ONE transaction: consumes `ticket_hash` AND enrolls the device, with
+ * enrolled_via='recovery'. Two separate calls would burn the ticket on a
+ * pk-in-use typo, in the one moment the user is already locked out of
+ * everything else. Req 7 still governs: a known handle presenting a different
+ * key is CONFLICT and audited, exactly as store_enroll_device does.
+ * The ticket must belong to `expect_user`, and that is checked INSIDE the
+ * transaction rather than by the caller afterwards -- by then it would already
+ * be spent.
+ * NOT_FOUND = unknown, expired, already-used, or another user's ticket -- all
+ * indistinguishable by design, which is what §8's single `ticket-invalid`
+ * code means. */
+store_status_t store_enroll_via_ticket(store_t *s,
+                                       const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                       const uint8_t *expect_user, size_t expect_user_len,
+                                       const uint8_t *handle, size_t handle_len,
+                                       const uint8_t pk[STORE_PK_BYTES],
+                                       const uint8_t *label, size_t label_len,
+                                       int64_t now);
 
 /* --- audit chain ------------------------------------------------------- */
 /* Copies the current head MAC (all-zero if the log is empty). */

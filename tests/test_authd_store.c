@@ -76,6 +76,38 @@ static const uint8_t KEK[32] = {
 };
 
 static const uint8_t U1[] = { 'u','1' };
+static const uint8_t U2[] = { 'u','2' };
+static const uint8_t UX[] = { 'n','o' };            /* never added */
+static const uint8_t H3[] = { 'd','1','c','c' };
+static const uint8_t TH1[STORE_HASH_BYTES] = { 0xa1, 0xa2, 0xa3 };
+static const uint8_t TH2[STORE_HASH_BYTES] = { 0xb1, 0xb2, 0xb3 };
+static const uint8_t TH3[STORE_HASH_BYTES] = { 0xc1, 0xc2, 0xc3 };
+
+/* Counting helpers for the recovery-code iterator. `first` keeps the newest
+ * code_id; `skip` lets the caller reach past it. */
+typedef struct { size_t n; int64_t first; } count_ctx_t;
+static int count_code(void *vctx, int64_t code_id, const char *pwhash_str)
+{
+    (void)pwhash_str;
+    count_ctx_t *c = (count_ctx_t *)vctx;
+    if (c->n == 0u) { c->first = code_id; }
+    c->n++;
+    return 0;
+}
+static int first_code_id(void *vctx, int64_t code_id, const char *pwhash_str)
+{
+    (void)pwhash_str;
+    ((count_ctx_t *)vctx)->first = code_id;
+    ((count_ctx_t *)vctx)->n++;
+    return 1;                                        /* stop at the first */
+}
+/* The newest still-unused code_id, or 0. */
+static int64_t any_unused(const store_t *s, const uint8_t *user, size_t user_len)
+{
+    count_ctx_t c = { 0u, 0 };
+    if (store_list_unused_recovery_codes(s, user, user_len, first_code_id, &c) != STORE_OK) { return 0; }
+    return c.first;
+}
 static const uint8_t H1[] = { 'd','1','a','a' };
 static const uint8_t H2[] = { 'd','1','b','b' };
 
@@ -528,6 +560,151 @@ int main(void)
         CHECK(store_open(NULL, KEK, NULL) == STORE_ERR_ARG, "store_open rejects NULL arguments");
         store_close(s);
         store_close(NULL);   /* idempotent */
+    }
+
+
+    /* ---- recovery codes, tickets, and their atomicity (V4-9d, §10.3) ---- */
+    {
+        store_t *s = fresh_store("r.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open r\n"); return 1; }
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK, "rec: add_user u1");
+        CHECK(store_add_user(s, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK, "rec: add_user u2");
+
+        /* The hashes are opaque to the store, so the test uses distinguishable
+         * literals rather than real Argon2id output: what is under test here is
+         * the SQL, not the KDF. */
+        const char *g1[] = { "hash-a", "hash-b", "hash-c" };
+        const char *g2[] = { "hash-d", "hash-e" };
+        size_t superseded = 0;
+
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g1, 3, 100, &superseded) == STORE_OK &&
+              superseded == 0u, "rec: the first generation supersedes nothing");
+        { count_ctx_t c = {0, 0};
+          CHECK(store_list_unused_recovery_codes(s, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 3u,
+                "rec: three unused codes are listed"); }
+
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g2, 2, 200, &superseded) == STORE_OK &&
+              superseded == 3u, "rec: re-issuing supersedes the whole previous generation");
+        { count_ctx_t c = {0, 0};
+          CHECK(store_list_unused_recovery_codes(s, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 2u,
+                "rec: only the current generation is listed -- this is what bounds the verify loop"); }
+        CHECK(store_recovery_replace(s, UX, sizeof UX, g1, 1, 100, NULL) == STORE_ERR_NOT_FOUND,
+              "rec: issuing for a user that does not exist is refused, not a silent no-op");
+
+        /* One user's code is not another's, even knowing its code_id. */
+        int64_t id_u1 = 0;
+        { count_ctx_t c = {0, 0};
+          (void)store_list_unused_recovery_codes(s, U1, sizeof U1, first_code_id, &c);
+          id_u1 = c.first; }
+        CHECK(id_u1 != 0, "rec: a code_id was obtained");
+        CHECK(store_recovery_consume(s, id_u1, U2, sizeof U2, TH1, 300, 900) == STORE_ERR_NOT_FOUND,
+              "rec: user B cannot spend user A's code, even by code_id");
+        { count_ctx_t c = {0, 0};
+          CHECK(store_list_unused_recovery_codes(s, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 2u,
+                "rec: the refused cross-user consume changed nothing"); }
+
+        /* ---- the atomicity proof: a fault between "code spent" and "ticket
+         * issued" must leave the code UNSPENT, not spent-with-no-ticket. ---- */
+        store_fault_arm(0);
+        CHECK(store_recovery_consume(s, id_u1, U1, sizeof U1, TH1, 300, 900) != STORE_OK,
+              "rec: a fault injected mid-consume makes the consume fail");
+        store_fault_arm(-1);
+        { count_ctx_t c = {0, 0};
+          CHECK(store_list_unused_recovery_codes(s, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 2u,
+                "rec: after the fault the code is STILL unused (in-process)"); }
+        store_close(s);
+
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "rec: reopen after the injected fault");
+        if (s2 != NULL) {
+            { count_ctx_t c = {0, 0};
+              CHECK(store_list_unused_recovery_codes(s2, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 2u,
+                    "rec: a half-consume is impossible: after reopen the code is still spendable"); }
+            /* ...and no ticket was left behind by the rolled-back half. */
+            CHECK(store_enroll_via_ticket(s2, TH1, U1, sizeof U1, H2, sizeof H2, pkB, NULL, 0, 400)
+                      == STORE_ERR_NOT_FOUND,
+                  "rec: the rolled-back ticket was never inserted");
+            CHECK(store_audit_verify(s2) == STORE_OK, "rec: audit chain verifies after a rolled-back consume");
+
+            /* the happy path, and the ticket it issues */
+            CHECK(store_recovery_consume(s2, id_u1, U1, sizeof U1, TH1, 300, 900) == STORE_OK,
+                  "rec: consume succeeds");
+            { count_ctx_t c = {0, 0};
+              CHECK(store_list_unused_recovery_codes(s2, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 1u,
+                    "rec: the spent code is no longer listed"); }
+            CHECK(store_recovery_consume(s2, id_u1, U1, sizeof U1, TH2, 300, 900) == STORE_ERR_NOT_FOUND,
+                  "rec: a code cannot be spent twice");
+
+            CHECK(store_enroll_via_ticket(s2, TH1, U2, sizeof U2, H2, sizeof H2, pkB, NULL, 0, 400)
+                      == STORE_ERR_NOT_FOUND,
+                  "rec: a ticket cannot be redeemed by a different user");
+            CHECK(store_enroll_via_ticket(s2, TH1, U1, sizeof U1, H2, sizeof H2, pkB, NULL, 0, 901)
+                      == STORE_ERR_NOT_FOUND,
+                  "rec: a ticket past its expiry is refused (one second after)");
+            CHECK(store_enroll_via_ticket(s2, TH1, U1, sizeof U1, H2, sizeof H2, pkB, NULL, 0, 899)
+                      == STORE_OK,
+                  "rec: a ticket one second before expiry still works (the lower bound)");
+            { uint8_t got2[STORE_PK_BYTES];
+              CHECK(store_lookup_active(s2, H2, sizeof H2, got2, NULL, 0, NULL, NULL) == STORE_OK &&
+                    memcmp(got2, pkB, STORE_PK_BYTES) == 0,
+                    "rec: the recovered device is active with its new key"); }
+            CHECK(store_enroll_via_ticket(s2, TH1, U1, sizeof U1, H3, sizeof H3, pkC, NULL, 0, 899)
+                      == STORE_ERR_NOT_FOUND,
+                  "rec: a ticket is single-use");
+
+            /* A pk already in use must not cost the user their ticket. */
+            CHECK(store_recovery_consume(s2, any_unused(s2, U1, sizeof U1), U1, sizeof U1, TH2, 300, 900) == STORE_OK,
+                  "rec: a second code is spent for the pk-in-use case");
+            CHECK(store_enroll_via_ticket(s2, TH2, U1, sizeof U1, H3, sizeof H3, pkB, NULL, 0, 400)
+                      == STORE_ERR_CONFLICT,
+                  "rec: enrolling an already-used public key is refused");
+            CHECK(store_enroll_via_ticket(s2, TH2, U1, sizeof U1, H3, sizeof H3, pkC, NULL, 0, 400)
+                      == STORE_OK,
+                  "rec: ...and the ticket was NOT spent by that refusal -- it still works");
+
+            /* ---- lockout ---- */
+            int locked = 0; int64_t until = 0; int fails = 0;
+            CHECK(store_recovery_lock_state(s2, U1, sizeof U1, 1000, &locked, &until, &fails) == STORE_OK &&
+                  !locked && fails == 0,
+                  "lock: a user who has just recovered is not locked and has no failures");
+            for (int i = 1; i < 5; i++) {
+                CHECK(store_recovery_note_failure(s2, U1, sizeof U1, 1000, 5, 3600, &locked, &until) == STORE_OK &&
+                      !locked, "lock: the first four failures do not lock");
+            }
+            CHECK(store_recovery_note_failure(s2, U1, sizeof U1, 1000, 5, 3600, &locked, &until) == STORE_OK &&
+                  locked && until == 4600,
+                  "lock: the fifth failure locks for an hour from the caller's clock");
+            CHECK(store_recovery_lock_state(s2, U1, sizeof U1, 4599, &locked, NULL, NULL) == STORE_OK && locked,
+                  "lock: still locked one second before the hour is up");
+            CHECK(store_recovery_lock_state(s2, U1, sizeof U1, 4600, &locked, NULL, &fails) == STORE_OK &&
+                  !locked && fails == 0,
+                  "lock: the lock lifts on the hour, with a fresh allowance");
+            /* A success must CLEAR the accumulated failures, or a user who
+             * fumbles four times and then recovers stays one mistake away
+             * from an hour's lockout for ever. */
+            { const char *g3[] = { "hash-f", "hash-g" };
+              CHECK(store_recovery_replace(s2, U1, sizeof U1, g3, 2, 5000, NULL) == STORE_OK,
+                    "lock: a fresh generation for the clear-on-success check");
+              for (int i = 0; i < 4; i++) {
+                  CHECK(store_recovery_note_failure(s2, U1, sizeof U1, 5000, 5, 3600, &locked, NULL) == STORE_OK &&
+                        !locked, "lock: four failures accumulate without locking");
+              }
+              CHECK(store_recovery_lock_state(s2, U1, sizeof U1, 5000, &locked, NULL, &fails) == STORE_OK &&
+                    fails == 4, "lock: the four failures were counted (present canary)");
+              CHECK(store_recovery_consume(s2, any_unused(s2, U1, sizeof U1), U1, sizeof U1,
+                                           TH3, 5000, 5600) == STORE_OK,
+                    "lock: a successful recovery after four failures");
+              CHECK(store_recovery_lock_state(s2, U1, sizeof U1, 5000, &locked, NULL, &fails) == STORE_OK &&
+                    !locked && fails == 0,
+                    "lock: a SUCCESS clears the accumulated failure count"); }
+
+            CHECK(store_recovery_note_failure(s2, UX, sizeof UX, 1000, 5, 3600, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                  "lock: noting a failure for a user that does not exist is refused");
+            CHECK(store_recovery_lock_state(s2, UX, sizeof UX, 1000, &locked, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                  "lock: an unknown user has no lock state");
+            CHECK(store_audit_verify(s2) == STORE_OK, "rec: audit chain verifies at the end");
+            store_close(s2);
+        }
     }
 
     {

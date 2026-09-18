@@ -169,6 +169,7 @@ add_test(NAME authd_e2e
           $<TARGET_FILE:authd_admin_bin> $<TARGET_FILE:authd_client_bin>
           $<TARGET_FILE:mldsa_authd_bin> "${MLDSA_NODE}"
           ${CMAKE_CURRENT_SOURCE_DIR}/e2e_site.mjs
+          ${CMAKE_CURRENT_SOURCE_DIR}/e2e_recovery.mjs
 )
 set_tests_properties(authd_e2e PROPERTIES TIMEOUT 600)
 

@@ -189,16 +189,64 @@ export async function logout(authd, token) {
   return Number(f.deleted) === 1;
 }
 
-/** Enroll a device's public key. `pk` is a Buffer/Uint8Array of 1952 bytes. */
-export async function enroll(authd, { user, handle, pk, label }) {
+/** Enroll a device's public key. `pk` is a Buffer/Uint8Array of 1952 bytes.
+ *  Pass `ticket` (hex, from recoveryUse) to enroll a REPLACEMENT device after
+ *  the user has lost the old one; without it this is an ordinary site-driven
+ *  enrollment. The two are not interchangeable: `via=site` with a ticket, and
+ *  `via=recovery` without one, are both refused as malformed. */
+export async function enroll(authd, { user, handle, pk, label, ticket }) {
   const f = fields(ensureOk(await authd.request('ENROLL', {
     user: hex(Buffer.from(user, 'utf8')),
     handle: hex(Buffer.from(handle, 'utf8')),
     pk: hex(pk),
     label: label ? hex(Buffer.from(label, 'utf8')) : undefined,
-    via: 'site',
+    via: ticket ? 'recovery' : 'site',
+    ticket: ticket || undefined,
   })));
   return { fp: f.fp, idempotent: f.idempotent === '1' };
+}
+
+/*
+ * Recovery (spec §10.3). The flow, end to end:
+ *
+ *   1. At enrollment, call recoveryIssue() and SHOW THE CODES ONCE. They are
+ *      never retrievable again -- the daemon keeps only Argon2id hashes.
+ *   2. The user loses their device. They type one code into your site.
+ *   3. recoveryUse() returns a single-use ticket valid ten minutes.
+ *   4. The new device generates a keypair; enroll(..., { ticket }) registers it.
+ *
+ * Pass the code THROUGH VERBATIM. Do not upper-case it, strip its hyphens or
+ * "fix" its O/0 and l/1 -- the daemon normalises, and what it hashes is its own
+ * canonical form. A site that normalises differently would lock its users out
+ * of their own recovery codes.
+ *
+ * Note that recoveryIssue() and recoveryUse() BLOCK the daemon while they run
+ * (roughly 0.1 s per code, single-threaded by design), so do not call them on
+ * a hot path, and never expose recoveryUse() without your own rate limit in
+ * front of it -- the daemon's five-failures-per-hour lockout is a backstop,
+ * not a substitute.
+ */
+
+/** Generate `count` (1..16) fresh recovery codes, invalidating any previous
+ *  generation. Returns the plaintext codes -- THE ONLY TIME THEY EXIST. */
+export async function recoveryIssue(authd, user, count = 10) {
+  const f = fields(ensureOk(await authd.request('RECOVERY-ISSUE', {
+    user: hex(Buffer.from(user, 'utf8')),
+    count: String(count),
+  })));
+  return f.codes.split(',');
+}
+
+/** Spend a recovery code for an enrollment ticket. `revoke: 'all'` also
+ *  revokes every existing device of that user and closes their live sessions
+ *  -- the right choice when the device was stolen rather than mislaid. */
+export async function recoveryUse(authd, user, code, { revoke = 'none' } = {}) {
+  const f = fields(ensureOk(await authd.request('RECOVERY-USE', {
+    user: hex(Buffer.from(user, 'utf8')),
+    code,                                   // base32 text, passed through as typed
+    revoke,
+  })));
+  return { ticket: f.ticket, expires: Number(f.expires) };
 }
 
 export async function listDevices(authd, user) {

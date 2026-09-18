@@ -97,6 +97,21 @@ typedef struct {
     uint32_t pad_bucket;
     uint32_t rotation_due_age_s;   /* 0 = never hint; spec defines no cadence */
     uint32_t code_ttl_s;
+
+    /* Recovery policy (V4-9d, spec §10.3). These are FIELDS rather than
+     * constants for one reason: the KDF at the spec's parameters costs ~0.1 s
+     * per verification, and test_authd_localapi and fuzz_localapi would each
+     * spend minutes per run issuing codes. They set them to libsodium's _MIN.
+     * The daemon itself assigns the spec's values from recovery.h -- which is
+     * what tools/audit/check_spec_constants.sh pins, since no test can observe
+     * what authd_main.c writes here. They are deliberately NOT config keys:
+     * §10.3 fixes them, and an operator who could set ops=1 would be
+     * configuring away the defence. */
+    unsigned long long recovery_ops;
+    size_t             recovery_mem;
+    int                recovery_lock_threshold;
+    int64_t            recovery_lock_seconds;
+    uint32_t           ticket_ttl_s;
     uint64_t started_ms;      /* for PING's uptime */
     uint64_t next_sweep_ms;
 
@@ -111,6 +126,12 @@ typedef struct {
     /* observable counters (tests and operators) */
     uint64_t logins_issued;
     uint64_t rotations;
+    uint64_t recoveries_issued;
+    uint64_t recoveries_used;
+    /* Argon2id verifications actually performed. A locked user must add ZERO
+     * to this; the error code alone cannot tell a lockout enforced before the
+     * KDF from one enforced after it. */
+    uint64_t recovery_kdf_calls;
     uint64_t decoy_pins;
     uint64_t handshakes_failed;
     uint64_t swept_tokens;

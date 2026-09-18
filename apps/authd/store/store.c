@@ -518,19 +518,25 @@ store_status_t store_get_decoy_pk(const store_t *s, uint8_t out[STORE_PK_BYTES])
 
 /* --- users -------------------------------------------------------------- */
 
-store_status_t store_add_user(store_t *s, const uint8_t *user_id, size_t user_id_len, store_role_t role)
+static store_status_t enroll_device_locked(store_t *s,
+                                           const uint8_t *handle, size_t handle_len,
+                                           const uint8_t *user_id, size_t user_id_len,
+                                           const uint8_t pk[STORE_PK_BYTES],
+                                           const char *via, const char *by,
+                                           const uint8_t *label, size_t label_len,
+                                           int64_t now, int *idempotent_out);
+
+/* The body of store_add_user, assuming a transaction is ALREADY OPEN. Factored
+ * out in V4-9d so an enrollment can create the user and the device together --
+ * see store_enroll_device_ex and finding F47. */
+static store_status_t add_user_locked(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                      store_role_t role)
 {
-    if (s == NULL || !id_ok(user_id, user_id_len)) { return STORE_ERR_ARG; }
-    if (role != STORE_ROLE_OPERATOR && role != STORE_ROLE_USER) { return STORE_ERR_ARG; }
-
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
-
+    store_status_t r = STORE_OK;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "INSERT INTO users(user_id, role, status, created_at) VALUES(?1,?2,'active',?3);",
             -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -544,7 +550,95 @@ store_status_t store_add_user(store_t *s, const uint8_t *user_id, size_t user_id
     }
     sqlite3_finalize(st);
     if (r == STORE_OK) { r = audit_append(s, "user-add", user_id, user_id_len, NULL, 0, role_text(role)); }
+    return r;
+}
+
+store_status_t store_add_user(store_t *s, const uint8_t *user_id, size_t user_id_len, store_role_t role)
+{
+    if (s == NULL || !id_ok(user_id, user_id_len)) { return STORE_ERR_ARG; }
+    if (role != STORE_ROLE_OPERATOR && role != STORE_ROLE_USER) { return STORE_ERR_ARG; }
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+    r = add_user_locked(s, user_id, user_id_len, role);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+    return tx_commit(s);
+}
+
+/* Enroll, creating the user first if it does not exist, in ONE transaction.
+ *
+ * This exists because the two-call form could not be made safe by ordering: the
+ * caller's "is this handle taken" pre-check used the three-join active lookup
+ * while the store's own Req 7 check uses the key row alone, so a handle whose
+ * USER was disabled passed the pre-check, the user was created, and the
+ * enrollment was then refused -- leaving a user behind for a request that
+ * failed (F47). Two predicates that can disagree is the defect; one
+ * transaction removes the class rather than the instance.
+ *
+ * `role` is used only if the user must be created. `created_out` reports
+ * whether it was, and `idempotent_out` whether the handle already held exactly
+ * this key. */
+store_status_t store_enroll_device_ex(store_t *s,
+                                      const uint8_t *handle, size_t handle_len,
+                                      const uint8_t *user_id, size_t user_id_len,
+                                      store_role_t role,
+                                      const uint8_t pk[STORE_PK_BYTES],
+                                      const char *via, const char *by,
+                                      const uint8_t *label, size_t label_len,
+                                      int *created_out, int *idempotent_out)
+{
+    if (s == NULL || !id_ok(handle, handle_len) || !id_ok(user_id, user_id_len) || pk == NULL) {
+        return STORE_ERR_ARG;
+    }
+    if (role != STORE_ROLE_OPERATOR && role != STORE_ROLE_USER) { return STORE_ERR_ARG; }
+    if (created_out != NULL)    { *created_out = 0; }
+    if (idempotent_out != NULL) { *idempotent_out = 0; }
+
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    int exists = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM users WHERE user_id=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { exists = 1; }
+        else if (rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    if (!exists) {
+        r = add_user_locked(s, user_id, user_id_len, role);
+        if (r != STORE_OK) { tx_rollback(s); return r; }
+    }
+
+    int idempotent = 0;
+    r = enroll_device_locked(s, handle, handle_len, user_id, user_id_len, pk, via, by,
+                             label, label_len, now_unix(), &idempotent);
+    if (idempotent) {
+        /* Nothing changed -- including, deliberately, the user: a re-enrollment
+         * that was going to be a no-op does not get to create one. */
+        tx_rollback(s);
+        if (idempotent_out != NULL) { *idempotent_out = 1; }
+        return STORE_OK;
+    }
+    if (r == STORE_ERR_CONFLICT) {
+        /* Req 7's audit row is written inside enroll_device_locked, and this is
+         * where it would be kept -- but keeping it means keeping the user this
+         * transaction may have created for a request that FAILED. The refusal
+         * wins: nothing is written. The rejection is still logged, by the
+         * daemon, to the journal (localapi.c), which is what Req 7's "rejected
+         * AND logged" is actually read by. */
+        tx_rollback(s);
+        return STORE_ERR_CONFLICT;
+    }
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (created_out != NULL) { *created_out = !exists; }
     return tx_commit(s);
 }
 
@@ -699,49 +793,53 @@ static store_status_t active_key_of(store_t *s, const uint8_t *handle, size_t ha
     return r;
 }
 
-store_status_t store_enroll_device(store_t *s,
-                                   const uint8_t *handle, size_t handle_len,
-                                   const uint8_t *user_id, size_t user_id_len,
-                                   const uint8_t pk[STORE_PK_BYTES],
-                                   const char *via, const char *by,
-                                   const uint8_t *label, size_t label_len)
+/* The body of an enrollment, assuming a transaction is ALREADY OPEN and
+ * leaving it open. Factored out in V4-9d so store_enroll_via_ticket can put
+ * the ticket consumption and the enrollment in one transaction; the caller
+ * owns begin/commit/rollback and therefore owns the atomicity claim.
+ *
+ * `*idempotent_out` is set when the handle already holds exactly this key: the
+ * caller decides what that means (store_enroll_device rolls back, since
+ * nothing changed and no audit row is wanted). Req 7's different-key case
+ * still writes its audit row here, so the caller must COMMIT on CONFLICT to
+ * keep it -- which is what makes "rejected AND logged" survive. */
+static store_status_t enroll_device_locked(store_t *s,
+                                           const uint8_t *handle, size_t handle_len,
+                                           const uint8_t *user_id, size_t user_id_len,
+                                           const uint8_t pk[STORE_PK_BYTES],
+                                           const char *via, const char *by,
+                                           const uint8_t *label, size_t label_len,
+                                           int64_t now, int *idempotent_out)
 {
-    if (s == NULL || !id_ok(handle, handle_len) || !id_ok(user_id, user_id_len) || pk == NULL) {
-        return STORE_ERR_ARG;
-    }
-
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
+    store_status_t r = STORE_OK;
+    *idempotent_out = 0;
 
     /* Req 7: a known handle presenting a DIFFERENT key is rejected and audited.
      * With the identical key the call is idempotent. */
     uint8_t cur[STORE_PK_BYTES];
     int have_active = 0;
     r = active_key_of(s, handle, handle_len, cur, NULL, &have_active);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (r != STORE_OK) { return r; }
     if (have_active) {
         if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
-            tx_rollback(s);         /* nothing changed; no audit row */
+            *idempotent_out = 1;
             return STORE_OK;
         }
         r = audit_append(s, "enroll-key-mismatch", user_id, user_id_len, handle, handle_len,
                          "known handle presented a different key (Req 7)");
-        if (r == STORE_OK) { (void)tx_commit(s); } else { tx_rollback(s); }
-        return STORE_ERR_CONFLICT;
+        return (r == STORE_OK) ? STORE_ERR_CONFLICT : r;
     }
 
     /* Invariant 2: the public key must be unused across all devices and states. */
     int dup = 0;
     r = pk_exists(s, pk, &dup);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
-    if (dup) { tx_rollback(s); return STORE_ERR_CONFLICT; }
+    if (r != STORE_OK) { return r; }
+    if (dup) { return STORE_ERR_CONFLICT; }
 
-    int64_t now = now_unix();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "INSERT INTO devices(handle,user_id,label,status,enrolled_at,enrolled_via,enrolled_by)"
             " VALUES(?1,?2,?3,'active',?4,?5,?6);", -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -758,7 +856,7 @@ store_status_t store_enroll_device(store_t *s,
         else if (rc != SQLITE_DONE)  { r = STORE_ERR_DB; }
     }
     sqlite3_finalize(st);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (r != STORE_OK) { return r; }
 
     uint8_t fp[crypto_hash_sha256_BYTES];
     pk_fingerprint(pk, fp);
@@ -766,7 +864,6 @@ store_status_t store_enroll_device(store_t *s,
     if (sqlite3_prepare_v2(s->db,
             "INSERT INTO device_keys(handle,pk,pk_fp,status,valid_from) VALUES(?1,?2,?3,'active',?4);",
             -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -781,6 +878,31 @@ store_status_t store_enroll_device(store_t *s,
     }
     sqlite3_finalize(st);
     if (r == STORE_OK) { r = audit_append(s, "device-enroll", user_id, user_id_len, handle, handle_len, via); }
+    return r;
+}
+
+store_status_t store_enroll_device(store_t *s,
+                                   const uint8_t *handle, size_t handle_len,
+                                   const uint8_t *user_id, size_t user_id_len,
+                                   const uint8_t pk[STORE_PK_BYTES],
+                                   const char *via, const char *by,
+                                   const uint8_t *label, size_t label_len)
+{
+    if (s == NULL || !id_ok(handle, handle_len) || !id_ok(user_id, user_id_len) || pk == NULL) {
+        return STORE_ERR_ARG;
+    }
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    int idempotent = 0;
+    r = enroll_device_locked(s, handle, handle_len, user_id, user_id_len, pk, via, by,
+                             label, label_len, now_unix(), &idempotent);
+    if (idempotent) { tx_rollback(s); return STORE_OK; }   /* nothing changed; no audit row */
+    if (r == STORE_ERR_CONFLICT) {
+        /* Req 7's audit row was written above and must survive the refusal. */
+        (void)tx_commit(s);
+        return STORE_ERR_CONFLICT;
+    }
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
 }
@@ -1443,67 +1565,219 @@ store_status_t store_consume_login_code(store_t *s, const uint8_t code_hash[STOR
 
 /* --- recovery codes / tickets --------------------------------------------- */
 
-store_status_t store_add_recovery_code(store_t *s, const uint8_t *user_id, size_t user_id_len,
-                                       const char *pwhash_str, int64_t issued_at)
+/* ---------------------------------------------------------------------------
+ * Recovery codes and enrollment tickets (V4-9d, spec §10.3, §9.3).
+ *
+ * Every mutation below is exactly one transaction, and the Argon2id work that
+ * decides WHICH code matched happens outside them -- see store.h.
+ * ------------------------------------------------------------------------- */
+
+store_status_t store_recovery_lock_state(const store_t *s,
+                                         const uint8_t *user_id, size_t user_id_len,
+                                         int64_t now, int *locked_out,
+                                         int64_t *locked_until_out, int *fail_count_out)
 {
-    if (s == NULL || !id_ok(user_id, user_id_len) || pwhash_str == NULL) { return STORE_ERR_ARG; }
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
+    if (s == NULL || !id_ok(user_id, user_id_len) || locked_out == NULL) {
+        return STORE_ERR_ARG;
+    }
+    *locked_out = 0;
+    if (locked_until_out != NULL) { *locked_until_out = 0; }
+    if (fail_count_out != NULL)   { *fail_count_out = 0; }
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "INSERT INTO recovery_codes(user_id,pwhash_str,issued_at) VALUES(?1,?2,?3);",
+            "SELECT recovery_fail_count, recovery_locked_until FROM users WHERE user_id=?1 LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            const int64_t until = sqlite3_column_int64(st, 1);
+            if (fail_count_out != NULL)   { *fail_count_out = sqlite3_column_int(st, 0); }
+            if (locked_until_out != NULL) { *locked_until_out = until; }
+            *locked_out = (now < until) ? 1 : 0;
+        } else if (rc == SQLITE_DONE) {
+            r = STORE_ERR_NOT_FOUND;
+        } else {
+            r = STORE_ERR_DB;
+        }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_list_unused_recovery_codes(const store_t *s,
+                                                const uint8_t *user_id, size_t user_id_len,
+                                                store_recovery_code_fn fn, void *ctx)
+{
+    if (s == NULL || !id_ok(user_id, user_id_len) || fn == NULL) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    /* Newest first: a user who has just been re-issued codes is most likely to
+     * be holding one of those. Order does not affect correctness -- every
+     * unused code is tried until one verifies. */
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT code_id, pwhash_str FROM recovery_codes"
+            " WHERE user_id=?1 AND used_at IS NULL ORDER BY code_id DESC;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        int rc;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const char *h = (const char *)sqlite3_column_text(st, 1);
+            if (h == NULL) { continue; }
+            if (fn(ctx, sqlite3_column_int64(st, 0), h) != 0) {
+                break;                      /* the verify loop found its match */
+            }
+        }
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_recovery_replace(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                      const char *const *pwhash_strs, size_t n,
+                                      int64_t now, size_t *superseded_out)
+{
+    if (s == NULL || !id_ok(user_id, user_id_len) || pwhash_strs == NULL || n == 0u) {
+        return STORE_ERR_ARG;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (pwhash_strs[i] == NULL) { return STORE_ERR_ARG; }
+    }
+    if (superseded_out != NULL) { *superseded_out = 0u; }
+
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    /* The user must exist: issuing codes for nobody would be a silent no-op. */
+    int exists = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM users WHERE user_id=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { exists = 1; }
+        else if (rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK)  { tx_rollback(s); return r; }
+    if (!exists)        { tx_rollback(s); return STORE_ERR_NOT_FOUND; }
+
+    /* Supersede the previous generation. Marked, never deleted (§10.3), and
+     * distinguishable in the audit trail from a code the user actually spent. */
+    st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "UPDATE recovery_codes SET used_at=?2, used_from='superseded'"
+            " WHERE user_id=?1 AND used_at IS NULL;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, now) != SQLITE_OK ||
+        sqlite3_step(st) != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    } else if (superseded_out != NULL) {
+        *superseded_out = (size_t)sqlite3_changes(s->db);
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    for (size_t i = 0; i < n && r == STORE_OK; i++) {
+        st = NULL;
+        if (sqlite3_prepare_v2(s->db,
+                "INSERT INTO recovery_codes(user_id,pwhash_str,issued_at) VALUES(?1,?2,?3);",
+                -1, &st, NULL) != SQLITE_OK) {
+            tx_rollback(s);
+            return STORE_ERR_DB;
+        }
+        if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+            sqlite3_bind_text(st, 2, pwhash_strs[i], -1, SQLITE_TRANSIENT) != SQLITE_OK ||
+            sqlite3_bind_int64(st, 3, now) != SQLITE_OK ||
+            sqlite3_step(st) != SQLITE_DONE) {
+            r = STORE_ERR_DB;
+        }
+        sqlite3_finalize(st);
+    }
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    char detail[32];
+    (void)snprintf(detail, sizeof detail, "issued %zu", n);
+    r = audit_append(s, "recovery-issue", user_id, user_id_len, NULL, 0u, detail);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+    return tx_commit(s);
+}
+
+store_status_t store_recovery_consume(store_t *s, int64_t code_id,
+                                      const uint8_t *user_id, size_t user_id_len,
+                                      const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                      int64_t now, int64_t expires_at)
+{
+    if (s == NULL || !id_ok(user_id, user_id_len) || ticket_hash == NULL) {
+        return STORE_ERR_ARG;
+    }
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    /* Re-check inside the transaction what the caller checked outside it: the
+     * row is still unused AND is this user's. Verification ran outside, so
+     * another connection could have spent the code in the meantime. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "UPDATE recovery_codes SET used_at=?2, used_from='recovery-use'"
+            " WHERE code_id=?1 AND used_at IS NULL AND user_id=?3;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_int64(st, 1, code_id) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, now) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 3, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_step(st) != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    } else if (sqlite3_changes(s->db) == 0) {
+        r = STORE_ERR_NOT_FOUND;            /* already used, or not this user's */
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    /* The window a non-transactional implementation would leave half-open: the
+     * code is spent but no ticket exists, so the user has burned their one way
+     * back in and received nothing. Armed only in the test build. */
+    if (STORE_FAULT_POINT()) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+
+    /* A successful recovery clears the guessing counters (§10.3). */
+    st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "UPDATE users SET recovery_fail_count=0, recovery_locked_until=0 WHERE user_id=?1;",
             -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_text(st, 2, pwhash_str, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, issued_at) != SQLITE_OK ||
         sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
-    return tx_commit(s);
-}
 
-store_status_t store_mark_recovery_used(store_t *s, int64_t code_id, const char *used_from, int64_t used_at)
-{
-    if (s == NULL) { return STORE_ERR_ARG; }
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
-
-    sqlite3_stmt *st = NULL;
-    /* never deletes: a used code stays, marked (§10.3) */
-    if (sqlite3_prepare_v2(s->db,
-            "UPDATE recovery_codes SET used_at=?2, used_from=?3 WHERE code_id=?1 AND used_at IS NULL;",
-            -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
-        return STORE_ERR_DB;
-    }
-    if (sqlite3_bind_int64(st, 1, code_id) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, used_at) != SQLITE_OK ||
-        sqlite3_bind_text(st, 3, used_from ? used_from : "", -1, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_step(st) != SQLITE_DONE) {
-        r = STORE_ERR_DB;
-    } else if (sqlite3_changes(s->db) == 0) {
-        r = STORE_ERR_NOT_FOUND;
-    }
-    sqlite3_finalize(st);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
-    return tx_commit(s);
-}
-
-store_status_t store_add_ticket(store_t *s, const uint8_t ticket_hash[STORE_HASH_BYTES],
-                                const uint8_t *user_id, size_t user_id_len,
-                                int64_t issued_at, int64_t expires_at)
-{
-    if (s == NULL || ticket_hash == NULL || !id_ok(user_id, user_id_len)) { return STORE_ERR_ARG; }
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
-
-    sqlite3_stmt *st = NULL;
+    st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "INSERT INTO enroll_tickets(ticket_hash,user_id,issued_at,expires_at) VALUES(?1,?2,?3,?4);",
             -1, &st, NULL) != SQLITE_OK) {
@@ -1512,29 +1786,119 @@ store_status_t store_add_ticket(store_t *s, const uint8_t ticket_hash[STORE_HASH
     }
     if (sqlite3_bind_blob(st, 1, ticket_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK ||
         sqlite3_bind_blob(st, 2, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, issued_at) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 3, now) != SQLITE_OK ||
         sqlite3_bind_int64(st, 4, expires_at) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else {
-        int rc = sqlite3_step(st);
+        const int rc = sqlite3_step(st);
         if (rc == SQLITE_CONSTRAINT) { r = STORE_ERR_CONFLICT; }
         else if (rc != SQLITE_DONE)  { r = STORE_ERR_DB; }
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "ok");
+    if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
 }
 
-store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_HASH_BYTES], int64_t now,
-                                    uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out)
+store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                           int64_t now, int threshold, int64_t lock_seconds,
+                                           int *locked_out, int64_t *locked_until_out)
 {
-    if (s == NULL || ticket_hash == NULL) { return STORE_ERR_ARG; }
+    if (s == NULL || !id_ok(user_id, user_id_len) || threshold < 1 || lock_seconds < 0) {
+        return STORE_ERR_ARG;
+    }
+    if (locked_out != NULL)       { *locked_out = 0; }
+    if (locked_until_out != NULL) { *locked_until_out = 0; }
+
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "SELECT user_id FROM enroll_tickets WHERE ticket_hash=?1 AND used_at IS NULL AND expires_at>?2 LIMIT 1;",
+            "UPDATE users SET recovery_fail_count=recovery_fail_count+1 WHERE user_id=?1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_step(st) != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    } else if (sqlite3_changes(s->db) == 0) {
+        r = STORE_ERR_NOT_FOUND;
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    int count = 0;
+    st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT recovery_fail_count FROM users WHERE user_id=?1 LIMIT 1;",
+                           -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { count = sqlite3_column_int(st, 0); }
+        else if (rc == SQLITE_DONE) { r = STORE_ERR_NOT_FOUND; }
+        else                        { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    if (count >= threshold) {
+        /* Lock, and zero the counter: after the lock expires the user gets a
+         * fresh allowance rather than re-locking on their next mistake. */
+        const int64_t until = now + lock_seconds;
+        st = NULL;
+        if (sqlite3_prepare_v2(s->db,
+                "UPDATE users SET recovery_locked_until=?2, recovery_fail_count=0 WHERE user_id=?1;",
+                -1, &st, NULL) != SQLITE_OK) {
+            tx_rollback(s);
+            return STORE_ERR_DB;
+        }
+        if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+            sqlite3_bind_int64(st, 2, until) != SQLITE_OK ||
+            sqlite3_step(st) != SQLITE_DONE) {
+            r = STORE_ERR_DB;
+        }
+        sqlite3_finalize(st);
+        if (r != STORE_OK) { tx_rollback(s); return r; }
+
+        if (locked_out != NULL)       { *locked_out = 1; }
+        if (locked_until_out != NULL) { *locked_until_out = until; }
+        r = audit_append(s, "recovery-locked", user_id, user_id_len, NULL, 0u, "five failures (§10.3)");
+    } else {
+        r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "invalid");
+    }
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+    return tx_commit(s);
+}
+
+store_status_t store_enroll_via_ticket(store_t *s,
+                                       const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                       const uint8_t *expect_user, size_t expect_user_len,
+                                       const uint8_t *handle, size_t handle_len,
+                                       const uint8_t pk[STORE_PK_BYTES],
+                                       const uint8_t *label, size_t label_len,
+                                       int64_t now)
+{
+    if (s == NULL || ticket_hash == NULL || !id_ok(handle, handle_len) || pk == NULL ||
+        !id_ok(expect_user, expect_user_len)) {
+        return STORE_ERR_ARG;
+    }
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+
+    uint8_t user[STORE_ID_MAX];
+    size_t user_len = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT user_id FROM enroll_tickets"
+            " WHERE ticket_hash=?1 AND used_at IS NULL AND expires_at>?2 LIMIT 1;",
             -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
@@ -1543,9 +1907,36 @@ store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_
         sqlite3_bind_int64(st, 2, now) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else {
-        int rc = sqlite3_step(st);
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { r = copy_blob_col(st, 0, user, sizeof user, &user_len); }
+        else if (rc == SQLITE_DONE) { r = STORE_ERR_NOT_FOUND; }  /* unknown, expired or used */
+        else                        { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    /* The ticket must be THIS user's, checked here rather than by the caller
+     * after the fact -- by then the ticket would already be spent. Folded into
+     * NOT_FOUND so the four ways a ticket can be unusable stay one answer. */
+    if (user_len != expect_user_len || sodium_memcmp(user, expect_user, user_len) != 0) {
+        tx_rollback(s);
+        return STORE_ERR_NOT_FOUND;
+    }
+
+    /* The user must still be active: a ticket is not a way past a disable. */
+    char status[16] = {0};
+    st = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT status FROM users WHERE user_id=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, user, (int)user_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
-            if (user_id_out != NULL) { r = copy_blob_col(st, 0, user_id_out, user_id_cap, user_id_len_out); }
+            const char *v = (const char *)sqlite3_column_text(st, 0);
+            (void)snprintf(status, sizeof status, "%s", v ? v : "");
         } else if (rc == SQLITE_DONE) {
             r = STORE_ERR_NOT_FOUND;
         } else {
@@ -1554,9 +1945,12 @@ store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (strcmp(status, "active") != 0) { tx_rollback(s); return STORE_ERR_STATE; }
 
     st = NULL;
-    if (sqlite3_prepare_v2(s->db, "UPDATE enroll_tickets SET used_at=?2 WHERE ticket_hash=?1;", -1, &st, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(s->db,
+            "UPDATE enroll_tickets SET used_at=?2 WHERE ticket_hash=?1 AND used_at IS NULL;",
+            -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
     }
@@ -1564,9 +1958,29 @@ store_status_t store_consume_ticket(store_t *s, const uint8_t ticket_hash[STORE_
         sqlite3_bind_int64(st, 2, now) != SQLITE_OK ||
         sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
+    } else if (sqlite3_changes(s->db) == 0) {
+        r = STORE_ERR_NOT_FOUND;
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+
+    int idempotent = 0;
+    r = enroll_device_locked(s, handle, handle_len, user, user_len, pk,
+                             "recovery", "recovery", label, label_len, now, &idempotent);
+    if (r == STORE_ERR_CONFLICT) {
+        /* Req 7's audit row (if any) is kept, but the TICKET IS NOT SPENT:
+         * the whole transaction rolls back, so a pk-in-use typo does not cost
+         * the user their one way back in. */
+        tx_rollback(s);
+        return STORE_ERR_CONFLICT;
+    }
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (idempotent) {
+        /* The handle already holds exactly this key. Nothing to do -- and the
+         * ticket is NOT spent, because nothing was recovered. */
+        tx_rollback(s);
+        return STORE_OK;
+    }
     return tx_commit(s);
 }
 
