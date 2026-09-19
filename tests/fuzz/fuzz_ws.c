@@ -136,8 +136,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size > fuzz_target_max_len) { return 0; }
 
+    /* libFuzzer hands a NULL pointer with a zero length for the empty input,
+     * and glibc declares memcpy/memcmp's pointer arguments `nonnull` -- so
+     * memcpy(dst, NULL, 0) is undefined behaviour even though it copies
+     * nothing. Linux clang UBSan says so; macOS UBSan does not, which is why
+     * this survived V4-10a and turned the first CI run that ever saw that
+     * commit red (audit finding F64). The guard is the whole fix; the
+     * comparisons below are guarded the same way. */
     static uint8_t copy[16384];
-    memcpy(copy, data, size);
+    if (size > 0u) {
+        memcpy(copy, data, size);
+    }
 
     static run_t whole, split, again;
     run(data, size, 0u, 0, &whole);
@@ -145,7 +154,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     run(data, size, 1u, 0, &split);
 
     /* (5) deterministic, and the input is untouched. */
-    FUZZ_ASSERT(memcmp(copy, data, size) == 0, "the WebSocket decoder modified its input");
+    FUZZ_ASSERT(size == 0u || memcmp(copy, data, size) == 0,
+                "the WebSocket decoder modified its input");
     FUZZ_ASSERT(whole.failed == again.failed && whole.total == again.total &&
                 whole.count == again.count &&
                 memcmp(whole.frames, again.frames, whole.total) == 0,
@@ -185,7 +195,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     run(data, size, 0u, 1, &pagain);
     run(data, size, 1u, 1, &psplit);
 
-    FUZZ_ASSERT(memcmp(copy, data, size) == 0, "the PROXY+WebSocket decoder modified its input");
+    FUZZ_ASSERT(size == 0u || memcmp(copy, data, size) == 0,
+                "the PROXY+WebSocket decoder modified its input");
     FUZZ_ASSERT(pwhole.failed == pagain.failed && pwhole.total == pagain.total &&
                 pwhole.count == pagain.count &&
                 memcmp(pwhole.frames, pagain.frames, pwhole.total) == 0,

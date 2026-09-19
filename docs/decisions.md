@@ -4851,6 +4851,23 @@ byte-exactly. Pushing that branch is an outward-facing action, and this project
 takes those only on instruction. Until it runs, the count above is the honest
 one and `tools/README.md` says so in those words.
 
+### Two defects that only a push could find
+
+The first CI run that ever saw V4-10a was V4-10b's push, because V4-10a had
+been held back for an instruction. `ubuntu-latest·clang·ubsan` went red
+immediately: `fuzz_ws.c` copies the input to compare against later, and
+libFuzzer hands a NULL pointer with a zero length for the empty input, which
+glibc's `nonnull` declaration of `memcpy` makes undefined behaviour. **macOS
+UBSan does not diagnose it** — so a fresh local UBSan suite, run to this
+project's full standard, passed through it twice (**F64**).
+
+That is the same shape as **F55**, one layer up: local verification here is
+macOS-shaped, and the CI matrix exists precisely because it is. A verified
+commit waiting on an unrelated instruction defers the half of the verification
+that cannot be reproduced on the developer's machine, and nobody notices for a
+step. Recorded as **F65**, because the lesson is about the process rather than
+about either defect.
+
 ### Spec gaps recorded, not fixed
 
 **F56** (`ERROR 0x04` is unemittable), **F57** (Req 11 says "Local API callers"
