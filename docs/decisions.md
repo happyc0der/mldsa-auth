@@ -4833,23 +4833,41 @@ The leg's last check is the one that makes the others mean something: with
 It is not a CTest. A suite gate that silently depends on a container registry
 is a gate that fails for reasons that have nothing to do with the code.
 
-### The nightly gap: the edit is written, the bring-up is owed
+### The nightly gap closes
 
-The nightly verifies **123 of the 160** mutations it claims authority over.
-`.github/workflows/nightly.yml` on the **`nightly-bringup` branch** adds `v49d`,
-`v50a` and `v50b` to the campaign matrix, `ws` to the 600-second fuzz budgets,
-and a `mutation-anchors` job that **gates** the campaigns (`needs:`) rather
-than running beside them — a rotted anchor aborts the runner, and learning that
-after three hours of mutation runs costs three hours to discover what five
-minutes knew. That tool earned the position during V4-10a by catching v48b's
-C4, and it caught two of this step's own anchors on their first dry run.
+The nightly had been verifying **123 of the 160** mutations it claimed
+authority over. `v49d`, `v50a` and `v50b` join the campaign matrix, `ws` joins
+the 600-second fuzz budgets, and `check_mutation_anchors.py` becomes a job that
+**gates** the campaigns (`needs:`) rather than running beside them — a rotted
+anchor aborts the runner, and learning that after three hours of mutation runs
+costs three hours to discover what five minutes knew. That tool earned the
+position during V4-10a by catching v48b's C4, and it caught two of this step's
+own anchors on their first dry run.
 
-It is **not on `main`**, and that is V3-3's decision 1 held to rather than
-waived: a workflow reaches `main` only after it has gone green on its own
-bring-up branch, with a deliberately-broken control shown red and reverted
-byte-exactly. Pushing that branch is an outward-facing action, and this project
-takes those only on instruction. Until it runs, the count above is the honest
-one and `tools/README.md` says so in those words.
+Brought up on its own branch, per V3-3 decision 1, and all three states are on
+the record:
+
+- **Green**, run `35464513850`, 33/33 on the first attempt. v49d G1–G15,
+  v50a H1–H9 and v50b J1–J13 every one `KILLED`, each campaign ending `final:
+  all sources restored; all artifacts identical to clean fingerprints`;
+  `fuzz_ws` 671,534 runs at `max_len 16384`, crashes 0, artifacts 0; the
+  anchors job reporting `180 anchors checked; 160 mutations across 19
+  campaigns`.
+- **Red**, run `35468417507`, with v50b's J1 expectation rotted to text no
+  check prints:
+
+      J1  mutant-in-binaries  SURVIVED(BAD: [CONTROL: this text is printed by
+      no check anywhere]) | restored=clean | clean-suite=PASS | residue=0
+
+  and `mutations · v50b` was the **only** campaign that failed — the redness
+  was targeted, not collateral. A gate that has never been shown to fail is
+  exactly what this milestone exists to stop.
+- **Green again**, run `35471972896`, 33/33, after restoring the expectation
+  byte-exactly (`sha256 dbbeea8c484ba007a8fa0a9391d0cef61935ae3ade21d15e97d709f262855b8d`,
+  matching the pre-control commit) — J1 back to `KILLED(2 named)`.
+
+Every committed campaign now runs nightly: 160 mutations across 19 campaigns,
+eighteen on Linux and v35 on macOS, plus eleven fuzz targets at 600 s each.
 
 ### Two defects that only a push could find
 
