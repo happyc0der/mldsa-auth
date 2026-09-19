@@ -7,6 +7,8 @@ add_library(mldsa_authd STATIC
   authd_config.c
   base32.c
   recovery.c
+  sha1.c
+  ws.c
   authmsg.c
   tokens.c
   localapi.c

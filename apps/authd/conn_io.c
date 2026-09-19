@@ -20,6 +20,9 @@ void conn_io_set_mode(conn_io_t *c, conn_io_mode_t mode)
 {
     if (c != NULL) {
         c->mode = mode;
+        if (mode == CONN_IO_MODE_WS) {
+            ws_init(&c->ws);
+        }
     }
 }
 
@@ -66,6 +69,22 @@ static conn_io_status_t note_line_cap(conn_io_t *c)
  * cannot follow a bad frame with a good one and be forgiven. */
 static conn_io_status_t note_header(conn_io_t *c)
 {
+    /* While a WebSocket connection is still buffering its HTTP request, `in`
+     * holds TEXT, not a frame header. "GET " read as a big-endian length is
+     * 1195725856, which poisons the connection before the upgrade is even
+     * parsed. push_ws() already knows not to call this -- but
+     * conn_io_next_frame() calls it too, and the event loop calls THAT after
+     * every read, so the guard has to live here, at the single point that
+     * interprets `in` as a frame.
+     *
+     * Found by fuzz_ws on its first run, and it was a deployable bug rather
+     * than a theoretical one: it only appears when the request arrives in more
+     * than one read, which is what a real network does as soon as the request
+     * crosses a segment boundary. Every hand-written test wrote it in one
+     * write() and passed. */
+    if (c->mode == CONN_IO_MODE_WS && c->ws.stage == WS_STAGE_UPGRADE) {
+        return CONN_IO_OK;
+    }
     if (c->frame_len != 0u || c->in_len < AUTHD_FRAME_HEADER) {
         return CONN_IO_OK;
     }
@@ -78,6 +97,105 @@ static conn_io_status_t note_header(conn_io_t *c)
     return CONN_IO_OK;
 }
 
+/* Unmasked DATA payload goes straight into the frame buffer: that is what
+ * makes the WebSocket invisible to conn_io_next_frame and to on_frame. */
+static int ws_sink_in(void *ctx, const uint8_t *p, size_t n)
+{
+    conn_io_t *c = (conn_io_t *)ctx;
+    if (n > sizeof c->in - c->in_len) {
+        return -1;                       /* AUTHD_FRAME_MAX, enforced here */
+    }
+    memcpy(c->in + c->in_len, p, n);
+    c->in_len += n;
+    return 0;
+}
+
+static conn_io_status_t ws_feed(conn_io_t *c, const uint8_t *p, size_t n)
+{
+    if (ws_consume(&c->ws, p, n, ws_sink_in, c) == WS_ERR_PROTOCOL) {
+        c->failed = 1;
+        return CONN_IO_ERR_PROTOCOL;
+    }
+    return note_header(c);
+}
+
+/* Finds the end of an HTTP header block, returning its length including the
+ * terminator, or 0 while it is still incomplete. */
+static size_t end_of_headers(const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i + 3u < n; i++) {
+        if (p[i] == '\r' && p[i + 1u] == '\n' && p[i + 2u] == '\r' && p[i + 3u] == '\n') {
+            return i + 4u;
+        }
+    }
+    return 0u;
+}
+
+static conn_io_status_t push_ws(conn_io_t *c, const uint8_t *data, size_t n)
+{
+    if (c->ws.stage != WS_STAGE_UPGRADE) {
+        return ws_feed(c, data, n);
+    }
+
+    /* The request is staged in `in` -- nothing else is there yet, and
+     * note_header() is deliberately NOT called while it sits there: "GET "
+     * read as a big-endian length is 1195725856, which would poison the
+     * connection before the upgrade was even parsed. */
+    if (n > sizeof c->in - c->in_len) {
+        c->failed = 1;
+        return CONN_IO_ERR_OVERFLOW;
+    }
+    memcpy(c->in + c->in_len, data, n);
+    c->in_len += n;
+
+    const size_t req_len = end_of_headers(c->in, c->in_len);
+    if (req_len == 0u) {
+        /* The cap applies to the HEADER BLOCK, and therefore only while it is
+         * still incomplete. Applying it to `in_len` outright was wrong: a peer
+         * that pipelines its first frame behind the request -- or a proxy that
+         * coalesces the two into one write -- delivers far more than 4096
+         * bytes in a single push while the request itself is ~160, and the
+         * connection was refused for a request that was never over-long.
+         * fuzz_ws found it: one push failed where byte-at-a-time succeeded. */
+        if (c->in_len > WS_UPGRADE_MAX) {
+            c->failed = 1;
+            return CONN_IO_ERR_PROTOCOL;
+        }
+        return CONN_IO_OK;               /* still buffering the request */
+    }
+    if (req_len > WS_UPGRADE_MAX) {
+        c->failed = 1;
+        return CONN_IO_ERR_PROTOCOL;
+    }
+    if (ws_upgrade(&c->ws, c->in, req_len) != WS_OK) {
+        c->failed = 1;
+        return CONN_IO_ERR_PROTOCOL;
+    }
+
+    /* Anything the client pipelined behind the request is already WebSocket.
+     *
+     * This buffer is sized from the INPUT BUFFER, not from WS_UPGRADE_MAX. It
+     * was WS_UPGRADE_MAX, which was safe only while the cap applied to the
+     * whole stream -- and the fix one commit earlier (F51) deliberately made
+     * the cap apply to the header block alone, so the leftover can now be as
+     * large as `in` itself. ASan caught the overflow the same afternoon the
+     * fix created it, which is the argument for running the sanitizer tree
+     * before the campaign rather than after.
+     *
+     * It is `static` because the daemon is one process and one thread by
+     * design (V4 decision 2) and push_ws is not reentrant in any case; a
+     * 12 KB frame on the event loop's stack for every read would be the
+     * worse trade. Wiped below, like every other buffer that held peer bytes. */
+    static uint8_t rest[AUTHD_IN_BUF_BYTES];
+    const size_t rest_len = c->in_len - req_len;
+    memcpy(rest, c->in + req_len, rest_len);
+    sodium_memzero(c->in, c->in_len);
+    c->in_len = 0u;
+    const conn_io_status_t r = (rest_len > 0u) ? ws_feed(c, rest, rest_len) : CONN_IO_OK;
+    sodium_memzero(rest, rest_len);
+    return r;
+}
+
 conn_io_status_t conn_io_push(conn_io_t *c, const uint8_t *data, size_t n)
 {
     if (c == NULL || (data == NULL && n != 0u)) {
@@ -85,6 +203,9 @@ conn_io_status_t conn_io_push(conn_io_t *c, const uint8_t *data, size_t n)
     }
     if (c->failed) {
         return CONN_IO_ERR_PROTOCOL;
+    }
+    if (c->mode == CONN_IO_MODE_WS) {
+        return push_ws(c, data, n);
     }
     if (n == 0u) {
         return (c->mode == CONN_IO_MODE_LINE) ? note_line_cap(c) : note_header(c);
@@ -191,6 +312,26 @@ conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len)
         c->out_sent = 0u;
         return CONN_IO_OK;
     }
+    if (c->mode == CONN_IO_MODE_WS) {
+        /* One protocol frame per binary message (spec §7.1), so the length
+         * prefix goes INSIDE the WebSocket payload and the caller's bound is
+         * unchanged. Server frames are never masked (RFC 6455 §5.1). */
+        const size_t inner = (size_t)AUTHD_FRAME_HEADER + len;
+        uint8_t h[WS_SRV_HDR_MAX];
+        const size_t hl = ws_server_header(h, (uint64_t)inner, WS_OP_BINARY);
+        if (hl + inner > sizeof c->out) {
+            return CONN_IO_ERR_ARG;
+        }
+        memcpy(c->out, h, hl);
+        c->out[hl]      = (uint8_t)((len >> 24) & 0xffu);
+        c->out[hl + 1u] = (uint8_t)((len >> 16) & 0xffu);
+        c->out[hl + 2u] = (uint8_t)((len >> 8) & 0xffu);
+        c->out[hl + 3u] = (uint8_t)(len & 0xffu);
+        memcpy(c->out + hl + AUTHD_FRAME_HEADER, payload, len);
+        c->out_len = hl + inner;
+        c->out_sent = 0u;
+        return CONN_IO_OK;
+    }
     c->out[0] = (uint8_t)((len >> 24) & 0xffu);
     c->out[1] = (uint8_t)((len >> 16) & 0xffu);
     c->out[2] = (uint8_t)((len >> 8) & 0xffu);
@@ -201,9 +342,25 @@ conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len)
     return CONN_IO_OK;
 }
 
+/* WS control and handshake replies jump the queue. The write path in evloop.c
+ * goes through conn_io_pending/_ptr/_sent and nothing else, so giving
+ * `ws.reply` priority here IS the whole output integration: slot_writable does
+ * not change, and the half-duplex rule now correctly counts a pending 101 or
+ * Pong as "there is something to send". */
+static int ws_reply_pending(const conn_io_t *c)
+{
+    return c->mode == CONN_IO_MODE_WS && c->ws.reply_len > c->ws.reply_sent;
+}
+
 size_t conn_io_pending(const conn_io_t *c)
 {
-    if (c == NULL || c->out_len <= c->out_sent) {
+    if (c == NULL) {
+        return 0u;
+    }
+    if (ws_reply_pending(c)) {
+        return c->ws.reply_len - c->ws.reply_sent;
+    }
+    if (c->out_len <= c->out_sent) {
         return 0u;
     }
     return c->out_len - c->out_sent;
@@ -214,12 +371,25 @@ const uint8_t *conn_io_pending_ptr(const conn_io_t *c)
     if (c == NULL) {
         return NULL;
     }
+    if (ws_reply_pending(c)) {
+        return c->ws.reply + c->ws.reply_sent;
+    }
     return c->out + c->out_sent;
 }
 
 void conn_io_sent(conn_io_t *c, size_t n)
 {
     if (c == NULL) {
+        return;
+    }
+    if (ws_reply_pending(c)) {
+        const size_t left = c->ws.reply_len - c->ws.reply_sent;
+        c->ws.reply_sent += (n > left) ? left : n;
+        if (c->ws.reply_sent >= c->ws.reply_len) {
+            sodium_memzero(c->ws.reply, c->ws.reply_len);
+            c->ws.reply_len = 0u;
+            c->ws.reply_sent = 0u;
+        }
         return;
     }
     const size_t pending = conn_io_pending(c);

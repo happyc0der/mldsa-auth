@@ -840,7 +840,102 @@ typedef struct {
     uint8_t     hsid[AUTHMSG_HANDSHAKE_ID_BYTES];
     authmsg_login_code_t code;
     int         live;
+    /* The proxy-facing Unix socket speaks WebSocket (spec §7.1); the loopback
+     * port an operator tunnels to speaks the frame stream raw. Which one this
+     * is decides how a frame is put on the wire, and nothing else -- the
+     * handshake, the session and every message above are identical. */
+    int         ws;
 } client_session_t;
+
+/* ---- the WebSocket carrier, client side -------------------------------- */
+
+/* Completes the RFC 6455 opening handshake. The accept value is CHECKED: a
+ * client that skipped it would happily "upgrade" with something that never
+ * read its key. */
+static int ws_do_upgrade(client_session_t *cs, const char *state)
+{
+    uint8_t nonce[16];
+    randombytes_buf(nonce, sizeof nonce);
+
+    char req[512];
+    size_t req_len = 0;
+    char expect[WS_ACCEPT_B64_LEN + 1u];
+    if (ws_client_request(req, sizeof req, &req_len, "/authd/v1", state, nonce, expect) != 0) {
+        return -1;
+    }
+    if (net_write_all(&cs->conn, (const uint8_t *)req, req_len, cs->deadline) != NET_OK) {
+        return -1;
+    }
+
+    /* The response header block is small and bounded; reading it a byte at a
+     * time keeps this to one primitive (net_read_exact) and cannot over-read
+     * into the first WebSocket frame. */
+    uint8_t resp[1024];
+    size_t n = 0;
+    while (n < sizeof resp) {
+        size_t got = 0;
+        if (net_read_exact(&cs->conn, resp + n, 1u, cs->deadline, &got) != NET_OK) {
+            return -1;
+        }
+        n++;
+        if (n >= 4u && memcmp(resp + n - 4u, "\r\n\r\n", 4) == 0) {
+            break;
+        }
+    }
+    return ws_client_check_101(resp, n, expect);
+}
+
+/* The shared reader in ws.c, over this session's socket. */
+static int cs_read_exact(void *ctx, uint8_t *buf, size_t n)
+{
+    client_session_t *cs = (client_session_t *)ctx;
+    size_t got = 0;
+    const net_status_t ns = net_read_exact(&cs->conn, buf, n, cs->deadline, &got);
+    if (ns == NET_OK)  { return 0; }
+    if (ns == NET_EOF && got == 0u) { return 1; }   /* clean EOF at a boundary */
+    return -1;
+}
+
+/* frame_send/frame_recv, or the same thing inside a WebSocket message. The
+ * callers below are identical either way, which is the point. */
+static frame_status_t cs_send(client_session_t *cs, uint8_t *buf, size_t payload_len)
+{
+    if (!cs->ws) {
+        return cs_send(cs, buf, payload_len);
+    }
+    frame_put_header(buf, (uint32_t)payload_len);
+    static uint8_t wf[WS_SRV_HDR_MAX + 4u + FRAME_BUF_BYTES];
+    uint8_t mask[4];
+    randombytes_buf(mask, sizeof mask);
+    const size_t n = ws_client_frame(wf, sizeof wf, buf, FRAME_HEADER_BYTES + payload_len, mask);
+    if (n == 0u) { return FRAME_INVALID_ARG; }
+    const net_status_t ns = net_write_all(&cs->conn, wf, n, cs->deadline);
+    sodium_memzero(wf, n);
+    return (ns == NET_OK) ? FRAME_OK : FRAME_IO;
+}
+
+static frame_status_t cs_recv(client_session_t *cs, uint8_t *buf, size_t min_len, size_t max_len,
+                              size_t *payload_len)
+{
+    if (!cs->ws) {
+        return frame_recv(&cs->conn, buf, min_len, max_len, payload_len, cs->deadline);
+    }
+    *payload_len = 0u;
+    size_t msg = 0u;
+    const ws_client_status_t ws = ws_client_read_message(cs_read_exact, cs, buf,
+                                                         FRAME_HEADER_BYTES + max_len, &msg);
+    if (ws == WS_CLIENT_CLOSED)   { return FRAME_EOF; }
+    if (ws == WS_CLIENT_IO)       { return FRAME_IO; }
+    if (ws != WS_CLIENT_OK)       { return FRAME_BAD_LENGTH; }
+    if (msg < FRAME_HEADER_BYTES) { return FRAME_TRUNCATED; }
+    const uint32_t plen = frame_get_header(buf);
+    if ((size_t)plen != msg - FRAME_HEADER_BYTES || plen < min_len || plen > max_len) {
+        return FRAME_BAD_LENGTH;
+    }
+    /* frame_recv's contract: payload at buf + FRAME_HEADER_BYTES. It already is. */
+    *payload_len = plen;
+    return FRAME_OK;
+}
 
 static void client_session_close(client_session_t *cs)
 {
@@ -864,6 +959,7 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
                                const uint8_t *sid, size_t sid_len,
                                const uint8_t *server_pk,
                                const char *unix_path, uint16_t port,
+                               const char *state,
                                client_session_t *cs)
 {
     memset(cs, 0, sizeof *cs);
@@ -886,6 +982,19 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
         return EX_FAIL;
     }
 
+    /* The Unix socket IS the proxy-facing listener, and that one speaks
+     * WebSocket (spec §7.1). The loopback port is the operator's tunnel and
+     * stays raw. Nothing above this line knows the difference. */
+    cs->ws = (unix_path != NULL);
+    if (cs->ws && ws_do_upgrade(cs, state) != 0) {
+        if (!quiet) {
+            fprintf(stderr, "%s %s: WebSocket upgrade failed\n", prog, sub);
+        }
+        net_close(&cs->conn);
+        keystore_wipe(&cs->pins);
+        return EX_FAIL;
+    }
+
     static uint8_t tx[FRAME_BUF_BYTES];
     static uint8_t rx[FRAME_BUF_BYTES];
     static uint8_t pt[SESSION_MAX_PLAINTEXT_BYTES];
@@ -901,9 +1010,9 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
     hst = handshake_initiator_create_client_hello(&hs, tx + FRAME_HEADER_BYTES,
                                                   FRAME_MAX_PAYLOAD, &out_len);
     if (hst != HANDSHAKE_OK) { goto fail; }
-    if (frame_send(&cs->conn, tx, out_len, cs->deadline) != FRAME_OK) { goto fail_io; }
+    if (cs_send(cs, tx, out_len) != FRAME_OK) { goto fail_io; }
     stage = "server-hello";
-    if (frame_recv(&cs->conn, rx, 1u, FRAME_MAX_SERVER_HELLO, &len, cs->deadline) != FRAME_OK) {
+    if (cs_recv(cs, rx, 1u, FRAME_MAX_SERVER_HELLO, &len) != FRAME_OK) {
         goto fail_io;
     }
     hst = handshake_initiator_verify_server_hello(&hs, rx + FRAME_HEADER_BYTES, len);
@@ -912,7 +1021,7 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
     hst = handshake_initiator_create_client_auth(&hs, tx + FRAME_HEADER_BYTES,
                                                  FRAME_MAX_PAYLOAD, &out_len);
     if (hst != HANDSHAKE_OK) { goto fail; }
-    if (frame_send(&cs->conn, tx, out_len, cs->deadline) != FRAME_OK) { goto fail_io; }
+    if (cs_send(cs, tx, out_len) != FRAME_OK) { goto fail_io; }
     hst = handshake_initiator_finish(&hs);
     if (hst != HANDSHAKE_OK) { goto fail; }
     /* Captured BEFORE session_init consumes the context: ROTATE's digest binds
@@ -928,7 +1037,7 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
         }
     }
     stage = "login-code";
-    if (frame_recv(&cs->conn, rx, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, &len, cs->deadline)
+    if (cs_recv(cs, rx, FRAME_CONFIRM_MIN, FRAME_CONFIRM_MAX, &len)
             != FRAME_OK) {
         goto fail_io;
     }
@@ -975,7 +1084,7 @@ static void client_say_bye(client_session_t *cs)
     if (cs->live && authmsg_encode_bye(body, sizeof body, &n) == AUTHMSG_OK &&
         session_seal(&cs->sess, body, n, tx + FRAME_HEADER_BYTES, FRAME_MAX_PAYLOAD,
                      &sealed) == SESSION_OK) {
-        (void)frame_send(&cs->conn, tx, sealed, cs->deadline);
+        (void)cs_send(cs, tx, sealed);
     }
     client_session_close(cs);
 }
@@ -1085,6 +1194,10 @@ typedef struct {
     const char *server_pub;
     const char *unix_path;
     uint16_t port;
+    /* §7.1: the opaque value the site put in its pre-login session. It rides
+     * the WebSocket URL, so it means nothing on the raw tunnel listener --
+     * which is exactly why the daemon binds SHA-256("") there. */
+    const char *state;
 } client_args_t;
 
 static int parse_client_args(int argc, char **argv, const char *prog, const char *sub,
@@ -1100,6 +1213,7 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         else if (strcmp(argv[i], "--server-id") == 0 && has)       { server_id = argv[++i]; }
         else if (strcmp(argv[i], "--server-pub") == 0 && has)      { a->server_pub = argv[++i]; }
         else if (strcmp(argv[i], "--unix") == 0 && has)            { a->unix_path = argv[++i]; }
+        else if (strcmp(argv[i], "--state") == 0 && has)           { a->state = argv[++i]; }
         else if (strcmp(argv[i], "--port") == 0 && has)            { port_s = argv[++i]; }
         else { return unexpected(prog, sub, argv[i]); }
     }
@@ -1111,7 +1225,7 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         (port_s != NULL && demo_parse_u64(port_s, 1u, 65535u, &port) != 0)) {
         return need(prog, sub,
                     "--handle H --key H.ek --passphrase-file PATH --server-id ID "
-                    "--server-pub server.pub (--unix PATH | --port N)");
+                    "--server-pub server.pub (--unix PATH | --port N) [--state S]");
     }
     a->port = (uint16_t)port;
     return EX_OK;
@@ -1158,7 +1272,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
 
     if (keyfile_open(a->key_path, a->hid, a->hid_len, pass, pass_len, &ek_kp, NULL) == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &ek_kp, a->hid, a->hid_len, a->sid, a->sid_len,
-                                server_pk, a->unix_path, a->port, &probe) == EX_OK) {
+                                server_pk, a->unix_path, a->port, a->state, &probe) == EX_OK) {
             ek_ok = 1;
             client_say_bye(&probe);
         }
@@ -1166,7 +1280,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     if (!ek_ok &&
         keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL) == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &next_kp, a->hid, a->hid_len, a->sid, a->sid_len,
-                                server_pk, a->unix_path, a->port, &probe) == EX_OK) {
+                                server_pk, a->unix_path, a->port, a->state, &probe) == EX_OK) {
             next_ok = 1;
             client_say_bye(&probe);
         }
@@ -1244,7 +1358,7 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
 
     client_session_t cs;
     rc = client_open_session(prog, "login", 0, &kp, a.hid, a.hid_len, a.sid, a.sid_len,
-                             server_pk, a.unix_path, a.port, &cs);
+                             server_pk, a.unix_path, a.port, a.state, &cs);
     mldsa_keypair_free(&kp);
     if (rc != EX_OK) { return rc; }
 
@@ -1353,7 +1467,7 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
 
     client_session_t cs;
     rc = client_open_session(prog, "rotate", 0, &old_kp, a.hid, a.hid_len, a.sid, a.sid_len,
-                             server_pk, a.unix_path, a.port, &cs);
+                             server_pk, a.unix_path, a.port, a.state, &cs);
     if (rc != EX_OK) {
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
@@ -1382,11 +1496,11 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
     }
     if (session_seal(&cs.sess, body, n, tx + FRAME_HEADER_BYTES, FRAME_MAX_PAYLOAD,
                      &sealed) != SESSION_OK ||
-        frame_send(&cs.conn, tx, sealed, cs.deadline) != FRAME_OK) {
+        cs_send(&cs, tx, sealed) != FRAME_OK) {
         (void)failed(prog, "rotate", next_path, "cannot-send-rotate");
         goto out;
     }
-    if (frame_recv(&cs.conn, rx, FRAME_MIN_RECORD, FRAME_MAX_RECORD, &len, cs.deadline)
+    if (cs_recv(&cs, rx, FRAME_MIN_RECORD, FRAME_MAX_RECORD, &len)
             != FRAME_OK) {
         /* No answer is NOT proof that nothing happened -- the daemon may have
          * committed and died before sealing the ACK. .ek.next stays. */
@@ -1461,9 +1575,9 @@ static void client_usage(const char *prog)
             "usage:\n"
             "  %s keygen --dir DIR --passphrase-file PATH\n"
             "  %s login  --handle H --key H.ek --passphrase-file PATH\n"
-            "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
+            "            --server-id ID --server-pub server.pub (--unix PATH | --port N) [--state S]\n"
             "  %s rotate --handle H --key H.ek --passphrase-file PATH\n"
-            "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
+            "            --server-id ID --server-pub server.pub (--unix PATH | --port N) [--state S]\n"
             "\n"
             "keygen prints the new device handle on stdout; login prints the login code as\n"
             "base64url, for pasting into the site's form. rotate replaces this device's key\n"

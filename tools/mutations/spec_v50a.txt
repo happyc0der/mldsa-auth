@@ -1,0 +1,9 @@
+H1|^test_authd_ws$|the RFC 6455 accept KAT reproduces
+H2|^test_authd_ws$|FIPS 180-1 vector
+H3|^test_authd_ws$|a version other than 13 is refused
+H4|^test_authd_ws$|an UNMASKED client frame fails the connection
+H5|^test_authd_ws$|a CONTROL payload never reaches the protocol stream
+H6|^test_authd_ws$|a state longer than 64 bytes is refused
+H7|^test_authd_ws$|the request completes however it is split across reads
+H9|^test_authd_ws$|the code is ACCEPTED against the state the URL carried
+H8|^test_authd_ws$|an upgrade pipelined with its first frame is accepted

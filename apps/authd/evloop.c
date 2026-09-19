@@ -83,6 +83,7 @@ int evloop_add_local_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n
     ev->listen_fd[i] = fd;
     ev->listen_kind[i] = SLOT_KIND_LOCAL;
     ev->listen_is_admin[i] = is_admin ? 1 : 0;
+    ev->listen_ws[i] = 0;
     ev->listen_n_allow[i] = n_allow;
     for (size_t j = 0; j < n_allow; j++) {
         ev->listen_allow[i][j] = allow[j];
@@ -91,7 +92,7 @@ int evloop_add_local_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n
     return 0;
 }
 
-int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid)
+static int add_proto_listener(evloop_t *ev, int fd, uid_t require_uid, int is_ws)
 {
     if (ev == NULL || fd < 0 || ev->n_listeners >= AUTHD_MAX_LISTENERS) {
         return -1;
@@ -100,6 +101,7 @@ int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid)
     ev->listen_fd[i] = fd;
     ev->listen_kind[i] = SLOT_KIND_PROTO;
     ev->listen_is_admin[i] = 0;
+    ev->listen_ws[i] = is_ws ? 1 : 0;
     if (require_uid == (uid_t)-1) {
         ev->listen_n_allow[i] = 0u;
     } else {
@@ -108,6 +110,16 @@ int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid)
     }
     ev->n_listeners++;
     return 0;
+}
+
+int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid)
+{
+    return add_proto_listener(ev, fd, require_uid, 0);
+}
+
+int evloop_add_ws_listener(evloop_t *ev, int fd, uid_t require_uid)
+{
+    return add_proto_listener(ev, fd, require_uid, 1);
 }
 
 size_t evloop_active(const evloop_t *ev)
@@ -134,6 +146,9 @@ void evloop_close_slot(evloop_t *ev, authd_slot_t *s)
     if (local) {
         conn_io_set_mode(&s->io, CONN_IO_MODE_LINE);   /* the mode is the pool's, not the connection's */
     }
+    /* A PROTO slot's mode is the LISTENER's and is re-applied on the next
+     * accept, so nothing is restored here -- conn_io_reset above has already
+     * zeroed the WebSocket state, which is what must not survive a slot. */
     s->state = SLOT_FREE;
     s->deadline_ms = 0;
     s->opened_ms = 0;
@@ -234,7 +249,8 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
             continue;
         }
         conn_io_reset(&s->io);
-        conn_io_set_mode(&s->io, (kind == SLOT_KIND_LOCAL) ? CONN_IO_MODE_LINE : CONN_IO_MODE_FRAME);
+        conn_io_set_mode(&s->io, (kind == SLOT_KIND_LOCAL) ? CONN_IO_MODE_LINE
+                                 : (ev->listen_ws[li] ? CONN_IO_MODE_WS : CONN_IO_MODE_FRAME));
         s->fd = cfd;
         s->kind = kind;
         s->state = SLOT_ACTIVE;

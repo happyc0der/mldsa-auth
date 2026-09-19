@@ -99,6 +99,10 @@ typedef struct {
     int         listen_fd[AUTHD_MAX_LISTENERS];
     slot_kind_t listen_kind[AUTHD_MAX_LISTENERS];
     int         listen_is_admin[AUTHD_MAX_LISTENERS];
+    /* PROTO listeners only: whether the slot speaks WebSocket. It is a
+     * conn_io MODE, not a slot kind -- the WS payload carries the same frame
+     * stream, so everything downstream of conn_io is identical (spec §7.1). */
+    int         listen_ws[AUTHD_MAX_LISTENERS];
     uid_t       listen_allow[AUTHD_MAX_LISTENERS][LISTENER_MAX_ALLOW];
     size_t      listen_n_allow[AUTHD_MAX_LISTENERS];
     size_t n_listeners;
@@ -130,6 +134,12 @@ int evloop_init(evloop_t *ev, authd_slot_t *slots, size_t n_slots,
 
 /* Registers a framed listener (no peer check). At most AUTHD_MAX_LISTENERS. */
 int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid);
+
+/* As evloop_add_listener, but the accepted connections speak WebSocket: the
+ * proxy-facing listener (spec §7.1). Frames, the on_frame callback and the
+ * connection state machine are unchanged -- only the framing on the wire
+ * differs, and conn_io hides it. */
+int evloop_add_ws_listener(evloop_t *ev, int fd, uid_t require_uid);
 
 /* Registers a LINE-oriented local-API listener: its connections come from the
  * local pool, are dispatched to on_line, and are accepted only from a uid in

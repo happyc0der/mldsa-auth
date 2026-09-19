@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "session.h"
+#include "ws.h"
 
 /*
  * Non-blocking frame reassembly for one connection (V4-8a).
@@ -45,16 +46,29 @@
 
 #define AUTHD_FRAME_HEADER 4u
 #define AUTHD_IN_BUF_BYTES  (AUTHD_FRAME_HEADER + AUTHD_FRAME_MAX)
-#define AUTHD_OUT_BUF_BYTES (AUTHD_FRAME_HEADER + AUTHD_FRAME_MAX)
+/* The out buffer carries a WebSocket header too when the slot is in WS mode:
+ * a reply is one WS binary message containing one 4-byte-length frame. Sizing
+ * it here rather than at the call site is what keeps conn_io_queue's bound
+ * (AUTHD_FRAME_MAX of PAYLOAD) the same in all three modes. */
+#define AUTHD_OUT_BUF_BYTES (WS_SRV_HDR_MAX + AUTHD_FRAME_HEADER + AUTHD_FRAME_MAX)
 
-/* A connection is either framed (the protocol listeners) or line-oriented
- * (the local API sockets). The mode is fixed when the slot is bound and
- * decides how push() interprets the bytes: in FRAME mode the first four bytes
- * are a length, in LINE mode they are the start of a command, and confusing
- * the two would make `PING` a 1347375947-byte frame. */
+/* A connection is framed (the raw protocol listener), line-oriented (the local
+ * API sockets) or WebSocket (the proxy-facing listener). The mode is fixed when
+ * the slot is bound and decides how push() interprets the bytes: in FRAME mode
+ * the first four bytes are a length, in LINE mode they are the start of a
+ * command, and confusing the two would make `PING` a 1347375947-byte frame.
+ *
+ * WS is a THIRD MODE rather than a third slot kind on purpose. Spec §7.1 says
+ * the WebSocket payload "carries the existing 4-byte length-prefixed frame
+ * stream unchanged, so one reassembler serves both" -- so WS de-framing
+ * happens here, on the way in, and conn_io_next_frame, slot_readable and the
+ * on_frame callback are all identical for a WebSocket and a raw connection. A
+ * third slot_kind_t would have touched ten sites in evloop.c to achieve the
+ * same thing. */
 typedef enum {
     CONN_IO_MODE_FRAME = 0,
-    CONN_IO_MODE_LINE
+    CONN_IO_MODE_LINE,
+    CONN_IO_MODE_WS
 } conn_io_mode_t;
 
 typedef enum {
@@ -67,6 +81,12 @@ typedef enum {
 
 typedef struct {
     conn_io_mode_t mode;
+    /* WS only: the upgrade state, the frame-in-progress, and any control or
+     * handshake reply owed to the peer. Its `reply` buffer is drained by
+     * conn_io_pending() BEFORE `out`, so a Pong or a 101 can never collide
+     * with a queued data reply -- the loop is half-duplex and would otherwise
+     * answer CONN_IO_ERR_BUSY and drop one of the two. */
+    ws_t ws;
     uint8_t in[AUTHD_IN_BUF_BYTES];
     size_t  in_len;        /* bytes currently buffered */
     size_t  frame_len;     /* FRAME: payload length at the head, 0 = not yet known */

@@ -254,13 +254,26 @@ static int issue_login_code(authd_app_t *app, authd_slot_t *slot, authd_conn_t *
     m.code_expires = (uint64_t)(app->now_unix + (int64_t)app->code_ttl_s);
 
     /* Req 4: the store never sees the code, only its SHA-256. Req 5: it is
-     * bound to {user, handle, handshake_id, SHA-256(state)}. On the raw
-     * listener `state` is the empty string (V4-8b decision 2); V4-10 gives
-     * the WebSocket listener a real one from the URL. */
+     * bound to {user, handle, handshake_id, SHA-256(state)}.
+     *
+     * The `state` comes from the WebSocket URL (§7.1) and lives in the slot's
+     * conn_io, which is where the upgrade parser put it -- so there is no
+     * second copy to keep in step and nothing extra to wipe: conn_io_reset
+     * already zeroes it when the slot is released. On the raw/tunnel listener
+     * there is no URL and the value is the empty string, exactly as V4-8b
+     * fixed it; that is now a property of the slot's MODE rather than of the
+     * whole daemon. */
+    const uint8_t *state = (const uint8_t *)"";
+    size_t state_len = 0u;
+    if (slot->io.mode == CONN_IO_MODE_WS) {
+        state = slot->io.ws.state;
+        state_len = slot->io.ws.state_len;
+    }
+
     uint8_t code_hash[STORE_HASH_BYTES];
     uint8_t state_hash[STORE_HASH_BYTES];
     crypto_hash_sha256(code_hash, m.code, sizeof m.code);
-    crypto_hash_sha256(state_hash, (const uint8_t *)"", 0u);
+    crypto_hash_sha256(state_hash, state, state_len);
 
     int rc = -1;
     if (store_add_login_code(app->store, code_hash,

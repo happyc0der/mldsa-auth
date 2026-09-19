@@ -54,8 +54,12 @@ M = {
  # the code lives for an hour instead of Req 5's 60-second ceiling
  "C3": (CN, [("    m.code_expires = (uint64_t)(app->now_unix + (int64_t)app->code_ttl_s);",
               "    m.code_expires = (uint64_t)(app->now_unix + 3600); /* MUTATION C3: TTL far over Req 5 */")]),
- # the code is not bound to `state`: login-CSRF at the exchange
- "C4": (CN, [("    crypto_hash_sha256(state_hash, (const uint8_t *)\"\", 0u);",
+ # the code is not bound to `state`: login-CSRF at the exchange.
+ # Re-pointed in V4-10a: the binding used to be a literal SHA-256("") because
+ # the raw listener has no URL to carry a state. It is now a hash over the
+ # slot's state, empty on that listener and real on the WebSocket one, so the
+ # anchor moved. The DEFECT and the property it guards are unchanged.
+ "C4": (CN, [("    crypto_hash_sha256(state_hash, state, state_len);",
               "    memset(state_hash, 0, sizeof state_hash); /* MUTATION C4: state binding broken */")]),
  # the confirmation record is empty, as in the demo -- no login code at all
  "C5": (CN, [("        if (authmsg_encode_login_code(content, sizeof content, &n, &m) == AUTHMSG_OK &&\n            queue_sealed(slot, &c->sess, content, n) == 0) {",

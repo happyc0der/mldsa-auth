@@ -54,11 +54,13 @@ typedef struct {
     int                       lfd;        /* protocol listener */
     int                       site_fd;
     int                       admin_fd;
+    int                       ws_fd;      /* the proxy-facing listener: WebSocket */
     uint16_t                  port;
     size_t                    nslots;
     char                      dir[256];
     char                      site_path[320];
     char                      admin_path[320];
+    char                      ws_path[320];
 } h_daemon_t;
 
 static const uint8_t H_SERVER_ID[] = { 'a','u','t','h','d' };
@@ -116,6 +118,12 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
 
     if (listener_open_loopback(0, 16, &d->lfd, &d->port) != LISTENER_OK) { return -1; }
     if (evloop_add_listener(&d->ev, d->lfd, (uid_t)-1) != 0) { return -1; }
+    /* The same daemon also offers the proxy-facing listener, which speaks
+     * WebSocket (spec §7.1). Having both in one fixture is what lets a test
+     * show that the two transports carry the SAME protocol. */
+    snprintf(d->ws_path, sizeof d->ws_path, "%s/w.sock", d->dir);
+    if (listener_open_unix(d->ws_path, 8, LISTENER_MODE_GROUP, &d->ws_fd) != LISTENER_OK) { return -1; }
+    if (evloop_add_ws_listener(&d->ev, d->ws_fd, (uid_t)-1) != 0) { return -1; }
 
     if (with_local) {
         if (evloop_set_local(&d->ev, d->local_slots, H_MAX_LOCAL, localapi_on_line) != 0) { return -1; }
@@ -331,19 +339,105 @@ typedef struct {
     handshake_ctx_t hs;
     session_t       sess;
     keystore_t      pins;
+    int         ws;     /* the WebSocket carrier, not the raw frame stream */
 } h_client_t;
 
 /* The real library initiator over a real socket. Returns 0 when the client
  * side completed (optimistically -- the server may still reject sig_A). */
+/* ---- the WebSocket carrier, client side (shares ws.c with authd_client) --- */
+
+typedef struct { h_daemon_t *d; int fd; } h_ws_rd_t;
+
+/* ws_read_fn over a non-blocking socket that the in-process daemon is also
+ * being pumped on. */
+static inline int h_ws_read(void *ctx, uint8_t *buf, size_t n)
+{
+    h_ws_rd_t *r = (h_ws_rd_t *)ctx;
+    size_t got = 0;
+    for (int i = 0; i < 20000 && got < n; i++) {
+        h_tick(r->d);
+        const ssize_t k = recv(r->fd, buf + got, n - got, MSG_DONTWAIT);
+        if (k > 0) { got += (size_t)k; }
+        else if (k == 0) { return (got == 0u) ? 1 : -1; }
+    }
+    return (got == n) ? 0 : -1;
+}
+
+/* Dials the WebSocket listener and completes the RFC 6455 handshake. */
+static inline int h_ws_connect(h_daemon_t *d, const char *state)
+{
+    const int fd = h_dial_unix(d->ws_path);
+    if (fd < 0) { return -1; }
+    uint8_t nonce[16];
+    randombytes_buf(nonce, sizeof nonce);
+    char req[512], expect[WS_ACCEPT_B64_LEN + 1u];
+    size_t req_len = 0;
+    if (ws_client_request(req, sizeof req, &req_len, "/authd/v1", state, nonce, expect) != 0) {
+        (void)close(fd); return -1;
+    }
+    if (write(fd, req, req_len) != (ssize_t)req_len) { (void)close(fd); return -1; }
+
+    uint8_t resp[1024];
+    size_t n = 0;
+    for (int i = 0; i < 20000 && n < sizeof resp; i++) {
+        h_tick(d);
+        const ssize_t k = recv(fd, resp + n, 1u, MSG_DONTWAIT);
+        if (k > 0) { n++; } else if (k == 0) { break; }
+        if (n >= 4u && memcmp(resp + n - 4u, "\r\n\r\n", 4) == 0) { break; }
+    }
+    if (ws_client_check_101(resp, n, expect) != 0) { (void)close(fd); return -1; }
+    return fd;
+}
+
+static inline int h_ws_send_frame(int fd, const uint8_t *p, size_t n)
+{
+    static uint8_t inner[4u + AUTHD_FRAME_MAX];
+    static uint8_t wire[WS_SRV_HDR_MAX + 4u + 4u + AUTHD_FRAME_MAX];
+    h_put_be32(inner, (uint32_t)n);
+    memcpy(inner + 4, p, n);
+    uint8_t mask[4];
+    randombytes_buf(mask, sizeof mask);
+    const size_t w = ws_client_frame(wire, sizeof wire, inner, 4u + n, mask);
+    if (w == 0u) { return -1; }
+    return (write(fd, wire, w) == (ssize_t)w) ? 0 : -1;
+}
+
+static inline int h_ws_recv_frame(h_daemon_t *d, int fd, uint8_t *out, size_t cap, size_t *out_len)
+{
+    static uint8_t msg[4u + AUTHD_FRAME_MAX];
+    h_ws_rd_t ctx = { d, fd };
+    size_t mlen = 0;
+    if (ws_client_read_message(h_ws_read, &ctx, msg, sizeof msg, &mlen) != WS_CLIENT_OK) { return -1; }
+    if (mlen < 4u) { return -1; }
+    const uint32_t len = h_get_be32(msg);
+    if ((size_t)len != mlen - 4u || (size_t)len > cap) { return -1; }
+    memcpy(out, msg + 4, len);
+    *out_len = len;
+    return 0;
+}
+
+/* h_login, over either transport. `ws_state` non-NULL selects the WebSocket
+ * listener; NULL is the raw loopback one. The handshake between them is
+ * IDENTICAL -- that is the property spec §7.1 claims and this shape proves. */
+static inline int h_login_on(h_daemon_t *d, h_client_t *c, const uint8_t *handle, size_t handle_len,
+                             const mldsa_keypair_t *kp, const char *ws_state);
+
 static inline int h_login(h_daemon_t *d, h_client_t *c, const uint8_t *handle, size_t handle_len,
                           const mldsa_keypair_t *kp)
+{
+    return h_login_on(d, c, handle, handle_len, kp, NULL);
+}
+
+static inline int h_login_on(h_daemon_t *d, h_client_t *c, const uint8_t *handle, size_t handle_len,
+                             const mldsa_keypair_t *kp, const char *ws_state)
 {
     memset(c, 0, sizeof *c);
     keystore_init(&c->pins);
     if (keystore_add(&c->pins, H_SERVER_ID, sizeof H_SERVER_ID, d->server_kp.public_key) != KEYSTORE_OK) {
         return -1;
     }
-    c->fd = h_dial(d->port);
+    c->ws = (ws_state != NULL);
+    c->fd = c->ws ? h_ws_connect(d, ws_state) : h_dial(d->port);
     if (c->fd < 0) { return -1; }
     if (!H_PUMP_UNTIL(d, evloop_active(&d->ev) >= 1u)) { return -1; }
 
@@ -352,12 +446,13 @@ static inline int h_login(h_daemon_t *d, h_client_t *c, const uint8_t *handle, s
     uint8_t buf[AUTHD_FRAME_MAX];
     size_t n = 0;
     if (handshake_initiator_create_client_hello(&c->hs, buf, sizeof buf, &n) != HANDSHAKE_OK) { return -1; }
-    if (h_send_frame(c->fd, buf, n) != 0) { return -1; }
+    if ((c->ws ? h_ws_send_frame(c->fd, buf, n) : h_send_frame(c->fd, buf, n)) != 0) { return -1; }
     size_t sh = 0;
-    if (h_recv_frame(d, c->fd, buf, sizeof buf, &sh) != 0) { return -1; }
+    if ((c->ws ? h_ws_recv_frame(d, c->fd, buf, sizeof buf, &sh)
+               : h_recv_frame(d, c->fd, buf, sizeof buf, &sh)) != 0) { return -1; }
     if (handshake_initiator_verify_server_hello(&c->hs, buf, sh) != HANDSHAKE_OK) { return -2; }
     if (handshake_initiator_create_client_auth(&c->hs, buf, sizeof buf, &n) != HANDSHAKE_OK) { return -1; }
-    if (h_send_frame(c->fd, buf, n) != 0) { return -1; }
+    if ((c->ws ? h_ws_send_frame(c->fd, buf, n) : h_send_frame(c->fd, buf, n)) != 0) { return -1; }
     if (handshake_initiator_finish(&c->hs) != HANDSHAKE_OK) { return -1; }
 
     session_limits_t lim;
@@ -380,7 +475,8 @@ static inline int h_get_login_code(h_daemon_t *d, h_client_t *c, uint8_t code_ou
 {
     uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
     size_t rec_len = 0, pt_len = 0;
-    if (h_recv_frame(d, c->fd, rec, sizeof rec, &rec_len) != 0) { return -1; }
+    if ((c->ws ? h_ws_recv_frame(d, c->fd, rec, sizeof rec, &rec_len)
+               : h_recv_frame(d, c->fd, rec, sizeof rec, &rec_len)) != 0) { return -1; }
     if (session_open(&c->sess, rec, rec_len, pt, sizeof pt, &pt_len) != SESSION_OK) { return -1; }
     if (pt_len != 43u || pt[0] != 0x10u) { return -1; }
     memcpy(code_out, pt + 3, 32u);

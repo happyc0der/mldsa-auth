@@ -4497,3 +4497,131 @@ supersedes (**F44**, decided here); §10.3 does not say that an operator's
 recovery is administrative (**F43**, decided here); and §15 names
 `log_identities` and `log_client_ip`, which exist nowhere, while its promised
 field vocabulary does not match what is emitted (**F46**).
+
+## V4-10a — WebSocket, and three bugs a fuzzer found before a browser could
+
+Milestone A could log in, rotate and recover — over a raw frame stream on a
+loopback socket reached through an SSH tunnel. It could not face a browser.
+V4-10a puts the browser transport in front of the same protocol: spec §6.5's
+framing rides inside WebSocket binary messages, and `src/` does not change by
+a byte.
+
+### The shape the code already wanted
+
+Two findings made this far smaller than the roadmap implied.
+
+**No new listener.** `listen_unix` was already "the proxy-facing Unix socket"
+and already carried the marker `V4-10 adds the proxy uid check`. It becomes the
+WebSocket listener; the loopback port stays raw for the operator's tunnel. That
+matters because `AUTHD_MAX_LISTENERS` is 4 and all four were consumed, and
+exceeding it is a *silent* no-service that already cost V4-9a a debugging
+session.
+
+**No third slot kind.** §7.1 says "one reassembler serves both the WebSocket
+listener and a raw listener", and `conn_io` already dispatched on a `mode` in
+exactly the three places a third needs. `CONN_IO_MODE_WS` leaves
+`slot_readable`, `take_slot`, both `pool < 2` loops and the `on_frame` callback
+untouched; a third `slot_kind_t` would have touched ten sites in `evloop.c`.
+The output side needed nothing either: the write path goes through
+`conn_io_pending/_ptr/_sent`, so giving the WS handshake and control replies
+priority *there* is the whole integration, and `slot_writable` is unchanged.
+
+### A vendored SHA-1, and why that sentence is not as bad as it reads
+
+RFC 6455 fixes the accept value as `base64(SHA-1(key ‖ GUID))`. libsodium
+1.0.22 ships SHA-256, SHA-512, SHA-3, BLAKE2b, HMAC and HKDF and **no SHA-1**;
+the project links no OpenSSL; and Caddy has no "WebSocket in, raw stream out"
+mode, so the daemon must complete the handshake itself. There was nothing to
+choose between.
+
+It is not a security primitive here and RFC 6455 §1.3 does not treat it as one:
+no secret enters it, nothing is authenticated by it, and its collision
+resistance is irrelevant to every property this daemon claims. Its job is to
+prove the server actually read the client's header, so a caching intermediary
+cannot be tricked into replaying a non-WebSocket response. **Scope is the
+control**: it is `static`-scoped to the WS layer, `git grep sha1` should only
+ever find `ws.c`, and it is pinned by FIPS 180-1's three published vectors and
+RFC 6455's own worked example (`dGhlIHNhbXBsZSBub25jZQ==` →
+`s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`). Recorded as finding F53.
+
+### `state` became real, and cost no new storage
+
+`authd_conn.c` hashed a literal `SHA-256("")` and said in a comment that V4-10
+would give the WebSocket listener a real value. It now hashes the slot's state
+— which lives in the slot's `conn_io`, where the upgrade parser put it. There
+is no second copy to keep in step and nothing extra to wipe, because
+`conn_io_reset` already zeroes it. The verifying half needed no change at all:
+`h_exchange` already hashed whatever the site presented and
+`store_consume_login_code_ex` already returned `STORE_CODE_STATE_MISMATCH`.
+Req 5's login-CSRF binding is therefore real on the only transport a browser
+uses, and still the empty string on the tunnel, which has no URL to carry one.
+
+### Three bugs, all found by fuzz_ws, none by the tests
+
+This is the part worth reading.
+
+`fuzz_ws` drives `conn_io` in WS mode — the upgrade parser, the frame decoder,
+the unmasking and the frame reassembler in one place — and its oracle is
+**self-consistency**: feeding the input in one push and one byte at a time must
+produce the same frames and the same verdict, because §7.1 says message
+boundaries on input are irrelevant.
+
+1. **A request split across reads poisoned the connection (F50, High).**
+   `conn_io_next_frame()` calls `note_header()`, and the event loop calls it
+   after every read — so a buffered `"GET "` was read as a 1195725856-byte
+   frame length. `push_ws` already knew not to interpret those bytes; the
+   second caller did not. It only appears when the request arrives in more than
+   one read, which is what a real network does as soon as the request crosses a
+   segment boundary. **Every hand-written test wrote the request in one
+   `write()` and passed.**
+2. **An upgrade pipelined with its first frame was refused (F51).** The
+   4096-byte cap was applied to the whole buffered stream rather than to the
+   header block.
+3. **Bytes after a Close were dropped in one push and an error in the next
+   (F52).** Both safe, but disagreeing — and a coalescing proxy turns that into
+   a spurious protocol error in the operator's log.
+
+None of these is exotic. All three are what a proxy and a real network do
+routinely, and all three would have shipped.
+
+### The oracle was wrong once, and that is recorded too
+
+Between (1) and (2) the target flagged a divergence that was **the oracle's
+fault, not the code's**: the harness drained frames between pushes, so
+byte-at-a-time freed buffer space that one big push did not, and the two runs
+legitimately hit capacity at different points. The first fix weakened the
+assertion to a common-prefix comparison — and that was worse, because a
+probe (a mask offset that fails to carry across a split payload) then passed
+undetected: the broken run failed early, leaving a zero-length prefix that
+compared equal. The real fix was to remove the asymmetry rather than the
+assertion: nothing is drained between pushes, both runs hit every bound at the
+same point, and the comparison is exact again. An oracle that states more than
+it can justify is a false alarm waiting to happen; one that states less is a
+bug waiting to ship.
+
+### Scope taken deliberately, and declared
+
+`authd_client` learned to speak WebSocket. The plan had the e2e move to a
+loopback port instead, which would have needed a fixed port (a CI collision
+risk, since `listen_port = 0` means *disabled*, not ephemeral) and would have
+left the new parser tested only in-process. Teaching the CLI instead keeps
+`authd_e2e` exercising the shipped binaries over the real transport — a full
+post-quantum login, plus the rotation and recovery legs, now run over
+WebSocket across real processes. The cost is one client-side reader, and it
+lives in `ws.c` so the CLI, the test harness and the fuzz target share it
+rather than growing three copies.
+
+The CLI's first draft had its own bug worth recording: it read the opcode out
+of `h[0]` *after* the extended-length read had overwritten `h`. It surfaced on
+the 4545-byte ServerHello, the first message long enough to need a 16-bit
+length — which is to say, on the first real message, not on a contrived one.
+
+### What V4-10b owes
+
+The proxy's uid check (`authd_main.c` still says so in a comment), PROXY
+protocol v2 fail-closed, the rate limiter — whose numbers the spec does not fix
+anywhere, so they become bounded config keys — the Caddy configuration, and the
+nightly bring-up that also discharges **v49d** and
+**`tools/audit/check_mutation_anchors.py`**, which V4-9d committed and wired
+nowhere. That tool earned its keep during this step: it caught v48b's C4 anchor
+rotting against the `state` change *before* the campaign ran.

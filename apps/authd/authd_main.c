@@ -288,8 +288,12 @@ int main(int argc, char **argv)
             fprintf(stderr, "mldsa-authd: unix listener %s: %s\n", unix_path, listener_status_name(ls));
             goto listener_failed;
         }
-        /* V4-10 adds the proxy uid check; today this relies on the 0660 mode. */
-        if (evloop_add_listener(&ev, unix_fd, (uid_t)-1) != 0) {
+        /* The proxy-facing listener speaks WebSocket (spec §7.1): a browser
+         * reaches it through the site's TLS proxy, and the WS payload carries
+         * the same frame stream the tunnel listener carries raw. V4-10b adds
+         * the proxy uid check and PROXY v2; today this still relies on the
+         * 0660 mode. */
+        if (evloop_add_ws_listener(&ev, unix_fd, (uid_t)-1) != 0) {
             fprintf(stderr, "mldsa-authd: cannot register the unix listener\n");
             goto listener_failed;
         }

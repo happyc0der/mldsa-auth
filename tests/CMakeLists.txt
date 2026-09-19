@@ -125,6 +125,16 @@ target_compile_definitions(test_authd_conn PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_
 target_link_options(test_authd_conn PRIVATE ${MLDSA_SANITIZE_FLAGS})
 add_test(NAME test_authd_conn COMMAND test_authd_conn)
 
+# V4-10a: the WebSocket carrier. Its own target rather than more cases in
+# test_authd_conn, because the upgrade parser is the first attacker-facing TEXT
+# parser in the tree and deserves a named place to fail.
+add_executable(test_authd_ws test_authd_ws.c)
+target_link_libraries(test_authd_ws PRIVATE mldsa_authd)
+target_compile_options(test_authd_ws PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_ws PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_authd_ws PRIVATE ${MLDSA_SANITIZE_FLAGS})
+add_test(NAME test_authd_ws COMMAND test_authd_ws)
+
 # V4-9a: the local socket protocol, tokens and revocation reaching live
 # sessions. Shares tests/authd_harness.h with test_authd_conn so both drive
 # the same in-process daemon.
