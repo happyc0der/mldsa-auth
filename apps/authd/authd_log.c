@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "proxy_v2.h"
+
 static FILE *g_dest = NULL;
 static authd_log_level_t g_min = AUTHD_LOG_INFO;
 
@@ -50,6 +52,19 @@ void authd_log_slot(authd_log_level_t lvl, const char *event, size_t slot)
         return;
     }
     fprintf(out(), "%s event=%s slot=%zu\n", level_name(lvl), event ? event : "?", slot);
+    fflush(out());
+}
+
+void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
+                         const struct authd_addr *addr, const char *detail)
+{
+    if (!enabled(lvl)) {
+        return;
+    }
+    char src[AUTHD_ADDR_STR_MAX];
+    authd_addr_str((const authd_addr_t *)addr, src, sizeof src);
+    fprintf(out(), "%s event=%s slot=%zu src=%s detail=%s\n",
+            level_name(lvl), event ? event : "?", slot, src, detail ? detail : "-");
     fflush(out());
 }
 

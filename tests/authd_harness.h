@@ -33,6 +33,8 @@
 #include "localapi.h"
 #include "recovery.h"
 #include "localcli.h"
+#include "proxy_v2.h"
+#include "ratelimit.h"
 #include "store.h"
 #include "handshake.h"
 #include "keystore.h"
@@ -49,6 +51,8 @@ typedef struct {
     authd_conn_t              conns[H_MAX_SLOTS];
     authd_slot_t              local_slots[H_MAX_LOCAL];
     handshake_pending_store_t pending;
+    ratelimit_t               rl;      /* live only when the fixture asked for PROXY v2 */
+    int                       proxy_v2;
     store_t                  *store;
     mldsa_keypair_t           server_kp;
     int                       lfd;        /* protocol listener */
@@ -70,7 +74,12 @@ static const uint8_t H_KEK[32] = {
 /* Starts a daemon with a protocol listener and, when `with_local`, a site and
  * an admin socket whose allowlist is this process's own uid -- the only uid a
  * test can prove anything about. */
-static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, int with_local)
+/* `proxy_v2` makes the WebSocket listener demand a PROXY v2 preamble and
+ * attaches the rate limiter, which is the deployed configuration (spec §7.2).
+ * A test that wants different limits re-runs ratelimit_init on d->rl after
+ * this returns. */
+static inline int h_start_ex(h_daemon_t *d, const char *dir, const char *dbname,
+                             int with_local, int proxy_v2)
 {
     memset(d, 0, sizeof *d);
     d->lfd = d->site_fd = d->admin_fd = -1;
@@ -115,6 +124,14 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
     if (evloop_init(&d->ev, d->slots, d->nslots, 10000u, 60000u,
                     authd_conn_on_frame, authd_conn_on_close, &d->app) != 0) { return -1; }
     d->app.ev = &d->ev;
+    if (evloop_set_on_addr(&d->ev, authd_conn_on_addr) != 0) { return -1; }
+    d->proxy_v2 = proxy_v2 ? 1 : 0;
+    if (d->proxy_v2) {
+        ratelimit_init(&d->rl, RATELIMIT_PER_MIN_DEFAULT, RATELIMIT_BURST_DEFAULT,
+                       RATELIMIT_GLOBAL_PER_SEC_DEF, RATELIMIT_MAX_CONNS_DEFAULT,
+                       d->app.now_ms);
+        d->app.rl = &d->rl;
+    }
 
     if (listener_open_loopback(0, 16, &d->lfd, &d->port) != LISTENER_OK) { return -1; }
     if (evloop_add_listener(&d->ev, d->lfd, (uid_t)-1) != 0) { return -1; }
@@ -123,7 +140,7 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
      * show that the two transports carry the SAME protocol. */
     snprintf(d->ws_path, sizeof d->ws_path, "%s/w.sock", d->dir);
     if (listener_open_unix(d->ws_path, 8, LISTENER_MODE_GROUP, &d->ws_fd) != LISTENER_OK) { return -1; }
-    if (evloop_add_ws_listener(&d->ev, d->ws_fd, (uid_t)-1) != 0) { return -1; }
+    if (evloop_add_ws_listener(&d->ev, d->ws_fd, NULL, 0u, d->proxy_v2) != 0) { return -1; }
 
     if (with_local) {
         if (evloop_set_local(&d->ev, d->local_slots, H_MAX_LOCAL, localapi_on_line) != 0) { return -1; }
@@ -138,12 +155,21 @@ static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, in
     return 0;
 }
 
+static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, int with_local)
+{
+    return h_start_ex(d, dir, dbname, with_local, 0);
+}
+
 static inline void h_stop(h_daemon_t *d)
 {
     evloop_close_all(&d->ev);
     listener_close(&d->lfd, NULL);
     listener_close(&d->site_fd, d->site_path[0] ? d->site_path : NULL);
     listener_close(&d->admin_fd, d->admin_path[0] ? d->admin_path : NULL);
+    /* The proxy-facing listener was opened by h_start and, until V4-10b, never
+     * closed here: every fixture leaked one descriptor and left one socket
+     * file behind (audit finding F54). */
+    listener_close(&d->ws_fd, d->ws_path[0] ? d->ws_path : NULL);
     handshake_pending_store_wipe(&d->pending);
     if (d->store != NULL) { store_close(d->store); d->store = NULL; }
     mldsa_keypair_free(&d->server_kp);
@@ -363,11 +389,35 @@ static inline int h_ws_read(void *ctx, uint8_t *buf, size_t n)
     return (got == n) ? 0 : -1;
 }
 
-/* Dials the WebSocket listener and completes the RFC 6455 handshake. */
-static inline int h_ws_connect(h_daemon_t *d, const char *state)
+/* Builds a PROXY v2 preamble announcing `ip` as the IPv4 client, into `out`
+ * (at least 28 bytes). Returns its length. The test harness is the proxy here,
+ * which is exactly the position Caddy is in. */
+static inline size_t h_proxy_v4(uint8_t *out, const uint8_t ip[4], uint16_t sport)
+{
+    static const uint8_t sig[12] = {
+        0x0du, 0x0au, 0x0du, 0x0au, 0x00u, 0x0du, 0x0au, 0x51u, 0x55u, 0x49u, 0x54u, 0x0au };
+    memcpy(out, sig, sizeof sig);
+    out[12] = 0x21u;                 /* version 2, command PROXY */
+    out[13] = 0x11u;                 /* AF_INET, SOCK_STREAM */
+    out[14] = 0x00u; out[15] = 0x0cu; /* 12 bytes of address block */
+    memcpy(out + 16, ip, 4);
+    out[20] = 10u; out[21] = 0u; out[22] = 0u; out[23] = 1u;   /* destination */
+    out[24] = (uint8_t)(sport >> 8); out[25] = (uint8_t)sport;
+    out[26] = 0u; out[27] = 80u;
+    return 28u;
+}
+
+/* Dials the WebSocket listener and completes the RFC 6455 handshake, sending a
+ * PROXY v2 preamble from `ip` first when the fixture was started with one. */
+static inline int h_ws_connect_from(h_daemon_t *d, const char *state, const uint8_t ip[4])
 {
     const int fd = h_dial_unix(d->ws_path);
     if (fd < 0) { return -1; }
+    if (d->proxy_v2) {
+        uint8_t pre[28];
+        (void)h_proxy_v4(pre, ip, 40000u);
+        if (write(fd, pre, sizeof pre) != (ssize_t)sizeof pre) { (void)close(fd); return -1; }
+    }
     uint8_t nonce[16];
     randombytes_buf(nonce, sizeof nonce);
     char req[512], expect[WS_ACCEPT_B64_LEN + 1u];
@@ -387,6 +437,12 @@ static inline int h_ws_connect(h_daemon_t *d, const char *state)
     }
     if (ws_client_check_101(resp, n, expect) != 0) { (void)close(fd); return -1; }
     return fd;
+}
+
+static inline int h_ws_connect(h_daemon_t *d, const char *state)
+{
+    static const uint8_t any[4] = { 203u, 0u, 113u, 7u };   /* TEST-NET-3 */
+    return h_ws_connect_from(d, state, any);
 }
 
 static inline int h_ws_send_frame(int fd, const uint8_t *p, size_t n)

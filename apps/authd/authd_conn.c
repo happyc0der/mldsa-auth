@@ -75,6 +75,51 @@ void authd_conn_bind(authd_app_t *app, authd_slot_t *slot)
     slot->user = c;
 }
 
+/* --- the client address, and what it is allowed to do (V4-10b) ----------- */
+
+ev_action_t authd_conn_on_addr(void *user, authd_slot_t *slot)
+{
+    authd_app_t *app = (authd_app_t *)user;
+    if (app == NULL || slot == NULL) {
+        return EV_ACTION_CLOSE;
+    }
+    const authd_addr_t *addr = conn_io_client_addr(&slot->io);
+
+    /* Req 12, and the only implementable reading of §7.2's "fails closed":
+     * close the connection. Nothing can be SAID here that carries meaning --
+     * spec §6.5's ERROR is a sealed record and no session exists -- and the
+     * one thing that could be said, an HTTP status, would tell a prober that
+     * its preamble was structurally fine. A well-formed preamble with no
+     * client in it (a LOCAL health check, or AF_UNIX) is the normal way this
+     * happens, so the log says which rather than shouting "malformed". */
+    if (addr->family == 0u) {
+        app->refused_no_address++;
+        authd_log_slot_addr(AUTHD_LOG_WARN, "refused-no-client-address", slot->index,
+                            addr, "fail-closed");
+        conn_io_ws_silence(&slot->io);
+        return EV_ACTION_CLOSE;
+    }
+
+    if (app->rl == NULL) {
+        authd_log_slot_addr(AUTHD_LOG_INFO, "client-address", slot->index, addr, "unlimited");
+        return EV_ACTION_CONTINUE;
+    }
+
+    const ratelimit_verdict_t v = ratelimit_admit(app->rl, addr, app->now_ms);
+    if (v != RATELIMIT_ALLOW) {
+        app->refused_rate++;
+        authd_log_slot_addr(AUTHD_LOG_WARN, "refused-rate-limited", slot->index,
+                            addr, ratelimit_verdict_name(v));
+        /* 429 for "you, slow down"; 503 for "we have run out of room to track
+         * addresses", which is our capacity problem and not the caller's rate. */
+        (void)conn_io_ws_refuse(&slot->io, (v == RATELIMIT_DENY_TABLE) ? 503u : 429u);
+        return EV_ACTION_CLOSE;
+    }
+    slot->addr_admitted = 1;
+    authd_log_slot_addr(AUTHD_LOG_INFO, "client-address", slot->index, addr, "admitted");
+    return EV_ACTION_CONTINUE;
+}
+
 void authd_conn_on_close(void *user, authd_slot_t *slot)
 {
     authd_app_t *app = (authd_app_t *)user;
@@ -83,6 +128,16 @@ void authd_conn_on_close(void *user, authd_slot_t *slot)
         conn_reset(c);
     }
     if (slot != NULL) {
+        /* Give back exactly what admission counted. The loop calls this before
+         * it resets the slot or the connection's buffers, so both the flag and
+         * the address are still readable here -- and a slot that was never
+         * admitted (refused, or a listener with no preamble at all) has
+         * nothing to give back, which is why the flag exists rather than an
+         * unconditional release. */
+        if (slot->addr_admitted && app != NULL && app->rl != NULL) {
+            ratelimit_release(app->rl, conn_io_client_addr(&slot->io));
+            slot->addr_admitted = 0;
+        }
         slot->user = NULL;
     }
 }

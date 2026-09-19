@@ -9,6 +9,8 @@ add_library(mldsa_authd STATIC
   recovery.c
   sha1.c
   ws.c
+  proxy_v2.c
+  ratelimit.c
   authmsg.c
   tokens.c
   localapi.c
@@ -28,9 +30,7 @@ target_compile_options(mldsa_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANI
 target_compile_definitions(mldsa_authd PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd PUBLIC ${MLDSA_SANITIZE_FLAGS})
 
-# The daemon binary. V4-8a is the transport skeleton: it validates config,
-# listens, accepts, reassembles frames and drains on SIGTERM, but does not yet
-# speak the protocol (V4-8b).
+# The daemon binary.
 add_executable(mldsa_authd_bin authd_main.c)
 set_target_properties(mldsa_authd_bin PROPERTIES OUTPUT_NAME mldsa-authd)
 target_link_libraries(mldsa_authd_bin PRIVATE mldsa_authd)

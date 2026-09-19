@@ -320,6 +320,249 @@ static void test_split_upgrade(void)
       conn_io_reset(&io); }
 }
 
+
+/* =======================================================================
+ * V4-10b: the PROXY v2 preamble, the client address and the rate limiter
+ * ======================================================================= */
+
+/* Builds a PROXY v2 preamble into `out`. `cmd_fam` is the two bytes at offsets
+ * 12 and 13, so a test can state a version, a command and a family that the
+ * happy path never would. Returns the total length. */
+static size_t mk_proxy(uint8_t *out, uint8_t ver_cmd, uint8_t fam_proto,
+                       const uint8_t *block, size_t block_len,
+                       const uint8_t *tlv, size_t tlv_len)
+{
+    static const uint8_t sig[12] = {
+        0x0du, 0x0au, 0x0du, 0x0au, 0x00u, 0x0du, 0x0au, 0x51u, 0x55u, 0x49u, 0x54u, 0x0au };
+    memcpy(out, sig, sizeof sig);
+    out[12] = ver_cmd;
+    out[13] = fam_proto;
+    const size_t body = block_len + tlv_len;
+    out[14] = (uint8_t)(body >> 8);
+    out[15] = (uint8_t)(body & 0xffu);
+    if (block_len > 0u) { memcpy(out + 16, block, block_len); }
+    if (tlv_len > 0u)   { memcpy(out + 16 + block_len, tlv, tlv_len); }
+    return 16u + body;
+}
+
+static const uint8_t V4BLOCK[12] = {
+    203u, 0u, 113u, 7u,        /* source */
+    10u, 0u, 0u, 1u,           /* destination */
+    0x9cu, 0x40u, 0x00u, 0x50u /* ports */
+};
+static const uint8_t V6BLOCK[36] = {
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x01,      /* source 2001:db8::1 */
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x02,      /* destination */
+    0x9cu, 0x40u, 0x00u, 0x50u
+};
+
+static void test_proxy_parse(void)
+{
+    proxy_v2_t p;
+    uint8_t buf[512];
+    size_t used = 0, n;
+
+    /* A well-formed IPv4 PROXY header, in one go. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_OK && used == n &&
+          p.addr.family == 4u && memcmp(p.addr.addr, V4BLOCK, 4) == 0,
+          "proxy: an IPv4 PROXY header yields the source address");
+
+    { char s[AUTHD_ADDR_STR_MAX];
+      authd_addr_str(&p.addr, s, sizeof s);
+      CHECK(strcmp(s, "203.0.113.7") == 0, "proxy: the address renders as 203.0.113.7"); }
+
+    /* IPv6, and the /64 key -- the reason a full-address key would be useless. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x21u, V6BLOCK, sizeof V6BLOCK, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_OK && p.addr.family == 6u &&
+          memcmp(p.addr.addr, V6BLOCK, 16) == 0,
+          "proxy: an IPv6 PROXY header yields the source address");
+    { uint8_t k[16];
+      CHECK(authd_addr_key(&p.addr, k) == 8u && memcmp(k, V6BLOCK, 8) == 0,
+            "proxy: an IPv6 address is rate-limited on its /64, not its full 128 bits"); }
+    { authd_addr_t v4 = { 4u, { 1u, 2u, 3u, 4u } };
+      uint8_t k[16];
+      CHECK(authd_addr_key(&v4, k) == 4u && memcmp(k, "\x01\x02\x03\x04", 4) == 0,
+            "proxy: an IPv4 address is rate-limited on all four of its bytes"); }
+
+    /* TLVs are skipped by length and never walked. */
+    proxy_v2_init(&p);
+    { uint8_t tlv[40];
+      memset(tlv, 0xabu, sizeof tlv);
+      n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, tlv, sizeof tlv);
+      CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_OK && used == n &&
+            p.addr.family == 4u,
+            "proxy: TLVs after the address block are skipped, not interpreted"); }
+
+    /* LOCAL is a health check: well-formed, and NO client address. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x20u, 0x00u, NULL, 0u, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_NO_ADDR && p.addr.family == 0u,
+          "proxy: a LOCAL command is well-formed and carries NO client address");
+
+    /* AF_UNIX likewise -- structurally fine, nothing to rate-limit. */
+    proxy_v2_init(&p);
+    { uint8_t blk[216];
+      memset(blk, 0x41u, sizeof blk);
+      n = mk_proxy(buf, 0x21u, 0x31u, blk, sizeof blk, NULL, 0u);
+      CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_NO_ADDR && p.addr.family == 0u,
+            "proxy: an AF_UNIX PROXY header carries no client address"); }
+
+    /* Every refusal. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    buf[3] ^= 0xffu;
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_ERR,
+          "proxy: a header whose signature is wrong in ONE byte is refused");
+
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x31u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_ERR,
+          "proxy: version 3 is refused");
+
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x22u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_ERR,
+          "proxy: a command other than LOCAL or PROXY is refused");
+
+    /* A family whose address block does not fit the body the header declared:
+     * truncation wearing a valid length. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    buf[15] = 0x08u;                     /* claims 8 bytes for a 12-byte family */
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_ERR,
+          "proxy: an IPv4 header declaring a body too short for its address block is refused");
+
+    /* A declared body over the ceiling: a 16-bit length must not decide how
+     * long a connection may occupy a slot saying nothing. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    buf[14] = 0xffu; buf[15] = 0xffu;
+    CHECK(proxy_v2_consume(&p, buf, n, &used) == PROXY_V2_ERR,
+          "proxy: a declared body length over PROXY_V2_LEN_MAX is refused");
+
+    /* A truncated header is NEED_MORE, never a verdict. */
+    proxy_v2_init(&p);
+    n = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    CHECK(proxy_v2_consume(&p, buf, n - 1u, &used) == PROXY_V2_NEED_MORE &&
+          p.addr.family == 0u,
+          "proxy: a truncated preamble is NEED_MORE and establishes nothing");
+
+    /* Split at EVERY offset: the property a real network forces and the one
+     * that cost V4-10a its highest finding on the HTTP side. */
+    { uint8_t tlv[24];
+      memset(tlv, 0x5au, sizeof tlv);
+      const size_t total = mk_proxy(buf, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, tlv, sizeof tlv);
+      int bad_at = -1;
+      for (size_t split = 1u; split < total && bad_at < 0; split++) {
+          proxy_v2_t q;
+          proxy_v2_init(&q);
+          size_t u1 = 0, u2 = 0;
+          const proxy_v2_status_t s1 = proxy_v2_consume(&q, buf, split, &u1);
+          if (s1 != PROXY_V2_NEED_MORE && s1 != PROXY_V2_OK) { bad_at = (int)split; break; }
+          const proxy_v2_status_t s2 = proxy_v2_consume(&q, buf + u1, total - u1, &u2);
+          const proxy_v2_status_t fin = (s1 == PROXY_V2_OK) ? s1 : s2;
+          if (fin != PROXY_V2_OK || q.addr.family != 4u ||
+              memcmp(q.addr.addr, V4BLOCK, 4) != 0) {
+              bad_at = (int)split;
+          }
+      }
+      if (bad_at >= 0) {
+          char msg[160];
+          snprintf(msg, sizeof msg,
+                   "proxy: the preamble completes however it is split across reads "
+                   "(failed at offset %d)", bad_at);
+          CHECK(0, msg);
+      } else {
+          CHECK(1, "proxy: the preamble completes however it is split across reads (every offset)");
+      } }
+}
+
+/* The preamble, the upgrade and the first frame down one conn_io, including
+ * the event loop's habit of calling conn_io_next_frame after every read. The
+ * signature begins "\r\n\r\n" = 218,893,066 as a length, so this is the F50
+ * trap wearing a different hat. */
+static void test_proxy_pipeline(void)
+{
+    static const char req[] =
+        "GET /authd/v1?state=pq HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    static uint8_t wire[1024];
+    size_t total = mk_proxy(wire, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    memcpy(wire + total, req, sizeof req - 1u);
+    total += sizeof req - 1u;
+    /* one masked binary message carrying a 4-byte-length frame of 3 bytes */
+    { const uint8_t m[4] = { 0xa1u, 0xb2u, 0xc3u, 0xd4u };
+      const uint8_t inner[7] = { 0u, 0u, 0u, 3u, 'a', 'b', 'c' };
+      wire[total++] = 0x82u;
+      wire[total++] = (uint8_t)(0x80u | 7u);
+      memcpy(wire + total, m, 4u); total += 4u;
+      for (size_t i = 0; i < 7u; i++) { wire[total + i] = (uint8_t)(inner[i] ^ m[i & 3u]); }
+      total += 7u; }
+
+    int bad_at = -1;
+    for (size_t split = 1u; split < total && bad_at < 0; split++) {
+        static conn_io_t io;
+        conn_io_reset(&io);
+        conn_io_set_mode(&io, CONN_IO_MODE_WS);
+        conn_io_set_proxy(&io, 1);
+
+        const uint8_t *p = NULL; size_t fl = 0;
+        int ok = (conn_io_push(&io, wire, split) == CONN_IO_OK);
+        (void)conn_io_next_frame(&io, &p, &fl);      /* what the loop does after every read */
+        if (ok) { ok = (conn_io_push(&io, wire + split, total - split) == CONN_IO_OK); }
+        if (ok) {
+            ok = conn_io_proxy_settled(&io) &&
+                 conn_io_client_addr(&io)->family == 4u &&
+                 memcmp(conn_io_client_addr(&io)->addr, V4BLOCK, 4) == 0 &&
+                 io.ws.stage == WS_STAGE_OPEN &&
+                 conn_io_next_frame(&io, &p, &fl) == 1 && fl == 3u &&
+                 memcmp(p, "abc", 3) == 0;
+        }
+        if (!ok) { bad_at = (int)split; }
+        conn_io_reset(&io);
+    }
+    if (bad_at >= 0) {
+        char msg[176];
+        snprintf(msg, sizeof msg,
+                 "proxy: preamble, upgrade and first frame survive any split and the "
+                 "address arrives intact (failed at offset %d)", bad_at);
+        CHECK(0, msg);
+    } else {
+        CHECK(1, "proxy: preamble, upgrade and first frame survive any split and the "
+                 "address arrives intact (every offset)");
+    }
+
+    /* A connection with no preamble at all: the GET is read as a PROXY header,
+     * fails its signature, and the connection is poisoned. Req 12, fail closed. */
+    { static conn_io_t io;
+      conn_io_reset(&io);
+      conn_io_set_mode(&io, CONN_IO_MODE_WS);
+      conn_io_set_proxy(&io, 1);
+      CHECK(conn_io_push(&io, (const uint8_t *)req, sizeof req - 1u) == CONN_IO_ERR_PROTOCOL,
+            "proxy: a connection that sends no preamble is refused before any HTTP is parsed");
+      conn_io_reset(&io); }
+
+    /* The refusal response, rendered. */
+    { static conn_io_t io;
+      conn_io_reset(&io);
+      conn_io_set_mode(&io, CONN_IO_MODE_WS);
+      conn_io_set_proxy(&io, 1);
+      CHECK(conn_io_ws_refuse(&io, 429u) == CONN_IO_OK &&
+            conn_io_pending(&io) > 0u &&
+            memcmp(conn_io_pending_ptr(&io), "HTTP/1.1 429 Too Many Requests\r\n", 32) == 0,
+            "proxy: a rate-limited connection is answered with HTTP 429");
+      conn_io_reset(&io);
+      conn_io_set_mode(&io, CONN_IO_MODE_WS);
+      CHECK(conn_io_ws_refuse(&io, 503u) == CONN_IO_OK &&
+            memcmp(conn_io_pending_ptr(&io), "HTTP/1.1 503 Service Unavailable\r\n", 34) == 0,
+            "proxy: a limiter with no room to track an address answers 503, not 429");
+      conn_io_reset(&io); }
+}
+
 /* ------------------------------------------------- end to end, in process */
 
 static void enroll_direct(h_daemon_t *d, const uint8_t *handle, size_t hl, mldsa_keypair_t *kp)
@@ -381,6 +624,240 @@ static void test_login_over_ws(void)
     h_stop(&d);
 }
 
+/* ------------------------------------------------------- the limiter alone */
+
+static void test_ratelimit(void)
+{
+    static ratelimit_t r;
+    const authd_addr_t a = { 4u, { 203u, 0u, 113u, 7u } };
+    const authd_addr_t b = { 4u, { 203u, 0u, 113u, 8u } };
+    const authd_addr_t none = { 0u, { 0 } };
+
+    /* Req 12 again, at the limiter: no address is not a bucket, it is a refusal. */
+    ratelimit_init(&r, 5u, 2u, 1000u, 8u, 1000u);
+    CHECK(ratelimit_admit(&r, &none, 1000u) == RATELIMIT_DENY_NO_ADDR,
+          "limiter: a connection with no client address is refused, not pooled");
+
+    /* The burst, then the exact refill boundary. 5 a minute is one token every
+     * 12000 ms, so 11999 must still be empty -- a limiter without a lower
+     * bound is a limiter that might just be slow. */
+    CHECK(ratelimit_admit(&r, &a, 1000u) == RATELIMIT_ALLOW &&
+          ratelimit_admit(&r, &a, 1000u) == RATELIMIT_ALLOW,
+          "limiter: the burst is spendable at once");
+    CHECK(ratelimit_admit(&r, &a, 1000u) == RATELIMIT_DENY_ADDR,
+          "limiter: one more than the burst is refused");
+    CHECK(ratelimit_admit(&r, &a, 1000u + 11999u) == RATELIMIT_DENY_ADDR,
+          "limiter: at 11999 ms the bucket has NOT yet refilled (5 a minute)");
+    CHECK(ratelimit_admit(&r, &a, 1000u + 12000u) == RATELIMIT_ALLOW,
+          "limiter: at 12000 ms exactly one token has returned");
+    CHECK(ratelimit_admit(&r, &b, 1000u) == RATELIMIT_ALLOW,
+          "limiter: a different address has its own bucket");
+    CHECK(r.denied_addr == 2u, "limiter: every per-address refusal is counted");
+
+    /* The global bucket, which is what bounds the damage when the addresses
+     * are many and genuine -- or when the proxy is lying about them. */
+    ratelimit_init(&r, 1000u, 1000u, 2u, 100u, 0u);
+    { authd_addr_t c = { 4u, { 198u, 51u, 100u, 0u } };
+      c.addr[3] = 1u; CHECK(ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW, "limiter: global 1");
+      c.addr[3] = 2u; CHECK(ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW, "limiter: global 2");
+      c.addr[3] = 3u;
+      CHECK(ratelimit_admit(&r, &c, 0u) == RATELIMIT_DENY_GLOBAL,
+            "limiter: the global bucket refuses a THIRD fresh address in the same instant");
+      CHECK(ratelimit_admit(&r, &c, 499u) == RATELIMIT_DENY_GLOBAL,
+            "limiter: at 499 ms the global bucket has not refilled (2 a second)");
+      CHECK(ratelimit_admit(&r, &c, 500u) == RATELIMIT_ALLOW,
+            "limiter: at 500 ms exactly one global token has returned"); }
+
+    /* Concurrency, and the release that must balance it. */
+    ratelimit_init(&r, 1000u, 1000u, 10000u, 2u, 0u);
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
+          ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
+          ratelimit_conns(&r, &a) == 2u,
+          "limiter: concurrent connections from one address are counted");
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_CONNS,
+          "limiter: one more than max_conns_per_addr is refused");
+    ratelimit_release(&r, &a);
+    CHECK(ratelimit_conns(&r, &a) == 1u,
+          "limiter: releasing a connection gives its slot back");
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW,
+          "limiter: ...and the address can connect again");
+    /* A refused connection must not have been charged: if DENY_CONNS also
+     * spent a token, an address at its connection cap would be rate-limited
+     * for something it never got to do. */
+    { const uint64_t before = r.admitted;
+      ratelimit_init(&r, 1000u, 1000u, 10000u, 1u, 0u);
+      (void)ratelimit_admit(&r, &a, 0u);
+      const uint64_t g = r.global_tokens_milli;
+      CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_CONNS &&
+            r.global_tokens_milli == g && ratelimit_conns(&r, &a) == 1u,
+            "limiter: a refusal changes nothing -- no token, no connection count");
+      (void)before; }
+
+    /* The table refuses rather than evicting: forgetting the address that is
+     * attacking you is the one behaviour a limiter must never have. */
+    ratelimit_init(&r, 1000u, 1000u, 10000u, 4u, 0u);
+    { size_t admitted = 0;
+      authd_addr_t c = { 4u, { 10u, 0u, 0u, 0u } };
+      for (size_t i = 0; i < RATELIMIT_ENTRIES + 8u; i++) {
+          c.addr[1] = (uint8_t)(i >> 16); c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+          if (ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW) { admitted++; }
+      }
+      CHECK(admitted == RATELIMIT_ENTRIES && r.denied_table == 8u,
+            "limiter: a full table refuses new addresses instead of evicting live ones");
+      /* Release one and its entry becomes reclaimable, so the limiter recovers
+       * on its own rather than needing a restart. */
+      c.addr[1] = 0u; c.addr[2] = 0u; c.addr[3] = 0u;
+      ratelimit_release(&r, &c);
+      authd_addr_t fresh = { 4u, { 172u, 16u, 9u, 9u } };
+      /* A minute later that entry has refilled to the brim and holds no
+       * connection, so it says nothing a fresh address does not -- which is
+       * the whole expiry condition. Reclaiming it forgets nothing. */
+      CHECK(ratelimit_admit(&r, &fresh, 60000u) == RATELIMIT_ALLOW,
+            "limiter: an idle, refilled entry is reclaimed so the table recovers"); }
+}
+
+/* --------------------------------------- the limiter, through the real loop */
+
+/* Dials the WebSocket listener, sends `pre` then an upgrade request, and
+ * returns whatever the daemon answers. Deliberately lower-level than
+ * h_ws_connect: the interesting cases are the ones that never reach a 101. */
+static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *out, size_t cap)
+{
+    static const char req[] =
+        "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    const int fd = h_dial_unix(d->ws_path);
+    if (fd < 0) { return -1; }
+    /* ONE write, deliberately: coalescing the preamble and the request is what
+     * a real proxy does, and it is the ordering in which ws_upgrade has
+     * already built a 101 by the time the address is judged. Sending them
+     * separately would let a refusal LOOK silent because the request had not
+     * arrived yet -- the check would then pass on a daemon that answers
+     * 101-then-EOF whenever the two land together. */
+    static uint8_t one[1024];
+    size_t on = 0;
+    if (pre_len > 0u) { memcpy(one, pre, pre_len); on = pre_len; }
+    memcpy(one + on, req, sizeof req - 1u);
+    on += sizeof req - 1u;
+    if (write(fd, one, on) != (ssize_t)on) { (void)close(fd); return -1; }
+    size_t n = 0;
+    for (int i = 0; i < 4000 && n + 1u < cap; i++) {
+        h_tick(d);
+        const ssize_t k = recv(fd, out + n, 1u, MSG_DONTWAIT);
+        if (k > 0) { n += (size_t)k; }
+        else if (k == 0) { break; }
+        if (n >= 4u && memcmp(out + n - 4u, "\r\n\r\n", 4) == 0) { break; }
+    }
+    out[n] = '\0';
+    (void)close(fd);
+    for (int i = 0; i < 50; i++) { h_tick(d); }   /* let the daemon reap the slot */
+    return (int)n;
+}
+
+static void test_proxy_through_loop(void)
+{
+    static h_daemon_t d;
+    CHECK(h_start_ex(&d, g_dir, "px.sqlite3", 1, 1) == 0,
+          "proxy-loop: the daemon starts with a PROXY v2 WebSocket listener");
+    mldsa_keypair_t kp;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    uint8_t pre[64];
+    const size_t pre_len = mk_proxy(pre, 0x21u, 0x11u, V4BLOCK, sizeof V4BLOCK, NULL, 0u);
+    const authd_addr_t A = { 4u, { 203u, 0u, 113u, 7u } };
+
+    /* A real login through the proxy path, and the connection counted against
+     * the address while it is open. The canary matters: without it "0 after
+     * close" would pass on a daemon that never counted anything. */
+    { h_client_t c;
+      CHECK(h_login_on(&d, &c, HANDLE1, sizeof HANDLE1, &kp, "st9") == 0,
+            "proxy-loop: a login completes through the PROXY v2 listener");
+      CHECK(ratelimit_conns(&d.rl, &A) == 1u,
+            "proxy-loop: the connection is counted against its client address while open");
+      uint8_t code[32];
+      CHECK(h_get_login_code(&d, &c, code) == 0, "proxy-loop: it yields a login code");
+      h_client_close(&c);
+      const int ok = H_PUMP_UNTIL(&d, ratelimit_conns(&d.rl, &A) == 0u);
+      CHECK(ok, "proxy-loop: closing the connection gives its count back"); }
+
+    /* Req 12 through the loop: a LOCAL preamble is well-formed and carries no
+     * client, so the connection is closed with nothing said. */
+    { char resp[512];
+      uint8_t loc[32];
+      const size_t ln = mk_proxy(loc, 0x20u, 0x00u, NULL, 0u, NULL, 0u);
+      const uint64_t before = d.app.refused_no_address;
+      const int n = ws_raw_try(&d, loc, ln, resp, sizeof resp);
+      CHECK(n == 0 && d.app.refused_no_address == before + 1u,
+            "proxy-loop: a preamble with no client address is closed, and nothing is said"); }
+
+    /* The limiter refuses BEFORE the ServerHello signature. The pending ledger
+     * is the pin: handshake_responder_create_server_hello is what inserts into
+     * it, so an empty ledger after a refusal is proof no signature was spent --
+     * which is the cost 7.3 assigns to "the rate limiter's problem". */
+    { ratelimit_init(&d.rl, 1u, 1u, 10000u, 8u, d.app.now_ms);
+      char resp[512];
+      const int n1 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
+      CHECK(n1 > 0 && strncmp(resp, "HTTP/1.1 101", 12) == 0,
+            "proxy-loop: the first connection from an address is upgraded (the canary)");
+      const int n2 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
+      CHECK(n2 > 0 && strncmp(resp, "HTTP/1.1 429", 12) == 0,
+            "proxy-loop: the next one is answered 429 at the upgrade, not at the handshake");
+      CHECK(handshake_pending_active_count(&d.pending) == 0u,
+            "proxy-loop: a refused connection cost no ServerHello signature (7.3)"); }
+
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+/* Req 11: the proxy-facing listener serves only the uid that is the proxy. */
+static void test_proxy_uid_allowlist(void)
+{
+    static h_daemon_t d;
+    CHECK(h_start_ex(&d, g_dir, "uid.sqlite3", 0, 0) == 0,
+          "proxy-uid: the daemon starts");
+
+    char path[384];
+    snprintf(path, sizeof path, "%s/deny.sock", g_dir);
+    int fd = -1;
+    CHECK(listener_open_unix(path, 8, LISTENER_MODE_GROUP, &fd) == LISTENER_OK,
+          "proxy-uid: a second WebSocket listener opens");
+    const uid_t nobody[1] = { (uid_t)(getuid() + 1u) };
+    CHECK(evloop_add_ws_listener(&d.ev, fd, nobody, 1u, 0) == 0,
+          "proxy-uid: ...with an allowlist this process is NOT in");
+
+    const uint64_t before_peer = d.ev.closed_peer;
+    const uint64_t before_acc = d.ev.accepted;
+    int c = h_dial_unix(path);
+    CHECK(c >= 0, "proxy-uid: the connection is made at the socket layer");
+    (void)H_PUMP_UNTIL(&d, d.ev.closed_peer > before_peer);
+    CHECK(d.ev.closed_peer == before_peer + 1u && d.ev.accepted == before_acc,
+          "proxy-uid: a peer outside the allowlist is refused at accept, occupying no slot");
+    if (c >= 0) { (void)close(c); }
+
+    /* The canary: the SAME code path serves a uid that IS allowed, so the
+     * refusal above is the allowlist and not a broken listener. */
+    { int fd2 = -1;
+      char p2[384];
+      snprintf(p2, sizeof p2, "%s/allow.sock", g_dir);
+      CHECK(listener_open_unix(p2, 8, LISTENER_MODE_GROUP, &fd2) == LISTENER_OK,
+            "proxy-uid: a third listener opens");
+      const uid_t me[1] = { getuid() };
+      CHECK(evloop_add_ws_listener(&d.ev, fd2, me, 1u, 0) == 0,
+            "proxy-uid: ...with an allowlist this process IS in");
+      const uint64_t acc = d.ev.accepted;
+      int c2 = h_dial_unix(p2);
+      CHECK(c2 >= 0, "proxy-uid: the allowed connection is made");
+      (void)H_PUMP_UNTIL(&d, d.ev.accepted > acc);
+      CHECK(d.ev.accepted == acc + 1u,
+            "proxy-uid: a peer inside the allowlist IS served (the canary)");
+      if (c2 >= 0) { (void)close(c2); }
+      listener_close(&fd2, p2); }
+
+    listener_close(&fd, path);
+    h_stop(&d);
+}
+
 int main(void)
 {
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
@@ -392,7 +869,12 @@ int main(void)
     test_upgrade();
     test_frames();
     test_split_upgrade();
+    test_proxy_parse();
+    test_proxy_pipeline();
     test_login_over_ws();
+    test_ratelimit();
+    test_proxy_through_loop();
+    test_proxy_uid_allowlist();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

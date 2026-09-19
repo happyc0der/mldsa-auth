@@ -69,6 +69,22 @@ void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
  * daemon could not log what the spec says it must. */
 void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32]);
 
+/* A client address, from the PROXY v2 preamble (spec §7.2), rendered as `src=`.
+ *
+ * `authd_addr_t` is a STRUCT, which is the whole point: `authd_log_fp` above
+ * takes a bare pointer and its 32-byte width happens to match an enrollment
+ * ticket's hash, so its guarantee is prose (audit finding F41). This one
+ * cannot be handed a secret by a caller who miscounted, because a secret is
+ * not an authd_addr_t -- and the renderer emits nothing outside [0-9a-f.:],
+ * so it can neither inject a field separator nor a newline.
+ *
+ * Addresses are not secret, but for public users they ARE personal data
+ * (audit finding F14, and spec §15's `log_client_ip`), which is why this is
+ * the second and last peer-influenced field in this interface. */
+struct authd_addr;
+void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
+                         const struct authd_addr *addr, const char *detail);
+
 /* An event with one unsigned number (a count, a port, a millisecond figure). */
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value);
 

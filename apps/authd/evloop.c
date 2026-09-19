@@ -41,8 +41,19 @@ int evloop_init(evloop_t *ev, authd_slot_t *slots, size_t n_slots,
         ev->listen_fd[i] = -1;
         ev->listen_kind[i] = SLOT_KIND_PROTO;
         ev->listen_is_admin[i] = 0;
+        ev->listen_ws[i] = 0;
+        ev->listen_proxy[i] = 0;
         ev->listen_n_allow[i] = 0u;
     }
+    return 0;
+}
+
+int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr)
+{
+    if (ev == NULL || on_addr == NULL) {
+        return -1;
+    }
+    ev->on_addr = on_addr;
     return 0;
 }
 
@@ -92,9 +103,11 @@ int evloop_add_local_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n
     return 0;
 }
 
-static int add_proto_listener(evloop_t *ev, int fd, uid_t require_uid, int is_ws)
+static int add_proto_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n_allow,
+                              int is_ws, int proxy_v2)
 {
-    if (ev == NULL || fd < 0 || ev->n_listeners >= AUTHD_MAX_LISTENERS) {
+    if (ev == NULL || fd < 0 || ev->n_listeners >= AUTHD_MAX_LISTENERS ||
+        n_allow > LISTENER_MAX_ALLOW || (n_allow > 0u && allow == NULL)) {
         return -1;
     }
     const size_t i = ev->n_listeners;
@@ -102,11 +115,10 @@ static int add_proto_listener(evloop_t *ev, int fd, uid_t require_uid, int is_ws
     ev->listen_kind[i] = SLOT_KIND_PROTO;
     ev->listen_is_admin[i] = 0;
     ev->listen_ws[i] = is_ws ? 1 : 0;
-    if (require_uid == (uid_t)-1) {
-        ev->listen_n_allow[i] = 0u;
-    } else {
-        ev->listen_allow[i][0] = require_uid;
-        ev->listen_n_allow[i] = 1u;
+    ev->listen_proxy[i] = (is_ws && proxy_v2) ? 1 : 0;
+    ev->listen_n_allow[i] = n_allow;
+    for (size_t j = 0; j < n_allow; j++) {
+        ev->listen_allow[i][j] = allow[j];
     }
     ev->n_listeners++;
     return 0;
@@ -114,12 +126,17 @@ static int add_proto_listener(evloop_t *ev, int fd, uid_t require_uid, int is_ws
 
 int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid)
 {
-    return add_proto_listener(ev, fd, require_uid, 0);
+    if (require_uid == (uid_t)-1) {
+        return add_proto_listener(ev, fd, NULL, 0u, 0, 0);
+    }
+    const uid_t one[1] = { require_uid };
+    return add_proto_listener(ev, fd, one, 1u, 0, 0);
 }
 
-int evloop_add_ws_listener(evloop_t *ev, int fd, uid_t require_uid)
+int evloop_add_ws_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n_allow,
+                           int proxy_v2)
 {
-    return add_proto_listener(ev, fd, require_uid, 1);
+    return add_proto_listener(ev, fd, allow, n_allow, 1, proxy_v2);
 }
 
 size_t evloop_active(const evloop_t *ev)
@@ -154,6 +171,8 @@ void evloop_close_slot(evloop_t *ev, authd_slot_t *s)
     s->opened_ms = 0;
     s->user = NULL;
     s->is_admin = 0;
+    s->addr_settled = 0;
+    s->addr_admitted = 0;
     s->peer.uid = (uid_t)-1;
     s->peer.pid = 0;
     if (local) {
@@ -251,7 +270,10 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
         conn_io_reset(&s->io);
         conn_io_set_mode(&s->io, (kind == SLOT_KIND_LOCAL) ? CONN_IO_MODE_LINE
                                  : (ev->listen_ws[li] ? CONN_IO_MODE_WS : CONN_IO_MODE_FRAME));
+        conn_io_set_proxy(&s->io, ev->listen_proxy[li]);
         s->fd = cfd;
+        s->addr_settled = 0;
+        s->addr_admitted = 0;
         s->kind = kind;
         s->state = SLOT_ACTIVE;
         s->opened_ms = now_ms;
@@ -303,6 +325,20 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
         ev->closed_protocol++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", s->index, conn_io_status_name(cs));
         return -1;
+    }
+
+    /* The client address is decided the instant the PROXY preamble settles --
+     * before the upgrade is answered, and therefore before
+     * handshake_responder_create_server_hello() spends a signature on a probe.
+     * §7.3 assigns that cost to the rate limiter by name; a limiter that acted
+     * on the ClientHello would already have paid it. */
+    if (!s->addr_settled && conn_io_proxy_settled(&s->io)) {
+        s->addr_settled = 1;
+        if (ev->on_addr != NULL && ev->on_addr(ev->user, s) == EV_ACTION_CLOSE) {
+            ev->closed_refused_addr++;
+            s->state = SLOT_DRAINING;   /* flush the refusal, then close */
+            return 0;
+        }
     }
 
     for (;;) {

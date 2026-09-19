@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "ratelimit.h"   /* the limiter's bounds and defaults */
+
 /*
  * The daemon's configuration (V4-8a): a strict `key = value` file, parsed
  * into a fixed struct with no allocation.
@@ -62,6 +64,35 @@ typedef struct {
      * regular file, mode 0600, at most AUTHD_PASSPHRASE_MAX bytes. */
     char     key_passphrase_file[AUTHD_PATH_MAX + 1u];
     char     listen_unix[AUTHD_PATH_MAX + 1u];    /* proxy-facing Unix socket; "" = disabled */
+    /* Who may connect to listen_unix (Req 11). Empty disables the check, which
+     * is what V4-10a shipped and what a development socket reached by
+     * authd_client directly still wants; a deployment names the proxy's uid.
+     * §7.2 relies on this check for the OTHER half of its trust: the preamble
+     * is only unforgeable because the peer that wrote it is the proxy. */
+    uid_t    proxy_uids[AUTHD_MAX_UIDS];
+    size_t   n_proxy_uids;
+    /* Whether peers of listen_unix prepend a PROXY v2 preamble (spec §7.2).
+     *
+     * The DEFAULT IS OFF, and that is a deliberate, uncomfortable choice. On
+     * is the secure setting for a proxied deployment, and Req 12 fails closed
+     * without an address -- but there is no default that is right for both
+     * "Caddy is in front" and "an operator's authd_client is connected
+     * directly", and a daemon whose first start refuses every connection
+     * teaches an operator to disable things. So the key exists to be SET: the
+     * deployment runbook sets it, the Caddy configuration in docs/ sets it,
+     * and `authd_client --proxy-v2` exists so the end-to-end test exercises
+     * the same path with the shipped binaries. */
+    int      proxy_protocol_v2;
+    /* Transport rate limiting (§7.3 assigns the decoy flow's per-probe
+     * signature cost to "the rate limiter"; ledger item A4). The spec fixes no
+     * numbers -- §17 has no row for them -- so these are operator policy with
+     * documented defaults, the rotation_due_age_s precedent, rather than
+     * invented protocol constants. They bite only where a client address
+     * exists, which today means the PROXY v2 listener. */
+    uint32_t rate_per_min;
+    uint32_t rate_burst;
+    uint32_t rate_global_per_sec;
+    uint32_t max_conns_per_addr;
     /* The local API (spec 8). Two sockets so an administrative command is
      * unreachable from the site's uid by construction, not by a flag. */
     char     site_socket[AUTHD_PATH_MAX + 1u];

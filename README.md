@@ -30,10 +30,11 @@ with the post-quantum handshake and receives a single-use login code, which a
 site exchanges over a local Unix socket for an opaque session token. Devices can
 be enrolled, revoked, and **rotate their keys** while keeping their identity.
 It has its own specification ([docs/mldsa-authd-spec.md](docs/mldsa-authd-spec.md)),
-its own store, its own CLIs, and nothing in it changes a byte on the wire. It is
-**not deployed**: WebSocket, rate limiting, the systemd unit and the operational
-runbook are still ahead. See *The authentication daemon* below for what works
-today and what does not.
+its own store, its own CLIs, and nothing in it changes a byte on the wire. Browsers reach it as a **WebSocket** behind a TLS
+proxy, which states the client's address in a PROXY v2 preamble the daemon
+rate-limits on. It is **not deployed**: the systemd unit, the hardening flags
+and the operational runbook are still ahead. See *The authentication daemon*
+below for what works today and what does not.
 
 Since `v2.0.0` the verification has been **automated rather than changed**: the
 library, the reference apps and the build are byte-identical to the `v2.0.0`
@@ -121,7 +122,7 @@ cmake --build build-fuzz -j8
 ctest --test-dir build --output-on-failure
 ```
 
-28 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+30 tests. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
@@ -139,9 +140,10 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `test_authd_store` | The daemon's SQLite store: schema-enforced invariants (one active key per handle, a public key unique forever), the three-join active lookup, Req 7 re-enrollment refusal, rotation atomicity proven by injecting a fault mid-rotation and reopening, audit-chain MAC verification with tamper and truncation detection, token/login-code lifetimes and the login-CSRF state binding, and backup/restore |
 | `test_authd_evloop` | The daemon's transport skeleton: strict `key = value` config parsing (unknown/duplicate/out-of-range/missing all refused, and a failed parse applies nothing), frame reassembly at every split point of a two-frame stream, the fixed slot pool and its refusal at capacity, deadline enforcement with a lower bound on both sides, graceful drain, slot wiping on release, and log hygiene with a present canary |
 | `test_authd_conn` | The daemon's connection state machine, driven with the daemon in-process and the real library initiator over loopback: a full login (first record `LOGIN_CODE`, 43 bytes of content in a 281-byte record, expiry within Req 5's 60 s), the login code stored only as SHA-256 and bound to user/handle/handshake/state, single-use, the uniform responder (unknown handle and known-handle-wrong-key indistinguishable, with a canary proving the decoy still yields a verifiable ServerHello), revocation taking effect at the next handshake, `BYE` closing cleanly while `ROTATE` is refused `ERROR(0x02)`, and wipe-on-close |
+| `test_authd_ws` | The WebSocket carrier and the proxy in front of it: RFC 6455's accept KAT and the FIPS 180-1 vectors for the vendored SHA-1, the upgrade's refusals enumerated, an unmasked client frame failing the connection, the same login run over both transports with the URL `state` bound into the login code (Req 5), the PROXY v2 preamble parsed and split at **every** offset, `LOCAL` and `AF_UNIX` carrying no client address, a peer outside the proxy's uid allowlist refused at accept with a canary that an allowed one is served, and the rate limiter's boundaries driven by an injected clock — including that a refused connection cost no `ServerHello` signature |
 | `test_authd_localapi` | The local socket protocol (spec §8): the line grammar and its 8192-byte cap, the two dispatch tables (an administrative command is *absent* from the site table, and its refusal is byte-identical to a nonsense command's), `EXCHANGE` with the login-CSRF state binding and single use, `VERIFY` with the idle-window slide and its lower bound, `LOGOUT` counts, enrollment including Req 7 refusal and idempotence, the periodic sweep, revocation closing live sessions (Req 9), and log hygiene — the peer's uid/pid present, the token and code absent |
 | `site_node_handler` | The Node reference handler in `examples/site-node/` against a **real daemon** (a genuine handshake, a real login code): exchange, verify, logout, list-devices, the state binding, and that administrative commands are unreachable from the site socket |
-| `fuzz_replay_*` (9) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
+| `fuzz_replay_*` (11) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
 | `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on sixteen built-in controls before every scan |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
 | `bench_smoke` | Every benchmark binary at tiny iteration counts, so bench code cannot rot |
@@ -190,7 +192,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, all 147 must-kill mutations in
+at 03:17 UTC every day, and on demand, all 160 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree, and every fuzz target runs for 600 s with any crash
 kept as a downloadable artifact. It is not part of the push gate. GitHub
@@ -451,9 +453,37 @@ Three things are worth knowing before you build a page around it:
 their live sessions — the right choice when the device was stolen rather than
 mislaid.
 
-Not yet, and named rather than implied: WebSocket, the client IP behind a proxy and rate limiting are
-V4-10; the systemd unit, the hardening flags and the runbook are V4-11. Until
-those land this is a working milestone, not a deployment.
+Behind a proxy, a browser-shaped client reaches the daemon as a WebSocket and
+the proxy states the client's address in a **PROXY protocol v2** preamble
+(spec §7.2). The daemon checks the proxy's uid, refuses a connection whose
+address is missing or unverifiable, and rate-limits on the address it was
+given: 5 connections a minute with a burst of 10, 50 a second across the whole
+daemon, 8 concurrent connections per address — all operator-settable, all
+refusing with an HTTP 429 at the upgrade, before any signature is spent.
+`tests/caddy_proxy.sh` performs a real login through a real Caddy to prove it,
+and then removes `proxy_protocol` from the Caddyfile to prove the refusal.
+
+**`proxy_protocol` defaults to `none`**, because there is no default that is
+right for both "a proxy is in front" and "an operator's client is connected
+directly" — a deployment must set it, and `--check-config` prints what it is.
+
+The proxy configuration itself is [`deploy/Caddyfile.example`](deploy/Caddyfile.example),
+and it is the file under test rather than an illustration of one:
+
+```bash
+sh tests/caddy_proxy.sh
+```
+
+builds the daemon and the CLIs inside a container, validates that Caddyfile,
+starts a real Caddy with it, logs in through it, and then removes
+`proxy_protocol` and requires the login to stop working. It needs Docker and
+network access and is deliberately **not** a CTest — a suite gate that silently
+depends on a container registry fails for reasons that have nothing to do with
+the code.
+
+Not yet, and named rather than implied: the systemd unit, the hardening flags
+and the runbook are V4-11. Until those land this is a working milestone, not a
+deployment.
 
 
 ## Dependencies
@@ -575,9 +605,10 @@ ships; each is a decision to stop somewhere.
   reference transport sidesteps this by handling one handshake per
   connection; a multiplexing server must route for itself.
   (§ *Pending-handshake store is a digest-only ledger*)
-- **Transport rate limiting** — the deferred mitigation for duplicate
-  ClientHellos. (§ *Duplicate ClientHello is accepted — an availability
-  trade-off*)
+- **Transport rate limiting in the reference apps** — the deferred mitigation
+  for duplicate ClientHellos. The *daemon* has one (spec §7.2/§7.3, keyed on
+  the address a PROXY v2 preamble states); `auth_server` does not.
+  (§ *Duplicate ClientHello is accepted — an availability trade-off*)
 - **Traffic-analysis resistance beyond padding** — v2 pads record lengths,
   but message timing, counts and direction are unprotected; no cover traffic
   and no constant-rate sending. (spec-v2 §6.4.1, §9)
@@ -623,7 +654,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 147 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 160 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 

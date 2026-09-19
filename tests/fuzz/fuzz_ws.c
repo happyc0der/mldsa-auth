@@ -25,6 +25,14 @@
  *      per-slot buffers are sized from.
  *   5. DETERMINISTIC, and the input is not modified.
  *
+ * V4-10b adds the PROXY v2 preamble to the same conn_io path, and this target
+ * runs EVERY input through both configurations -- preamble expected and not --
+ * rather than spending a selector byte on it. A selector would have changed
+ * what every existing corpus entry means; running both keeps the corpus valid
+ * and doubles what each input tests. The preamble's own split-resumption is
+ * then covered by property (1), which is precisely the property that found
+ * F50's HTTP twin.
+ *
  * What this does NOT cover, so nobody concludes otherwise: the login itself.
  * Reaching a handshake needs valid ML-DSA signatures that random bytes will
  * never produce. test_authd_ws pins the login over this carrier, and the v50a
@@ -77,13 +85,15 @@ static void drain(conn_io_t *io, run_t *r)
     }
 }
 
-/* `chunk` of 0 means one push; otherwise push in `chunk`-sized pieces. */
-static void run(const uint8_t *data, size_t size, size_t chunk, run_t *r)
+/* `chunk` of 0 means one push; otherwise push in `chunk`-sized pieces.
+ * `proxy` makes the connection expect a PROXY v2 preamble first (spec §7.2). */
+static void run(const uint8_t *data, size_t size, size_t chunk, int proxy, run_t *r)
 {
     static conn_io_t io;                       /* ~12 KB: static, not stack */
     memset(r, 0, sizeof *r);
     conn_io_reset(&io);
     conn_io_set_mode(&io, CONN_IO_MODE_WS);
+    conn_io_set_proxy(&io, proxy);
 
     /* NOTHING is drained between pushes, and that is deliberate. Draining
      * frees buffer space, so a consumer that drains after every byte survives
@@ -105,6 +115,14 @@ static void run(const uint8_t *data, size_t size, size_t chunk, run_t *r)
     }
     if (!r->failed) {
         drain(&io, r);
+        /* The preamble either settled or it did not, and either way the
+         * address it established must agree with that: a family set on a
+         * connection whose preamble never completed would be an address
+         * invented out of a partial read. */
+        if (proxy && !conn_io_proxy_settled(&io)) {
+            FUZZ_ASSERT(conn_io_client_addr(&io)->family == 0u,
+                        "a client address appeared before the PROXY preamble completed");
+        }
     } else {
         /* (2) sticky: once poisoned, nothing is ever accepted again. */
         const uint8_t probe[1] = { 0x00u };
@@ -122,9 +140,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     memcpy(copy, data, size);
 
     static run_t whole, split, again;
-    run(data, size, 0u, &whole);
-    run(data, size, 0u, &again);
-    run(data, size, 1u, &split);
+    run(data, size, 0u, 0, &whole);
+    run(data, size, 0u, 0, &again);
+    run(data, size, 1u, 0, &split);
 
     /* (5) deterministic, and the input is untouched. */
     FUZZ_ASSERT(memcmp(copy, data, size) == 0, "the WebSocket decoder modified its input");
@@ -158,6 +176,29 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     /* (3) de-framing only ever removes. */
     FUZZ_ASSERT(whole.total <= size, "more bytes came out of the WebSocket layer than went in");
+
+    /* The same input again, this time through a connection that expects a
+     * PROXY v2 preamble. Every property above is asserted again -- the
+     * preamble is part of the same state machine and splits the same way. */
+    static run_t pwhole, psplit, pagain;
+    run(data, size, 0u, 1, &pwhole);
+    run(data, size, 0u, 1, &pagain);
+    run(data, size, 1u, 1, &psplit);
+
+    FUZZ_ASSERT(memcmp(copy, data, size) == 0, "the PROXY+WebSocket decoder modified its input");
+    FUZZ_ASSERT(pwhole.failed == pagain.failed && pwhole.total == pagain.total &&
+                pwhole.count == pagain.count &&
+                memcmp(pwhole.frames, pagain.frames, pwhole.total) == 0,
+                "the PROXY+WebSocket decoder is not deterministic");
+    if (!pwhole.truncated && !psplit.truncated) {
+        FUZZ_ASSERT(pwhole.failed == psplit.failed,
+                    "chunking changed the VERDICT behind a PROXY preamble");
+        FUZZ_ASSERT(pwhole.count == psplit.count && pwhole.total == psplit.total,
+                    "chunking changed how many frames came out behind a PROXY preamble");
+        FUZZ_ASSERT(memcmp(pwhole.frames, psplit.frames, pwhole.total) == 0,
+                    "chunking changed the BYTES that came out behind a PROXY preamble");
+    }
+    FUZZ_ASSERT(pwhole.total <= size, "more bytes came out of the PROXY+WebSocket layer than went in");
     return 0;
 }
 
@@ -238,4 +279,57 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
       uint8_t big[8] = { 0xffu, 0xffu, 0xffu, 0xffu, 0,0,0,0 };
       n = put_frame(b, u, WS_OP_BINARY, 1, big, 8u);
       emit(ctx, "frame-len-huge", b, n); }
+
+    /* PROXY v2 preambles (V4-10b). These are only meaningful to the half of
+     * each run that expects one -- in the other half they are junk the HTTP
+     * parser refuses, which is itself worth an input. */
+    { static const uint8_t sig[12] = {
+          0x0du,0x0au,0x0du,0x0au,0x00u,0x0du,0x0au,0x51u,0x55u,0x49u,0x54u,0x0au };
+      static const uint8_t v4[12] = { 203u,0u,113u,7u, 10u,0u,0u,1u, 0x9cu,0x40u,0u,80u };
+      uint8_t pre[64];
+      memcpy(pre, sig, 12);
+      pre[12] = 0x21u; pre[13] = 0x11u; pre[14] = 0u; pre[15] = 12u;
+      memcpy(pre + 16, v4, 12);
+      const size_t pl = 28u;
+
+      emit(ctx, "proxy-only", pre, pl);
+      emit(ctx, "proxy-truncated", pre, pl - 1u);
+
+      memcpy(b, pre, pl);
+      memcpy(b + pl, UPGRADE, u);
+      emit(ctx, "proxy-upgrade", b, pl + u);
+
+      { uint8_t inner[16] = { 0x00u, 0x00u, 0x00u, 0x08u, 1,2,3,4,5,6,7,8 };
+        memcpy(b, pre, pl);
+        memcpy(b + pl, UPGRADE, u);
+        const size_t n2 = put_frame(b, pl + u, WS_OP_BINARY, 1, inner, 12u);
+        emit(ctx, "proxy-upgrade-frame", b, n2); }
+
+      /* LOCAL: well formed, no client address */
+      { uint8_t loc[16];
+        memcpy(loc, sig, 12);
+        loc[12] = 0x20u; loc[13] = 0x00u; loc[14] = 0u; loc[15] = 0u;
+        memcpy(b, loc, 16u);
+        memcpy(b + 16u, UPGRADE, u);
+        emit(ctx, "proxy-local-upgrade", b, 16u + u); }
+
+      /* one signature byte wrong */
+      { uint8_t badsig[64];
+        memcpy(badsig, pre, pl);
+        badsig[3] ^= 0xffu;
+        emit(ctx, "proxy-bad-signature", badsig, pl); }
+
+      /* a body of TLVs after the address block */
+      { uint8_t tlv[64];
+        memcpy(tlv, pre, 16u);
+        tlv[15] = (uint8_t)(12u + 16u);
+        memcpy(tlv + 16, v4, 12);
+        memset(tlv + 28, 0xabu, 16u);
+        emit(ctx, "proxy-tlv", tlv, 44u); }
+
+      /* a declared body length far past the ceiling */
+      { uint8_t huge[64];
+        memcpy(huge, pre, pl);
+        huge[14] = 0xffu; huge[15] = 0xffu;
+        emit(ctx, "proxy-len-huge", huge, pl); } }
 }

@@ -25,3 +25,19 @@ mask="\x11\x22\x33\x44"
 framelen_8="\x00\x00\x00\x08"
 framelen_0="\x00\x00\x00\x00"
 framelen_max="\x00\x00\x30\x19"
+# PROXY protocol v2 (V4-10b). The signature is the one token nothing else can
+# produce by chance -- twelve fixed bytes the fuzzer would otherwise never
+# assemble -- and the ver/cmd, family and length bytes are what the parser
+# branches on immediately after it.
+pp2_signature="\x0d\x0a\x0d\x0a\x00\x0d\x0a\x51\x55\x49\x54\x0a"
+pp2_v2_proxy="\x21"
+pp2_v2_local="\x20"
+pp2_v1_proxy="\x11"
+pp2_fam_inet="\x11"
+pp2_fam_inet6="\x21"
+pp2_fam_unix="\x31"
+pp2_fam_unspec="\x00"
+pp2_len_12="\x00\x0c"
+pp2_len_36="\x00\x24"
+pp2_len_0="\x00\x00"
+pp2_len_max="\xff\xff"

@@ -1,0 +1,34 @@
+# The proxy in front of mldsa-authd (spec docs/mldsa-authd-spec.md §7.1, §7.2).
+#
+# THIS FILE IS THE ONE UNDER TEST. tests/caddy_proxy.sh copies it into a
+# container, runs `caddy validate` on it, starts a real Caddy with it, and
+# performs a real post-quantum login through it -- so an example that drifted
+# from what works would fail the leg rather than mislead an operator.
+#
+# Two things matter and both are load-bearing:
+#
+#   proxy_protocol v2
+#       The preamble Caddy prepends before the client is allowed to write a
+#       byte. It is the ONLY unforgeable statement of the client's address the
+#       daemon can get, because everything else it can see is Caddy. Without
+#       it the daemon has no address, refuses the connection (Req 12), and
+#       says `event=closed-protocol` in the journal.
+#
+#   a Unix-socket upstream
+#       The daemon's proxy-facing listener is a Unix socket, mode 0660, whose
+#       peer uid must appear in the daemon's `proxy_uids` (Req 11). The
+#       preamble is only trustworthy because the peer that wrote it is the
+#       proxy; run Caddy as a user that is in that list and nothing else.
+#
+# WebSocket needs no directive: reverse_proxy passes an Upgrade through.
+#
+# Replace the site address and let Caddy manage the certificate; the TLS half
+# is Caddy's job and the daemon never sees it.
+
+authd.example.com {
+	reverse_proxy /authd/v1* unix//run/mldsa-authd/p.sock {
+		transport http {
+			proxy_protocol v2
+		}
+	}
+}

@@ -4621,7 +4621,242 @@ length — which is to say, on the first real message, not on a contrived one.
 The proxy's uid check (`authd_main.c` still says so in a comment), PROXY
 protocol v2 fail-closed, the rate limiter — whose numbers the spec does not fix
 anywhere, so they become bounded config keys — the Caddy configuration, and the
-nightly bring-up that also discharges **v49d** and
+nightly bring-up that also discharges **v49d**, **v50a** — this step's own
+campaign, which is owed a bring-up exactly as v49d is — and
 **`tools/audit/check_mutation_anchors.py`**, which V4-9d committed and wired
 nowhere. That tool earned its keep during this step: it caught v48b's C4 anchor
 rotting against the `state` change *before* the campaign ran.
+
+## V4-10b — the client's address, and the first thing that can say no
+
+V4-10a gave the daemon a browser-shaped transport. It did not give it any
+reason to refuse one. The proxy-facing listener accepted **any** uid — the
+`(uid_t)-1` sentinel makes `listener_accept_ex` skip the credential check
+entirely — the daemon had never in its life obtained a client address (audit
+finding **F10**, open since v1), and there was no rate limit of any kind
+(ledger item **A4**, listed as blocking this deployment).
+
+That last one is not a comfort feature. §7.3's uniform responder flow pins a
+decoy public key for every identity that is not active and signs a real
+`ServerHello` anyway, so that an unknown handle is indistinguishable from a
+known one. The spec states the consequence in one sentence and then walks away
+from it: *"This costs one signature per probe, which is the rate limiter's
+problem."* Until this step, nobody owned that problem — one connection, one
+ML-DSA-65 signature, no ceiling.
+
+### Where the decision has to be taken, and why it could not be anywhere else
+
+The limiter has to fire **before** `handshake_responder_create_server_hello`,
+or it has already paid for the thing it exists to stop. The client's address is
+known the moment the PROXY v2 preamble completes, which is strictly before the
+HTTP upgrade and long before the first frame — so that is where the decision
+goes, and `evloop` gained exactly one new callback (`on_addr`) to report the
+moment. The loop reports; it takes no view. Whether a missing address or a
+spent token means refusal is policy, and policy lives in `authd_conn.c` with
+the log line that explains it.
+
+The pin for "before the signature" is the pending ledger:
+`create_server_hello` is what inserts into it, so an empty ledger after a
+refusal is proof that no signature was spent. That is a test, not a comment.
+
+### Nothing can be sealed before a session, so the refusal is HTTP
+
+Spec §6.5 defines `ERROR 0x1F`, and §6.5 also defines **`ERROR 0x04` for a
+refused connection** — and neither can be emitted here. Every `ERROR` goes
+through `fail_with_error` → `queue_sealed` → `session_seal`, and a connection
+refused for its address has no session and never will;
+`authd_conn.c:132` has said so since V4-8b ("no session exists yet: nothing to
+reply with"). Mutation **W11** additionally pins `0x04` as the *wrong* code for
+the ROTATE-conflict path, so the byte is doubly spoken for.
+
+The one channel that exists before a session is the connection's own HTTP
+identity, which has not yet become a WebSocket. So a rate-limited connection is
+answered `HTTP/1.1 429 Too Many Requests` and a limiter with no room left to
+track addresses answers `503` — its capacity problem, not the caller's rate —
+and a connection with **no client address** is answered with nothing at all and
+closed. That `0x04` remains unemitted is recorded as **F56**, not papered over.
+
+`conn_io_ws_silence()` exists for a reason worth stating. If the preamble and
+the HTTP request arrive in one read — which is what a coalescing proxy does —
+`ws_upgrade` has already built a 101 by the time the address is judged; if they
+arrive separately it has not. Without an explicit discard, the same refusal
+would be `101`-then-EOF on one scheduling and a bare EOF on another. That is
+**F52's** divergence in a new place, and this time it was designed out rather
+than found.
+
+### The F50 trap did not recur, and the reason is structural
+
+The PROXY v2 signature begins `\r\n\r\n`, which as a big-endian length is
+**218,893,066** — the same shape as the `"GET "` that poisoned V4-10a's
+connections (F50). The plan said `note_header`'s guard "must be widened in the
+same edit". **It did not need widening.** The preamble is consumed strictly
+inside `WS_STAGE_UPGRADE`, and its bytes never reach `in` at all, so the
+existing condition already covers it — and adding `|| proxy_pending` would have
+been an *equivalent mutant*, indistinguishable from the code without it. The
+argument is written next to the guard, the equivalent mutant is declared in
+`spec_v50b.txt`'s docstring, and the test that would have caught the bug is
+written anyway: the preamble, the upgrade and the first frame are split at
+**every** offset and must arrive intact.
+
+### Decisions
+
+1. **PROXY protocol v2 only.** §7.2 lists an `X-Real-IP` fallback; it is not
+   implemented and no code path can be made to read it (**F61**). Two trust
+   paths for one fact is one more parser to attack, and the header form
+   additionally depends on the proxy remembering to overwrite a client-supplied
+   value — a configuration mistake with no local symptom.
+2. **The TLV region is skipped by length, never walked.** Nothing here wants a
+   TLV, and a parser that is not written cannot be wrong. A declared body over
+   **1024** bytes is refused, so a 16-bit length field cannot decide how long a
+   connection may occupy a slot having said nothing.
+3. **`LOCAL` and `AF_UNIX` are well-formed and carry no client.** They are
+   reported distinctly from a malformed header, because an operator whose
+   health checker is talking to the login socket should be able to tell that
+   from an attack. Both are still refused: Req 12 is about having an address,
+   not about having a header.
+4. **IPv6 is keyed on the /64.** A /64 is the smallest unit a single customer
+   is routinely given; keying on all 128 bits would let one host rotate through
+   2^64 addresses and meet the limiter exactly never.
+5. **Admission is one call that does everything or nothing.** `ratelimit_admit`
+   either takes a token from both buckets *and* counts the connection, or
+   changes nothing at all. A half-applied decision is not representable, and
+   mutation J9 exists because "refused but counted anyway" is the natural way
+   to get this wrong.
+6. **The table refuses rather than evicting.** Forgetting the address that is
+   attacking you is the one behaviour a limiter must not have. It recovers on
+   its own instead: an entry whose bucket has refilled to the brim and which
+   holds no connection says nothing a fresh address does not, so reclaiming it
+   forgets nothing. That *is* the expiry condition; there is no timer.
+7. **Integer arithmetic in thousandths of a token**, and `last_ms` advances
+   only by the time that actually produced whole milli-tokens. A limiter whose
+   refill depends on floating point is a limiter whose boundary cannot be
+   asserted exactly — and the boundary is the whole test: empty at 11999 ms,
+   full at 12000.
+8. **The numbers are config, with defaults.** §17 has no row for them. 5 a
+   minute per address with a burst of 10, 50 a second globally, 8 concurrent
+   connections per address — generous to a human, useless to a prober, and
+   bounded by the parser so nobody can set `rate_per_min = 0`.
+9. **The limiter is attached only where an address exists.** A daemon with
+   `proxy_protocol = none` has `app.rl == NULL`. Keying every addressless
+   connection on "no address" would not be rate limiting; it would be one
+   bucket with everyone in it, and Req 12 refuses those connections anyway.
+
+### `proxy_protocol` defaults to OFF, and that is the uncomfortable one
+
+`v2` is the secure setting and Req 12 fails closed without an address. But
+there is no default that is right for both "Caddy is in front" and "an
+operator's `authd_client` is connected directly", and a daemon whose first
+start refuses every connection teaches an operator to disable things. So the
+key exists to be **set**: the deployment runbook sets it, the Caddy
+configuration in `tests/caddy_proxy.sh` sets it, `--check-config` now prints
+it, and — the part that makes this not a cop-out — **`authd_client --proxy-v2`
+exists so `authd_e2e.sh` runs the whole deployed configuration with the shipped
+binaries**, including a named check that a login with no preamble is refused.
+Recorded as **F63**, because a `--check-config` that passes still does not mean
+the limiter is on.
+
+### Where the address lives, and where it does not
+
+On `conn_io`, which parsed it, and nowhere else. The plan put a copy on
+`authd_slot_t`; the slot carries only two lifecycle flags (`addr_settled`,
+`addr_admitted`) and asks `conn_io_client_addr()` for the value. One copy of a
+fact is one thing that can be stale, and `conn_io_reset` already wipes it on
+slot reuse — the same argument V4-8b used for keeping the WebSocket `state`
+there rather than duplicating it into the connection record.
+
+It does **not** go in the store. The plan's roadmap row said "the client
+address in the store and the log", but §9.1's schema — which
+`store/schema.sql.h` carries verbatim, so that the DDL that runs is the DDL
+under review — has no column for one anywhere, and the standing rule is that a
+spec is never edited to match the code. So: the log, and `authd_log_slot_addr`.
+That function takes an `authd_addr_t` **by struct**, deliberately: `authd_log_fp`
+takes a bare 32-byte pointer and an enrollment ticket's hash is also 32 bytes,
+which is why its guarantee is prose and why **F41** is open. A secret is not an
+`authd_addr_t`.
+
+### The connection cap could not go where the plan put it
+
+The plan placed it in `accept_ready`, before `take_slot`. That is not
+implementable for this listener: the client's address arrives as **data**, so
+at accept time the only address known is the proxy's. `max_conns_per_addr` is
+therefore enforced at the earliest moment it *can* be — the same moment the
+token is taken — and released by `authd_conn_on_close`, which the loop calls
+before it resets the slot. The deviation is stated rather than quietly taken.
+
+### Two defects this step found in the step before it
+
+**F55, High.** `authd_client`'s `cs_send` called `cs_send` where it meant
+`frame_send`, so `login --port` — the operator's SSH-tunnel path, the entire
+reason milestone A has a raw listener — recursed into itself until the stack
+gave out. It shipped in V4-10a and survived a whole step because **every test
+and every e2e leg used `--unix`**, where `cs->ws` is 1 and the branch is dead.
+At `-O2` the recursion is a tail call, so a Release build hangs rather than
+crashing — the worse of the two. It was found by the first check that ever
+drove `--port`, which is now an `authd_e2e` leg, and mutation **J12** restores
+it so it cannot come back quietly.
+
+**F54, Low.** `h_stop` closed the loopback, site and admin listeners and not the
+WebSocket one, so every fixture leaked a descriptor and a socket file. Nothing
+failed, because no suite starts enough daemons to exhaust a descriptor table —
+which is exactly why it went unnoticed.
+
+### The Caddy leg runs a real Caddy, and it had to be one container
+
+`tests/caddy_proxy.sh` puts **Caddy 2.10.2** (`sha256
+501e955fa634c5aab63247458c3ac655cfdd6cbf1e0436528f41248451c190ac`, linux/arm64)
+in front of the daemon, builds the daemon and the CLIs from this tree inside
+the same container, and performs a real post-quantum login through the proxy.
+
+Everything is in **one** container, and that is not laziness. The proxy-facing
+listener is a Unix socket, and a Unix socket cannot be crossed between a macOS
+host and a Linux VM: virtiofs shares the inode, not the listening kernel
+object, so a guest `connect()` to a host-created socket is refused. Caddy on
+the host is no better — it is not installed, and installing it changes the
+developer's machine. One namespace removes both problems and is also how the
+thing actually runs.
+
+Two things had to be added to make the leg real rather than a simulation.
+`authd_client --ws` speaks WebSocket over `--port`, because a browser reaches
+the daemon as WebSocket **over TCP** through a TLS proxy and until now `--unix`
+implied WebSocket and `--port` implied raw frames — the one arrangement a real
+deployment uses was the one shape the tree could not take. And `caddy validate`
+is run twice: once on the configuration under test, and once on the same
+configuration with `proxy_protocol v9` — one character from the value that
+matters. V4-2's S5 spike reported "PROXY v2 upstream: NOT supported" and was
+wrong, because of a brace error in its own Caddyfile, so a `validate` that
+passes proves nothing until a near-miss is shown to fail.
+
+The leg's last check is the one that makes the others mean something: with
+`proxy_protocol` removed from the Caddyfile and Caddy reloaded, the login must
+**stop working**.
+
+It is not a CTest. A suite gate that silently depends on a container registry
+is a gate that fails for reasons that have nothing to do with the code.
+
+### The nightly gap: the edit is written, the bring-up is owed
+
+The nightly verifies **123 of the 160** mutations it claims authority over.
+`.github/workflows/nightly.yml` on the **`nightly-bringup` branch** adds `v49d`,
+`v50a` and `v50b` to the campaign matrix, `ws` to the 600-second fuzz budgets,
+and a `mutation-anchors` job that **gates** the campaigns (`needs:`) rather
+than running beside them — a rotted anchor aborts the runner, and learning that
+after three hours of mutation runs costs three hours to discover what five
+minutes knew. That tool earned the position during V4-10a by catching v48b's
+C4, and it caught two of this step's own anchors on their first dry run.
+
+It is **not on `main`**, and that is V3-3's decision 1 held to rather than
+waived: a workflow reaches `main` only after it has gone green on its own
+bring-up branch, with a deliberately-broken control shown red and reverted
+byte-exactly. Pushing that branch is an outward-facing action, and this project
+takes those only on instruction. Until it runs, the count above is the honest
+one and `tools/README.md` says so in those words.
+
+### Spec gaps recorded, not fixed
+
+**F56** (`ERROR 0x04` is unemittable), **F57** (Req 11 says "Local API callers"
+while §7.2 cites it for the proxy socket), **F58** (no document states the
+proxy listener's mode), **F59** ("fails closed" is never defined as a wire
+behaviour), **F60** (`threat-model.md` still describes the `X-Real-IP`
+arrangement S5 superseded) and **F61** (the fallback is deliberately not
+implemented). Six for the errata step, none of them fixed by editing a spec to
+match the code.

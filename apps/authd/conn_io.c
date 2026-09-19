@@ -26,6 +26,55 @@ void conn_io_set_mode(conn_io_t *c, conn_io_mode_t mode)
     }
 }
 
+void conn_io_set_proxy(conn_io_t *c, int on)
+{
+    if (c != NULL && c->mode == CONN_IO_MODE_WS) {
+        c->proxy_on = on ? 1 : 0;
+        if (c->proxy_on) {
+            proxy_v2_init(&c->proxy);
+        }
+    }
+}
+
+int conn_io_proxy_settled(const conn_io_t *c)
+{
+    return (c != NULL && c->proxy_on && c->proxy.done) ? 1 : 0;
+}
+
+const authd_addr_t *conn_io_client_addr(const conn_io_t *c)
+{
+    static const authd_addr_t none = { 0u, { 0 } };
+    return (c != NULL) ? &c->proxy.addr : &none;
+}
+
+conn_io_status_t conn_io_ws_refuse(conn_io_t *c, unsigned code)
+{
+    if (c == NULL || c->mode != CONN_IO_MODE_WS) {
+        return CONN_IO_ERR_ARG;
+    }
+    /* Any data reply is abandoned along with the 101: this connection is not
+     * going to carry protocol, and leaving bytes in `out` would append them
+     * after the HTTP response. */
+    sodium_memzero(c->out, sizeof c->out);
+    c->out_len = 0u;
+    c->out_sent = 0u;
+    return (ws_refuse(&c->ws, code) == WS_OK) ? CONN_IO_OK : CONN_IO_ERR_PROTOCOL;
+}
+
+void conn_io_ws_silence(conn_io_t *c)
+{
+    if (c == NULL || c->mode != CONN_IO_MODE_WS) {
+        return;
+    }
+    sodium_memzero(c->out, sizeof c->out);
+    c->out_len = 0u;
+    c->out_sent = 0u;
+    sodium_memzero(c->ws.reply, sizeof c->ws.reply);
+    c->ws.reply_len = 0u;
+    c->ws.reply_sent = 0u;
+    c->ws.stage = WS_STAGE_CLOSED;
+}
+
 size_t conn_io_out_capacity(void)
 {
     return (size_t)AUTHD_FRAME_MAX;
@@ -81,7 +130,16 @@ static conn_io_status_t note_header(conn_io_t *c)
      * than a theoretical one: it only appears when the request arrives in more
      * than one read, which is what a real network does as soon as the request
      * crosses a segment boundary. Every hand-written test wrote it in one
-     * write() and passed. */
+     * write() and passed.
+     *
+     * V4-10b's PROXY v2 preamble is the same trap wearing a different hat --
+     * its signature begins "\r\n\r\n", which is 218,893,066 read as a
+     * length -- and this one condition ALREADY covers it, because the preamble
+     * is consumed strictly inside WS_STAGE_UPGRADE and its bytes never reach
+     * `in` at all. Adding `|| proxy_pending` here would read as diligence and
+     * be an equivalent mutant: nothing could distinguish the two versions.
+     * Recorded in tools/mutations/spec_v50b.txt rather than written. What IS
+     * written is the test that splits the preamble at every offset. */
     if (c->mode == CONN_IO_MODE_WS && c->ws.stage == WS_STAGE_UPGRADE) {
         return CONN_IO_OK;
     }
@@ -205,6 +263,30 @@ conn_io_status_t conn_io_push(conn_io_t *c, const uint8_t *data, size_t n)
         return CONN_IO_ERR_PROTOCOL;
     }
     if (c->mode == CONN_IO_MODE_WS) {
+        /* The PROXY v2 preamble, when the listener says there is one, is
+         * consumed BEFORE anything else looks at these bytes. It has to be:
+         * its signature begins "\r\n\r\n", which as a big-endian length is
+         * 218,893,066, and its body is arbitrary binary that no HTTP parser
+         * should ever see. The preamble's own buffer holds it, so `in` never
+         * contains a byte of it -- and note_header()'s existing guard already
+         * covers this whole stage, because a WebSocket connection is in
+         * WS_STAGE_UPGRADE throughout it (see that function). */
+        if (c->proxy_on && !c->proxy.done) {
+            size_t used = 0u;
+            if (proxy_v2_consume(&c->proxy, data, n, &used) == PROXY_V2_ERR) {
+                c->failed = 1;
+                return CONN_IO_ERR_PROTOCOL;
+            }
+            data += used;
+            n -= used;
+            if (!c->proxy.done) {
+                return CONN_IO_OK;          /* still buffering the preamble */
+            }
+            /* Settled. Whether it carried an address is the CALLER's decision
+             * (Req 12 is a policy, and the log line that explains a refusal
+             * lives with the policy), so a preamble with no address is not an
+             * error here -- conn_io_proxy_settled() tells the loop to ask. */
+        }
         return push_ws(c, data, n);
     }
     if (n == 0u) {

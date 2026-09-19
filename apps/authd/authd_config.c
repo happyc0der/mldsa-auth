@@ -27,10 +27,22 @@
 #define K_ADMIN_UIDS "admin_uids"
 #define K_LOCAL_SLOTS "max_local_slots"
 #define K_ROT_AGE    "rotation_due_age_s"
+#define K_PROXY_UIDS "proxy_uids"
+#define K_PROXY_PROTO "proxy_protocol"
+#define K_RATE_MIN   "rate_per_min"
+#define K_RATE_BURST "rate_burst"
+#define K_RATE_GLOBAL "rate_global_per_sec"
+#define K_MAX_CONNS  "max_conns_per_addr"
 
 /* bit index per key, for duplicate and missing detection */
 enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET,
-       B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_ROT_AGE, B_COUNT };
+       B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_ROT_AGE,
+       B_PROXY_UIDS, B_PROXY_PROTO, B_RATE_MIN, B_RATE_BURST, B_RATE_GLOBAL, B_MAX_CONNS,
+       B_COUNT };
+
+/* `seen` is a uint32_t, so the key count is a compile-time invariant rather
+ * than something a future key silently overflows. */
+_Static_assert(B_COUNT <= 32, "the duplicate/missing bitmask holds at most 32 keys");
 
 const char *authd_config_status_name(authd_config_status_t st)
 {
@@ -61,6 +73,12 @@ void authd_config_defaults(authd_config_t *out)
     out->pad_bucket = SESSION_PAD_BUCKET_DEFAULT;
     out->rotation_due_age_s = AUTHD_ROTATION_AGE_DEFAULT;
     out->max_local_slots = 8u;
+    out->proxy_protocol_v2 = 0;
+    out->n_proxy_uids = 0u;
+    out->rate_per_min = RATELIMIT_PER_MIN_DEFAULT;
+    out->rate_burst = RATELIMIT_BURST_DEFAULT;
+    out->rate_global_per_sec = RATELIMIT_GLOBAL_PER_SEC_DEF;
+    out->max_conns_per_addr = RATELIMIT_MAX_CONNS_DEFAULT;
     /* The admin socket defaults to root only; the site socket has no default
      * allowlist, so a deployment must name the uid that may reach it. */
     out->admin_uids[0] = (uid_t)0;
@@ -256,6 +274,12 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
         else if (key_is(k, kn, K_ADMIN_UIDS)){ bit = B_ADMIN_UIDS; }
         else if (key_is(k, kn, K_LOCAL_SLOTS)) { bit = B_LOCAL_SLOTS; }
         else if (key_is(k, kn, K_ROT_AGE))   { bit = B_ROT_AGE; }
+        else if (key_is(k, kn, K_PROXY_UIDS)) { bit = B_PROXY_UIDS; }
+        else if (key_is(k, kn, K_PROXY_PROTO)) { bit = B_PROXY_PROTO; }
+        else if (key_is(k, kn, K_RATE_MIN))  { bit = B_RATE_MIN; }
+        else if (key_is(k, kn, K_RATE_BURST)) { bit = B_RATE_BURST; }
+        else if (key_is(k, kn, K_RATE_GLOBAL)) { bit = B_RATE_GLOBAL; }
+        else if (key_is(k, kn, K_MAX_CONNS)) { bit = B_MAX_CONNS; }
         else {
             if (err_line != NULL) { *err_line = line_no; }
             return AUTHD_CFG_ERR_UNKNOWN_KEY;
@@ -310,6 +334,27 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
             r = parse_u32(v, vn, AUTHD_TIMEOUT_MS_MIN, AUTHD_TIMEOUT_MS_MAX, &cfg.handshake_timeout_ms);
         } else if (bit == B_IDLE_MS) {
             r = parse_u32(v, vn, AUTHD_TIMEOUT_MS_MIN, AUTHD_TIMEOUT_MS_MAX, &cfg.idle_timeout_ms);
+        } else if (bit == B_PROXY_UIDS) {
+            r = parse_uids(v, vn, cfg.proxy_uids, &cfg.n_proxy_uids);
+        } else if (bit == B_PROXY_PROTO) {
+            /* An enumerated value, not a boolean: "v2" names the mechanism, so
+             * adding a second one later does not have to redefine what `on`
+             * meant. Anything else is refused rather than guessed. */
+            if (vn == 4u && memcmp(v, "none", 4) == 0) {
+                cfg.proxy_protocol_v2 = 0;
+            } else if (vn == 2u && memcmp(v, "v2", 2) == 0) {
+                cfg.proxy_protocol_v2 = 1;
+            } else {
+                r = AUTHD_CFG_ERR_VALUE;
+            }
+        } else if (bit == B_RATE_MIN) {
+            r = parse_u32(v, vn, 1u, RATELIMIT_PER_MIN_MAX, &cfg.rate_per_min);
+        } else if (bit == B_RATE_BURST) {
+            r = parse_u32(v, vn, 1u, RATELIMIT_BURST_MAX, &cfg.rate_burst);
+        } else if (bit == B_RATE_GLOBAL) {
+            r = parse_u32(v, vn, 1u, RATELIMIT_GLOBAL_MAX, &cfg.rate_global_per_sec);
+        } else if (bit == B_MAX_CONNS) {
+            r = parse_u32(v, vn, 1u, RATELIMIT_MAX_CONNS_MAX, &cfg.max_conns_per_addr);
         } else if (bit == B_ROT_AGE) {
             /* 0 is legal and means "never hint", so the minimum is 0, not 1. */
             r = parse_u32(v, vn, 0u, AUTHD_ROTATION_AGE_MAX, &cfg.rotation_due_age_s);
@@ -347,6 +392,12 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
     }
     /* at least one listener must be configured, or the daemon can serve nobody */
     if (cfg.listen_port == 0u && cfg.listen_unix[0] == '\0') {
+        return AUTHD_CFG_ERR_MISSING;
+    }
+    /* Both of these configure the proxy-facing listener, so naming either
+     * without it is a mistake the operator wants to hear about now rather than
+     * discover as an absent rate limit. */
+    if ((cfg.proxy_protocol_v2 || cfg.n_proxy_uids > 0u) && cfg.listen_unix[0] == '\0') {
         return AUTHD_CFG_ERR_MISSING;
     }
     (void)B_COUNT;

@@ -45,6 +45,15 @@ typedef struct {
     slot_kind_t  kind;
     listener_peer_t peer;       /* LOCAL only: uid/pid, for the log (spec 8) */
     int          is_admin;      /* LOCAL only: which dispatch table applies */
+    /* PROXY-v2 slots: whether the client address has been decided yet, and
+     * whether admission counted a connection that must be given back.
+     *
+     * The ADDRESS itself is deliberately not here: it lives in conn_io, which
+     * parsed it and which conn_io_reset already wipes on slot reuse. One copy
+     * of a fact is one thing that can be stale; these two are pure slot
+     * lifecycle, which is this struct's job. */
+    int          addr_settled;
+    int          addr_admitted;
     slot_state_t state;
     conn_io_t    io;
     uint64_t     deadline_ms;   /* absolute; 0 = none */
@@ -67,6 +76,16 @@ typedef ev_action_t (*evloop_on_frame_fn)(void *user, authd_slot_t *slot,
  * contract as on_frame: queue at most one reply, never block. */
 typedef ev_action_t (*evloop_on_line_fn)(void *user, authd_slot_t *slot,
                                          const uint8_t *line, size_t len);
+
+/* Called once per PROXY-v2 slot, the moment the preamble settles and the
+ * client address is therefore decided -- before the HTTP upgrade is answered
+ * and long before any signature. Returning EV_ACTION_CLOSE refuses the
+ * connection; anything the callback queued (an HTTP 429) is flushed first.
+ *
+ * The loop reports the event and takes no view: whether a missing address or a
+ * spent token means refusal is policy, and policy lives with the log line that
+ * explains it. */
+typedef ev_action_t (*evloop_on_addr_fn)(void *user, authd_slot_t *slot);
 
 /* Called when a slot is released, so V4-8b can wipe its handshake state. */
 typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
@@ -103,6 +122,8 @@ typedef struct {
      * conn_io MODE, not a slot kind -- the WS payload carries the same frame
      * stream, so everything downstream of conn_io is identical (spec §7.1). */
     int         listen_ws[AUTHD_MAX_LISTENERS];
+    /* PROTO+WS listeners only: whether peers prepend a PROXY v2 preamble. */
+    int         listen_proxy[AUTHD_MAX_LISTENERS];
     uid_t       listen_allow[AUTHD_MAX_LISTENERS][LISTENER_MAX_ALLOW];
     size_t      listen_n_allow[AUTHD_MAX_LISTENERS];
     size_t n_listeners;
@@ -114,6 +135,7 @@ typedef struct {
 
     evloop_on_frame_fn on_frame;
     evloop_on_line_fn  on_line;
+    evloop_on_addr_fn  on_addr;
     evloop_on_close_fn on_close;
     void *user;
 
@@ -125,6 +147,7 @@ typedef struct {
     uint64_t closed_peer;
     uint64_t local_accepted;
     uint64_t local_refused_no_slot;
+    uint64_t closed_refused_addr;    /* refused by on_addr (Req 12 / the limiter) */
 } evloop_t;
 
 /* `slots` must have room for `n_slots` and outlive the loop. */
@@ -138,8 +161,18 @@ int evloop_add_listener(evloop_t *ev, int fd, uid_t require_uid);
 /* As evloop_add_listener, but the accepted connections speak WebSocket: the
  * proxy-facing listener (spec §7.1). Frames, the on_frame callback and the
  * connection state machine are unchanged -- only the framing on the wire
- * differs, and conn_io hides it. */
-int evloop_add_ws_listener(evloop_t *ev, int fd, uid_t require_uid);
+ * differs, and conn_io hides it.
+ *
+ * `allow` is the uid allowlist the proxy must appear in (Req 11): empty
+ * disables the check, which is what V4-10a shipped and what a development
+ * socket wants. `proxy_v2` makes the daemon require a PROXY v2 preamble before
+ * the upgrade (spec §7.2), which is what supplies the client address. */
+int evloop_add_ws_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n_allow,
+                           int proxy_v2);
+
+/* Attaches the address callback. Optional; without it a PROXY-v2 listener
+ * still parses the preamble and simply admits everything. */
+int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr);
 
 /* Registers a LINE-oriented local-API listener: its connections come from the
  * local pool, are dispatched to on_line, and are accepted only from a uid in

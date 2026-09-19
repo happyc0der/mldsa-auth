@@ -202,6 +202,35 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
     return WS_OK;
 }
 
+ws_status_t ws_refuse(ws_t *w, unsigned code)
+{
+    if (w == NULL) {
+        return WS_ERR_PROTOCOL;
+    }
+    const char *status = (code == 429u) ? "429 Too Many Requests" : "503 Service Unavailable";
+    const int n = snprintf((char *)w->reply, sizeof w->reply,
+                           "HTTP/1.1 %s\r\n"
+                           "Connection: close\r\n"
+                           "Content-Length: 0\r\n\r\n", status);
+    if (n <= 0 || (size_t)n >= sizeof w->reply) {
+        /* Unreachable for either literal, but a truncated response is worse
+         * than none: leave the buffer empty and let the caller close. */
+        w->reply_len = 0u;
+        w->reply_sent = 0u;
+        w->stage = WS_STAGE_CLOSED;
+        return WS_ERR_PROTOCOL;
+    }
+    /* Overwrites whatever was queued -- specifically a 101 built moments ago by
+     * ws_upgrade, when the preamble and the request arrived in one read. A 101
+     * followed by a 429 is not a thing, so the refusal replaces it. Nothing has
+     * been written to the socket yet: the event loop computes its POLLOUT set
+     * before the read that got us here. */
+    w->reply_len = (size_t)n;
+    w->reply_sent = 0u;
+    w->stage = WS_STAGE_CLOSED;
+    return WS_OK;
+}
+
 /* ----------------------------------------------------------------- frames */
 
 size_t ws_server_header(uint8_t out[WS_SRV_HDR_MAX], uint64_t payload_len, uint8_t opcode)

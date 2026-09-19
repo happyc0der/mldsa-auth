@@ -849,6 +849,26 @@ typedef struct {
 
 /* ---- the WebSocket carrier, client side -------------------------------- */
 
+/* Announces 127.0.0.1 as the client in a PROXY v2 preamble (spec §7.2). The
+ * layout is the one proxy_v2.c parses; building it here rather than exporting
+ * a writer from that file keeps the parser a pure decoder with nothing in it
+ * that can emit. */
+static int write_proxy_v2_local(client_session_t *cs)
+{
+    static const uint8_t sig[12] = {
+        0x0du, 0x0au, 0x0du, 0x0au, 0x00u, 0x0du, 0x0au, 0x51u, 0x55u, 0x49u, 0x54u, 0x0au };
+    uint8_t hdr[28];
+    memcpy(hdr, sig, sizeof sig);
+    hdr[12] = 0x21u;                    /* version 2, command PROXY */
+    hdr[13] = 0x11u;                    /* AF_INET, SOCK_STREAM */
+    hdr[14] = 0x00u; hdr[15] = 0x0cu;   /* a 12-byte IPv4 address block */
+    hdr[16] = 127u; hdr[17] = 0u; hdr[18] = 0u; hdr[19] = 1u;   /* source */
+    hdr[20] = 127u; hdr[21] = 0u; hdr[22] = 0u; hdr[23] = 1u;   /* destination */
+    hdr[24] = 0u; hdr[25] = 0u;         /* source port: unknown, and unused */
+    hdr[26] = 0u; hdr[27] = 0u;
+    return (net_write_all(&cs->conn, hdr, sizeof hdr, cs->deadline) == NET_OK) ? 0 : -1;
+}
+
 /* Completes the RFC 6455 opening handshake. The accept value is CHECKED: a
  * client that skipped it would happily "upgrade" with something that never
  * read its key. */
@@ -901,7 +921,13 @@ static int cs_read_exact(void *ctx, uint8_t *buf, size_t n)
 static frame_status_t cs_send(client_session_t *cs, uint8_t *buf, size_t payload_len)
 {
     if (!cs->ws) {
-        return cs_send(cs, buf, payload_len);
+        /* frame_send, not cs_send: V4-10a wrote the latter here and the raw
+         * transport recursed into itself forever (audit finding F55). Nothing
+         * caught it because every test and every e2e leg used --unix, where
+         * cs->ws is 1 and this branch is dead -- so the operator's own SSH
+         * tunnel, the thing milestone A exists for, crashed on its first
+         * frame. The e2e now logs in over BOTH transports. */
+        return frame_send(&cs->conn, buf, payload_len, cs->deadline);
     }
     frame_put_header(buf, (uint32_t)payload_len);
     static uint8_t wf[WS_SRV_HDR_MAX + 4u + FRAME_BUF_BYTES];
@@ -959,7 +985,7 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
                                const uint8_t *sid, size_t sid_len,
                                const uint8_t *server_pk,
                                const char *unix_path, uint16_t port,
-                               const char *state,
+                               const char *state, int proxy_v2, int force_ws,
                                client_session_t *cs)
 {
     memset(cs, 0, sizeof *cs);
@@ -985,7 +1011,18 @@ static int client_open_session(const char *prog, const char *sub, int quiet,
     /* The Unix socket IS the proxy-facing listener, and that one speaks
      * WebSocket (spec §7.1). The loopback port is the operator's tunnel and
      * stays raw. Nothing above this line knows the difference. */
-    cs->ws = (unix_path != NULL);
+    cs->ws = (unix_path != NULL) || force_ws;
+    /* The PROXY v2 preamble goes first, before a byte of HTTP: that ordering is
+     * the whole security property -- the client never gets to write ahead of
+     * the statement about who it is. */
+    if (cs->ws && proxy_v2 && write_proxy_v2_local(cs) != 0) {
+        if (!quiet) {
+            fprintf(stderr, "%s %s: could not send the PROXY v2 preamble\n", prog, sub);
+        }
+        net_close(&cs->conn);
+        keystore_wipe(&cs->pins);
+        return EX_FAIL;
+    }
     if (cs->ws && ws_do_upgrade(cs, state) != 0) {
         if (!quiet) {
             fprintf(stderr, "%s %s: WebSocket upgrade failed\n", prog, sub);
@@ -1198,6 +1235,24 @@ typedef struct {
      * the WebSocket URL, so it means nothing on the raw tunnel listener --
      * which is exactly why the daemon binds SHA-256("") there. */
     const char *state;
+    /* Speak PROXY protocol v2 before the upgrade (spec §7.2), announcing
+     * 127.0.0.1 as the client.
+     *
+     * A deployed daemon's proxy-facing socket has `proxy_protocol = v2` and
+     * Caddy supplies the preamble; this flag exists so the end-to-end test can
+     * drive that same configuration with the shipped binaries instead of only
+     * a container. It is not a way to forge a client address: the listener's
+     * uid allowlist (Req 11) is what decides who may state one at all. */
+    int proxy_v2;
+    /* Speak WebSocket over the TCP listener too.
+     *
+     * A browser reaches the daemon as WebSocket over TCP over TLS, through the
+     * site's proxy -- and until this existed nothing in the tree could take
+     * that shape: --unix implied WebSocket and --port implied raw frames, so
+     * the one arrangement a real deployment uses could only be tested by
+     * pretending the proxy was a Unix client. tests/caddy_proxy.sh puts a real
+     * Caddy in front of the daemon and drives it with this. */
+    int ws;
 } client_args_t;
 
 static int parse_client_args(int argc, char **argv, const char *prog, const char *sub,
@@ -1215,6 +1270,8 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         else if (strcmp(argv[i], "--unix") == 0 && has)            { a->unix_path = argv[++i]; }
         else if (strcmp(argv[i], "--state") == 0 && has)           { a->state = argv[++i]; }
         else if (strcmp(argv[i], "--port") == 0 && has)            { port_s = argv[++i]; }
+        else if (strcmp(argv[i], "--proxy-v2") == 0)               { a->proxy_v2 = 1; }
+        else if (strcmp(argv[i], "--ws") == 0)                     { a->ws = 1; }
         else { return unexpected(prog, sub, argv[i]); }
     }
     uint64_t port = 0;
@@ -1225,7 +1282,8 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         (port_s != NULL && demo_parse_u64(port_s, 1u, 65535u, &port) != 0)) {
         return need(prog, sub,
                     "--handle H --key H.ek --passphrase-file PATH --server-id ID "
-                    "--server-pub server.pub (--unix PATH | --port N) [--state S]");
+                    "--server-pub server.pub (--unix PATH | --port N) [--state S] "
+                    "[--proxy-v2] [--ws]");
     }
     a->port = (uint16_t)port;
     return EX_OK;
@@ -1272,7 +1330,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
 
     if (keyfile_open(a->key_path, a->hid, a->hid_len, pass, pass_len, &ek_kp, NULL) == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &ek_kp, a->hid, a->hid_len, a->sid, a->sid_len,
-                                server_pk, a->unix_path, a->port, a->state, &probe) == EX_OK) {
+                                server_pk, a->unix_path, a->port, a->state, a->proxy_v2, a->ws, &probe) == EX_OK) {
             ek_ok = 1;
             client_say_bye(&probe);
         }
@@ -1280,7 +1338,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     if (!ek_ok &&
         keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL) == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &next_kp, a->hid, a->hid_len, a->sid, a->sid_len,
-                                server_pk, a->unix_path, a->port, a->state, &probe) == EX_OK) {
+                                server_pk, a->unix_path, a->port, a->state, a->proxy_v2, a->ws, &probe) == EX_OK) {
             next_ok = 1;
             client_say_bye(&probe);
         }
@@ -1358,7 +1416,7 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
 
     client_session_t cs;
     rc = client_open_session(prog, "login", 0, &kp, a.hid, a.hid_len, a.sid, a.sid_len,
-                             server_pk, a.unix_path, a.port, a.state, &cs);
+                             server_pk, a.unix_path, a.port, a.state, a.proxy_v2, a.ws, &cs);
     mldsa_keypair_free(&kp);
     if (rc != EX_OK) { return rc; }
 
@@ -1467,7 +1525,7 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
 
     client_session_t cs;
     rc = client_open_session(prog, "rotate", 0, &old_kp, a.hid, a.hid_len, a.sid, a.sid_len,
-                             server_pk, a.unix_path, a.port, a.state, &cs);
+                             server_pk, a.unix_path, a.port, a.state, a.proxy_v2, a.ws, &cs);
     if (rc != EX_OK) {
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
@@ -1575,9 +1633,11 @@ static void client_usage(const char *prog)
             "usage:\n"
             "  %s keygen --dir DIR --passphrase-file PATH\n"
             "  %s login  --handle H --key H.ek --passphrase-file PATH\n"
-            "            --server-id ID --server-pub server.pub (--unix PATH | --port N) [--state S]\n"
+            "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
+            "            [--state S] [--proxy-v2] [--ws]\n"
             "  %s rotate --handle H --key H.ek --passphrase-file PATH\n"
-            "            --server-id ID --server-pub server.pub (--unix PATH | --port N) [--state S]\n"
+            "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
+            "            [--state S] [--proxy-v2] [--ws]\n"
             "\n"
             "keygen prints the new device handle on stdout; login prints the login code as\n"
             "base64url, for pasting into the site's form. rotate replaces this device's key\n"
@@ -1585,6 +1645,12 @@ static void client_usage(const char *prog)
             "sent, and renamed over <key> only when the daemon acknowledges. If a rotation\n"
             "is interrupted, the next login or rotate asks the daemon which key is live and\n"
             "finishes the job; nothing is ever deleted on a guess.\n"
+            "--unix reaches the proxy-facing socket, which speaks WebSocket; --port is the\n"
+            "raw loopback listener an operator reaches through an SSH tunnel. Add --proxy-v2\n"
+            "when the daemon's proxy_protocol is v2 -- normally a TLS proxy supplies that\n"
+            "preamble, and without it the daemon fails the connection closed (spec 7.2).\n"
+            "--ws speaks WebSocket over --port as well, which is the shape a browser takes\n"
+            "through a TLS proxy.\n"
             "Passphrases are FILES (mode 0600, owned by you): argv and the environment are\n"
             "readable by other processes on this machine.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",

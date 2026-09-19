@@ -104,6 +104,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FUZZ_ASSERT(bucket_ok(cfg.pad_bucket), "pad_bucket is not one of the six on OK");
         FUZZ_ASSERT(cfg.listen_port != 0u || cfg.listen_unix[0] != '\0',
                     "OK with no listener configured");
+        /* V4-10b. The limiter's values are what stand between the decoy flow
+         * and an unbounded signature cost (spec §7.3), so a parse that
+         * accepted a zero would disable the defence rather than misconfigure
+         * it -- and `proxy_protocol` or `proxy_uids` without the listener they
+         * configure is a key that does nothing, which the parser refuses
+         * rather than silently honours. */
+        FUZZ_ASSERT(cfg.rate_per_min >= 1u && cfg.rate_per_min <= RATELIMIT_PER_MIN_MAX,
+                    "rate_per_min out of range on OK");
+        FUZZ_ASSERT(cfg.rate_burst >= 1u && cfg.rate_burst <= RATELIMIT_BURST_MAX,
+                    "rate_burst out of range on OK");
+        FUZZ_ASSERT(cfg.rate_global_per_sec >= 1u &&
+                        cfg.rate_global_per_sec <= RATELIMIT_GLOBAL_MAX,
+                    "rate_global_per_sec out of range on OK");
+        FUZZ_ASSERT(cfg.max_conns_per_addr >= 1u &&
+                        cfg.max_conns_per_addr <= RATELIMIT_MAX_CONNS_MAX,
+                    "max_conns_per_addr out of range on OK");
+        FUZZ_ASSERT(cfg.n_proxy_uids <= AUTHD_MAX_UIDS, "too many proxy_uids on OK");
+        FUZZ_ASSERT((cfg.proxy_protocol_v2 == 0 && cfg.n_proxy_uids == 0u) ||
+                        cfg.listen_unix[0] != '\0',
+                    "OK with proxy settings but no proxy listener");
     } else {
         /* a failed parse must leave nothing half-applied */
         authd_config_t def;
@@ -138,6 +158,23 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
              "handshake_timeout_ms = 100\n"
              "idle_timeout_ms = 600000\n"
              "pad_bucket = 4096\n");
+    emit_str(emit, ctx, "proxy-v2-full",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_unix = /run/p.sock\nproxy_protocol = v2\nproxy_uids = 33,1001\n"
+             "rate_per_min = 5\nrate_burst = 10\nrate_global_per_sec = 50\n"
+             "max_conns_per_addr = 8\n");
+    emit_str(emit, ctx, "proxy-without-listener",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_port = 1\nproxy_protocol = v2\n");
+    emit_str(emit, ctx, "proxy-protocol-bogus",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_unix = /run/p.sock\nproxy_protocol = yes\n");
+    emit_str(emit, ctx, "rate-zero",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_port = 1\nrate_per_min = 0\n");
+    emit_str(emit, ctx, "proxy-uids-empty",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_unix = /run/p.sock\nproxy_uids = \n");
     emit_str(emit, ctx, "missing-required", "listen_port = 1\n");
     emit_str(emit, ctx, "no-listener",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n");

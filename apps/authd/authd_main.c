@@ -31,6 +31,7 @@
 #include "keyfile.h"
 #include "listener.h"
 #include "localapi.h"
+#include "ratelimit.h"
 #include "recovery.h"
 #include "tokens.h"
 #include "secure_mem.h"
@@ -122,9 +123,12 @@ int main(int argc, char **argv)
     }
     if (check_only) {
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
-               "idle_timeout_ms=%u pad_bucket=%u)\n",
+               "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
+               "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u)\n",
                cfg_path, cfg.max_slots, cfg.handshake_timeout_ms,
-               cfg.idle_timeout_ms, cfg.pad_bucket);
+               cfg.idle_timeout_ms, cfg.pad_bucket,
+               cfg.proxy_protocol_v2 ? "v2" : "none", cfg.rate_per_min,
+               cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr);
         return 0;
     }
 
@@ -219,6 +223,17 @@ int main(int argc, char **argv)
     app.now_unix = (int64_t)time(NULL);
     app.started_ms = app.now_ms;
 
+    /* The limiter exists only where a client address does. Attaching it to a
+     * daemon with no PROXY v2 listener would be theatre: every connection
+     * would key on "no address", which is not rate limiting, it is one bucket
+     * with everyone in it. Req 12 refuses those connections instead. */
+    static ratelimit_t limiter;
+    if (cfg.proxy_protocol_v2) {
+        ratelimit_init(&limiter, cfg.rate_per_min, cfg.rate_burst,
+                       cfg.rate_global_per_sec, cfg.max_conns_per_addr, app.now_ms);
+        app.rl = &limiter;
+    }
+
     static handshake_pending_store_t pending;
     if (handshake_pending_store_init(&pending, ledger_cap, (uint64_t)cfg.handshake_timeout_ms,
                                      authd_app_clock, &app) != PENDING_OK) {
@@ -248,6 +263,12 @@ int main(int argc, char **argv)
         return 1;
     }
     app.ev = &ev;
+    if (evloop_set_on_addr(&ev, authd_conn_on_addr) != 0) {
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns); free(local_slots);
+        fprintf(stderr, "mldsa-authd: address callback init failed\n");
+        return 1;
+    }
     if (evloop_set_local(&ev, local_slots, (size_t)cfg.max_local_slots, localapi_on_line) != 0) {
         store_close(store); mldsa_keypair_free(&server_kp);
         free(slots); free(conns); free(local_slots);
@@ -290,10 +311,18 @@ int main(int argc, char **argv)
         }
         /* The proxy-facing listener speaks WebSocket (spec §7.1): a browser
          * reaches it through the site's TLS proxy, and the WS payload carries
-         * the same frame stream the tunnel listener carries raw. V4-10b adds
-         * the proxy uid check and PROXY v2; today this still relies on the
-         * 0660 mode. */
-        if (evloop_add_ws_listener(&ev, unix_fd, (uid_t)-1) != 0) {
+         * the same frame stream the tunnel listener carries raw.
+         *
+         * Two things make what it says about the client trustworthy (§7.2):
+         * the uid allowlist, which says the peer IS the proxy (Req 11), and
+         * the PROXY v2 preamble, which is the only address the proxy can state
+         * before the client is allowed to write. Neither is useful alone --
+         * an allowlist with no preamble knows who the proxy is and nothing
+         * about the client; a preamble from an unauthenticated peer is a
+         * self-reported address. */
+        if (evloop_add_ws_listener(&ev, unix_fd,
+                                   cfg.n_proxy_uids ? cfg.proxy_uids : NULL,
+                                   cfg.n_proxy_uids, cfg.proxy_protocol_v2) != 0) {
             fprintf(stderr, "mldsa-authd: cannot register the unix listener\n");
             goto listener_failed;
         }

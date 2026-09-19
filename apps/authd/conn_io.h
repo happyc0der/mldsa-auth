@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "proxy_v2.h"
 #include "session.h"
 #include "ws.h"
 
@@ -81,6 +82,13 @@ typedef enum {
 
 typedef struct {
     conn_io_mode_t mode;
+    /* WS only: whether this listener's peers prepend a PROXY v2 preamble
+     * (spec §7.2). It is a property of the LISTENER, set with the mode, and it
+     * lives here rather than in ws_t because ws_t is shared with the client
+     * half -- whose stage machine must not grow a server-only pre-stage -- and
+     * because a future raw listener behind a proxy would want the same thing. */
+    int    proxy_on;
+    proxy_v2_t proxy;
     /* WS only: the upgrade state, the frame-in-progress, and any control or
      * handshake reply owed to the peer. Its `reply` buffer is drained by
      * conn_io_pending() BEFORE `out`, so a Pong or a 101 can never collide
@@ -105,6 +113,37 @@ void conn_io_reset(conn_io_t *c);
 /* Sets the framing mode. Call immediately after conn_io_reset() when a slot is
  * bound; the mode survives until the next reset. */
 void conn_io_set_mode(conn_io_t *c, conn_io_mode_t mode);
+
+/* WS mode only: expect a PROXY v2 preamble before the HTTP request. Call after
+ * conn_io_set_mode(). */
+void conn_io_set_proxy(conn_io_t *c, int on);
+
+/* 1 once the PROXY preamble has been fully consumed -- whether or not it
+ * yielded an address. Always 0 on a connection that was never expecting one,
+ * so a caller can use it as "the client address is now decided, ask me". */
+int conn_io_proxy_settled(const conn_io_t *c);
+
+/* The client address the preamble established, or an address whose `family` is
+ * 0 when it established none. Never NULL. The pointer is into the connection's
+ * own state and is wiped by conn_io_reset, so there is exactly ONE copy of this
+ * fact per slot -- the same argument that keeps the WebSocket `state` here
+ * rather than duplicated into the connection record. */
+const authd_addr_t *conn_io_client_addr(const conn_io_t *c);
+
+/* WS mode only: replace whatever is queued with a minimal HTTP refusal and
+ * close the WebSocket layer. The caller drains and closes the slot. */
+conn_io_status_t conn_io_ws_refuse(conn_io_t *c, unsigned code);
+
+/* WS mode only: discard everything queued and say NOTHING.
+ *
+ * It exists because "close the connection" has to mean the same thing however
+ * the peer's bytes happened to be split. If the preamble and the HTTP request
+ * arrive in one read, ws_upgrade has already built a 101 by the time the
+ * address is judged; if they arrive separately, it has not. Without this, a
+ * connection refused under Req 12 would be answered with a 101-then-EOF on one
+ * scheduling and a bare EOF on another -- the same class of divergence as F52,
+ * and one a coalescing proxy decides for you. */
+void conn_io_ws_silence(conn_io_t *c);
 
 const char *conn_io_status_name(conn_io_status_t st);
 

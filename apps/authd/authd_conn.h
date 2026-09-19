@@ -10,6 +10,7 @@
 #include "session.h"
 #include "store.h"
 #include "evloop.h"
+#include "ratelimit.h"
 
 /*
  * The per-connection protocol state machine (V4-8b).
@@ -94,6 +95,12 @@ typedef struct {
      * process, in one thread, in that order. */
     evloop_t *ev;
 
+    /* The transport rate limiter (spec §7.3, ledger item A4), or NULL when no
+     * listener supplies a client address. It is reached only from the address
+     * callback and from the close callback, so nothing on the hot protocol
+     * path pays for it. */
+    ratelimit_t *rl;
+
     uint32_t pad_bucket;
     uint32_t rotation_due_age_s;   /* 0 = never hint; spec defines no cadence */
     uint32_t code_ttl_s;
@@ -133,6 +140,8 @@ typedef struct {
      * KDF from one enforced after it. */
     uint64_t recovery_kdf_calls;
     uint64_t decoy_pins;
+    uint64_t refused_no_address;   /* Req 12: a preamble that carried no client */
+    uint64_t refused_rate;         /* the limiter said no */
     uint64_t handshakes_failed;
     uint64_t swept_tokens;
     uint64_t swept_codes;
@@ -150,6 +159,10 @@ void authd_conn_bind(authd_app_t *app, authd_slot_t *slot);
 /* The event-loop callbacks. */
 ev_action_t authd_conn_on_frame(void *user, authd_slot_t *slot, const uint8_t *payload, size_t len);
 void        authd_conn_on_close(void *user, authd_slot_t *slot);
+
+/* The address callback: Req 12's fail-closed decision and the rate limiter,
+ * taken the moment the PROXY v2 preamble settles. */
+ev_action_t authd_conn_on_addr(void *user, authd_slot_t *slot);
 
 const char *authd_conn_stage_name(conn_stage_t s);
 

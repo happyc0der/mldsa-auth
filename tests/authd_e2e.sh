@@ -108,12 +108,28 @@ echo "PASS: E2E: both binaries report a configuration error as exit 3 (spec 13)"
 
 # --------------------------------------------------------------- daemon
 
+# The raw loopback listener is the operator's SSH-tunnel path (spec 7.1), and
+# until V4-10b no test had ever driven it with the shipped client -- every leg
+# here used --unix. A fixed high port derived from the pid keeps concurrent
+# runs apart without needing the daemon to report one back.
+PORT=$(( 40000 + ($$ % 20000) ))
+
 cat > "$TMP/authd.conf" <<EOF
 store_path = $TMP/d/store.sqlite3
 key_path = $TMP/d/server.ek
 key_passphrase_file = $TMP/d/pass
 server_id = authd
 listen_unix = $TMP/p.sock
+listen_port = $PORT
+# The DEPLOYED shape of the proxy-facing socket (spec 7.2): only the proxy's
+# uid may connect, and it must state the client's address in a PROXY v2
+# preamble before the client writes anything. Running the whole e2e this way
+# means every leg below exercises the configuration an operator actually
+# deploys, not a development one.
+proxy_protocol = v2
+proxy_uids = $(id -u)
+rate_per_min = 60
+rate_burst = 60
 site_socket = $TMP/s.sock
 admin_socket = $TMP/a.sock
 site_uids = $(id -u)
@@ -218,7 +234,7 @@ echo "PASS: E2E: administrative commands are unreachable from the site socket (R
 
 CODE=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
         --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-        --unix "$TMP/p.sock" 2> "$TMP/login.err") || fail "client login exited nonzero"
+        --unix "$TMP/p.sock" --proxy-v2 2> "$TMP/login.err") || fail "client login exited nonzero"
 # 32 bytes of base64url, unpadded, is exactly 43 characters from [A-Za-z0-9_-].
 # Hex would be 64 and standard base64 would carry +, / or =.
 [ "${#CODE}" -eq 43 ] || fail "the login code is ${#CODE} characters, expected 43 base64url"
@@ -227,6 +243,28 @@ case "$CODE" in
 esac
 echo "PASS: E2E: a real post-quantum login produced a 43-character base64url code"
 
+# The same login over the RAW loopback listener -- the operator's tunnel. The
+# two transports differ only in how a frame reaches the wire (spec 7.1), so
+# anything that works over one must work over the other, and nothing had ever
+# checked the raw one with the shipped client.
+CODEP=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --port "$PORT" 2>> "$TMP/login.err") || fail "client login over the raw loopback listener exited nonzero"
+[ "${#CODEP}" -eq 43 ] || fail "the raw-listener login code is ${#CODEP} characters, expected 43 base64url"
+echo "PASS: E2E: the same login works over the raw loopback listener (the operator tunnel)"
+
+# Req 12, by execution: with proxy_protocol = v2 the daemon must refuse a
+# connection that does not state a client address. Without this check every
+# other --proxy-v2 leg above would still pass if the preamble were optional.
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" > /dev/null 2> "$TMP/nopreamble.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a login with NO PROXY v2 preamble succeeded (Req 12 fails open)"
+grep -q 'event=closed-protocol' "$TMP/authd.log" \
+    || fail "the daemon did not log a protocol refusal for the missing preamble"
+echo "PASS: E2E: a connection with no PROXY v2 preamble is refused (Req 12, fail closed)"
+
 # A wrong pin must be refused. Without this, a login that never checked the
 # server's signature would pass every other check in this file.
 "$ADMIN" keygen-server --key "$TMP/other.ek" --pub "$TMP/other.pub" --server-id authd \
@@ -234,7 +272,7 @@ echo "PASS: E2E: a real post-quantum login produced a 43-character base64url cod
 rc=0
 "$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/other.pub" \
-    --unix "$TMP/p.sock" > /dev/null 2> "$TMP/wrongpin.err" || rc=$?
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/wrongpin.err" || rc=$?
 [ "$rc" -ne 0 ] || fail "login succeeded against the WRONG pinned server key"
 echo "PASS: E2E: login refuses a ServerHello not signed by the pinned key (spec 4)"
 
@@ -243,7 +281,7 @@ echo "PASS: E2E: login refuses a ServerHello not signed by the pinned key (spec 
 if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
     CODE2=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
             --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-            --unix "$TMP/p.sock" 2>> "$TMP/login.err") || fail "second login exited nonzero"
+            --unix "$TMP/p.sock" --proxy-v2 2>> "$TMP/login.err") || fail "second login exited nonzero"
     "$NODE" "$SITE" "$TMP/s.sock" "$CODE2" > "$TMP/site.txt" 2> "$TMP/site.err" \
         || fail "the site could not exchange the login code"
     grep -q '"role":"operator"' "$TMP/site.txt" || fail "the site did not receive an operator token"
@@ -283,7 +321,7 @@ if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
     # against, so this is the check that makes the leg mean something.
     RCODE=$("$CLIENT" login --handle "$BOB2" --key "$TMP/bob2/$BOB2.ek" \
             --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-            --unix "$TMP/p.sock" 2>> "$TMP/login.err") || fail "the recovered device could not log in"
+            --unix "$TMP/p.sock" --proxy-v2 2>> "$TMP/login.err") || fail "the recovered device could not log in"
     [ "${#RCODE}" -eq 43 ] || fail "the recovered device's login code is ${#RCODE} characters, expected 43"
     echo "PASS: E2E: the recovered device completes a real post-quantum login"
 
@@ -315,7 +353,7 @@ FP_BEFORE=$("$ADMIN" list-devices --socket "$TMP/a.sock" --user alice | sed -n '
 
 "$CLIENT" rotate --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-    --unix "$TMP/p.sock" > "$TMP/rotate.txt" 2> "$TMP/rotate.err" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/rotate.txt" 2> "$TMP/rotate.err" \
     || fail "client rotate exited nonzero"
 
 FP_AFTER=$("$ADMIN" list-devices --socket "$TMP/a.sock" --user alice | sed -n 's/.*fp=//p')
@@ -347,7 +385,7 @@ echo "PASS: E2E: no .ek.next survives an acknowledged rotation"
 # The new key logs in.
 "$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-    --unix "$TMP/p.sock" > "$TMP/code3.txt" 2>> "$TMP/login.err" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/code3.txt" 2>> "$TMP/login.err" \
     || fail "login with the rotated key failed"
 [ "$(wc -c < "$TMP/code3.txt" | tr -d ' ')" -eq 44 ] || fail "the rotated key's login code is not 43 characters"
 echo "PASS: E2E: the rotated key logs in"
@@ -359,7 +397,7 @@ cp "$TMP/dev/$HANDLE.ek" "$TMP/current.ek"
 rc=0
 "$CLIENT" login --handle "$HANDLE" --key "$TMP/save-old.ek" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-    --unix "$TMP/p.sock" > /dev/null 2> "$TMP/oldkey.err" || rc=$?
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/oldkey.err" || rc=$?
 [ "$rc" -ne 0 ] || fail "the SUPERSEDED key still obtained a login code: there is an overlap window"
 echo "PASS: E2E: the superseded key gets no login code (no overlap window, spec 10.2)"
 

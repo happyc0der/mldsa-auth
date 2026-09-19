@@ -157,6 +157,22 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len);
 typedef int (*ws_sink_fn)(void *ctx, const uint8_t *p, size_t n);
 ws_status_t ws_consume(ws_t *w, const uint8_t *p, size_t n, ws_sink_fn sink, void *ctx);
 
+/* Refuses the connection with a minimal HTTP response INSTEAD of the 101,
+ * discarding any 101 already built, and moves to WS_STAGE_CLOSED so nothing
+ * further is interpreted. The caller drains and closes.
+ *
+ * This is the only channel a pre-session refusal has. Spec §6.5 defines
+ * ERROR 0x1F and spec-v2 seals every record with the session key, so before
+ * the handshake there is literally nothing to encrypt a refusal with --
+ * authd_conn.c:132 says as much ("no session exists yet: nothing to reply
+ * with"), and every handshake-stage failure in that file is a bare close. The
+ * upgrade is the one moment a refusal can still be spoken in a language the
+ * peer understands, which is why the rate limiter answers here.
+ *
+ * `code` is 429 (rate limited) or 503 (the daemon is out of capacity to track
+ * this address); anything else is treated as 503. */
+ws_status_t ws_refuse(ws_t *w, unsigned code);
+
 /* Writes an unmasked server frame header for `payload_len` bytes of `opcode`.
  * Returns the header length (2..10). */
 size_t ws_server_header(uint8_t out[WS_SRV_HDR_MAX], uint64_t payload_len, uint8_t opcode);

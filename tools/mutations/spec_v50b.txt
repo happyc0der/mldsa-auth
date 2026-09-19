@@ -1,0 +1,13 @@
+J1|^test_authd_ws$|a header whose signature is wrong in ONE byte is refused
+J2|^test_authd_ws$|a declared body length over PROXY_V2_LEN_MAX is refused
+J3|^test_authd_ws$|a preamble with no client address is closed
+J4|^test_authd_ws$|a peer outside the allowlist is refused at accept
+J5|^test_authd_ws$|at 12000 ms exactly one token has returned
+J6|^test_authd_ws$|the global bucket refuses a THIRD fresh address
+J7|^test_authd_ws$|closing the connection gives its count back
+J8|^test_authd_ws$|answered 429 at the upgrade
+J9|^test_authd_ws$|a refusal changes nothing
+J10|^test_authd_ws$|an IPv6 address is rate-limited on its /64
+J11|^test_authd_ws$|a preamble with no client address is closed
+J13|^test_authd_ws$|a login completes through the PROXY v2 listener
+J12|^authd_e2e$|client login over the raw loopback listener exited nonzero
