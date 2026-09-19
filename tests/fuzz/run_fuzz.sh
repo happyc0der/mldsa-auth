@@ -41,11 +41,48 @@ if [ -z "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ]; then
 fi
 BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "SKIP: build directory not found"; exit 0; }
 
+# The per-target bound is SINGLE-SOURCED from CMakeLists.txt's FUZZ_MAXLEN_<t>,
+# for exactly the reason the target list above is -- and this function is the
+# proof that deriving one of two neighbouring lists is not enough.
+#
+# It used to be a hardcoded `case` covering only the original five targets. For
+# envelope, authd_config, authd_conn, localapi and authmsg it therefore printed
+# NOTHING, the command became `-max_len=`, and libFuzzer said so in every log:
+#
+#   INFO: -max_len is not provided; libFuzzer will not generate inputs larger
+#         than 4096 bytes
+#
+# Five targets had been fuzzed to 4096 instead of 8192-16384 since V4-6, and
+# `wire` was given 8192 here against FUZZ_MAXLEN_wire=4096 in CMake -- the two
+# sources disagreeing in both directions at once. Nothing was unsound, because
+# each harness re-enforces fuzz_target_max_len itself, but every "600 s, 0
+# crashes" line from V4-6 onward described a narrower run than it claimed.
+# Finding F49.
+#
+# A target with no bound is a HARD FAILURE, never an empty string: an empty
+# -max_len is precisely the silent degradation this replaces.
 maxlen() {
-    case "$1" in
-        wire) echo 8192 ;; handshake) echo 16384 ;; session) echo 140000 ;; frame) echo 140000 ;; keys) echo 8192 ;;
-    esac
+    sed -n "s/^[[:space:]]*set(FUZZ_MAXLEN_$1[[:space:]]\{1,\}\([0-9]\{1,\}\)).*/\1/p" \
+        "$HERE/CMakeLists.txt"
 }
+
+# Every target must have one, checked BEFORE any run starts so a missing bound
+# cannot be discovered halfway through a 50-minute sweep.
+check_bounds() {
+    missing=""
+    for t in $1; do
+        if [ -z "$(maxlen "$t")" ]; then
+            missing="$missing $t"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        echo "FAIL: no FUZZ_MAXLEN_<t> in $HERE/CMakeLists.txt for:$missing"
+        echo "      (an empty -max_len silently caps libFuzzer at 4096 -- see F49)"
+        return 1
+    fi
+    return 0
+}
+check_bounds "$TARGETS" || exit 2
 
 for t in $TARGETS; do
     if [ ! -x "$BUILD/tests/fuzz/fuzz_$t" ]; then
