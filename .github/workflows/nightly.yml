@@ -23,9 +23,28 @@ concurrency:
   cancel-in-progress: false   # a nightly should finish, not be superseded
 
 jobs:
+  # Every campaign anchor still matches its source EXACTLY once, checked
+  # statically in seconds.
+  #
+  # It gates the campaigns rather than running beside them, and that ordering is
+  # the whole point: a rotted anchor makes the runner abort, so discovering one
+  # after three hours of mutation runs costs three hours to learn something a
+  # five-minute job knew at the start. The tool was committed with V4-9d and
+  # then ran nowhere -- the same way check_spec_constants.sh sat unused until
+  # V4-9c -- and it earned its place during V4-10a by catching v48b's C4.
+  mutation-anchors:
+    name: mutation anchors still match
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Every anchor matches exactly once, and every mutation is covered
+        run: python3 tools/audit/check_mutation_anchors.py "$PWD"
+
   mutations:
     name: mutations · ${{ matrix.campaign }}
     runs-on: ubuntu-latest
+    needs: mutation-anchors
     timeout-minutes: 300
     strategy:
       fail-fast: false
@@ -37,7 +56,7 @@ jobs:
         # mutations-macos below -- which is the point, since U2 is a defect
         # that only ever appeared on a macOS VM.
         campaign: [v23, v24, v25, v26, v27, v28, v29, v33, v46, v47, v48a, v48b,
-                   v49a, v49b, v49c]
+                   v49a, v49b, v49c, v49d, v50a, v50b]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -84,6 +103,7 @@ jobs:
   mutations-macos:
     name: mutations · ${{ matrix.campaign }} (macOS-only code)
     runs-on: macos-latest
+    needs: mutation-anchors
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -168,7 +188,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [wire, handshake, session, frame, keys, envelope, authd_config, authd_conn,
-                 localapi, authmsg]
+                 localapi, authmsg, ws]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
