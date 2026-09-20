@@ -52,7 +52,7 @@ foreach(t IN LISTS FUZZ_TARGETS)
   target_compile_options(fuzz_${t}_replay PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS}
                                                   ${FUZZ_REPLAY_EXTRA_FLAGS})
   target_compile_definitions(fuzz_${t}_replay PRIVATE ${MLDSA_HARDENING_DEFS})
-  target_link_options(fuzz_${t}_replay PRIVATE ${MLDSA_SANITIZE_FLAGS} ${FUZZ_REPLAY_EXTRA_FLAGS})
+  target_link_options(fuzz_${t}_replay PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS} ${FUZZ_REPLAY_EXTRA_FLAGS})
 
   add_test(NAME fuzz_replay_${t}
     COMMAND fuzz_${t}_replay --ci
@@ -66,7 +66,11 @@ foreach(t IN LISTS FUZZ_TARGETS)
     target_link_libraries(fuzz_${t} PRIVATE mldsa_authd)
     target_compile_options(fuzz_${t} PRIVATE ${MLDSA_HARDENING_FLAGS}
       -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1)
-    target_link_options(fuzz_${t} PRIVATE -fsanitize=fuzzer,address,undefined)
+    # The hardening link flags come along even though a libFuzzer binary is
+    # never shipped: check_hardening.sh discovers every executable under a
+    # build directory, so leaving these out would make a whole-tree --require
+    # run on build-fuzz report findings that are about nothing.
+    target_link_options(fuzz_${t} PRIVATE -fsanitize=fuzzer,address,undefined ${MLDSA_HARDENING_LINK_FLAGS})
 
     # Seeds are generated at runtime into the (ignored) build directory.
     set(corpus ${CMAKE_BINARY_DIR}/fuzz-corpus/${t})

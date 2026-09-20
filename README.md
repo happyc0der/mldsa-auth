@@ -32,9 +32,17 @@ be enrolled, revoked, and **rotate their keys** while keeping their identity.
 It has its own specification ([docs/mldsa-authd-spec.md](docs/mldsa-authd-spec.md)),
 its own store, its own CLIs, and nothing in it changes a byte on the wire. Browsers reach it as a **WebSocket** behind a TLS
 proxy, which states the client's address in a PROXY v2 preamble the daemon
-rate-limits on. It is **not deployed**: the systemd unit, the hardening flags
-and the operational runbook are still ahead. See *The authentication daemon*
-below for what works today and what does not.
+rate-limits on. It is **installable but not deployed** — a distinction worth keeping.
+What exists and is proven: an `install()` target, probed link hardening gated
+on the install tree by `check_hardening.sh --require`, a systemd unit checked
+by systemd's own analysers rather than by review, an offline dependency cache
+that still enforces every pin (proven by a build with the network switched
+off), a daemon that warns when its locked-memory limit is too small to keep
+secrets off disk, and [deploy/RUNBOOK.md](deploy/RUNBOOK.md) — a numbered
+checklist from an empty VPS to a first login. What does not exist is a running
+deployment: nobody has executed that checklist against a real host, and until
+someone does, the runbook is where the remaining risk lives. See
+*The authentication daemon* below for what works today and what does not.
 
 Since `v2.0.0` the verification has been **automated rather than changed**: the
 library, the reference apps and the build are byte-identical to the `v2.0.0`
@@ -96,9 +104,58 @@ Two constraints that will otherwise cost you an afternoon:
 | Portable binaries | `-DMLDSA_OQS_OPT_TARGET=generic` | Anything you distribute (see below) |
 
 Project sources are compiled with `-Wall -Wextra -Werror
--fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8). Those
-flags apply to this project's own targets only, never to the vendored
-dependencies.
+-fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8), and linked
+with `-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack` and PIE where the toolchain
+accepts them. Both sets apply to this project's own targets only, never to the
+vendored dependencies — which is why they are set per target rather than
+globally.
+
+The link flags are **probed, not assumed**: `check_linker_flag()` and
+`check_pie_supported()` decide, so a toolchain that rejects one simply does not
+get it (macOS `ld` rejects `-z` outright). What is actually present is read back
+out of the built binaries by
+[`tools/audit/check_hardening.sh`](tools/audit/check_hardening.sh), which reads
+Mach-O and ELF rather than the build files:
+
+```sh
+tools/audit/check_hardening.sh build-release --require
+```
+
+On Mach-O it reports RELRO and BIND_NOW as `n/a` — they are ELF concepts — so
+`--require` there gates three properties, not five. **Run it on Linux if you
+want it to mean something.**
+
+### Installing, and building something you would deploy
+
+```sh
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
+      -DMLDSA_OQS_OPT_TARGET=x86-64-v3
+cmake --build build-release -j8
+cmake --install build-release --prefix /usr/local --component mldsa-authd
+```
+
+That installs `mldsa-authd`, `authd_admin` and `authd_client`, plus the service
+unit and the example configs under `share/mldsa-authd/` — six files, and
+nothing else. `x86-64-v3` is the x86_64 choice; on arm64 name an arm64 CPU
+(`-DMLDSA_OQS_OPT_TARGET=neoverse-n1`, say). What matters is that it is
+*named*: the `auto` default tunes for the building machine and the binary may
+fault on an older CPU of the same family. **Pass `--component`**: liboqs is vendored with FetchContent and
+brings its own install rules, so a bare `cmake --install` would additionally
+drop a pin-locked, `-march`-tuned `liboqs.a` and its headers into your prefix,
+where another build on that host could find and link it. Name the CPU target —
+never ship the `auto` default, for the reason below. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
+is the rest: users, directories, credentials, the proxy, the backup drill.
+
+**Offline or air-gapped?** Fetch the three dependencies once on a networked
+machine and carry the cache across; every hash and commit pin is still
+enforced, and an offline configure checks the liboqs pin **three** times rather
+than two:
+
+```sh
+sh deploy/fetch-deps.sh /opt/mldsa-deps       # networked machine, once
+chown -R "$(id -un)" /opt/mldsa-deps          # git will not read another user's repo
+cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...
+```
 
 **`MLDSA_OQS_OPT_TARGET` decides portability.** It defaults to `auto`,
 which tunes liboqs for the building machine's CPU (`-mcpu=native` /
@@ -138,7 +195,7 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `authd_e2e` | Milestone A with the shipped binaries as real processes, in the **deployed** proxy configuration (`proxy_protocol = v2`): `init` → daemon → `keygen` → `enroll-operator` → `login` → the Node site handler exchanging and verifying → the admin queries. Also that no plaintext secret key is written anywhere (Req 10), that a login refuses a ServerHello not signed by the pinned key, that a listener failure runs its cleanup epilogue, that `audit-verify` accepts the real chain and rejects one with a single tampered row while blaming the key rather than the chain for a wrong passphrase, and that no passphrase or login code reaches a log |
 | `test_authd_keyfile` | The `MLDSAEK1` key-at-rest envelope: seal/open round trip, header-as-AAD, KDF parameter bounds on both sides, a tamper sweep over every header field, `O_NOFOLLOW`, and the KEK out-parameter (filled on success, identical on re-derive, zeroed on failure) |
 | `test_authd_store` | The daemon's SQLite store: schema-enforced invariants (one active key per handle, a public key unique forever), the three-join active lookup, Req 7 re-enrollment refusal, rotation atomicity proven by injecting a fault mid-rotation and reopening, audit-chain MAC verification with tamper and truncation detection, token/login-code lifetimes and the login-CSRF state binding, and backup/restore |
-| `test_authd_evloop` | The daemon's transport skeleton: strict `key = value` config parsing (unknown/duplicate/out-of-range/missing all refused, and a failed parse applies nothing), frame reassembly at every split point of a two-frame stream, the fixed slot pool and its refusal at capacity, deadline enforcement with a lower bound on both sides, graceful drain, slot wiping on release, and log hygiene with a present canary |
+| `test_authd_evloop` | The daemon's transport skeleton: strict `key = value` config parsing (unknown/duplicate/out-of-range/missing all refused, and a failed parse applies nothing), frame reassembly at every split point of a two-frame stream, the fixed slot pool and its refusal at capacity, deadline enforcement with a lower bound on both sides, graceful drain, slot wiping on release, log hygiene with a present canary, and the locked-memory check driven under a genuinely lowered `RLIMIT_MEMLOCK` — both sides of the boundary from literals, with a present canary proving the sufficient case is reachable, so "the limit is too small" cannot pass by always being true |
 | `test_authd_conn` | The daemon's connection state machine, driven with the daemon in-process and the real library initiator over loopback: a full login (first record `LOGIN_CODE`, 43 bytes of content in a 281-byte record, expiry within Req 5's 60 s), the login code stored only as SHA-256 and bound to user/handle/handshake/state, single-use, the uniform responder (unknown handle and known-handle-wrong-key indistinguishable, with a canary proving the decoy still yields a verifiable ServerHello), revocation taking effect at the next handshake, `BYE` closing cleanly while `ROTATE` is refused `ERROR(0x02)`, and wipe-on-close |
 | `test_authd_ws` | The WebSocket carrier and the proxy in front of it: RFC 6455's accept KAT and the FIPS 180-1 vectors for the vendored SHA-1, the upgrade's refusals enumerated, an unmasked client frame failing the connection, the same login run over both transports with the URL `state` bound into the login code (Req 5), the PROXY v2 preamble parsed and split at **every** offset, `LOCAL` and `AF_UNIX` carrying no client address, a peer outside the proxy's uid allowlist refused at accept with a canary that an allowed one is served, and the rate limiter's boundaries driven by an injected clock — including that a refused connection cost no `ServerHello` signature |
 | `test_authd_localapi` | The local socket protocol (spec §8): the line grammar and its 8192-byte cap, the two dispatch tables (an administrative command is *absent* from the site table, and its refusal is byte-identical to a nonsense command's), `EXCHANGE` with the login-CSRF state binding and single use, `VERIFY` with the idle-window slide and its lower bound, `LOGOUT` counts, enrollment including Req 7 refusal and idempotence, the periodic sweep, revocation closing live sessions (Req 9), and log hygiene — the peer's uid/pid present, the token and code absent |
@@ -192,15 +249,16 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, 160 of the 164 must-kill mutations in
+at 03:17 UTC every day, and on demand, 160 of the 169 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
 the runner and finding that out after three hours of mutation runs costs three
 hours — and all eleven fuzz targets run for 600 s with any crash kept as a
-downloadable artifact. The four that do not are `v50c`, committed in V4-10c
-and awaiting the bring-up every new matrix entry needs; `tools/README.md`
-carries the expiry. It is not part of the push gate. GitHub
+downloadable artifact. The nine that do not are `v50c` (V4-10c) and `v51`
+(V4-11), each committed with its step and each awaiting the bring-up every new
+matrix entry needs; `tools/README.md` carries the expiry. It is not part of the
+push gate. GitHub
 disables scheduled workflows after 60 days without a commit, so a badge that
 has stopped updating is not a badge that is passing — check the date on it.
 
@@ -486,9 +544,34 @@ network access and is deliberately **not** a CTest — a suite gate that silentl
 depends on a container registry fails for reasons that have nothing to do with
 the code.
 
-Not yet, and named rather than implied: the systemd unit, the hardening flags
-and the runbook are V4-11. Until those land this is a working milestone, not a
-deployment.
+### Getting it onto a host
+
+The systemd unit, the hardening flags, the install target and the runbook all
+exist now. What is packaged is [`deploy/`](deploy/): the unit, a commented
+example config, `fetch-deps.sh` for an offline dependency cache, and
+[`RUNBOOK.md`](deploy/RUNBOOK.md) — a numbered checklist from an empty VPS to a
+first login, with a `LimitMEMLOCK` table and a "when it will not start" section
+keyed to the daemon's own exit codes.
+
+Two more container-backed proofs sit beside `caddy_proxy.sh`, neither a CTest
+for the same reason:
+
+```bash
+sh tests/deploy_checks.sh                    # the unit, per systemd's own analysers
+sh tests/offline_build.sh /opt/mldsa-deps    # a build with the network switched off
+```
+
+`deploy_checks.sh` gates the unit on `systemd-analyze` rather than on review —
+and on its **output**, not its exit status, because `systemd-analyze verify`
+exits 0 for an unknown directive; it also asserts an exposure score with a
+control that moves it. `offline_build.sh` disconnects the container's network,
+proves the disconnection by requiring DNS to fail, builds from the cache alone,
+and then stages three ways the cache could be wrong — unreadable, one byte
+changed, moved off the pinned commit — and requires each to be refused.
+
+What does not exist is a running deployment. Nobody has executed that checklist
+against a real host, so this is **installable, not deployed**, and the runbook
+is where the remaining risk lives.
 
 
 ## Dependencies
@@ -637,7 +720,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | nineteen of the twenty committed campaigns against fresh ASan trees — eighteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | nineteen of the twenty-one committed campaigns against fresh ASan trees — eighteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
@@ -659,7 +742,8 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 164 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `deploy/` | What a deployment needs and nothing else: the systemd unit, a commented example config, `fetch-deps.sh` for an offline dependency cache, and `RUNBOOK.md` — the numbered checklist from an empty VPS to a first login |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 169 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
 
 ## License
 

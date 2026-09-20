@@ -98,32 +98,85 @@ def main(repo):
                 defined.add(name)
     compare("error codes", emitted, defined)
 
-    # ---- 2. log events: authd_log_*(LEVEL, <expr>, ...) vs §15 -----------
+    # ---- 2. log events: authd_log_*(<level>, <event>, ...) vs §15 --------
+    #
+    # Every authd_log_* call is found FIRST, and its arguments split at top
+    # level afterwards -- deliberately, because the original version anchored
+    # on a literal `AUTHD_LOG_[A-Z]+,` immediately after the paren and a call
+    # whose LEVEL is computed therefore matched nothing and was skipped in
+    # silence. V4-11 added exactly such a call (`ms == MEMLOCK_LOW ?
+    # AUTHD_LOG_WARN : AUTHD_LOG_INFO`) and the gate reported "53 names, all
+    # match" while looking straight past it (audit finding F71).
+    #
+    # So the rule is inverted: find the call, then require that its first two
+    # arguments are extractable. A call this parser cannot read is reported,
+    # never ignored -- that is the difference between a check that covers what
+    # it claims and one that merely says so.
+    def split_args(src, i):
+        """Arguments of a call whose opening paren is at src[i]."""
+        args, depth, cur = [], 0, ""
+        i += 1
+        while i < len(src):
+            c = src[i]
+            if c in "([":
+                depth += 1
+            elif c in ")]":
+                if depth == 0:
+                    args.append(cur)
+                    return args, i
+                depth -= 1
+            elif c == ',' and depth == 0:
+                args.append(cur)
+                cur = ""
+                i += 1
+                continue
+            cur += c
+            i += 1
+        return args, i
+
+    # WHICH functions take an event is derived from authd_log.h's prototypes --
+    # every one whose second parameter is `const char *event` -- rather than
+    # listed here. A new logging function is then covered the day it is
+    # declared, and `authd_log_init` (which takes a stream and a level, and no
+    # event) is excluded without naming it.
+    hdr = open("apps/authd/authd_log.h").read()
+    evfns = set(re.findall(
+        r'\b(authd_log_[a-z_]+)\s*\([^;]*?authd_log_level_t\s+\w+\s*,\s*const char \*event',
+        hdr, re.S))
+    report("log events: the event-taking functions are discoverable", evfns,
+           "%d function(s): %s" % (len(evfns), " ".join(sorted(evfns))))
+
     events = set()
     bad_event_sites = []
-    for path in sorted(glob.glob("apps/authd/*.c")):
+    # authd_log.c holds the DEFINITIONS; call sites are everywhere else.
+    for path in sorted(p for p in glob.glob("apps/authd/*.c")
+                       if not p.endswith("authd_log.c")):
         src = open(path).read()
-        for m in re.finditer(r'authd_log_[a-z_]*\(\s*AUTHD_LOG_[A-Z]+\s*,', src):
-            i, depth, arg = m.end(), 0, ""
-            while i < len(src):
-                c = src[i]
-                if c == '(':
-                    depth += 1
-                elif c == ')':
-                    if depth == 0:
-                        break
-                    depth -= 1
-                elif c == ',' and depth == 0:
-                    break
-                arg += c
-                i += 1
-            found = re.findall(r'"([a-z][a-z0-9-]*)"', arg)
+        for m in re.finditer(r'\b(' + "|".join(sorted(evfns)) + r')\s*\(', src):
+            args, _ = split_args(src, m.end() - 1)
+            where = "%s:%d" % (path, src.count("\n", 0, m.start()) + 1)
+            # What is gated here is the EVENT NAME, which is argument 2. The
+            # level is argument 1 and is deliberately not inspected: it may be
+            # a literal, a ternary, or -- as `memlock_log_level(ms)` is -- a
+            # named function, which is the shape a level decision takes once it
+            # is a requirement somebody has to test. An earlier version of this
+            # check required `AUTHD_LOG_` to appear in argument 1, and V4-11's
+            # first such helper made a perfectly readable call site report as
+            # unreadable. Requiring only that the call HAS two arguments keeps
+            # the property that matters: a site whose event is not a literal is
+            # still reported below, because a computed event name is the one
+            # thing that could evade the vocabulary entirely.
+            if len(args) < 2:
+                bad_event_sites.append(where + " (fewer than two arguments)")
+                continue
+            found = re.findall(r'"([a-z][a-z0-9-]*)"', args[1])
             if not found:
-                bad_event_sites.append("%s:%s" % (path, arg.strip()[:40]))
+                bad_event_sites.append(where + " (event is not a literal)")
+                continue
             events.update(found)
-    report("log events: every call site is a literal", not bad_event_sites,
+    report("log events: every call site is readable", not bad_event_sites,
            "%d name(s)" % len(events) if not bad_event_sites
-           else "non-literal: " + " ".join(bad_event_sites))
+           else "unreadable: " + " ".join(bad_event_sites))
 
     sec15 = section(spec, "## 15. Logging")
     # The two lists are located by §15's own headings rather than by guessing
@@ -164,8 +217,10 @@ def main(repo):
     num_keys = set()
     for path in sorted(glob.glob("apps/authd/*.c")):
         src = open(path).read()
-        num_keys.update(re.findall(
-            r'authd_log_num\(\s*AUTHD_LOG_[A-Z]+\s*,[^,]+,\s*"([a-z][a-z0-9_]*)"', src))
+        for m in re.finditer(r'\bauthd_log_num\s*\(', src):
+            args, _ = split_args(src, m.end() - 1)
+            if len(args) >= 3:
+                num_keys.update(re.findall(r'"([a-z][a-z0-9_]*)"', args[2]))
     report("log fields: the numeric key is a literal", num_keys,
            "%d counted quantity(ies)" % len(num_keys))
     compare("log fields", emitted_fields | num_keys, fields)

@@ -58,9 +58,90 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(OQS_DIST_BUILD OFF CACHE BOOL "" FORCE)
 set(OQS_OPT_TARGET "${MLDSA_OQS_OPT_TARGET}" CACHE STRING "" FORCE)
 
+# --- offline builds (V4-11, audit finding F12) ----------------------------
+# MLDSA_DEPS_CACHE names a directory holding the three dependencies, populated
+# once on a networked machine by deploy/fetch-deps.sh. It exists so a VPS can
+# be built on without trusting the network at deploy time, and so a rebuild is
+# reproducible from something you kept rather than from something a server
+# still serves.
+#
+# EVERY PIN STAYS ENFORCED, and the shape of each source is chosen for that:
+#
+#   liboqs     a local CLONE used as GIT_REPOSITORY, not
+#              FETCHCONTENT_SOURCE_DIR_LIBOQS. The override is the obvious
+#              route and it is the wrong one: CMake's design makes it bypass
+#              the population-time PATCH_COMMAND, so the commit would be
+#              verified once instead of twice. V2-10's retrospective already
+#              had to record that asymmetry; cloning from a local path keeps
+#              both checks, because FetchContent clones from a path exactly as
+#              it clones from a URL.
+#   libsodium  the tarball, with URL pointed at the file. ExternalProject
+#              checks URL_HASH for a local file exactly as for a remote one.
+#   sqlite     the zip, likewise.
+#
+# So an offline build is not a weaker build -- which is the whole point, and
+# the reason deploy/fetch-deps.sh verifies each artefact as it writes it and
+# tests/offline_build.sh proves, in a container with the network switched off,
+# that each way the cache could be wrong is refused: unreadable, one byte
+# changed, or moved off the pinned commit.
+set(MLDSA_DEPS_CACHE "" CACHE PATH
+    "Directory of pre-fetched dependencies for an offline build (see deploy/fetch-deps.sh)")
+
+set(_mldsa_oqs_repo "https://github.com/open-quantum-safe/liboqs.git")
+if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/liboqs.git")
+  set(_mldsa_oqs_repo "${MLDSA_DEPS_CACHE}/liboqs.git")
+  message(STATUS "liboqs from the offline cache: ${_mldsa_oqs_repo}")
+
+  # Prove the cached clone is usable BEFORE FetchContent tries it. Found by
+  # the V4-11 container proof: a cache populated by one user and built by
+  # another trips git's safe.directory rule, and the failure surfaces three
+  # layers down as "Failed to clone repository" inside a generated
+  # subbuild script -- with the actual cause (`detected dubious ownership`)
+  # buried in a log nobody reads. Reading the pinned commit out of the cache
+  # here is one command, and it answers both questions at once: whether git
+  # will talk to this directory at all, and whether it holds the commit this
+  # build is pinned to.
+  #
+  # This does not REPLACE either pin check. Both still run: the PATCH_COMMAND
+  # at population time and the re-check after FetchContent_MakeAvailable
+  # below, each against the populated tree rather than against the cache. An
+  # offline build is checked three times, an online one twice.
+  find_package(Git QUIET REQUIRED)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${_mldsa_oqs_repo}" rev-parse HEAD
+    OUTPUT_VARIABLE _mldsa_cache_head
+    ERROR_VARIABLE _mldsa_cache_err
+    RESULT_VARIABLE _mldsa_cache_rc
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT _mldsa_cache_rc EQUAL 0)
+    string(STRIP "${_mldsa_cache_err}" _mldsa_cache_err)
+    if(_mldsa_cache_err MATCHES "dubious ownership")
+      message(FATAL_ERROR
+        "the cached liboqs clone at ${_mldsa_oqs_repo} is not owned by the "
+        "user running this build, so git refuses to read it:\n"
+        "  ${_mldsa_cache_err}\n"
+        "Fix the ownership rather than the exception -- the cache is a build "
+        "input and should belong to whoever builds:\n"
+        "  chown -R \"$(id -un)\" ${MLDSA_DEPS_CACHE}\n"
+        "(see deploy/RUNBOOK.md, offline build)")
+    endif()
+    message(FATAL_ERROR
+      "the cached liboqs clone at ${_mldsa_oqs_repo} is unusable:\n"
+      "  ${_mldsa_cache_err}\n"
+      "Re-populate it with deploy/fetch-deps.sh on a networked machine.")
+  endif()
+  if(NOT _mldsa_cache_head STREQUAL MLDSA_LIBOQS_COMMIT)
+    message(FATAL_ERROR
+      "the cached liboqs clone is at ${_mldsa_cache_head}, pinned commit is "
+      "${MLDSA_LIBOQS_COMMIT}: refusing to build from an unverified cache. "
+      "Re-populate it with deploy/fetch-deps.sh.")
+  endif()
+  message(STATUS "liboqs cache holds the pinned commit: ${_mldsa_cache_head}")
+endif()
+
 FetchContent_Declare(
   liboqs
-  GIT_REPOSITORY https://github.com/open-quantum-safe/liboqs.git
+  GIT_REPOSITORY ${_mldsa_oqs_repo}
   GIT_TAG        0.16.0
   GIT_SHALLOW    TRUE
   PATCH_COMMAND  ${CMAKE_COMMAND}
@@ -136,9 +217,16 @@ set(LIBSODIUM_PREFIX "${_mldsa_tmp}/mldsa-auth-libsodium-1.0.22-${_mldsa_build_h
 set(LIBSODIUM_INCLUDE_DIR ${LIBSODIUM_PREFIX}/include)
 set(LIBSODIUM_LIBRARY ${LIBSODIUM_PREFIX}/lib/libsodium.a)
 
+set(_mldsa_sodium_url
+    "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz")
+if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
+  set(_mldsa_sodium_url "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
+  message(STATUS "libsodium from the offline cache: ${_mldsa_sodium_url}")
+endif()
+
 ExternalProject_Add(
   libsodium_ext
-  URL               https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz
+  URL               ${_mldsa_sodium_url}
   URL_HASH          SHA256=adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_DIR        ${LIBSODIUM_BUILD_DIR}
@@ -172,9 +260,15 @@ add_dependencies(sodium libsodium_ext)
 # path-with-spaces libtool bug that forces libsodium out to $TMPDIR does not
 # apply here; it builds straight in the build tree as pure CMake.
 set(MLDSA_SQLITE_SHA3 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e)
+set(_mldsa_sqlite_url "https://sqlite.org/2026/sqlite-amalgamation-3530400.zip")
+if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/sqlite-amalgamation-3530400.zip")
+  set(_mldsa_sqlite_url "${MLDSA_DEPS_CACHE}/sqlite-amalgamation-3530400.zip")
+  message(STATUS "sqlite from the offline cache: ${_mldsa_sqlite_url}")
+endif()
+
 FetchContent_Declare(
   sqlite3_amalg
-  URL      https://sqlite.org/2026/sqlite-amalgamation-3530400.zip
+  URL      ${_mldsa_sqlite_url}
   URL_HASH SHA3_256=${MLDSA_SQLITE_SHA3}
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )

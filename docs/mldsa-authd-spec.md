@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.1, V4-3 + V4-10c errata)
+# mldsa-authd — deployment specification (v1.2, V4-3 + V4-10c/V4-11 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -784,7 +784,7 @@ quantity.
 
 ```
 event slot cmd uid pid id fp src detail
-accepted closed codes count logins port revoked superseded tickets tokens
+accepted closed codes count logins need port revoked superseded tickets tokens
 ```
 
 `id` is escaped — any byte outside printable ASCII becomes `.` and the field
@@ -821,7 +821,7 @@ Adding an event is therefore a change to this document — which is the point.
 Transport and lifecycle:
 
 ```
-started draining stopped loop-failed
+started draining stopped loop-failed memlock-limit
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
 accept-refused-no-slot local-accept-refused-no-slot
@@ -904,6 +904,18 @@ The systemd unit sets `NoNewPrivileges`, `ProtectSystem=strict`,
 **`LimitMEMLOCK` derived from the configured slot count**, because libsodium
 returns unlocked memory silently when the limit is exhausted (V4-2 S1) — this
 is a correctness setting, not a tuning knob.
+
+The requirement is **4 KiB × 10 × `max_slots`**: about ten secure allocations
+per in-flight handshake, each costing one locked page. At the default
+`max_slots = 256` that is 10 MiB, which is above Linux's usual 8 MiB default —
+so a host that has not set the directive is already short.
+
+The daemon **reads its own `RLIMIT_MEMLOCK` at startup** and logs it
+(`memlock-limit`), at WARN when it is below that requirement. It warns rather
+than refusing: the failure mode has no symptom of its own — every allocation
+still succeeds and the secrets merely become swappable — so the log line is
+what makes an unconfigured host visible, while refusing would turn a common
+misconfiguration into an outage.
 
 The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 -Wl,-z,noexecstack` and a named CPU target (never `-march=native`), and
@@ -1012,3 +1024,23 @@ commit.
 
 Every finding cited above is marked RESOLVED in the register, and the register
 holds no remaining row that asks for a change to this document.
+
+### Revision v1.2 (V4-11)
+
+Packaging and operations. Two additions rather than corrections — the
+implementation gained something this document had to describe before it could
+ship, which is the order §0 asks for:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 27 | 15 | the event `memlock-limit` and the field `need` | the daemon now reports its own locked-memory limit at startup (below) |
+| 28 | 16 | the `LimitMEMLOCK` requirement stated as an arithmetic, and what the daemon does when it is not met | §16 called it "derived from the configured slot count" without saying derived how, and a correctness setting nobody can compute is a correctness setting nobody sets |
+
+Both were required by `tools/audit/check_spec_vocabularies.py`, which fails
+unless §15 and the daemon name exactly the same events and fields. It is not
+part of the build; it runs in CI and by hand. It earned its place twice over
+during this revision: first by **not** catching the new event at all (**F71** —
+it had been skipping any log call whose level was computed), and then, once
+repaired, by catching a second call site this step had made unreadable to it.
+A gate that has failed for a real reason is worth more than one that has only
+ever passed.

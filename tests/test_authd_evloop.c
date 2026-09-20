@@ -21,6 +21,8 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 
 #include <sodium.h>
 
@@ -29,6 +31,7 @@
 #include "evloop.h"
 #include "listener.h"
 #include "authd_log.h"
+#include "memlock.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -476,6 +479,113 @@ static void test_log_hygiene(void)
     authd_log_init(stderr, AUTHD_LOG_ERROR);
 }
 
+/* ---------------------------------------------------------------- memlock */
+
+/*
+ * V4-11 / finding F6. The hazard S1 measured is that a too-small
+ * RLIMIT_MEMLOCK is SILENT: every sodium_malloc still succeeds and the
+ * secrets simply stop being locked. So the check has to be driven under a
+ * limit that is genuinely lowered, not merely asserted about the ambient one
+ * -- which is also what stops this test passing for the wrong reason on a
+ * host that happens to run unlimited.
+ *
+ * Lowering the soft limit is permitted to an unprivileged process; raising it
+ * back is permitted only up to the hard limit, which is why the original is
+ * captured and restored rather than guessed.
+ */
+static void test_memlock(void)
+{
+    /* The derived need, from literals rather than from the macros the
+     * implementation uses -- otherwise a mutation to the formula would move
+     * the test's expectation with it and could never be caught. */
+    CHECK(memlock_required_bytes(1u) == 40960u,
+          "memlock: 1 slot needs 40960 B (4096 x 10)");
+    CHECK(memlock_required_bytes(256u) == 10485760u,
+          "memlock: the default 256 slots need 10485760 B (10 MiB)");
+    CHECK(memlock_required_bytes(4096u) == 167772160u,
+          "memlock: the 4096-slot ceiling needs 167772160 B (160 MiB)");
+    CHECK(memlock_required_bytes(0u) == 0u,
+          "memlock: no slots need nothing");
+
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_MEMLOCK, &saved) != 0) {
+        printf("SKIP: memlock: getrlimit(RLIMIT_MEMLOCK) unavailable on this platform\n");
+        return;
+    }
+
+    struct rlimit rl = saved;
+    const rlim_t want = 1u << 20; /* 1 MiB: under 256 slots, over 16 */
+    if (saved.rlim_max != RLIM_INFINITY && saved.rlim_max < want) {
+        printf("SKIP: memlock: hard limit below 1 MiB; cannot stage the test\n");
+        return;
+    }
+    rl.rlim_cur = want;
+    if (setrlimit(RLIMIT_MEMLOCK, &rl) != 0) {
+        printf("SKIP: memlock: setrlimit(RLIMIT_MEMLOCK) refused on this platform\n");
+        return;
+    }
+
+    uint64_t limit = 0u, need = 0u;
+
+    /* PRESENT CANARY: at a slot count the staged limit DOES cover, the very
+     * same call must answer OK. Without this, "LOW" below could be true
+     * because the check answers LOW unconditionally. */
+    CHECK(memlock_check(16u, &limit, &need) == MEMLOCK_OK,
+          "memlock: 16 slots fit inside a 1 MiB limit (canary: OK is reachable)");
+    CHECK(limit == (uint64_t)want, "memlock: the staged 1 MiB limit is reported back");
+    CHECK(need == 655360u, "memlock: 16 slots derive a 655360 B need");
+
+    CHECK(memlock_check(256u, &limit, &need) == MEMLOCK_LOW,
+          "memlock: the default 256 slots do NOT fit inside 1 MiB");
+    CHECK(need == 10485760u, "memlock: the reported need is the 256-slot need");
+    CHECK(limit == (uint64_t)want, "memlock: the reported limit is the staged one");
+
+    /* The boundary, both sides, from literals: 1 MiB covers exactly 26 slots
+     * (26 x 40960 = 1064960 > 1048576, so 25 is the last that fits). */
+    CHECK(memlock_check(25u, NULL, NULL) == MEMLOCK_OK,
+          "memlock: 25 slots (1024000 B) fit in 1048576 B");
+    CHECK(memlock_check(26u, NULL, NULL) == MEMLOCK_LOW,
+          "memlock: 26 slots (1064960 B) do not");
+
+    /* NULL outputs are accepted -- the daemon's startup path passes both, but
+     * nothing should require them. */
+    CHECK(memlock_check(1u, NULL, NULL) == MEMLOCK_OK, "memlock: NULL outputs are accepted");
+
+    /* The insufficient case must be LOUD -- the whole point of the line. The
+     * ambient limit differs by platform, so this is pinned here by naming the
+     * status directly rather than by reading a real daemon's journal. */
+    CHECK(memlock_log_level(MEMLOCK_LOW) == AUTHD_LOG_WARN,
+          "memlock: a limit below the requirement is logged at WARN");
+    CHECK(memlock_log_level(MEMLOCK_OK) == AUTHD_LOG_INFO,
+          "memlock: a sufficient limit is logged at INFO");
+    CHECK(memlock_log_level(MEMLOCK_UNLIMITED) == AUTHD_LOG_INFO,
+          "memlock: an unlimited limit is logged at INFO, not WARN");
+    CHECK(memlock_log_level(MEMLOCK_UNKNOWN) == AUTHD_LOG_INFO,
+          "memlock: an unknowable limit is logged at INFO, not WARN");
+
+    CHECK(strcmp(memlock_status_name(MEMLOCK_OK), "ok") == 0, "memlock: OK names itself");
+    CHECK(strcmp(memlock_status_name(MEMLOCK_LOW), "below-requirement") == 0,
+          "memlock: LOW names itself");
+    CHECK(strcmp(memlock_status_name(MEMLOCK_UNLIMITED), "unlimited") == 0,
+          "memlock: UNLIMITED names itself");
+    CHECK(strcmp(memlock_status_name(MEMLOCK_UNKNOWN), "unknown") == 0,
+          "memlock: UNKNOWN names itself");
+
+    /* An unlimited limit is not "very large": it is its own answer, and the
+     * daemon must not warn about it. Only reachable when the hard limit allows
+     * it, which is the common case for a developer shell on macOS. */
+    if (saved.rlim_max == RLIM_INFINITY) {
+        rl.rlim_cur = RLIM_INFINITY;
+        if (setrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+            CHECK(memlock_check(4096u, &limit, &need) == MEMLOCK_UNLIMITED,
+                  "memlock: RLIM_INFINITY answers UNLIMITED, not OK");
+            CHECK(limit == UINT64_MAX, "memlock: unlimited is reported as UINT64_MAX");
+        }
+    }
+
+    (void)setrlimit(RLIMIT_MEMLOCK, &saved);
+}
+
 int main(void)
 {
     if (sodium_init() < 0) {
@@ -489,6 +599,7 @@ int main(void)
     test_conn_io();
     test_evloop();
     test_log_hygiene();
+    test_memlock();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);
     return g_fail ? 1 : 0;

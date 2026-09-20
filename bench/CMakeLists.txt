@@ -13,7 +13,7 @@ target_include_directories(mldsa_bench PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mldsa_bench PUBLIC mldsa_core $<$<NOT:$<PLATFORM_ID:Darwin>>:m>)
 target_compile_options(mldsa_bench PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_bench PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(mldsa_bench PUBLIC ${MLDSA_SANITIZE_FLAGS})
+target_link_options(mldsa_bench PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 # Recorded in every bench run's environment block, so a result can never be
 # read without knowing how it was compiled.
@@ -32,7 +32,7 @@ foreach(_bench primitives handshake session)
   target_link_libraries(bench_${_bench} PRIVATE mldsa_bench)
   target_compile_options(bench_${_bench} PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
   target_compile_definitions(bench_${_bench} PRIVATE ${MLDSA_HARDENING_DEFS})
-  target_link_options(bench_${_bench} PRIVATE ${MLDSA_SANITIZE_FLAGS})
+  target_link_options(bench_${_bench} PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 endforeach()
 target_link_libraries(bench_primitives PRIVATE mldsa_demo)
 target_link_libraries(bench_handshake PRIVATE mldsa_demo)

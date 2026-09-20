@@ -27,7 +27,7 @@ target_link_libraries(test_vectors PRIVATE mldsa_core)
 target_link_libraries(test_vectors PRIVATE oqs-internal)
 target_compile_options(test_vectors PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_vectors PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_vectors PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_vectors PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 # Points the ML-DSA-65 KAT test at liboqs's own vendored KAT reference
 # file, so the test reads liboqs's published hash live rather than
@@ -44,7 +44,7 @@ add_executable(test_handshake test_handshake.c)
 target_link_libraries(test_handshake PRIVATE mldsa_core)
 target_compile_options(test_handshake PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_handshake PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_handshake PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_handshake PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 add_test(NAME test_handshake COMMAND test_handshake)
 
@@ -52,7 +52,7 @@ add_executable(test_session test_session.c)
 target_link_libraries(test_session PRIVATE mldsa_core)
 target_compile_options(test_session PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_session PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_session PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_session PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 add_test(NAME test_session COMMAND test_session)
 
@@ -67,7 +67,7 @@ add_executable(test_session_alloc test_session_alloc.c counting_secure_mem.c)
 target_link_libraries(test_session_alloc PRIVATE mldsa_core)
 target_compile_options(test_session_alloc PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_session_alloc PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_session_alloc PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_session_alloc PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 # Optional macOS developer diagnostic (libmalloc's malloc_logger hook). Not a
 # stable public API: OFF by default, never required, never affects the exit
@@ -85,7 +85,7 @@ add_executable(test_net test_net.c)
 target_link_libraries(test_net PRIVATE mldsa_demo)
 target_compile_options(test_net PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_net PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_net PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_net PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 add_test(NAME test_net COMMAND test_net)
 
@@ -93,7 +93,7 @@ add_executable(test_authd_keyfile test_authd_keyfile.c)
 target_link_libraries(test_authd_keyfile PRIVATE mldsa_authd)
 target_compile_options(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(test_authd_keyfile PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_keyfile PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_keyfile COMMAND test_authd_keyfile)
 
 # V4-7: the store. This target compiles store.c ITSELF with the fault hook so
@@ -106,14 +106,14 @@ target_include_directories(test_authd_store PRIVATE ${PROJECT_SOURCE_DIR}/apps/a
 target_link_libraries(test_authd_store PRIVATE mldsa_demo sqlite3)
 target_compile_definitions(test_authd_store PRIVATE ${MLDSA_HARDENING_DEFS} MLDSA_STORE_FAULT_HOOK=1)
 target_compile_options(test_authd_store PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
-target_link_options(test_authd_store PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_store PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_store COMMAND test_authd_store)
 
 add_executable(test_authd_evloop test_authd_evloop.c)
 target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)
 target_compile_options(test_authd_evloop PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_evloop PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(test_authd_evloop PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_evloop PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_evloop COMMAND test_authd_evloop)
 
 # V4-8b: the connection state machine, driven with the daemon in-process so the
@@ -122,7 +122,7 @@ add_executable(test_authd_conn test_authd_conn.c)
 target_link_libraries(test_authd_conn PRIVATE mldsa_authd)
 target_compile_options(test_authd_conn PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_conn PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(test_authd_conn PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_conn PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_conn COMMAND test_authd_conn)
 
 # V4-10a: the WebSocket carrier. Its own target rather than more cases in
@@ -132,7 +132,7 @@ add_executable(test_authd_ws test_authd_ws.c)
 target_link_libraries(test_authd_ws PRIVATE mldsa_authd)
 target_compile_options(test_authd_ws PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_ws PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(test_authd_ws PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_ws PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_ws COMMAND test_authd_ws)
 
 # V4-9a: the local socket protocol, tokens and revocation reaching live
@@ -142,14 +142,14 @@ add_executable(test_authd_cli test_authd_cli.c)
 target_link_libraries(test_authd_cli PRIVATE mldsa_authd)
 target_compile_options(test_authd_cli PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_cli PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_cli COMMAND test_authd_cli)
 
 add_executable(test_authd_localapi test_authd_localapi.c)
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_localapi COMMAND test_authd_localapi)
 
 # A real daemon for the Node reference handler to talk to. Not a CTest itself:
@@ -158,7 +158,7 @@ add_executable(authd_node_fixture authd_node_fixture.c)
 target_link_libraries(authd_node_fixture PRIVATE mldsa_authd)
 target_compile_options(authd_node_fixture PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(authd_node_fixture PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
-target_link_options(authd_node_fixture PRIVATE ${MLDSA_SANITIZE_FLAGS})
+target_link_options(authd_node_fixture PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 # The Node reference handler, against that daemon. Skips with a named reason if
 # node is absent -- never passes vacuously.

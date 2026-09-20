@@ -1,0 +1,72 @@
+# mldsa-authd configuration (spec §16). Install at /etc/mldsa-authd/authd.conf,
+# mode 0600, owned by root. Validate before starting the service:
+#
+#   mldsa-authd --config /etc/mldsa-authd/authd.conf --check-config
+#
+# The parser is strict on purpose: an unknown key, a duplicate key, a value out
+# of range or a missing required key is a refusal, never a silent default. It
+# also prints the settings it resolved, which is the one place an operator can
+# see whether the rate limiter is on.
+
+# --- identity and storage (required) --------------------------------------
+store_path = /var/lib/mldsa-authd/store.sqlite3
+key_path = /var/lib/mldsa-authd/server.ek
+server_id = authd
+
+# The passphrase that opens the sealed key. Under systemd this is the decrypted
+# credential, a 0400 file owned by the service user -- exactly what the daemon
+# requires. Never an environment variable and never argv, both of which other
+# processes on this host can read.
+key_passphrase_file = /run/credentials/mldsa-authd.service/passphrase
+
+# --- listeners -------------------------------------------------------------
+# The proxy-facing socket. systemd creates /run/mldsa-authd/ as 0750 owned by
+# this service with the proxy's group (RuntimeDirectory=), and the socket
+# itself is 0660.
+listen_unix = /run/mldsa-authd/p.sock
+
+# The operator's tunnel: loopback only, reached over SSH. Leave it at 0 to
+# disable it entirely if operators will use the browser path instead.
+listen_port = 8443
+
+# The local API (spec §8). site_uids MUST name the uid your site process runs
+# as -- there is no default, because guessing it would be guessing who may
+# exchange a login code for a token.
+site_socket = /run/mldsa-authd/site.sock
+admin_socket = /run/mldsa-authd/admin.sock
+site_uids = 33
+admin_uids = 0
+
+# --- the proxy, and the rate limiter that depends on it --------------------
+#
+# THIS IS THE SETTING MOST WORTH CHECKING. `proxy_protocol` defaults to `none`
+# because there is no value that is right for both "a TLS proxy is in front"
+# and "an operator's client is connected directly" -- so a deployment that
+# forgets it gets a proxy-facing listener with no client address, no rate
+# limiting, and no complaint (audit finding F63). If Caddy (or any proxy) is in
+# front, this must be v2, and `proxy_uids` must name the uid it runs as.
+proxy_protocol = v2
+proxy_uids = 33
+
+# Rate limiting, keyed on the address the PROXY v2 preamble states. Generous to
+# a person, useless to a prober; §7.3 assigns the decoy flow's per-probe
+# signature cost to exactly this.
+rate_per_min = 5
+rate_burst = 10
+rate_global_per_sec = 50
+max_conns_per_addr = 8
+
+# --- capacity --------------------------------------------------------------
+# ~91 KiB per slot, so 256 slots is about 24 MB. RAISE LimitMEMLOCK IN THE UNIT
+# IF YOU RAISE THIS: the requirement is 4 KiB x 10 x max_slots, and the daemon
+# logs `memlock-limit` at WARN when its own limit is short.
+max_slots = 256
+max_local_slots = 8
+
+handshake_timeout_ms = 10000
+idle_timeout_ms = 60000
+pad_bucket = 256
+
+# How old a device key may get before LOGIN_CODE hints that it should rotate.
+# 0 disables the hint. The spec defines no cadence; this is operator policy.
+rotation_due_age_s = 15552000

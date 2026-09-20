@@ -5011,3 +5011,174 @@ catch it **on Linux**; LSan does not run under macOS ASan, so the mutation would
 SURVIVE on the machine this campaign is usually run on and be killed only in
 the nightly. A mutation whose verdict depends on which platform ran it is worse
 than no mutation — it teaches that a survivor is normal.
+
+## V4-11 — packaging, and the difference between "hardened" and "hardened by four flags nobody measured"
+
+Milestone A worked. It was not deployable: no `install()` target anywhere, no
+service unit, no runbook, a `Debug` default build, and a default CPU target
+(`auto` = `-march=native`) the README itself describes as liable to fault on
+another machine. The daemon ran from a build directory. This step ends that,
+and closes the largest single block of open findings in the register: F4, F6,
+F7, F12, F13, F17, F63.
+
+### The hardening gap was one property, not five
+
+The register said "no PIE/RELRO/BIND_NOW/noexecstack". Measured on a Linux
+Release build of the daemon before writing a line of CMake:
+
+```
+BINARY        PIE   RELRO  BIND_NOW  NX-STACK  CANARY
+mldsa-authd   yes   yes    no        yes       yes
+```
+
+**One property was missing.** Modern toolchains supply PIE, partial RELRO, NX
+and canaries by default; the gap was full RELRO plus `BIND_NOW`, which is
+`-Wl,-z,relro -Wl,-z,now`. The number is recorded because a step that claims to
+add five things and adds one is a step nobody can check — and because the four
+flags would have been added either way, with three of them doing nothing and
+no one the wiser.
+
+Two platform facts constrain how they are added, both established by probe
+rather than recall: `-Wl,-z,...` **does not link on macOS** (`ld: unknown
+options: -z`), and `-fcf-protection` is rejected on arm64. So the flags are
+**probed, not guessed** — `check_linker_flag()` per flag, plus
+`check_pie_supported()` — and a toolchain that refuses one simply does not get
+it. This is also why the `--require` gate is meaningful **only on Linux**:
+`check_hardening.sh` reports RELRO and BIND_NOW as `n/a` on Mach-O, so a macOS
+`--require` run passes on three properties out of five. It is run on both and
+the macOS output is quoted precisely to show that it proves less.
+
+The flags go on the ~25 existing `target_link_options` sites rather than into a
+global `add_link_options`, for the reason the compile flags are already
+per-target: a global would reach the vendored liboqs, libsodium and SQLite
+targets, which this project does not get to relink on its own terms.
+
+### The daemon checks its own locked-memory limit, because a unit file only protects the operators who use the unit
+
+V4-2's S1 spike measured the hazard exactly. Under a 64 KiB `RLIMIT_MEMLOCK`,
+1,000 concurrent `sodium_malloc` allocations **all succeeded** and about 16
+were actually locked. libsodium calls `mlock()`, ignores its failure, and hands
+back memory indistinguishable from locked memory. Nothing errors, nothing logs,
+and the daemon's secret key, session keys and login codes quietly become
+swappable — with no symptom of any kind.
+
+`LimitMEMLOCK` in the unit fixes that for anyone running the unit. It does
+nothing for a host that is not. So the daemon reads `RLIMIT_MEMLOCK` itself at
+startup, logs it against the derived need (4 KiB × 10 blocks × `max_slots`,
+S1's formula), and raises the line to WARN when it falls short.
+
+**It warns rather than refuses**, deliberately. Linux's usual 8 MiB default is
+already below the need at the default `max_slots = 256`, so refusing would
+convert a widespread misconfiguration into an outage — and would stop every
+development run and the end-to-end test besides. The loud line is what makes
+the misconfigured host visible; the unit is what fixes it.
+
+The level decision is a named function, `memlock_log_level()`, not a ternary at
+the call site. That is not tidiness: "the short case is LOUD" is a requirement,
+and inside `main()` it had no oracle, because the ambient `RLIMIT_MEMLOCK`
+decides which branch runs and differs by platform. As a function a test names
+both answers directly, which is what makes mutation Z4 killable at all.
+
+Campaign **v51 (Z1–Z5)**. Two of the five are about the formula rather than the
+comparison: Z3 drops the ten-blocks factor and Z5 halves the page size, and
+both leave a check that reads correctly, compares correctly and reports a
+plausible number. That is why the test asserts `memlock_required_bytes` against
+**literals** (40960, 10485760, 167772160) rather than against the macros the
+implementation uses — an expectation computed from `MEMLOCK_PAGE_BYTES` would
+move with the mutation and could never catch one.
+
+Not mutated, with the reason stated: "the daemon refuses to start when the
+limit is low" would be a mutation against the design rather than against a
+defect; and "getrlimit's failure is treated as OK" is reachable on no platform
+this project builds on, so it would survive everywhere and teach that a
+survivor is normal. Both join the equivalent-mutant register (N7, v48a D7,
+v48b C8, v49c's pair, v49d's).
+
+### The offline cache: three pin checks, and a failure mode the proof found on its first run
+
+F12 said an offline build was impossible. `MLDSA_DEPS_CACHE` plus
+`deploy/fetch-deps.sh` closes it, and the design point is that **every pin
+survives**: liboqs is cached as a local clone used as `GIT_REPOSITORY`, so both
+existing checks still run — the `PATCH_COMMAND` at population time and the
+re-check after `FetchContent_MakeAvailable`. `FETCHCONTENT_SOURCE_DIR_LIBOQS`
+was the obvious alternative and is the wrong one: CMake's design makes it
+bypass the population-time `PATCH_COMMAND`, and the V2-10 retrospective already
+had to record a period when the liboqs pin was enforced through one of its two
+points. libsodium and SQLite become local `URL`s with their `URL_HASH`
+untouched.
+
+The proof is a build in a container with **`--network none`**, with
+`getent hosts github.com` failing first so the test cannot pass by quietly
+still being online. It found a real defect on its first run, now **F72**: git
+refuses to read a repository owned by another user (its `safe.directory` rule),
+and with the cache used as a `GIT_REPOSITORY` the refusal surfaces as
+`Failed to clone repository` from a generated FetchContent subbuild script,
+with the actual cause buried in a log the operator has no reason to open. The
+container reproduced it exactly — the cache arrived carrying the host's uid
+while the build ran as root — which is the shape of an operator who populates a
+cache as themselves and builds as root.
+
+The fix is one `git rev-parse HEAD` against the cache at configure time, which
+answers both questions at once: whether git will read this directory at all,
+and whether it holds the commit this build is pinned to. An ownership refusal
+is re-reported naming the remedy (`chown`, not a `safe.directory` exception —
+the cache is a build input and should belong to whoever builds). So an offline
+build is now verified **three** times and an online one twice; the probe adds
+a check, it does not replace one.
+
+Three controls, all executed:
+
+| control | staged as | result |
+|---|---|---|
+| unreadable cache | cache left owned by another uid | refused, naming `dubious ownership` and the `chown` |
+| corrupted archive | one byte of the libsodium tarball changed | refused by `URL_HASH`, expected value printed |
+| cache off the pin | a new commit built with `commit-tree` (the cache is a **bare, shallow** clone: no work tree to commit in and no `HEAD~1` to step back to) | refused, and `_deps/liboqs-src` was never created |
+
+The third control is the one worth having: it proves the refusal happens
+*before* anything is populated, so a drifted cache cannot be half-unpacked
+into a build tree.
+
+### The unit is gated, not reviewed — and the first gate is shaped by a measurement
+
+`systemd-analyze verify` **exits 0 for an unknown directive**. Probed: a unit
+carrying `BogusDirective=yes` prints `Unknown key name … ignoring` on stderr
+and exits 0. So the exit status is worthless as a gate, and the real signal is
+the **output**: a clean unit produces none. The second gate is
+`systemd-analyze security --offline=true`, which scores the unit; the unit
+scores **1.7** ("OK") against a threshold of 4.0.
+
+That threshold needed its own control, and the first one chosen failed:
+removing `MemoryDenyWriteExecute` did not move the score at all (1.7 → 1.7). So
+every directive was measured individually and the control became
+`CapabilityBoundingSet`, which moves it to **3.4**. The whole table is recorded
+in the script. A gate whose control does not move it is a gate that is not
+measuring what its author thinks.
+
+`deploy_checks.sh` is not a CTest, for the reason `caddy_proxy.sh` is not: a
+suite gate that silently depends on a container registry fails for reasons that
+have nothing to do with the code.
+
+### What this step does not do
+
+It ends at **provably installable**, not installed. The VPS is not mine to
+reach, so everything that does not need it is proven here and the rest is a
+numbered runbook someone runs. That boundary is stated rather than blurred,
+and it is where the remaining risk lives.
+
+### Two gates caught this step's own work
+
+Worth recording because it is what the previous two steps were for.
+`check_spec_vocabularies.py` failed on `memlock-limit` — the new event was in
+the spec and the *call site was unreadable*, because the gate required
+`AUTHD_LOG_` to appear in the level argument and `memlock_log_level(ms)` does
+not contain that text. The gate was right to complain and wrong about what to
+complain about: what it exists to pin is the **event name**, which is argument
+two. The level may legitimately be a literal, a ternary or a named function —
+and a named function is precisely the shape a level takes once it is a
+requirement somebody has to test. The requirement was relaxed to "the call has
+two arguments"; a site whose *event* is not a literal is still reported, which
+is the case that could evade the vocabulary entirely.
+
+And `check_mutation_anchors.py` was run before and after every source edit —
+189 anchors, 169 mutations, 21 campaigns, all OK — because this step touches
+`authd_main.c`, which carries other campaigns' anchors.

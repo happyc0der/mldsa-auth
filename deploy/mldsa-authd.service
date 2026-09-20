@@ -1,0 +1,98 @@
+# mldsa-authd — the post-quantum authentication daemon (spec §16).
+#
+# THIS FILE IS UNDER TEST. tests/deploy_checks.sh runs `systemd-analyze verify`
+# on it and requires NO output — the exit status is not a gate, because
+# systemd-analyze exits 0 even for an unknown directive and merely warns — and
+# runs `systemd-analyze security --offline=true`, requiring an exposure score
+# below a threshold. A unit that drifted from what passes would fail the build
+# rather than mislead an operator on the day they need it.
+#
+# Install:
+#   install -m 0644 mldsa-authd.service /etc/systemd/system/
+#   systemctl daemon-reload
+# See deploy/RUNBOOK.md for the whole sequence; this file is step 6 of it.
+
+[Unit]
+Description=mldsa-authd post-quantum authentication daemon
+Documentation=https://github.com/happyc0der/mldsa-auth
+# The daemon binds a Unix socket the proxy connects to; it does not require the
+# proxy, and it must be able to start before it so the socket exists when the
+# proxy first tries.
+After=network-target.service network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mldsa-authd
+Group=mldsa-authd
+ExecStart=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf
+Restart=on-failure
+RestartSec=2s
+
+# The passphrase that opens the MLDSAEK1 server key (spec §12). systemd
+# decrypts it into $CREDENTIALS_DIRECTORY as a 0400 file owned by this service
+# — which is exactly the shape authd_secret.c already requires, so the config's
+# key_passphrase_file points there and nothing else changes. Never an
+# environment variable, never argv: both are readable by other processes.
+#
+#   systemd-creds encrypt --name=passphrase /var/lib/mldsa-authd/pass -
+# and paste the output as SetCredentialEncrypted=, or keep the file and use
+# LoadCredentialEncrypted= as below.
+LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred
+
+# /run/mldsa-authd/ 0750, owned by this user, group-readable by the proxy
+# (spec §16). systemd creates and removes it, so a crashed daemon never leaves
+# a stale directory with the wrong mode.
+RuntimeDirectory=mldsa-authd
+RuntimeDirectoryMode=0750
+# /var/lib/mldsa-authd/ 0700 holds the store, the sealed key and backups.
+StateDirectory=mldsa-authd
+StateDirectoryMode=0700
+
+# LOCKED MEMORY IS A CORRECTNESS SETTING, NOT A TUNING KNOB (spec §16).
+#
+# libsodium calls mlock() for every secure allocation, IGNORES its failure, and
+# returns memory that looks identical to locked memory. V4-2's S1 spike
+# measured the consequence: under a 64 KiB limit, 1000 of 1000 allocations
+# still succeeded and only ~16 were actually locked. No error, no log line —
+# the daemon's keys simply become swappable.
+#
+# The requirement is 4 KiB x 10 x max_slots: about ten secure allocations per
+# in-flight handshake, one locked page each. The value below covers the default
+# max_slots = 256 (10 MiB) with headroom for the store and the server key.
+# RAISE IT IF YOU RAISE max_slots — the daemon logs `memlock-limit` at WARN
+# when its own limit is short, so the journal will tell you.
+LimitMEMLOCK=32M
+
+# --- hardening (spec §16's list, verbatim) --------------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+
+# A core dump of this process would contain the server's secret key in
+# plaintext. LimitCORE=0 above stops the kernel writing one; this stops a
+# crash handler doing it by another route.
+ProtectHostname=yes
+ProtectClock=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

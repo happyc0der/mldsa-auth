@@ -66,6 +66,47 @@ set(MLDSA_HARDENING_FLAGS
   -fstack-protector-strong
 )
 
+# --- Link-time hardening (V4-11, spec 16; audit finding F4) ---------------
+# PIE, full RELRO and BIND_NOW, and a non-executable stack. Measured before
+# this was added: a Linux Release build of the daemon already had PIE, partial
+# RELRO, NX and canaries from the toolchain's own defaults -- the one property
+# actually missing was BIND_NOW. The register said "no PIE/RELRO/BIND_NOW/
+# noexecstack"; the binary said otherwise, and the binary is the authority
+# (which is why tools/audit/check_hardening.sh reads ELF headers rather than
+# build files).
+#
+# Every flag is PROBED, never assumed from the platform name. `-Wl,-z,...` is
+# an ELF concept and Apple's ld rejects it outright ("ld: unknown options: -z"),
+# so a guess of the form `if(APPLE)` would be both wrong in principle and
+# fragile in practice -- a linker is a property of the toolchain, not of the
+# operating system. A flag this toolchain will not take is simply absent, and
+# check_hardening.sh then reports the property as `n/a` (Mach-O) rather than
+# as a failure.
+#
+# NOTE for anyone reading a green `--require` on macOS: RELRO and BIND_NOW have
+# no Mach-O equivalent, so that run proves three properties out of five. The
+# gate that matters runs on Linux, in CI, against the install tree.
+include(CheckLinkerFlag)
+include(CheckPIESupported)
+
+set(MLDSA_HARDENING_LINK_FLAGS "")
+foreach(_mldsa_lflag "-Wl,-z,relro" "-Wl,-z,now" "-Wl,-z,noexecstack")
+  string(MAKE_C_IDENTIFIER "MLDSA_HAVE${_mldsa_lflag}" _mldsa_lvar)
+  check_linker_flag(C "${_mldsa_lflag}" ${_mldsa_lvar})
+  if(${_mldsa_lvar})
+    list(APPEND MLDSA_HARDENING_LINK_FLAGS "${_mldsa_lflag}")
+  endif()
+endforeach()
+
+# PIE via CMake's own support check, which knows how to ask each toolchain and
+# sets -fPIE/-pie correctly for executables (policy CMP0083).
+check_pie_supported(OUTPUT_VARIABLE _mldsa_pie_why LANGUAGES C)
+if(CMAKE_C_LINK_PIE_SUPPORTED)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+else()
+  message(STATUS "PIE not supported by this toolchain: ${_mldsa_pie_why}")
+endif()
+
 # _FORTIFY_SOURCE is skipped under ASan/UBSan builds: Apple Clang (and GCC)
 # auto-define _FORTIFY_SOURCE=0 whenever -fsanitize=address is active
 # (fortification needs optimization the sanitizer build forgoes, and the two

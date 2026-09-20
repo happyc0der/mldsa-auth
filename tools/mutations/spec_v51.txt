@@ -1,0 +1,5 @@
+Z1|^test_authd_evloop$|memlock: the default 256 slots do NOT fit inside 1 MiB
+Z2|^test_authd_evloop$|memlock: 16 slots fit inside a 1 MiB limit (canary: OK is reachable)
+Z3|^test_authd_evloop$|memlock: 1 slot needs 40960 B (4096 x 10)
+Z4|^test_authd_evloop$|memlock: a limit below the requirement is logged at WARN
+Z5|^test_authd_evloop$|memlock: 1 slot needs 40960 B (4096 x 10)

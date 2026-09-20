@@ -16,5 +16,11 @@ audit.
 Coverage is **not** a gate. The mutation campaigns are the gate; coverage maps
 where a mutation could never be killed.
 
-`check_hardening.sh` is written to become a gate: V4-11 runs it with
-`--require` on the daemon binary once the hardening flags are added.
+`check_hardening.sh` **is** a gate as of V4-11: it runs with `--require` over
+the **install tree** — the three binaries that actually ship — in `ci.yml`'s
+release job. Two things about that are worth keeping in mind. It reads the
+binary, never the build files, so it cannot be satisfied by a flag that was
+passed and silently dropped. And on Mach-O it reports RELRO and BIND_NOW as
+`n/a`, because they are ELF concepts with no Mach-O equivalent, so a macOS
+`--require` run gates three properties out of five: **it is a Linux gate**, and
+a green run on macOS is not the same claim.

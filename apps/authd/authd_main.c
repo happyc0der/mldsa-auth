@@ -31,6 +31,7 @@
 #include "keyfile.h"
 #include "listener.h"
 #include "localapi.h"
+#include "memlock.h"
 #include "ratelimit.h"
 #include "recovery.h"
 #include "tokens.h"
@@ -363,6 +364,27 @@ int main(int argc, char **argv)
     (void)sigaction(SIGTERM, &sa, NULL);
     (void)sigaction(SIGINT, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */
+
+    /* How much of this daemon's memory can actually be locked (spec 16,
+     * V4-2 S1). Logged unconditionally so the number is in the journal of
+     * every deployment, and raised to WARN when it is short -- the failure
+     * mode this guards has no symptom of its own: libsodium hands back
+     * unlocked memory and says nothing, so without this line an operator who
+     * never installed the unit would have swappable secrets and no way to
+     * know. */
+    {
+        uint64_t lim = 0, need = 0;
+        const memlock_status_t ms = memlock_check(cfg.max_slots, &lim, &need);
+        authd_log_num(memlock_log_level(ms), "memlock-limit", "need", need);
+        if (ms == MEMLOCK_LOW) {
+            fprintf(stderr,
+                    "mldsa-authd: RLIMIT_MEMLOCK is %llu bytes but %u slots need %llu "
+                    "(4 KiB x %u blocks x max_slots): secrets may be swapped to disk. "
+                    "Set LimitMEMLOCK in the service unit (spec 16).\n",
+                    (unsigned long long)lim, cfg.max_slots, (unsigned long long)need,
+                    (unsigned)MEMLOCK_BLOCKS_PER_SLOT);
+        }
+    }
 
     authd_log_event(AUTHD_LOG_INFO, "started");
 

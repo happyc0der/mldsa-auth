@@ -21,4 +21,4 @@ target_link_libraries(mldsa_core PUBLIC oqs sodium)
 
 target_compile_options(mldsa_core PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_core PRIVATE ${MLDSA_HARDENING_DEFS})
-target_link_options(mldsa_core PUBLIC ${MLDSA_SANITIZE_FLAGS})
+target_link_options(mldsa_core PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})

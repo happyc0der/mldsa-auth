@@ -106,6 +106,36 @@ rc=0
 [ "$rc" -eq 3 ] || fail "daemon --check-config on a bad config exited $rc, expected exactly 3"
 echo "PASS: E2E: both binaries report a configuration error as exit 3 (spec 13)"
 
+# ------------------------------------------- the config an operator copies
+#
+# deploy/authd.conf.example is what a deployment starts from, so its KEYS and
+# VALUES are checked here. Only the paths are rewritten into $TMP -- those are
+# deployment-specific by nature; everything else is exactly the file as
+# shipped, which is the part that can rot when a key is renamed or a bound
+# changes.
+EX="$(cd "$(dirname "$0")/.." && pwd)/deploy/authd.conf.example"
+if [ -f "$EX" ]; then
+    mkdir -p "$TMP/ex"
+    : > "$TMP/ex/server.ek"; : > "$TMP/ex/pass"
+    sed -e "s|/var/lib/mldsa-authd|$TMP/ex|g" \
+        -e "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/ex/pass|" \
+        -e "s|/run/mldsa-authd|$TMP|g" \
+        -e "s|^site_uids = .*|site_uids = $(id -u)|" \
+        -e "s|^admin_uids = .*|admin_uids = $(id -u)|" \
+        -e "s|^proxy_uids = .*|proxy_uids = $(id -u)|" \
+        -e "s|^listen_port = .*|listen_port = 0|" "$EX" > "$TMP/ex.conf"
+    "$DAEMON" --config "$TMP/ex.conf" --check-config > "$TMP/ex.out" 2>&1 \
+        || { cat "$TMP/ex.out"; fail "deploy/authd.conf.example does not pass --check-config"; }
+    # F63: the file an operator copies must turn the rate limiter ON. A
+    # default-shaped example would leave a deployment with a proxy-facing
+    # listener, no client address and no complaint.
+    grep -q 'proxy_protocol=v2' "$TMP/ex.out" \
+        || { cat "$TMP/ex.out"; fail "the example config does not enable proxy_protocol=v2"; }
+    echo "PASS: E2E: deploy/authd.conf.example validates and enables the rate limiter"
+else
+    fail "deploy/authd.conf.example is missing"
+fi
+
 # --------------------------------------------------------------- daemon
 
 # The raw loopback listener is the operator's SSH-tunnel path (spec 7.1), and
