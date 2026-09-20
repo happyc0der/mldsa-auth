@@ -192,13 +192,15 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, all 164 must-kill mutations in
+at 03:17 UTC every day, and on demand, 160 of the 164 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
 the runner and finding that out after three hours of mutation runs costs three
 hours — and all eleven fuzz targets run for 600 s with any crash kept as a
-downloadable artifact. It is not part of the push gate. GitHub
+downloadable artifact. The four that do not are `v50c`, committed in V4-10c
+and awaiting the bring-up every new matrix entry needs; `tools/README.md`
+carries the expiry. It is not part of the push gate. GitHub
 disables scheduled workflows after 60 days without a commit, so a badge that
 has stopped updating is not a badge that is passing — check the date on it.
 
@@ -635,7 +637,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | every committed campaign against fresh ASan trees — nineteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | nineteen of the twenty committed campaigns against fresh ASan trees — eighteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
