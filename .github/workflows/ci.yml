@@ -111,6 +111,27 @@ jobs:
       - name: Environment block (records the CPU these results came from)
         run: ./"$BUILD_DIR"/bench/bench_primitives --smoke | sed -n '/^mldsa-auth bench/,/^  mode /p'
 
+  # The two gates that check the SPECIFICATION against the tree. Neither needs
+  # a build, so both cost seconds -- and both belong on a push rather than in
+  # the nightly, because a document that is wrong about what the software does
+  # is wrong for everyone who reads it in the meantime.
+  #
+  # check_spec_constants.sh also runs in the nightly. The duplication is
+  # deliberate: the nightly proves it on a schedule, this proves it before the
+  # wrong claim reaches main.
+  spec:
+    name: specification vs the tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Every derived size appears in the specification
+        run: tools/audit/check_spec_constants.sh "$PWD"
+
+      - name: Error codes, log events and log fields match the daemon both ways
+        run: python3 tools/audit/check_spec_vocabularies.py "$PWD"
+
   fuzz-and-scan:
     name: fuzz smoke + secret scan (Linux only)
     runs-on: ubuntu-latest
