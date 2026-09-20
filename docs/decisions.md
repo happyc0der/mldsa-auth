@@ -4895,3 +4895,119 @@ behaviour), **F60** (`threat-model.md` still describes the `X-Real-IP`
 arrangement S5 superseded) and **F61** (the fallback is deliberately not
 implemented). Six for the errata step, none of them fixed by editing a spec to
 match the code.
+
+## V4-10c — the specification, corrected, and two vocabularies that can no longer drift
+
+`docs/mldsa-authd-spec.md` was written in V4-3, before any of the daemon
+existed, and had not been edited since — deliberately. Every step from V4-6
+onward held to one rule: **a specification is never edited to match the code.**
+A disagreement between the two is recorded as a finding and left for a step
+whose job is to decide which side was wrong, because the alternative is a
+document that agrees with whatever was implemented last and therefore says
+nothing.
+
+Eight steps later the register held **19 errata items**, plus **F26**, which
+asks for a §3.1 change and had been mis-filed under V4-11. Reading the document
+end to end for this step turned up **five more contradictions no finding
+covered** (F66–F70). Twenty-five corrections is past the point where the rule
+protects anything, and the spec is now the document V4-11 will package, V4-14
+will hand to a reviewer, and a browser client will be written against.
+
+What it was telling a reader, as of V4-10b: that `ERROR 0x04` means "rate
+limited" (nothing can emit it); that `bad-handle` is an error code (nothing
+emits it); that `log_identities` and `log_client_ip` control logging (neither
+exists anywhere in the tree); that key files are "never clobbering" four
+sections after telling a client to rename one over another; and that a client
+recovering an interrupted rotation should branch on whether the server found a
+key "unknown" — a distinction §7.3's decoy flow exists to destroy.
+
+### The rule is suspended once, and replaced by a stricter one
+
+Every change cites a finding, and **§20 Errata** lists all twenty-six with the
+section, what v1 said, what v1.1 says and which finding forced it. No
+correction was taken that no finding asked for. The document is **v1.1**: the
+body is corrected so §§1–19 are true on their own, rather than leaving a reader
+to apply an errata list by hand while reading.
+
+`docs/v4/audit.md` marks all twenty-five items RESOLVED — twenty-four in the
+spec, plus **F60** in the threat model, which still described the `X-Real-IP`
+arrangement V4-2's S5 spike superseded.
+
+### The part that outlives the step
+
+Numbers were never the problem. §6 and §12's byte tables have been right since
+V4-3 because `check_spec_constants.sh` re-derives them from the headers. What
+drifted was the prose that enumerates **names** — and it drifted in both
+directions at once:
+
+- §8 listed `bad-handle` for eight steps and nothing ever emitted it;
+- §8 defined no code at all for a refused command, while the daemon answered
+  `not-permitted` from the day the local API existed;
+- §15 promised the fields `ev`, `conn`, `stage`, `status`, `ms`, `rx`, `tx`,
+  none of which the daemon has ever emitted.
+
+Each was found by a person reading the document one step at a time, which is
+the slowest detector there is. `tools/audit/check_spec_vocabularies.py` is the
+fast one, and it fails **both ways**: a name the daemon can emit that the spec
+does not define is a failure, and so is a name the spec defines that nothing
+emits. The second half is the one that matters — an undefined name is a
+documentation gap, but a **defined** name nothing emits is a promise to a
+reader that the software does not keep, and no test can see it.
+
+It is exact rather than heuristic because every call site passes a string
+literal: 101 `send_err` calls covering 17 codes, 53 event names (one a ternary
+of two literals, which is why the second argument is parsed as an expression
+rather than matched as a token), and a fixed set of formats in `authd_log.c`.
+**A non-literal at any of those sites is itself reported as a failure**, so the
+check cannot quietly start covering less than it claims.
+
+The cost is stated rather than discovered: §15 now enumerates all 53 event
+names, so **adding a log event is a change to the specification**. That is the
+same cost `FUZZ_TARGETS` imposes, and §15 drifted precisely because nothing
+made it cost anything.
+
+Six controls, all shown: a code defined but unemitted; a code emitted but
+undefined; an event removed from the catalogue; a field renamed; §15
+restructured so a heading moves (which fails with "a §15 heading is missing"
+rather than thirty lines of noise — the first version content-sniffed for the
+field block and produced exactly that noise); and a new `send_err` code with no
+spec entry.
+
+`check_spec_constants.sh` grew from 27 checks to **38**, covering §17's new
+rows: the token lifetimes, the four rate-limit defaults, the rotation cadence,
+the line limit and `AUTHD_MAX_CONTENT`.
+
+### One code change: `audit-verify`
+
+§9.2 calls the audit head MAC "detectable from a second trust domain", and
+`store_audit_verify()` was **reachable from nothing at all** (F29) — no §8
+command, no §13 subcommand. A deployed operator could not check their own
+chain, which made the property a claim rather than a control.
+
+`authd_admin audit-verify` is offline by design: it opens the key envelope for
+the KEK, opens the store, re-computes the whole chain, and prints the head MAC
+and a verdict. Offline is half the point — **the same command runs against a
+backup**, which is where a tampered chain is most likely to be noticed and
+least likely to be repairable.
+
+Two details are not decoration. It prints the **entry count**, because an empty
+chain verifies trivially: without the count, a command that had walked nothing
+would look identical to one that had verified three hundred rows, and the first
+version of the e2e check was vacuous for exactly that reason until the count
+existed to assert on. And it prints the head **on failure too** — a tamper that
+rewrites a row without touching its stored MAC leaves the head unchanged, so an
+operator comparing it against yesterday's learns whether the chain was
+truncated or rewritten, which the verdict alone does not say.
+
+A wrong passphrase is reported as a **key** failure, never as a corrupt chain:
+the chain is keyed from the envelope KEK, so failing to open the key means the
+verification never ran, and an operator told "corrupt" would go looking for an
+intruder instead of for their passphrase file. That is mutation **O4**.
+
+Campaign **v50c, letter O** (F and Z remain), all four killed in `authd_e2e` —
+the only place a real chain with real entries exists. Not mutated, with the
+reason stated: "the KEK is not wiped". The leak is real and LeakSanitizer would
+catch it **on Linux**; LSan does not run under macOS ASan, so the mutation would
+SURVIVE on the machine this campaign is usually run on and be killed only in
+the nightly. A mutation whose verdict depends on which platform ran it is worse
+than no mutation — it teaches that a survivor is normal.

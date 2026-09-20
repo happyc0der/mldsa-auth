@@ -59,6 +59,36 @@ check "pk_new field"             "$PK"
 check "signature bound"          "$SIG"
 check "handshake_id in digest"   "$HSID"
 
+# --- §17's limits table (V4-10c, findings F36/F68) -----------------------
+#
+# §17 was six rows and the document stated at least ten more limits elsewhere;
+# the errata pass completed it. These are the ones with a named constant, so
+# they can be derived rather than transcribed -- the rate-limit four are
+# operator DEFAULTS rather than protocol constants, which is why the check is
+# that §17 quotes the default the code ships, not that the number is fixed.
+SEC17=$(awk '/^## 17\. /{f=1} f{print} /^## 18\. /{if(f) exit}' "$SPEC")
+in17() { case "$SEC17" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
+                          *) printf '  FAIL  %-34s derived %s, not in §17\n' "$1" "$2"; fail=1;; esac; }
+
+TOK=apps/authd/tokens.h
+hrs() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 3600u\)" $TOK | grep -oE '\(([0-9]+)u' | tr -d '(u'; }
+mins() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 60u\)" $TOK | grep -oE '\(([0-9]+)u' | tr -d '(u'; }
+in17 "token lifetime, user"       "$(hrs TOKEN_TTL_USER_S) h"
+in17 "token lifetime, operator"   "$(hrs TOKEN_TTL_OPERATOR_S) h"
+in17 "token idle, user"           "$(hrs TOKEN_IDLE_TTL_USER_S) h"
+in17 "token idle, operator"       "$(mins TOKEN_IDLE_TTL_OPERATOR_S) min"
+
+RL=apps/authd/ratelimit.h
+in17 "rate_per_min default"       "\`rate_per_min\` $(hdr RATELIMIT_PER_MIN_DEFAULT $RL)"
+in17 "rate_burst default"         "\`rate_burst\` $(hdr RATELIMIT_BURST_DEFAULT $RL)"
+in17 "rate_global_per_sec default" "default $(hdr RATELIMIT_GLOBAL_PER_SEC_DEF $RL)"
+in17 "max_conns_per_addr default" "default $(hdr RATELIMIT_MAX_CONNS_DEFAULT $RL)"
+
+ROT_DAYS=$(grep -oE '#define AUTHD_ROTATION_AGE_DEFAULT[[:space:]]+\(([0-9]+)u' apps/authd/authd_config.h | grep -oE '\(([0-9]+)u' | tr -d '(u')
+in17 "rotation cadence default"   "default $ROT_DAYS days"
+in17 "local-socket line limit"    "$(hdr AUTHD_LINE_MAX apps/authd/conn_io.h) B"
+in17 "AUTHD_MAX_CONTENT"          "$(hdr AUTHD_MAX_CONTENT apps/authd/conn_io.h) B"
+
 # --- recovery codes and tickets (V4-9d, spec §10.3) ----------------------
 #
 # Two different claims are checked here, and only the second could be caught

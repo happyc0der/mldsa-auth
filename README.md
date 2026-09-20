@@ -135,7 +135,7 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `test_net` | Reference transport over real loopback TCP: framing, socket I/O, fault injection, timeouts, demo key files, asymmetric pad buckets on the wire (27/281/4121-byte confirmation records), and legacy-key migration |
 | `demo_e2e` | The full client/server demo end to end — three times: default padding, mismatched `--pad-bucket` policies, and a migrated legacy key authenticating against the original pin — including a check that no key material reaches any log |
 | `test_authd_cli` | The two command-line tools driven in-process: `init` refusing an existing store and leaving it byte-identical, the sealed key opening with the passphrase **as written to the file**, spec §12's per-role Argon2id parameters read back out of the header, `rewrap` refusing a wrong passphrase and refusing to work in place, a `.pub` whose embedded id differs from `--handle`, both binaries' `--check-config` reporting the same status name, and the one list-framing table measured against a live daemon's actual replies |
-| `authd_e2e` | Milestone A with the shipped binaries as real processes: `init` → daemon → `keygen` → `enroll-operator` → `login` → the Node site handler exchanging and verifying → the admin queries. Also that no plaintext secret key is written anywhere (Req 10), that a login refuses a ServerHello not signed by the pinned key, that a listener failure runs its cleanup epilogue, and that no passphrase or login code reaches a log |
+| `authd_e2e` | Milestone A with the shipped binaries as real processes, in the **deployed** proxy configuration (`proxy_protocol = v2`): `init` → daemon → `keygen` → `enroll-operator` → `login` → the Node site handler exchanging and verifying → the admin queries. Also that no plaintext secret key is written anywhere (Req 10), that a login refuses a ServerHello not signed by the pinned key, that a listener failure runs its cleanup epilogue, that `audit-verify` accepts the real chain and rejects one with a single tampered row while blaming the key rather than the chain for a wrong passphrase, and that no passphrase or login code reaches a log |
 | `test_authd_keyfile` | The `MLDSAEK1` key-at-rest envelope: seal/open round trip, header-as-AAD, KDF parameter bounds on both sides, a tamper sweep over every header field, `O_NOFOLLOW`, and the KEK out-parameter (filled on success, identical on re-derive, zeroed on failure) |
 | `test_authd_store` | The daemon's SQLite store: schema-enforced invariants (one active key per handle, a public key unique forever), the three-join active lookup, Req 7 re-enrollment refusal, rotation atomicity proven by injecting a fault mid-rotation and reopening, audit-chain MAC verification with tamper and truncation detection, token/login-code lifetimes and the login-CSRF state binding, and backup/restore |
 | `test_authd_evloop` | The daemon's transport skeleton: strict `key = value` config parsing (unknown/duplicate/out-of-range/missing all refused, and a failed parse applies nothing), frame reassembly at every split point of a two-frame stream, the fixed slot pool and its refusal at capacity, deadline enforcement with a lower bound on both sides, graceful drain, slot wiping on release, and log hygiene with a present canary |
@@ -192,7 +192,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, all 160 must-kill mutations in
+at 03:17 UTC every day, and on demand, all 164 must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
@@ -635,7 +635,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | every committed campaign against fresh ASan trees — eighteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | every committed campaign against fresh ASan trees — nineteen on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of eleven fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
@@ -657,7 +657,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `bench/` | Benchmarks and measured results |
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 160 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 164 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C). Not part of the build |
 
 ## License
 

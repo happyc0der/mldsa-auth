@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1 draft, V4-3)
+# mldsa-authd — deployment specification (v1.1, V4-3 + V4-10c errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -20,6 +20,23 @@ step, not a description of code that already exists.
 Milestones: **A** — operators (a handful of identities the operator controls,
 native CLI). **B** — public end users from browsers. Sections marked *(B)*
 are not implemented in milestone A.
+
+**Revision v1.1 (V4-10c).** V4-3 wrote this document before the daemon
+existed, and every step since has held to one rule: a specification is never
+edited to match the code, so a disagreement between the two is recorded as a
+finding and left for a step whose job is to decide which side was wrong. This
+revision is that step. Twenty-five corrections are listed in **§20**, each
+naming the finding that forced it and which side of the disagreement won. The
+body below has been corrected, so a reader of §§1–19 is reading the truth and
+does not have to apply an errata list by hand.
+
+Two vocabularies in this document — §8's error codes and §15's log events and
+fields — are now **checked mechanically in both directions** against the
+implementation by `tools/audit/check_spec_vocabularies.py`. A code or event
+the daemon can emit that this document does not define is a build failure, and
+so is one this document defines that nothing emits. They are normative lists,
+not illustrations, and that is why they drifted before anything made them
+cost.
 
 ## 1. Objective
 
@@ -66,6 +83,15 @@ Consequences, all deliberate: a handle carries no user name, so the wire
 reveals no account; handles are unguessable (128 bits), which is most of the
 answer to enumeration (§5 Req 9); and a *user* is a daemon-level grouping of
 handles, never a wire identity.
+
+**The shape above is a client-side convention, not a daemon invariant.** The
+daemon accepts any identity of 1..64 printable bytes — `WIRE_ID_MAX_LEN`, the
+protocol's own bound — and does not check for the `d1` prefix or the hex. That
+is deliberate rather than an oversight: the unguessability that matters comes
+from the generator that produced the 16 random bytes, and a daemon that
+enforced the shape would gain nothing while refusing to serve a device
+enrolled by some future client with a different convention. Anything enrolled
+is served; the convention is what `authd_client keygen` produces.
 
 ### 3.2 User id, labels, roles
 
@@ -135,13 +161,21 @@ none, and the step that implements a requirement ships its pin.
    its tokens MUST be deleted, and its live connections MUST be closed.
 10. **Identity keys are encrypted at rest** (§12). No plaintext secret key is
     written to disk by any daemon or CLI command.
-11. **Local API callers are authenticated by peer credentials**, not by a
+11. **Every Unix-socket peer is authenticated by peer credentials**, not by a
     shared secret: `SO_PEERCRED`/`LOCAL_PEERCRED` uid against an allowlist,
-    plus filesystem permissions. Administrative commands are refused on the
-    site socket.
+    plus filesystem permissions. This covers all three sockets — `site.sock`,
+    `admin.sock` and the **proxy-facing listener** — because a PROXY v2
+    preamble (§7.2) is only unforgeable if the peer that wrote it is the
+    proxy: an allowlist with no preamble knows who the proxy is and nothing
+    about the client, and a preamble from an unauthenticated peer is a
+    self-reported address. Administrative commands are refused on the site
+    socket with `ERR code=not-permitted`, and that refusal is byte-identical
+    to the one an unknown command receives, so the site socket is not an
+    oracle for which administrative commands exist.
 12. **The client address used for rate limiting is obtained from a source the
     client cannot forge** (§7.2), and a missing or unverifiable address fails
-    closed.
+    closed — which means, precisely, that **the connection is closed** (§7.2
+    says what the peer sees, and why nothing can be sealed).
 13. **Logging never contains** key material, shared secrets, session keys,
     signatures, nonces, raw frames, decrypted payloads, tokens, login codes,
     recovery codes or tickets. There is no option to enable any of them (§15).
@@ -243,8 +277,15 @@ including it in the digest binds the message to one exact old→new edge.
 elsewhere (Req 8). The two labels stop a signature from either key being
 replayed as the other.
 
+**At most one `ROTATE` per session.** A second is refused `ERROR(0x02)`. The
+rule exists because `sig_old` is verified against the key that authenticated
+the session, and that pin outlives the rotation: without it, the holder of the
+key being rotated *away from* could keep rotating, which is precisely the
+capability rotation is meant to end.
+
 **Acceptance order** (first failure wins, nothing is written until all pass):
-session confirmed → strict decode → handle equals the authenticated id →
+session confirmed → not already rotated on this session → strict decode →
+handle equals the authenticated id →
 `pk_new` ≠ `pk_old` → `pk_new` unused by any device, in any state → verify
 `sig_old` against the session's key → verify `sig_new` against `pk_new` →
 re-read the store and confirm device and user are still active → one
@@ -267,8 +308,15 @@ parties hold.
 
 `ERROR` body: `version (1) || code (1)`. Codes are coarse by design — a remote
 peer learns that it failed, not why: `0x01` malformed, `0x02` not permitted in
-this state, `0x03` rejected, `0x04` rate limited, `0x05` internal. `BYE` has an
-empty body.
+this state, `0x03` rejected, `0x05` internal. `BYE` has an empty body.
+
+**`0x04` is reserved and cannot currently be emitted.** It was defined for a
+refused connection, and every `ERROR` is a **sealed record** — a connection
+refused for its address or its rate has no session, and never will. §7.2 says
+what such a refusal actually looks like. The code point is kept rather than
+reused so that a future transport which can carry a pre-session error has one
+waiting, and so that an implementation reading an old capture is not surprised
+by it. A peer that receives any unrecognised code MUST treat it as `0x03`.
 
 ## 7. Connection binding
 
@@ -299,7 +347,38 @@ proxy. Two mechanisms, in order of preference:
    Caddy overwrites a client-supplied `X-Real-IP` and can strip
    `X-Forwarded-For` (V4-2 S4).
 
-A missing or unverifiable address **fails closed** (Req 12).
+**Mechanism 2 is not implemented, deliberately** (V4-10b). No code path reads
+any header for this purpose and none can be made to: two trust paths for one
+fact is one more parser to attack, and the header form additionally depends on
+the proxy remembering to overwrite a client-supplied value — a configuration
+mistake with no local symptom. It is kept here as the documented alternative
+for a deployment behind a proxy that cannot speak PROXY v2; such a deployment
+would be implementing it, not enabling it.
+
+The preamble is trusted because of **both** halves of §7.2: the listener's uid
+allowlist says the peer is the proxy (Req 11), and the preamble is the only
+statement about the client the proxy can make before the client is allowed to
+write a byte. Whether to expect one is configuration (`proxy_protocol`), and
+the default is `none` — there is no value that is right for both "a proxy is
+in front" and "an operator's client is connected directly", so a deployment
+must say.
+
+**What "fails closed" means on the wire.** Nothing can be *said* to a peer
+before a session exists: §6.5's `ERROR` is a sealed record and there is no key
+to seal it with. So:
+
+| Refusal | What the peer sees |
+|---|---|
+| No preamble, or a malformed one | the connection is closed, nothing sent |
+| A well-formed preamble carrying no client address (`LOCAL`, `AF_UNIX`) | the connection is closed, nothing sent |
+| The peer's uid is not in the allowlist | the connection is closed at accept |
+| Rate limited (§7.3) | `HTTP/1.1 429 Too Many Requests`, then closed |
+| The limiter has no room left to track another address | `HTTP/1.1 503 Service Unavailable`, then closed |
+
+The two HTTP responses are possible only because the connection is still HTTP
+at that point: the refusal is decided when the preamble completes, which is
+before the WebSocket upgrade is answered and long before any signature is
+spent (Req 12, §7.3).
 
 ### 7.3 Uniform responder flow
 
@@ -330,27 +409,76 @@ why the line limit is 8192). Labels and reasons are hex too, so there are no
 escaping rules at all. Unknown keys, duplicate keys, a missing required key or
 a malformed value are `ERR code=malformed`.
 
+A command that does not exist, and a command that exists but is not reachable
+on this socket, both answer `ERR code=not-permitted`. The two are deliberately
+indistinguishable: a site process must not be able to use the refusal to
+enumerate which administrative commands exist.
+
+A list response is built in one buffer and sent as one reply, so it is bounded:
+at most **24** items, and a query that would return more answers
+`ERR code=too-many` rather than a truncated list that looks complete. A
+deployment needing more than 24 devices per user needs a streaming list, which
+this version does not define.
+
+**The error-code vocabulary below is normative and complete.**
+`tools/audit/check_spec_vocabularies.py` checks it against the daemon in both
+directions: a code the implementation can emit and this section does not define
+is a build failure, and so is a code defined here that nothing emits.
+
 **`site.sock`** — mode 0660, group = the site's group, uid allowlist:
 
 | Request | Response |
 |---|---|
-| `ENROLL user= handle= pk= label= via=site\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|bad-handle\|user-disabled\|ticket-invalid\|role-mismatch`; a byte-identical re-enrollment is `OK fp= idempotent=1` |
+| `ENROLL user= handle= pk= label= via=site\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|internal`; a byte-identical re-enrollment is `OK fp= idempotent=1` |
 | `EXCHANGE code= state=` | `OK token= user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|used\|state-mismatch` |
 | `VERIFY token=` | `OK user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|idle-expired\|device-revoked\|user-disabled` |
 | `LOGOUT token=` | `OK deleted=0\|1` |
 | `REVOKE-TOKENS user= [handle=]` | `OK count=` |
 | `REVOKE-DEVICE handle= reason=` | `OK` / `ERR code=unknown` |
-| `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` |
-| `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) |
-| `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled` |
+| `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` / `ERR code=too-many` |
+| `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) / `ERR code=invalid\|user-disabled\|not-permitted` |
+| `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted` |
 | `PING` | `OK version= schema= uptime=` |
 
+`ENROLL`'s `ticket=` is **required** when `via=recovery` and **refused** when
+`via=site`: a request carrying a ticket that would be ignored is `malformed`,
+because a caller who believes it is redeeming a ticket and is not has been
+told something false.
+
+`ENROLL` creates the user on first use, with role `user`. A handle whose user
+already exists with the other role is `role-mismatch`. `ENROLL-OPERATOR` is
+the same request with the same keys, on the administrative socket, creating
+the user with role `operator`; it also takes `via=site` and is audited as
+such, because the administrator running it *is* the enroller.
+
+`RECOVERY-ISSUE` and `RECOVERY-USE` answer `not-permitted` when the named user
+is an **operator** (§10.3): otherwise a compromised site process could mint an
+operator's recovery codes, spend one, and redeem the ticket for a device it
+controls — the exact escalation Req 11 exists to prevent.
+
+`revoke=` on `RECOVERY-USE` defaults to `none`. `revoke=all` additionally
+revokes every one of that user's active devices, deletes their tokens and
+closes their live connections (§10.3): it is the stolen-device path, and it is
+reachable only by someone who has already presented a valid recovery code.
+
 **`admin.sock`** — mode 0600, root only: everything above plus
-`ENROLL-OPERATOR`, `DISABLE-USER user= reason=`, `ENABLE-USER user=`,
-`LIST-USERS`, `AUDIT-TAIL n=`, `BACKUP path=`.
+`ENROLL-OPERATOR user= handle= pk= label= via=site`,
+`DISABLE-USER user= reason=`, `ENABLE-USER user=`, `LIST-USERS`,
+`AUDIT-TAIL n=`, `BACKUP path=`.
+
+`AUDIT-TAIL` and `LIST-USERS` are lists and carry the same 24-item bound and
+the same `too-many`. `BACKUP`'s `path=` is resolved in the **daemon's**
+working directory, so a caller should give an absolute one.
+
+**The proxy-facing listener** (§7.1) is the third Unix socket: mode **0660**,
+group = the proxy's group, with its own uid allowlist (`proxy_uids`). It
+carries the protocol, not this line protocol, and nothing on it is a local-API
+request.
 
 Operator enrollment is impossible from the site's uid **by construction**, not
-by a flag (Req 11). Every request is logged with the peer's uid and pid.
+by a flag (Req 11): `ENROLL-OPERATOR` is absent from the site socket's table,
+so it answers `not-permitted` there, exactly as a nonsense command does. Every
+request is logged with the peer's uid and pid.
 
 ## 9. The store
 
@@ -399,8 +527,11 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    `mac_i = crypto_auth(key_audit, prev_mac || seq || at || event || 0x00 || fields)`
    with `key_audit = HKDF-SHA256(ikm = the envelope KEK, salt = store_id,
    info = "mldsa-authd/v1/audit-mac")`, MAC width 32 bytes. The head MAC is
-   written to the system journal periodically, so truncation is detectable from
-   a second trust domain.
+   printed by `authd_admin audit-verify` (§13), which re-computes the whole
+   chain offline and is the operator's means of detecting truncation or
+   tampering. **Periodic publication of the head MAC to the system journal —
+   the second trust domain — is not implemented** (§18): an operator who wants
+   one runs `audit-verify` on a timer and keeps its output.
 
 ### 9.3 One transaction per operation
 
@@ -434,10 +565,29 @@ audited** (Req 7). With an identical key it is idempotent.
 
 Specified in §6.3. The client writes the sealed new key to `<handle>.ek.next`
 **before** sending `ROTATE`, and renames it over the current file on
-`ROTATE_ACK`. If `.ek.next` exists at startup the client tries it first: if it
-authenticates, the rename was interrupted and is completed; if it is unknown,
-the server never committed and the old key is still current. There is no
-overlap window in which two keys authenticate.
+`ROTATE_ACK`.
+
+**Recovering an interrupted rotation.** If `.ek.next` exists at startup the
+client probes with `<handle>.ek` first, and the rule is stated in the only
+direction that is observable:
+
+> **`.ek` authenticating proves the server did not commit** — §9.2's
+> `one_active_key` index means at most one key per handle is ever active — so
+> and only so may `.ek.next` be discarded. **`.ek.next` failing proves
+> nothing** and MUST NOT cause a delete.
+
+The inverse rule is not implementable and earlier revisions of this section
+got it wrong: §7.3's uniform responder flow guarantees a client cannot tell an
+unknown key from a revoked one from a bad signature, so "if it is unknown, the
+server never committed" asks the client to branch on a distinction Req 6
+exists to destroy. Never deleting on ambiguity costs one confusing file; the
+other way costs a permanently unusable identity.
+
+**On the server there is no overlap window**: `one_active_key` makes two
+simultaneously-active keys for a handle unrepresentable, and that is enforced
+by the schema rather than asserted. What the paragraph above describes is a
+*client* that does not yet know which of its two files the server accepted —
+a different thing, and the reason the probe exists.
 
 Tokens survive rotation (they are bound to the handle) unless `flags` bit 0 is
 set, which is the "I think this key leaked" path.
@@ -451,9 +601,19 @@ set, which is the "I think this key leaked" path.
 | `DISABLE-USER` | user → `disabled`; every device fails lookup | closed | deleted |
 | `ENABLE-USER` | user → `active`; devices keep their own status | — | — |
 
-Revocation takes effect at the next handshake immediately (the store is
-authoritative, there is no key cache) and at the site within its `VERIFY`
-cache TTL, which SHOULD be ≤ 30 s or absent.
+Revocation delivers **two separate guarantees**, by two separate mechanisms,
+and this section used to run them together:
+
+1. **The next handshake fails** (Req 9). The store is authoritative and there
+   is no key cache, so the three-join lookup stops returning the key the
+   instant the row changes.
+2. **Live connections are closed** at the moment of revocation. The daemon
+   owns both the store and the slots, so revoking a row and closing its
+   sessions happen in one process, in one thread, in that order — there is no
+   "store hook" and no window.
+
+At the site, a revocation is visible within its `VERIFY` cache TTL, which
+SHOULD be ≤ 30 s or absent.
 
 **Recovery codes.** `RECOVERY-ISSUE` generates 1..16 codes of 10 random bytes
 rendered as 16 base32 characters (80 bits), returned once and stored as
@@ -461,7 +621,28 @@ rendered as 16 base32 characters (80 bits), returned once and stored as
 defence; the KDF bounds server memory per verification). `RECOVERY-USE`
 verifies against each unused code, marks it used (never deletes it), and
 returns a single-use **enrollment ticket** valid 10 minutes, which the site
-presents to `ENROLL … via=recovery`. Five failures lock recovery for one hour.
+presents to `ENROLL … via=recovery`. Five failures lock recovery for one hour,
+answering `ERR code=locked`; the lockout is read **before** any Argon2id work,
+so a locked user costs nothing to refuse.
+
+**Re-issuing supersedes.** A second `RECOVERY-ISSUE` marks the previous
+generation used (`used_from='superseded'`, never deleted) in the same
+transaction that inserts the new one. Left additive, the verify loop would
+grow by `count` on every issue and the bound that makes the blocking KDF
+acceptable — at most 16 unused codes, at most five attempts an hour — would
+mean nothing.
+
+**`revoke=`** on `RECOVERY-USE` defaults to `none`. `revoke=all` is the
+stolen-device path: every one of that user's active devices is revoked, their
+tokens deleted and their live connections closed, in addition to issuing the
+ticket.
+
+**Recovery of an operator is administrative.** `RECOVERY-ISSUE` and
+`RECOVERY-USE` answer `not-permitted` for a user whose role is `operator`,
+even though both are site-socket commands. Without the rule a compromised site
+process could mint an operator's recovery codes, spend one, and redeem the
+ticket for a device it controls — Req 11's escalation, reached the long way
+round.
 
 **Device loss with no codes** is site-mediated re-enrollment: the site
 authenticates the person by its own means and calls `ENROLL via=site`. This is
@@ -534,7 +715,17 @@ encryption at rest keeps the key out of **disk images, snapshots and backups**,
 and does nothing against root on a running host.
 
 Writing follows V2-9's rules: a temporary file with `O_EXCL`, `fsync`, then
-`link()` — never in place, never clobbering. `migrate-key` converts an existing
+`link()` — never in place, never clobbering.
+
+**One exception, documented rather than implicit:** completing a rotation
+(§10.2) renames `<handle>.ek.next` over `<handle>.ek`. That is a clobber, it
+is deliberate, and it is the only one — the rule above exists so that a key
+file is never *created* over something that already exists, and the promotion
+is the one operation whose whole purpose is to replace a key the server has
+already stopped accepting. It has its own function so it cannot be reached by
+accident.
+
+`migrate-key` converts an existing
 `MLDSASK2` file and leaves the source untouched, printing that the plaintext
 should be destroyed once the new file is verified.
 
@@ -542,7 +733,12 @@ should be destroyed once the new file is verified.
 
 `authd_admin`: `init`, `keygen-server`, `migrate-key`, `rewrap`,
 `enroll-operator`, `disable-user`, `enable-user`, `list-users`,
-`list-devices`, `audit-tail`, `backup`, `--check-config`.
+`list-devices`, `audit-tail`, `audit-verify`, `backup`, `--check-config`.
+
+`audit-verify` is **offline**: it opens the key envelope for the KEK, opens the
+store, re-computes the whole MAC chain and prints the head MAC and a verdict.
+It needs no running daemon and no §8 command, which is what makes it usable on
+a backup as well as on the live store. Exit 0 means the chain verified.
 
 `authd_client`: `keygen`, `login`, `rotate`. `login` prints the login code as
 base64url for pasting into the site's form (milestone A has no browser).
@@ -577,30 +773,126 @@ cannot hold an ML-DSA key today.
 
 ## 15. Logging
 
-One `key=value` line per event to stderr (journald). Fields: `ev`, `conn`,
-`src` (per `log_client_ip`), `id` (escaped, per `log_identities`), `stage`,
-`status`, `ms`, `rx`, `tx`.
+One `key=value` line per event to stderr (journald), prefixed by a level
+(`error`, `warn`, `info`). There is no `debug` level and no compile flag that
+adds one.
+
+**Fields.** This list is normative and complete; the daemon's logging API can
+emit no other key. The first nine are structural, fixed by the function that
+writes them; the rest are the names an event may give to a single counted
+quantity.
+
+```
+event slot cmd uid pid id fp src detail
+accepted closed codes count logins port revoked superseded tickets tokens
+```
+
+`id` is escaped — any byte outside printable ASCII becomes `.` and the field
+is truncated to 64 bytes — so a hostile identifier can neither inject a
+newline nor smuggle binary. `fp` is a 32-byte public-key fingerprint in hex and
+nothing else: its prototype fixes the width. `src` is a client address from
+§7.2, rendered so it can contain only `[0-9a-f.:]`.
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
-tickets. There is no option to enable any of them.
+tickets. There is no option to enable any of them. This is a property of the
+**shape** of the logging interface rather than of the caller's discipline:
+apart from `fp` and `src`, which are typed, no function here accepts a byte
+buffer, so there is nothing correct to call that would emit one.
 
 **Always logged**: every enrollment and every Req 7 rejection (with both key
-fingerprints), every rotation (`handle`, `fp_old`, `fp_new`, `handshake_id`),
-every revocation and user status change with actor and reason, recovery issue
-and use (success or failure, never the code), login-code issue and exchange,
-logout, and the sweep counts.
+fingerprints), every rotation (`handle` via `id`, `fp_old` and `fp_new` via
+`fp`), every revocation and user status change with actor and reason, recovery
+issue and use (success or failure, never the code), login-code issue and
+exchange, logout, and the sweep counts.
 
-Device handles are pseudonymous but, for public users, are personal data:
-`log_identities` and `log_client_ip` control them, and the defaults for
-milestone B are narrower than for A.
+The rotation line does **not** carry the `handshake_id`, and is not expected
+to: `device_keys.superseded_by_hsid` records it inside rotation's own
+transaction (§9.1), which is the authoritative place and the one an
+investigator reads. Widening the logging interface to carry sixteen bytes
+would weaken the never-list for a field that is already durable elsewhere.
+
+**Event catalogue.** Normative and complete, and checked against the
+implementation in both directions by
+`tools/audit/check_spec_vocabularies.py`: an event name the daemon can emit
+that is not here is a build failure, and so is a name here that nothing emits.
+Adding an event is therefore a change to this document — which is the point.
+
+Transport and lifecycle:
+
+```
+started draining stopped loop-failed
+listening-loopback listening-unix listening-site listening-admin
+accepted local-accepted listener-peer-rejected
+accept-refused-no-slot local-accept-refused-no-slot
+closed-deadline closed-protocol
+```
+
+Connection binding and the rate limiter (§7.2, §7.3):
+
+```
+client-address refused-no-client-address refused-rate-limited
+```
+
+The handshake and the session (§6, §7.3):
+
+```
+client-hello client-hello-malformed client-hello-rejected
+responder-init-failed decoy-unavailable pin-failed server-hello-failed
+client-auth-failed client-auth-retryable authenticated-without-identity
+login-code-issued login-code-failed
+record-refused record-rejected bye
+```
+
+Rotation (§6.3, §10.2):
+
+```
+rotate rotate-fp-old rotate-fp-new rotate-tokens-dropped
+```
+
+The local API and the lifecycle (§8, §10):
+
+```
+local-request exchange
+enroll enroll-idempotent enroll-fp
+enroll-key-mismatch enroll-key-mismatch-old enroll-key-mismatch-new
+enroll-recovery enroll-recovery-fp
+recovery-issue recovery-use
+device-revoked user-disabled
+swept sweep-failed
+```
+
+**Identities and addresses are logged**, and for public users both are
+personal data. Device handles are pseudonymous but stable; a client address is
+not pseudonymous at all. Milestone A logs both unconditionally, which is
+appropriate for a handful of operators on a host they own. **Milestone B needs
+switches and there are none**: earlier revisions of this section named
+`log_identities` and `log_client_ip` as though they existed — they are not
+config keys, constants or fields anywhere (§18).
 
 ## 16. Deployment
 
 User `mldsa-authd`, never root. `/var/lib/mldsa-authd/` mode 0700 holds
 `store.sqlite3`, `server.ek`, `server.pub` and `backups/`;
-`/run/mldsa-authd/` holds `site.sock`, `admin.sock` and the proxy-facing
-listener. Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`
+`/run/mldsa-authd/` — mode **0750**, owner `mldsa-authd`, group = the proxy's
+group, created by systemd's `RuntimeDirectory=` — holds the three sockets:
+
+| Socket | Mode | Reachable by |
+|---|---|---|
+| `site.sock` | 0660 | the site's uid, via `site_uids` |
+| `admin.sock` | 0600 | root, via `admin_uids` |
+| the proxy-facing listener (§7.1) | 0660 | the proxy's uid, via `proxy_uids` |
+
+The mode is defence in depth only: every one of them additionally checks the
+connecting peer's uid against its allowlist (Req 11), and a socket whose
+filesystem permissions were wrong would still refuse an unlisted peer.
+
+**Socket paths must fit `sun_path`** — 104 bytes on macOS, 108 on Linux — which
+is shorter than the 255 bytes the configuration parser otherwise allows. A path
+that passes every byte-level check and no kernel can bind is refused by
+`--check-config` rather than at start-up.
+
+Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`
 mode 0600, validated by `--check-config` before the service starts.
 
 The systemd unit sets `NoNewPrivileges`, `ProtectSystem=strict`,
@@ -626,7 +918,25 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Sustained handshake rate | capacity ÷ TTL | consumed entries are reclaimed only at expiry |
 | RSS per in-flight handshake | ~95 KiB | V4-2 S1: 9.5 KiB × ~10 secure blocks |
 | `AUTHD_MAX_RECORD` | 12313 B | §6.1 |
+| `AUTHD_MAX_CONTENT` | 9216 B | §6.1 |
+| Local-socket request line | ≤ 8192 B | §8 |
+| List response | ≤ 24 items, else `too-many` | §8 |
 | Login code lifetime | ≤ 60 s | Req 5 |
+| `state` | ≤ 64 B | §7.1 |
+| Token lifetime, user / operator | 12 h / 8 h absolute | §11 |
+| Token idle window, user / operator | 1 h / 30 min | §11 |
+| `VERIFY` cache at the site | ≤ 30 s, or absent | §10.3 |
+| Recovery codes per issue | 1..16 | §10.3 |
+| Enrollment ticket lifetime | 10 minutes | §10.3 |
+| Recovery lockout | 5 failures → 1 hour | §10.3 |
+| Key rotation cadence | `rotation_due_age_s`, default 180 days, `0` disables | §6.2 |
+| Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
+| Handshakes per address | `rate_per_min` 5, `rate_burst` 10 | §7.2 |
+| Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
+
+The last four are **operator policy with a documented default**, not protocol
+constants: this document fixes no rate limit, and a deployment that wants
+different numbers sets them. The rest are normative.
 
 ## 18. Known limitations (document, do not silently fix)
 
@@ -638,6 +948,17 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 - Recovery ultimately rests on the site's own identity proofing.
 - The daemon is single-threaded; capacity is one core's worth (§17 says how
   much that is, and it is ~100× a single site's need).
+- **`ERROR 0x04` cannot be emitted** (§6.5): every `ERROR` is a sealed record
+  and a pre-session refusal has no session. The code point is reserved.
+- **Periodic publication of the audit head MAC to the journal is not
+  implemented** (§9.2). `authd_admin audit-verify` is the operator's means of
+  checking the chain, and running it on a timer is the deployment's job.
+- **There are no `log_identities` / `log_client_ip` switches** (§15). Milestone
+  A logs handles and client addresses unconditionally; milestone B needs the
+  switches and a step that adds them.
+- **Only the first of §7.2's two mechanisms for obtaining a client address is
+  implemented.** A deployment behind a proxy that cannot speak PROXY v2 has no
+  supported configuration today.
 
 ## 19. Decisions
 
@@ -645,3 +966,49 @@ Recorded in [decisions.md](decisions.md): V4-1 (audit and threat model), V4-2
 (the spikes that set §7.2, §12, §14 and §17), and V4-3 (this document). The
 findings register is [v4/audit.md](v4/audit.md); the threat model is
 [v4/threat-model.md](v4/threat-model.md).
+
+## 20. Errata
+
+Revision **v1.1** (V4-10c). Every correction below is applied in the body
+above; this table exists so a reviewer can see what the document used to say
+wrongly, and so that each change names the finding that forced it rather than
+being someone's improvement. Findings are in [v4/audit.md](v4/audit.md).
+
+| # | § | v1 said | v1.1 says | Finding |
+|---|---|---|---|---|
+| 1 | 3.1 | the handle shape, with no statement of who enforces it | it is a client-side convention; the daemon accepts 1..64 printable bytes | F26 |
+| 2 | 5 Req 11 | "Local API callers are authenticated by peer credentials" | all three Unix sockets are, the proxy-facing one included — and why that is load-bearing for §7.2 | F57 |
+| 3 | 5 Req 12 | "fails closed" | "fails closed" defined as closing the connection, with §7.2's table of what the peer sees | F59 |
+| 4 | 6.3 | no once-per-session rule for `ROTATE` | at most one per session, `ERROR(0x02)` for a second, and why | F32 |
+| 5 | 6.5 | `0x04` rate limited | `0x04` reserved and unemittable, with the reason and the forward pointer | F56 |
+| 6 | 7.2 | two mechanisms, in order of preference | mechanism 2 is **not implemented**, deliberately | F61 |
+| 7 | 7.2 | — | what "fails closed" looks like on the wire, per refusal | F59 |
+| 8 | 8 | no code for a refused or unknown command | `not-permitted`, and that the two are indistinguishable on purpose | F20(a) |
+| 9 | 8 | `ENROLL` with no role rule | `ENROLL` creates a `user`; `role-mismatch`; `ENROLL-OPERATOR` creates an `operator` | F20(b) |
+| 10 | 8 | no bound on a list response | ≤ 24 items, else `too-many` | F20(c) |
+| 11 | 8 | `ENROLL-OPERATOR` named with no key set | its full request line, and that it is audited as `via=site` because the administrator is the enroller | F25 |
+| 12 | 8 | `bad-handle` in `ENROLL`'s error list | removed — nothing emits it; a malformed handle is `malformed` | F27 |
+| 13 | 8 | `RECOVERY-ISSUE` with no error branch at all | its error set, including the operator refusal | F42 |
+| 14 | 8 | `[ticket=]`, conditionality implicit | required with `via=recovery`, refused with `via=site` | F69 |
+| 15 | 8, 16 | the proxy-facing listener's mode stated nowhere | 0660, the proxy's group, its own uid allowlist | F58 |
+| 16 | 9.2 | "the head MAC is written to the system journal periodically" | it is printed by `audit-verify`; periodic publication is **not implemented** (§18) | F29 |
+| 17 | 10.2 | "if it is unknown, the server never committed" | inverted to the only observable form: `.ek` authenticating proves no commit; `.ek.next` failing proves nothing | F33 |
+| 18 | 10.2 | "there is no overlap window" | scoped to the server, where `one_active_key` enforces it | F70 |
+| 19 | 10.2, 12 | "never in place, never clobbering" vs "renames it over the current file" | the rotation promotion named as the single documented exception | F34 |
+| 20 | 10.3 | "takes effect at the next handshake immediately" | two guarantees, stated separately, with the mechanism for each | F66 |
+| 21 | 10.3 | re-issuing recovery codes undefined | a re-issue supersedes the previous generation, in the same transaction | F44 |
+| 22 | 10.3 | `revoke=` appeared only in §8's table | its default (`none`) and its semantics | F67 |
+| 23 | 10.3 | nothing about operators | recovery of an operator is administrative, and why | F43 |
+| 24 | 15 | `log_identities`, `log_client_ip`, and a field list that did not match | the real field vocabulary, a normative event catalogue, both machine-checked; the absent switches recorded in §18 | F46 |
+| 25 | 15 | the rotation line carries `handshake_id` | it does not, and `superseded_by_hsid` is where that binding lives | F35 |
+| 26 | 17 | six limits | the document's own normative limits, plus V4-10b's rate-limit policy defaults | F36, F68 |
+
+**F60** is the twenty-fifth item the register asked this revision to close and
+is not in the table above, because its correction is not in this document:
+[v4/threat-model.md](v4/threat-model.md) still described the `X-Real-IP`
+arrangement of §7.2 as the mechanism for obtaining a client address, which
+V4-2's S5 spike superseded with PROXY protocol v2. It was corrected in the same
+commit.
+
+Every finding cited above is marked RESOLVED in the register, and the register
+holds no remaining row that asks for a change to this document.

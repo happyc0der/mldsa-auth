@@ -475,6 +475,55 @@ echo "PASS: E2E: the daemon drained and exited on SIGTERM"
 [ -e "$TMP/a.sock" ] && fail "the admin socket was left behind after shutdown"
 echo "PASS: E2E: every socket file was removed on shutdown"
 
+# ------------------------------------------------- the audit chain, offline
+#
+# spec 9.2 calls the head MAC "detectable from a second trust domain". Until
+# V4-10c store_audit_verify() was reachable from nothing, so that was a claim
+# rather than a control (finding F29). This runs with the daemon STOPPED, which
+# is half the point: the same command works on a backup.
+"$ADMIN" audit-verify --store "$TMP/d/store.sqlite3" --key "$TMP/d/server.ek" \
+    --passphrase-file "$TMP/d/pass" --server-id authd > "$TMP/audit1.txt" 2>&1 \
+    || { cat "$TMP/audit1.txt"; fail "audit-verify rejected an untampered chain"; }
+grep -q 'the audit chain verifies' "$TMP/audit1.txt" || fail "audit-verify printed no verdict"
+grep -qE 'head=[0-9a-f]{64}' "$TMP/audit1.txt" || fail "audit-verify printed no head MAC"
+# A chain with nothing in it verifies trivially, so a check that did not look
+# at the count would pass on a store that had recorded nothing at all.
+ENTRIES=$(sed -n 's/.*verifies (\([0-9]*\) entries).*/\1/p' "$TMP/audit1.txt")
+[ "${ENTRIES:-0}" -ge 3 ] \
+    || fail "audit-verify reports $ENTRIES audit entries, expected at least 3"
+echo "PASS: E2E: audit-verify accepts the real chain and reports $ENTRIES entries"
+
+# The check that makes the one above mean something: change one byte of one
+# audited row and the verdict must flip. Nothing else in this file can tell a
+# verifier from a printer.
+cp "$TMP/d/store.sqlite3" "$TMP/tampered.sqlite3"
+python3 - "$TMP/tampered.sqlite3" <<'PYEOF' || fail "could not tamper with the audit chain"
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("UPDATE audit SET detail='tampered' WHERE seq=(SELECT MAX(seq) FROM audit)")
+assert c.total_changes == 1, "no audit row was altered"
+c.commit(); c.close()
+PYEOF
+rc=0
+"$ADMIN" audit-verify --store "$TMP/tampered.sqlite3" --key "$TMP/d/server.ek" \
+    --passphrase-file "$TMP/d/pass" --server-id authd > "$TMP/audit2.txt" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "audit-verify exited $rc on a tampered chain, expected exactly 1"
+grep -q 'audit-chain-corrupt' "$TMP/audit2.txt" \
+    || { cat "$TMP/audit2.txt"; fail "audit-verify did not name the corruption"; }
+echo "PASS: E2E: audit-verify detects a single tampered audit row (spec 9.2)"
+
+# A wrong passphrase must not be reported as a corrupt chain: the chain is keyed
+# from the envelope KEK, so opening the key is a different failure from failing
+# to verify, and an operator told "corrupt" would look in the wrong place.
+printf 'not-the-passphrase' > "$TMP/wrong.pass"; chmod 600 "$TMP/wrong.pass"
+rc=0
+"$ADMIN" audit-verify --store "$TMP/d/store.sqlite3" --key "$TMP/d/server.ek" \
+    --passphrase-file "$TMP/wrong.pass" --server-id authd > "$TMP/audit3.txt" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "audit-verify accepted a wrong passphrase"
+grep -q 'audit-chain-corrupt' "$TMP/audit3.txt" \
+    && fail "audit-verify blamed the chain for a wrong passphrase"
+echo "PASS: E2E: a wrong passphrase is a key failure, not a chain failure"
+
 # --------------------------------------------------------- secret scan
 
 # The passphrase bytes must not appear in any log. Unlike the daemon's logger,

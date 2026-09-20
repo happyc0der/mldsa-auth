@@ -678,6 +678,119 @@ static int cmd_backup(int argc, char **argv, const char *prog)
     return local_call(prog, "backup", sock, "BACKUP", args);
 }
 
+/* ---- authd_admin: audit-verify ------------------------------------------ */
+
+/* Re-computes the store's whole audit MAC chain and prints its head.
+ *
+ * OFFLINE, and that is the point rather than a convenience: spec 9.2 calls the
+ * head MAC "detectable from a second trust domain", and until V4-10c
+ * store_audit_verify() was reachable from nothing at all -- a deployed
+ * operator could not check their own chain, which made the property a claim
+ * rather than a control (audit finding F29). Being offline also means it runs
+ * against a BACKUP, which is where a tampered chain is most likely to be
+ * noticed and least likely to be repairable.
+ *
+ * It needs the passphrase because the chain is keyed from the envelope KEK
+ * (key_audit = HKDF(KEK, store_id, "mldsa-authd/v1/audit-mac")): verifying it
+ * without the key would verify nothing. The KEK is wiped as soon as the store
+ * holds its derived key, exactly as the daemon and `init` do. */
+/* The chain's length, which store_audit_verify has just proven is also the
+ * highest seq: it walks every row and fails on a gap or a reorder, so after it
+ * returns OK the last row's seq IS the number of entries. Printing it matters
+ * because an EMPTY chain verifies trivially, and "the audit chain verifies"
+ * with nothing behind it is the most misleading thing this command could say. */
+static int audit_last_seq(void *ctx, int64_t seq, int64_t at, const char *event,
+                          const uint8_t *user_id, size_t user_id_len,
+                          const uint8_t *handle, size_t handle_len, const char *detail)
+{
+    (void)at; (void)event; (void)user_id; (void)user_id_len;
+    (void)handle; (void)handle_len; (void)detail;
+    *(int64_t *)ctx = seq;
+    return 0;
+}
+
+static int cmd_audit_verify(int argc, char **argv, const char *prog)
+{
+    const char *db = NULL, *ek = NULL, *pass_path = NULL, *server_id = NULL;
+    for (int i = 2; i < argc; i++) {
+        const int has = (i + 1 < argc);
+        if (strcmp(argv[i], "--store") == 0 && has)            { db = argv[++i]; }
+        else if (strcmp(argv[i], "--key") == 0 && has)         { ek = argv[++i]; }
+        else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { pass_path = argv[++i]; }
+        else if (strcmp(argv[i], "--server-id") == 0 && has)   { server_id = argv[++i]; }
+        else { return unexpected(prog, "audit-verify", argv[i]); }
+    }
+    const uint8_t *id = NULL;
+    size_t id_len = 0;
+    if (db == NULL || ek == NULL || pass_path == NULL || server_id == NULL ||
+        demo_parse_id(server_id, &id, &id_len) != 0) {
+        return need(prog, "audit-verify",
+                    "--store store.sqlite3 --key server.ek --passphrase-file PATH "
+                    "--server-id ID");
+    }
+
+    uint8_t *pass = NULL;
+    size_t pass_len = 0;
+    int rc = read_pass(prog, "audit-verify", pass_path, &pass, &pass_len);
+    if (rc != EX_OK) {
+        return rc;
+    }
+
+    mldsa_keypair_t kp;
+    memset(&kp, 0, sizeof kp);
+    uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+    if (kek == NULL) {
+        authd_secret_free(pass, pass_len);
+        return failed(prog, "audit-verify", ek, "allocation-failed");
+    }
+    const keyfile_status_t ks = keyfile_open(ek, id, id_len, (const char *)pass, pass_len, &kp, kek);
+    authd_secret_free(pass, pass_len);
+    if (ks != KEYFILE_OK) {
+        secure_mem_free(kek, STORE_KEK_BYTES);
+        return failed(prog, "audit-verify", ek, keyfile_status_name(ks));
+    }
+    mldsa_keypair_free(&kp);          /* the KEK is all this needs */
+
+    store_t *store = NULL;
+    const store_status_t so = store_open(db, kek, &store);
+    secure_mem_free(kek, STORE_KEK_BYTES);
+    if (so != STORE_OK) {
+        return failed(prog, "audit-verify", db, store_status_name(so));
+    }
+
+    uint8_t head[STORE_AUDIT_MAC_BYTES];
+    const store_status_t hv = store_audit_head_mac(store, head);
+    const store_status_t vv = store_audit_verify(store);
+    int64_t entries = 0;
+    (void)store_audit_tail(store, 1u, audit_last_seq, &entries);
+    store_close(store);
+
+    if (hv != STORE_OK) {
+        return failed(prog, "audit-verify", db, store_status_name(hv));
+    }
+    char hex[2u * STORE_AUDIT_MAC_BYTES + 1u];
+    sodium_bin2hex(hex, sizeof hex, head, sizeof head);
+    if (vv != STORE_OK) {
+        /* The head is printed on FAILURE too: an operator comparing it with
+         * the one they recorded yesterday learns whether the chain was
+         * truncated or rewritten, which the verdict alone does not say. */
+        printf("%s audit-verify: head=%s\n", prog, hex);
+        fprintf(stderr, "%s audit-verify: FAILED after %lld entries: %s: %s\n",
+                prog, (long long)entries, db, store_status_name(vv));
+        sodium_memzero(head, sizeof head);
+        return EX_FAIL;
+    }
+    printf("%s audit-verify: head=%s\n", prog, hex);
+    printf("%s audit-verify: the audit chain verifies (%lld entries)\n",
+           prog, (long long)entries);
+    if (entries == 0) {
+        fprintf(stderr, "%s audit-verify: NOTE: the chain is empty, so it verifies "
+                        "trivially -- this store has recorded nothing yet\n", prog);
+    }
+    sodium_memzero(head, sizeof head);
+    return EX_OK;
+}
+
 /* ---- authd_admin: --check-config ---------------------------------------- */
 
 /* Delegates to the SAME authd_config_load() and authd_config_check_paths()
@@ -737,12 +850,18 @@ static void admin_usage(const char *prog)
             "  %s list-devices    --socket S --user ID\n"
             "  %s audit-tail      --socket S --n N        (1..24)\n"
             "  %s backup          --socket S --path /absolute/destination\n"
+            "  %s audit-verify    --store DB --key server.ek --passphrase-file PATH\n"
+            "                     --server-id ID              (offline; no daemon needed)\n"
             "  %s --check-config  --config PATH\n"
             "\n"
+            "Every subcommand above --check-config except init, keygen-server, migrate-key,\n"
+            "rewrap and audit-verify talks to a running daemon; those five work on files.\n"
+            "audit-verify re-computes the whole audit MAC chain and prints its head, so it\n"
+            "runs against a backup as readily as against the live store.\n"
             "Passphrases are FILES (mode 0600, owned by you). There is no prompt and no\n"
             "environment variable: argv and the environment are readable by other processes.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",
-            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 int authd_cli_admin(int argc, char **argv)
@@ -760,6 +879,7 @@ int authd_cli_admin(int argc, char **argv)
     if (strcmp(sub, "rewrap") == 0)         { return cmd_rewrap(argc, argv, prog); }
     if (strcmp(sub, "enroll-operator") == 0){ return cmd_enroll_operator(argc, argv, prog); }
     if (strcmp(sub, "backup") == 0)         { return cmd_backup(argc, argv, prog); }
+    if (strcmp(sub, "audit-verify") == 0)   { return cmd_audit_verify(argc, argv, prog); }
     if (strcmp(sub, "--check-config") == 0) { return cmd_check_config(argc, argv, prog); }
 
     if (strcmp(sub, "disable-user") == 0) {

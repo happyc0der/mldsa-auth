@@ -1,0 +1,4 @@
+O1|^authd_e2e$|audit-verify exited 0 on a tampered chain, expected exactly 1
+O2|^authd_e2e$|audit-verify exited 0 on a tampered chain, expected exactly 1
+O3|^authd_e2e$|audit entries, expected at least 3
+O4|^authd_e2e$|audit-verify blamed the chain for a wrong passphrase

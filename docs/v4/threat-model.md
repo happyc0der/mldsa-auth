@@ -34,14 +34,20 @@ more importantly — what it does not.
 | **Root on the VPS** | Everything: the key is in process memory, the store is readable, the daemon can be replaced | Nothing in this design. Stated plainly; encryption at rest buys separation of backups and images, not resistance to root |
 | **XSS on the site's origin** | Can drive the logged-in session, and can read wasm memory while a key is unlocked; can exfiltrate the encrypted blob for offline guessing | Login-code exchange keeps the *token* out of JS; Argon2id slows offline guessing; neither is a substitute for not having XSS |
 | **Identity enumeration** | Nothing useful: handles are 128-bit random and the responder's reply is uniform (decoy pin) | V4-8 decoy flow + random handles |
-| **Login flooding** | Denial of service | Per-IP and global token buckets, connection cap, ledger capacity sized to rate |
+| **Login flooding** | Denial of service | Per-address and global token buckets, a per-address connection cap and ledger capacity sized to rate — all implemented in V4-10b, keyed on the PROXY v2 address, and refusing with HTTP 429 before any signature is spent |
 
 ## Trust boundaries
 
 1. **Browser ↔ Caddy** — TLS. Caddy is trusted for availability and for the
    client IP, not for confidentiality or authentication.
 2. **Caddy ↔ daemon** — a Unix socket; the daemon verifies the proxy's uid
-   (`SO_PEERCRED`) and refuses a missing client-IP header (fail closed).
+   (`SO_PEERCRED`) against an allowlist and requires a **PROXY protocol v2**
+   preamble, which the proxy writes before the client is allowed to write a
+   byte. A connection with no address, or an unverifiable one, is closed
+   (fail closed). V4-2's S5 spike established that the stock Caddy binary can
+   emit the preamble to a Unix upstream; the `X-Real-IP` arrangement the first
+   draft of this document described was superseded by it and is not
+   implemented (spec §7.2).
 3. **Daemon ↔ site** — `site.sock` (0660, site's group) and `admin.sock`
    (0600, root). The site is a *trusted enroller* and a *token consumer*; it
    is never given key material.
