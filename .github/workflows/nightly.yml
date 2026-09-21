@@ -41,6 +41,36 @@ jobs:
       - name: Every anchor matches exactly once, and every mutation is covered
         run: python3 tools/audit/check_mutation_anchors.py "$PWD"
 
+      # ...and every committed campaign is actually IN a matrix below. This is
+      # the defect that keeps recurring: v48b, v49a, v49b, v49c, v49d, v50a,
+      # v50c and v51 were each committed with their step and then ran nowhere
+      # until someone remembered a bring-up. The anchors tool cannot see it --
+      # an unwired campaign's anchors match perfectly -- and the per-push CI
+      # cannot either, because it derives its target list from CMake while
+      # this matrix is hand-maintained. So it is checked here, where the
+      # matrices are, rather than trusted to a habit that has failed seven
+      # times.
+      - name: Every committed campaign runs in a matrix
+        run: |
+          wf=.github/workflows/nightly.yml
+          # The matrix entries, from the workflow's own campaign: lists.
+          wired=$(sed -n '/^ *campaign: \[/,/\]/p' "$wf" \
+                  | tr -d ' ' | tr ',' '\n' | tr -d '[]' \
+                  | sed 's/^campaign://' | grep -E '^v[0-9]+[a-z]*$' | sort -u)
+          have=$(ls tools/mutations/spec_*.txt | sed 's|.*/spec_||; s|\.txt$||' | sort -u)
+          missing=$(comm -23 <(echo "$have") <(echo "$wired"))
+          # The reverse is a defect too: a matrix naming a campaign that does
+          # not exist fails the job at run time, three hours in.
+          phantom=$(comm -13 <(echo "$have") <(echo "$wired"))
+          echo "committed: $(echo "$have" | wc -l | tr -d ' ')   wired: $(echo "$wired" | wc -l | tr -d ' ')"
+          if [ -n "$missing" ]; then
+            echo "::error::committed campaigns that run nowhere:$(echo $missing)"; exit 1
+          fi
+          if [ -n "$phantom" ]; then
+            echo "::error::matrix names campaigns that do not exist:$(echo $phantom)"; exit 1
+          fi
+          echo "every committed campaign is wired into a matrix"
+
   mutations:
     name: mutations · ${{ matrix.campaign }}
     runs-on: ubuntu-latest
@@ -56,7 +86,7 @@ jobs:
         # mutations-macos below -- which is the point, since U2 is a defect
         # that only ever appeared on a macOS VM.
         campaign: [v23, v24, v25, v26, v27, v28, v29, v33, v46, v47, v48a, v48b,
-                   v49a, v49b, v49c, v49d, v50a, v50b]
+                   v49a, v49b, v49c, v49d, v50a, v50b, v50c, v51]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
