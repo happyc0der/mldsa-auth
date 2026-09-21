@@ -440,6 +440,46 @@ static void test_not_permitted(void)
 }
 
 /* Secrets do not outlive the connection. */
+/*
+ * The pin resolver, tested DIRECTLY. Through the wire its identity comparison
+ * can never fail -- the pin is taken for the id in the same ClientHello the
+ * library then decodes -- so the only way to show the comparison exists at all
+ * is to call it. Mutation P8 removes it and dies here and nowhere else.
+ */
+static void test_pin_lookup(void)
+{
+    authd_conn_t c;
+    memset(&c, 0, sizeof c);
+    uint8_t pk[STORE_PK_BYTES];
+    memset(pk, 0xC3, sizeof pk);
+    memcpy(c.handle, HANDLE1, sizeof HANDLE1);
+    c.handle_len = sizeof HANDLE1;
+    memcpy(c.pin_pk, pk, sizeof c.pin_pk);
+    c.pin_set = 1;
+
+    CHECK(authd_conn_pin_lookup(&c, HANDLE1, sizeof HANDLE1) == c.pin_pk,
+          "conn: the pin lookup answers for THIS connection's handle (canary)");
+
+    uint8_t other[sizeof HANDLE1];
+    memcpy(other, HANDLE1, sizeof HANDLE1);
+    other[0] = (uint8_t)(other[0] ^ 0x01u);
+    CHECK(authd_conn_pin_lookup(&c, other, sizeof other) == NULL,
+          "conn: the pin lookup refuses an id that is not this connection's handle");
+    CHECK(authd_conn_pin_lookup(&c, HANDLE1, sizeof HANDLE1 - 1u) == NULL,
+          "conn: the pin lookup refuses a PREFIX of its handle");
+    CHECK(authd_conn_pin_lookup(&c, HANDLE1, 0) == NULL,
+          "conn: the pin lookup refuses a zero-length id");
+    CHECK(authd_conn_pin_lookup(&c, NULL, sizeof HANDLE1) == NULL,
+          "conn: the pin lookup refuses a NULL id");
+    CHECK(authd_conn_pin_lookup(NULL, HANDLE1, sizeof HANDLE1) == NULL,
+          "conn: the pin lookup refuses a NULL connection");
+
+    c.pin_set = 0;
+    CHECK(authd_conn_pin_lookup(&c, HANDLE1, sizeof HANDLE1) == NULL,
+          "conn: the pin lookup answers nothing before a pin is set");
+    sodium_memzero(&c, sizeof c);
+}
+
 static void test_wipe_on_close(void)
 {
     daemon_t d; client_t c;
@@ -460,6 +500,20 @@ static void test_wipe_on_close(void)
     }
     CHECK(live, "wipe: a serving connection holds an ACTIVE session and its handle (canary)");
 
+    /* V4-12: the pin is a slot field now, not a keystore. Its own canary --
+     * the key really IS there while the connection lives -- so the residue
+     * check below cannot pass by the pin never having been stored. */
+    {
+        int pinned = 0;
+        for (size_t i = 0; i < d.nslots; i++) {
+            if (d.conns[i].pin_set &&
+                memcmp(d.conns[i].pin_pk, kp.public_key, sizeof d.conns[i].pin_pk) == 0) {
+                pinned = 1;
+            }
+        }
+        CHECK(pinned, "wipe: the live connection holds the device's pinned key (canary)");
+    }
+
     client_close(&c);
     (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
     evloop_close_all(&d.ev);
@@ -472,6 +526,14 @@ static void test_wipe_on_close(void)
         if (memmem(d.conns[i].handle, sizeof d.conns[i].handle, HANDLE1, sizeof HANDLE1) != NULL) { residue = 1; }
     }
     CHECK(!residue, "wipe: closing a connection clears its session, handle and identity");
+
+    int pin_residue = 0;
+    for (size_t i = 0; i < d.nslots; i++) {
+        if (d.conns[i].pin_set) { pin_residue = 1; }
+        if (memmem(d.conns[i].pin_pk, sizeof d.conns[i].pin_pk,
+                   kp.public_key, sizeof kp.public_key) != NULL) { pin_residue = 1; }
+    }
+    CHECK(!pin_residue, "wipe: the slot's pinned key is zero after close");
 
     mldsa_keypair_free(&kp);
     daemon_stop(&d);
@@ -902,6 +964,7 @@ int main(void)
     test_not_permitted();
     test_rotate();
     test_log_has_no_code();
+    test_pin_lookup();
     test_wipe_on_close();
     test_abandoned_handshake_frees_ledger();
 

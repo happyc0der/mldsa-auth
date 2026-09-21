@@ -35,9 +35,11 @@
  * UNKNOWN_IDENTITY, which is precisely the enumeration channel being closed.
  *
  * Per-connection state is a slot in a caller-provided array; nothing is
- * allocated per connection. The scratch keystore is 64 KB of the ~91 KB slot
- * and holds exactly one entry -- the cost of not changing the library for
- * milestone A, recorded in docs/decisions.md with the alternative.
+ * allocated per connection. V4-8b spent 64,552 bytes of the ~91 KiB slot on a
+ * scratch keystore_t carrying exactly one of its 32 entries -- 69 %, and
+ * 264 MB of dead weight at max_slots = 4096 -- because milestone A would not
+ * change the library. V4-12 changed it: the pin is now a bare 1,952-byte
+ * public key resolved through handshake_lookup_fn, and a slot is ~28 KiB.
  */
 
 /* Req 5's ceiling, not a value chosen below it by accident: a login code
@@ -52,11 +54,35 @@ typedef enum {
     CONN_STAGE_CLOSING
 } conn_stage_t;
 
+/* handshake_lookup_fn over ONE connection slot (V4-12).
+ *
+ * The pin is chosen before the handshake begins -- the device's real key or
+ * the decoy, indistinguishably (spec 7.3 / Req 6) -- so this answers for
+ * exactly one identity: the handle carried in THIS ClientHello.
+ *
+ * It COMPARES the identity rather than returning the pin unconditionally.
+ * Through the wire that comparison can never fail, because the pin was taken
+ * for the id in the same ClientHello the library then decodes; it is here so
+ * that "this slot speaks for one identity" is a property of the function
+ * rather than of its caller, and so mutation P8 has something to die on.
+ *
+ * It does NOT branch on c->decoy. A decoy pin and a real pin must produce
+ * identical control flow here, or this function becomes the enumeration
+ * channel the whole decoy flow exists to close.
+ *
+ * The returned pointer is into the slot, which outlives the handshake context:
+ * conn_reset wipes the context first and the pin after. */
+const uint8_t *authd_conn_pin_lookup(void *ctx, const uint8_t *id, size_t id_len);
+
 typedef struct {
     conn_stage_t     stage;
     handshake_ctx_t  hs;
     session_t        sess;
-    keystore_t       ks;        /* per-slot scratch: exactly one pin */
+    /* The ONE pinned key this connection authenticates against -- the device's
+     * real key, or the store's decoy, chosen in on_client_hello before the
+     * handshake begins. Resolved by authd_conn_pin_lookup below. */
+    uint8_t  pin_pk[STORE_PK_BYTES];
+    int      pin_set;
 
     uint8_t  handle[STORE_ID_MAX];
     size_t   handle_len;

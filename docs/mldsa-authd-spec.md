@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.2, V4-3 + V4-10c/V4-11 errata)
+# mldsa-authd — deployment specification (v1.3, V4-3 + V4-10c/V4-11/V4-12 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -838,7 +838,7 @@ The handshake and the session (§6, §7.3):
 
 ```
 client-hello client-hello-malformed client-hello-rejected
-responder-init-failed decoy-unavailable pin-failed server-hello-failed
+responder-init-failed decoy-unavailable server-hello-failed
 client-auth-failed client-auth-retryable authenticated-without-identity
 login-code-issued login-code-failed
 record-refused record-rejected bye
@@ -1044,3 +1044,19 @@ it had been skipping any log call whose level was computed), and then, once
 repaired, by catching a second call site this step had made unreadable to it.
 A gate that has failed for a real reason is worth more than one that has only
 ever passed.
+
+### Revision v1.3 (V4-12)
+
+One removal, forced by an implementation change that deleted the only thing
+the event could report:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 29 | 15 | the event `pin-failed` removed from the catalogue | V4-12 replaced the daemon's per-connection scratch `keystore_t` with a bare pinned key resolved through a callback, so the pin is now a `memcpy` into a fixed-size field. `keystore_add` was the only thing that could fail there, and a `memcpy` cannot, so the event became unemittable. Recorded as finding **F76** |
+
+`tools/audit/check_spec_vocabularies.py` is what required this, and required it
+at the right moment: it reported `defined but NEVER EMITTED: pin-failed` as
+soon as the branch was deleted, before the change could be committed with a
+catalogue describing an event the daemon can no longer produce. An event that
+exists only in a document is exactly the drift the both-directions comparison
+was built for.

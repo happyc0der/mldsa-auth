@@ -40,6 +40,26 @@ static authd_conn_t *conn_of(authd_app_t *app, authd_slot_t *slot)
  * observable afterwards: the session first (it owns the traffic keys), then
  * the handshake (which cancels a still-live ledger entry -- see
  * handshake_ctx_wipe's contract), then the scratch pin and the identifiers. */
+/* See authd_conn.h for why this compares the identity and why it must not
+ * branch on c->decoy. */
+const uint8_t *authd_conn_pin_lookup(void *ctx, const uint8_t *id, size_t id_len)
+{
+    const authd_conn_t *c = (const authd_conn_t *)ctx;
+    if (c == NULL || !c->pin_set || id == NULL || id_len == 0u || id_len != c->handle_len) {
+        return NULL;
+    }
+    if (sodium_memcmp(id, c->handle, id_len) != 0) {
+        return NULL;
+    }
+    return c->pin_pk;
+}
+
+/* V4-12's result, asserted rather than remembered: a connection slot must
+ * never regrow a keystore-sized field. 64 KiB is a ceiling with room, not the
+ * measured size -- bench_authd prints the exact number. */
+_Static_assert(sizeof(authd_conn_t) < 64u * 1024u,
+               "a connection slot must not carry a keystore again");
+
 static void conn_reset(authd_conn_t *c)
 {
     if (c == NULL) {
@@ -50,7 +70,8 @@ static void conn_reset(authd_conn_t *c)
         handshake_ctx_wipe(&c->hs);
         c->hs_live = 0;
     }
-    keystore_wipe(&c->ks);
+    sodium_memzero(c->pin_pk, sizeof c->pin_pk);
+    c->pin_set = 0;
     sodium_memzero(c->handle, sizeof c->handle);
     sodium_memzero(c->user_id, sizeof c->user_id);
     sodium_memzero(c->handshake_id, sizeof c->handshake_id);
@@ -70,7 +91,6 @@ void authd_conn_bind(authd_app_t *app, authd_slot_t *slot)
     }
     conn_reset(c);
     memset(&c->sess, 0, sizeof c->sess);
-    keystore_init(&c->ks);
     c->stage = CONN_STAGE_AWAIT_CH;
     slot->user = c;
 }
@@ -211,16 +231,17 @@ static ev_action_t on_client_hello(authd_app_t *app, authd_slot_t *slot, authd_c
     authd_log_slot_id(AUTHD_LOG_INFO, "client-hello", slot->index, ch.id, ch.id_len);
     sodium_memzero(&ch, sizeof ch);
 
-    keystore_init(&c->ks);
-    if (keystore_add(&c->ks, c->handle, c->handle_len, pk) != KEYSTORE_OK) {
-        sodium_memzero(pk, sizeof pk);
-        authd_log_slot(AUTHD_LOG_ERROR, "pin-failed", slot->index);
-        return EV_ACTION_CLOSE;
-    }
+    /* c->handle / c->handle_len were set above, and MUST stay above this:
+     * authd_conn_pin_lookup answers by comparing against them, so a reorder
+     * would make every handshake fail with UNKNOWN_IDENTITY and nothing else
+     * would say why. */
+    memcpy(c->pin_pk, pk, sizeof c->pin_pk);
+    c->pin_set = 1;
     sodium_memzero(pk, sizeof pk);
 
-    if (handshake_responder_init(&c->hs, app->server_id, app->server_id_len,
-                                 app->server_kp, &c->ks, app->pending) != HANDSHAKE_OK) {
+    if (handshake_responder_init_ext(&c->hs, app->server_id, app->server_id_len,
+                                     app->server_kp, authd_conn_pin_lookup, c,
+                                     app->pending) != HANDSHAKE_OK) {
         authd_log_slot(AUTHD_LOG_ERROR, "responder-init-failed", slot->index);
         return EV_ACTION_CLOSE;
     }
@@ -445,9 +466,11 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
      * sig_old must verify under, and what the digest binds to. Taking it from
      * the store instead would let a rotation that happened underneath this
      * session be signed by a key that is no longer current. */
-    const uint8_t *pk_old = NULL;
-    if (keystore_lookup(&c->ks, c->handle, c->handle_len, &pk_old) != KEYSTORE_OK ||
-        pk_old == NULL) {
+    /* Resolved through the SAME callback the handshake used, not a second copy
+     * of the rule: a pin the handshake would refuse must not be one ROTATE
+     * accepts. */
+    const uint8_t *pk_old = authd_conn_pin_lookup(c, c->handle, c->handle_len);
+    if (pk_old == NULL) {
         return fail_with_error(slot, c, AUTHMSG_ERR_INTERNAL, "rotate-no-pin");
     }
 

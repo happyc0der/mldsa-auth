@@ -133,15 +133,24 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* The pending ledger caps CONCURRENT handshakes at HANDSHAKE_PENDING_MAX
-     * (256) regardless of max_slots, until V4-12's init_ext. Its TTL is the
-     * handshake timeout, and the library requires the timeout not to exceed
-     * the TTL -- the same invariant demo_app.c enforces -- so a config that
-     * violates it is refused HERE rather than producing expired entries under
-     * load. */
-    const size_t ledger_cap = ((size_t)cfg.max_slots < (size_t)HANDSHAKE_PENDING_MAX)
+    /* The ledger is sized from the operator's own max_slots, capped at the
+     * MEASURED scan ceiling. find_slot is a constant-time full scan, so the
+     * per-handshake cost is linear in capacity, and 2,048 is the largest
+     * capacity that stays inside the 100 us budget (V4-2 S2, corrected in
+     * V4-12 to five walks per handshake rather than four).
+     *
+     * TWO ceilings, and this raises only the first. Capacity is the THROUGHPUT
+     * ceiling, because a successful handshake leaves a CONSUMED tombstone that
+     * only expiry reclaims (audit finding F1), so the sustained rate is
+     * capacity / handshake_timeout_ms -- 25.6/s at 256, 205/s at 2,048 with
+     * the default 10 s timeout. The scan cost is the LATENCY ceiling. The TTL
+     * is the other lever and it is already the operator's.
+     *
+     * The TTL is the handshake timeout, so the library's "the timeout must not
+     * exceed the TTL" invariant holds by construction. */
+    const size_t ledger_cap = ((size_t)cfg.max_slots < (size_t)HANDSHAKE_PENDING_EXT_MAX)
                                   ? (size_t)cfg.max_slots
-                                  : (size_t)HANDSHAKE_PENDING_MAX;
+                                  : (size_t)HANDSHAKE_PENDING_EXT_MAX;
 
     /* Slots and connections: two allocations, at startup, sized by the
      * operator's budget. After this neither the loop nor the connection layer
@@ -236,8 +245,17 @@ int main(int argc, char **argv)
     }
 
     static handshake_pending_store_t pending;
-    if (handshake_pending_store_init(&pending, ledger_cap, (uint64_t)cfg.handshake_timeout_ms,
-                                     authd_app_clock, &app) != PENDING_OK) {
+    /* The ledger's backing array, static beside the store it backs. calloc was
+     * the obvious alternative and was rejected on a count: `slots` and `conns`
+     * are already freed at eleven early-exit sites below, and a fourth pointer
+     * is eleven more chances to leak one. BSS is demand-zero, so a daemon at a
+     * small ledger_cap never faults in more than the first pages: the 144 KiB
+     * is virtual, not resident -- and there is no free() to sequence the
+     * existing wipe calls against. */
+    static handshake_pending_entry_t ledger_slots[HANDSHAKE_PENDING_EXT_MAX];
+    if (handshake_pending_store_init_ext(&pending, ledger_slots, ledger_cap,
+                                         (uint64_t)cfg.handshake_timeout_ms,
+                                         authd_app_clock, &app) != PENDING_OK) {
         fprintf(stderr, "mldsa-authd: pending ledger init failed\n");
         store_close(store); mldsa_keypair_free(&server_kp);
         free(slots); free(conns);
