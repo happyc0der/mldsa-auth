@@ -5195,3 +5195,151 @@ is the case that could evade the vocabulary entirely.
 And `check_mutation_anchors.py` was run before and after every source edit —
 189 anchors, 169 mutations, 21 campaigns, all OK — because this step touches
 `authd_main.c`, which carries other campaigns' anchors.
+
+## V4-12 — two ceilings, and the walk nobody had counted
+
+The daemon could serve 256 concurrent handshakes no matter how it was
+configured, and spent 69 % of every connection slot on a table holding one
+entry. Both are ceilings; they are not the same ceiling, and keeping them
+apart is most of what this step had to get right.
+
+### The throughput ceiling and the latency ceiling
+
+**Capacity is the throughput ceiling.** A completed handshake leaves a
+CONSUMED tombstone that only expiry reclaims and `cancel` refuses to erase —
+that tombstone *is* the replay record for the remainder of the TTL, so this is
+replay protection working as designed, not a defect. The consequence is
+arithmetic: the sustained rate is `capacity ÷ TTL`, which at 256 entries and a
+10 s timeout is **25.6 handshakes per second**. That is audit finding F1, and
+`handshake_pending_store_init_ext` raises it to 205/s by letting the operator's
+own `max_slots` size the ledger.
+
+**The scan cost is the latency ceiling**, and it is where the number 2,048 comes
+from. `find_slot` is a deliberate constant-time full scan with no early exit,
+so cost is linear in capacity.
+
+### The correction: five walks, not four
+
+V4-2's S2 spike measured one scan and multiplied by four. Writing the comment
+for `HANDSHAKE_PENDING_EXT_MAX` meant justifying that multiplier, and counting
+the walks in the code gives **five**:
+
+| where | walks |
+|---|---|
+| `handshake_pending_insert` | `sweep`, `find_slot`, the placement loop |
+| `handshake_pending_get_digest` | `find_slot` |
+| `handshake_pending_consume_success` | `find_slot` |
+
+Four are unconditionally full; the placement loop early-exits on the first free
+slot, which means it is *also* a full walk exactly when the store is near
+capacity — the case the budget is about. So at 2,048 the figure is
+**~99.5 µs against a 100 µs budget**, not the recorded 79.6 µs.
+
+And the model was still optimistic. Measured end to end on arm64 Release, the
+ledger's share of a handshake is **137 µs at capacity 2048** and 62 µs at
+1024 — because a hot-loop scan is not what a handshake performs. Between the
+five walks sits ML-DSA signing and verification, which evicts 147 KB of ledger
+from cache, so every walk is cold. The progression is worth keeping: S2 said
+79.6 µs, counting the walks said ~99.5, and measuring said 137.
+
+**The cap stays at 2048 and the budget is revised instead**, which is the
+opposite of this project's usual direction of fit and so is argued rather than
+assumed. What §17 carried was not a requirement but a *justification*, and it
+was a measurement that turned out to be wrong; a document may not keep citing a
+number its own tooling has disproved. The trade is concrete: capacity is the
+throughput ceiling, so 2048 buys 205 handshakes/s against 1024's 102/s, on a
+handshake already dominated by ML-DSA. The cost — 24 % of a handshake, where
+V4-2's budget would have allowed about 18 % — is accepted with the number
+written down. Recorded as F77 and spec erratum 30.
+
+The benchmark had to be corrected too, and the mistake is instructive: its
+first draft compared handshakes by ledger **occupancy**. `find_slot` iterates
+`i < s->capacity` whatever the store holds, so both rows paid the same scan and
+the difference measured cache effects. Cost is linear in capacity, so the rows
+vary capacity. An arm64-in-a-container number that was already
+marginal is a poor thing to extrapolate from, which is why the x86_64
+re-measurement stopped being tidy-up.
+
+**And the sustained rate is not measured at all.** It is `capacity ÷ TTL` by
+construction; timing it would be reporting an arithmetic identity as an
+observation, the same shape as the start-up check V4-8b removed for asserting
+`x <= x`.
+
+### The slot: 91 KiB to 31 KiB, measured
+
+V4-8b gave each connection a scratch `keystore_t` — 64,552 bytes to carry
+exactly one of its 32 entries — because milestone A would not change the
+library. V4-12 changed it, and the numbers are printed by `bench_authd` rather
+than quoted:
+
+```
+authd_conn_t   67.6 KB -> 6,256 B
+slot total     ~91 KiB -> 31.0 KiB
+at 4096 slots  382 MB  -> ~127 MB
+```
+
+`handshake_lookup_fn` is responder-only. An initiator pins the one identity it
+chose to dial and is a one-shot process; fewer public entry points is less to
+verify on the first change to the verified handshake since v2.0.0. The internal
+resolver is role-agnostic, so an initiator form later is a ~10-line change —
+recorded as a decision rather than left to read as an omission.
+
+The keystore path is **bit-identical**, not merely equivalent: `keystore_lookup`
+sets `*out = NULL` on every non-OK status, so "NULL" and "!= KEYSTORE_OK" are
+the same condition. Every pre-existing test passes untouched, which is the
+compatibility proof.
+
+### The edit that compiles when it is wrong
+
+Nine accessors moved from `s->entries[i]` to `s->slots[i]`. Every one of them
+**still compiles** if missed, and a missed one is invisible to every test
+written before this step, because they are all inline and cannot tell the two
+addresses apart. Three independent guards, because one would not be enough:
+mutation **P4** (chosen precisely because the compiler is blind to it), tests
+that fill and read an external array past index 256, and a mechanical grep that
+`s->entries[` appears **zero** times. Four address comparisons on `s->entries`
+remain and are intentional.
+
+### F8, answered rather than carried
+
+"~10 `sodium_malloc`/`free` pairs per handshake, measure under load" has been
+open since v2. It is **12 and 12**, balanced, counted with the same counting
+allocator `test_session_alloc` uses — reused, not copied, so it cannot drift
+from the real allocator. The bench proves the counter is live before trusting
+the balance, because `0 == 0` is also what an unwired counter reports, and it
+fails outright if the two ever differ.
+
+### Three things the gates caught, not me
+
+**The spec gate caught an event that had become unemittable.** Deleting the pin
+branch removed the only thing that could fail there, so `pin-failed` survived
+in §15's catalogue and nowhere else. `check_spec_vocabularies.py` said
+`defined but NEVER EMITTED` immediately. Keeping a tautological guard to
+preserve the event was considered and rejected — `decode_client_hello` already
+enforces the id bounds, so the check would assert `x <= x`. Spec v1.3,
+erratum 29, finding F76.
+
+**Two mutations were re-authored before they ever ran.** P7 and P10 both failed
+`-Werror` on a variable their own defect made unused — `KILLED(compile)`, which
+proves the compiler works and nothing about the check under test. That is now
+five occurrences (v50b J1, v50c O3, v51 Z4, and these two), and the pattern is
+worth naming: a mutation that deletes a *use* tends not to compile, so the
+defect should change what a value **is**, not whether it is read.
+
+**An anchor was hiding outside the table.** P10 needs three edits across two
+files, and the second file's two anchors initially lived in a helper list
+outside `M` — where `check_mutation_anchors.py`, which reads these tables
+statically, would never have seen them. An anchor nothing verifies is the exact
+failure that tool exists to prevent. P10 became a shape the checker
+understands, and the count went 200 → 202.
+
+### F62, which stopped being latent
+
+`AUTHD_SLOTS_POLL_MAX` was `AUTHD_SLOTS_MAX` restated as a literal, and the
+poll set was filled protocol-pool-first, so at a high `max_slots` the local API
+could never be polled — the failure the separate pools exist to prevent,
+reintroduced by the array that polls them. Latent only because the default was
+256; raising capacity is exactly what would have made it real. It is now
+derived from both maxima, bounded per pool, and refused at registration, and
+the test drives a genuinely full 4,096-slot pool — one quiet socket standing in
+for every slot, since `poll()` accepts the same fd repeatedly.

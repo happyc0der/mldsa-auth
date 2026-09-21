@@ -469,3 +469,91 @@ closing it would mean benchmarking a tag this repository no longer
 implements. It remains an open, recorded deviation against a frozen spec.
 spec-v2 §5.1 has no such gap — it names its measurement platform, and V2-7
 measured it there.
+
+## Daemon capacity (V4-12)
+
+Measured 2026-09-21 on `build-bench-v412`, Release, `bench/bench_authd`. These
+are single-run medians from one invocation, not the median of three runs the
+sections above use — stated so a number is not mistaken for more than it is.
+The environment block, verbatim in the parts that matter:
+
+```
+  os                         Darwin 25.5.0 arm64
+  cpu                        Apple M4 Pro (10 performance + 4 efficiency cores)
+  compiler                   clang 21.0.0 (clang-2100.1.1.101)
+  build type                 Release
+  clock                      CLOCK_MONOTONIC_RAW, measured resolution 41.0 ns
+  conn slot                  6256 B (authd_conn_t)
+  poll slot                  25480 B (authd_slot_t)
+  pending store              18472 B inline, 147456 B external at 2048
+```
+
+### One full scan that misses
+
+`find_slot` is a deliberate constant-time full scan with no early exit, so the
+cost is linear in capacity and independent of what the store holds.
+
+| capacity | median | min | p99 |
+|---|---|---|---|
+| 256 | 3.08 µs | 2.29 µs | 3.92 µs |
+| 512 | 5.54 µs | 4.62 µs | 6.42 µs |
+| 1024 | 9.50 µs | 9.17 µs | 10.42 µs |
+| **2048** | **20.00 µs** | 18.38 µs | 22.42 µs |
+
+V4-2's S2 measured 19.90 µs at 2048 in a container on the same architecture;
+20.00 µs here is the same number. **What S2 got wrong was not the scan.**
+
+### A whole handshake, by ledger capacity
+
+Both rows are held at `capacity − 1` so the placement loop inside `insert()`
+is a full walk in both. They vary **capacity**, not occupancy: `find_slot`
+iterates `i < s->capacity` whatever the store holds, so an occupancy
+comparison measures cache effects rather than the ledger. The first draft of
+this suite made that mistake.
+
+| ledger capacity | median handshake | ledger's share |
+|---|---|---|
+| 8 | 437.00 µs | — (baseline) |
+| 1024 | 499.08 µs | **62.1 µs** |
+| 2048 | 573.75 µs | **136.8 µs** (23.8 %) |
+
+**The five-walk model understates.** A successful responder handshake performs
+five full walks — sweep, `find_slot` and the placement loop in `insert()`, then
+one `find_slot` each in `get_digest()` and `consume_success()` — which predicts
+`5 × 20.00 = 100 µs` at capacity 2048. Measured: 137 µs. The difference is
+cache: in a hot loop the 147 KB ledger stays resident, but in a real handshake
+ML-DSA signing and verification sit between the walks and evict it, so every
+walk is cold.
+
+So the figure §17 used to cite has been wrong in three ways, each found by
+looking rather than by reasoning: **79.6 µs** (S2, four walks, hot cache),
+**~99.5 µs** (five walks, hot cache), **137 µs** (measured). Recorded as F77;
+the capacity limit stays 2048 by decision, with the cost stated rather than
+the budget quietly re-fitted — see spec §20 erratum 30.
+
+### Secure allocations per handshake (audit finding F8)
+
+**12 allocations, 12 frees.** Counted with the same counting allocator
+`test_session_alloc` uses, reused rather than copied so it cannot drift from
+the real one. The bench requires `allocs > 0` before trusting the balance —
+`0 == 0` is also what an unwired counter reports — and fails outright if the
+two ever differ, so a leak is a gate rather than a note. The register's
+estimate was "~10".
+
+### What these numbers do not establish
+
+They are **arm64 only**, and `decisions.md` has said since V4-2 that the x86_64
+figure must be measured rather than ported. That measurement has not happened
+yet; until `bench.yml` runs on `ubuntu-latest`, the capacity limit rests on
+this architecture alone.
+
+They are also a **quiet laptop**, not a loaded VPS. The handshake medians carry
+a wide spread (p99 838 µs against a 574 µs median at capacity 2048), which is
+scheduling noise, not ledger cost — the ledger's share is a difference of
+medians and is the stable part.
+
+And the **sustained rate is not measured at all**: it is `capacity ÷ TTL` by
+construction, because a completed handshake leaves a tombstone only expiry
+reclaims (audit F1). At 2048 with the default 10 s timeout that is 205/s, up
+from 25.6/s at the old 256-entry ceiling. Timing it would report an arithmetic
+identity as an observation.

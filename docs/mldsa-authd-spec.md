@@ -926,8 +926,8 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Quantity | Value | Source |
 |---|---|---|
 | Handshakes per second per vCPU | ~2000 (Release) | spec-v2 §5.1 measurements |
-| Pending-ledger capacity | ≤ **2048** | V4-2 S2: 79.6 µs/handshake at 2048, 159.5 µs at 4096 |
-| Sustained handshake rate | capacity ÷ TTL | consumed entries are reclaimed only at expiry |
+| Pending-ledger capacity | ≤ **2048** | V4-12, measured: the ledger costs **137 µs**, 24 % of a 560 µs handshake. V4-2 S2 estimated 79.6 µs and was wrong twice over — see §20 erratum 30 |
+| Sustained handshake rate | capacity ÷ TTL | consumed entries are reclaimed only at expiry; 205/s at 2048 with the default 10 s timeout |
 | RSS per in-flight handshake | ~95 KiB | V4-2 S1: 9.5 KiB × ~10 secure blocks |
 | `AUTHD_MAX_RECORD` | 12313 B | §6.1 |
 | `AUTHD_MAX_CONTENT` | 9216 B | §6.1 |
@@ -1052,6 +1052,7 @@ the event could report:
 
 | # | § | Change | Why |
 |---|---|---|---|
+| 30 | 17 | the pending-ledger row's justification replaced with a measurement, and the sustained rate stated | §17 cited V4-2 S2's 79.6 µs/handshake at capacity 2048. That figure was wrong twice: S2 counted **four** walks of the store per handshake where a successful responder performs **five**, and it timed a scan in a hot loop where a real handshake's ML-DSA work evicts the 147 KB ledger between walks, so every walk is cold. Measured end to end the ledger costs **137 µs**, not 79.6. Recorded as finding **F77** |
 | 29 | 15 | the event `pin-failed` removed from the catalogue | V4-12 replaced the daemon's per-connection scratch `keystore_t` with a bare pinned key resolved through a callback, so the pin is now a `memcpy` into a fixed-size field. `keystore_add` was the only thing that could fail there, and a `memcpy` cannot, so the event became unemittable. Recorded as finding **F76** |
 
 `tools/audit/check_spec_vocabularies.py` is what required this, and required it
@@ -1060,3 +1061,18 @@ soon as the branch was deleted, before the change could be committed with a
 catalogue describing an event the daemon can no longer produce. An event that
 exists only in a document is exactly the drift the both-directions comparison
 was built for.
+
+Erratum 30 deserves a word on the direction of fit, because this project
+normally refuses to move a requirement to meet an implementation. What changed
+here is not a requirement but a **justification**: §17's figure was a
+measurement, it was wrong, and a document may not keep citing a number its own
+tooling has since disproved. The capacity limit itself is unchanged at 2048.
+
+What the corrected number means is stated rather than buried: at 2048 the
+ledger is **24 % of a handshake**, where V4-2's 100 µs budget would have
+allowed about 18 %. That budget was itself asserted in V4-2 without a stated
+derivation, and the trade it was weighed against is concrete — capacity is the
+throughput ceiling (§17), so 2048 buys **205 handshakes/s** against 1024's
+102/s, on a handshake already dominated by ML-DSA. The cost is accepted with
+the number written down, and the alternative for anyone who needs more is an
+indexed store, which v4 does not attempt.

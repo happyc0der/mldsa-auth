@@ -1,0 +1,11 @@
+P1|^test_handshake$|step4 Pext-4: wipe zeroes every byte of the EXTERNAL array
+P2|^test_handshake$|step4 Pext-2: all 2048 inserts succeed
+P3|^test_handshake$|step4 Pext-1c: ...and the store is usable afterwards
+P4|^test_handshake$|step4 Pext-2b: a caller-array entry is found, not one from the inline array
+P5|^test_authd_conn$|decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome
+P6|^test_handshake$|step4 T1: responder verifies ClientAuth -> CLIENT_AUTH_VERIFIED
+P7|^test_handshake$|step4 Pcb-1: a handshake resolved by CALLBACK completes
+P8|^test_authd_conn$|conn: the pin lookup refuses an id that is not this connection's handle
+P9|^test_authd_conn$|wipe: the slot's pinned key is zero after close
+P10|^test_authd_evloop$|ev: a local slot is still polled when the protocol pool is full (F62)
+P11|^test_authd_evloop$|ev: evloop_set_local refuses a local pool over AUTHD_LOCAL_SLOTS_MAX

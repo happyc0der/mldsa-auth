@@ -528,7 +528,11 @@ static void test_poll_fairness(void)
     {
         evloop_t ev;
         static authd_slot_t one[1];
-        static authd_slot_t lone[1];
+        /* Sized for the OVER-limit call, not for the legal one. evloop_set_local
+         * memsets every slot it is given, so a 1-element array claimed as 65
+         * would overrun the moment a mutation removes the bound -- and an ASan
+         * abort is a weaker verdict than the named refusal this is testing. */
+        static authd_slot_t lone[AUTHD_LOCAL_SLOTS_MAX + 1u];
         CHECK(evloop_init(&ev, one, (size_t)AUTHD_SLOTS_MAX + 1u, 5000u, 20000u,
                           on_frame, on_close, NULL) == -1,
               "ev: evloop_init refuses a protocol pool over AUTHD_SLOTS_MAX");

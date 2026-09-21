@@ -34,6 +34,17 @@ foreach(_bench primitives handshake session)
   target_compile_definitions(bench_${_bench} PRIVATE ${MLDSA_HARDENING_DEFS})
   target_link_options(bench_${_bench} PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 endforeach()
+# bench_authd additionally links the daemon (for the real sizeof(authd_conn_t)
+# it prints) and the SAME counting allocator test_session_alloc uses -- reused
+# rather than copied, so the F8 count cannot drift from the real allocator.
+add_executable(bench_authd bench_authd.c ${CMAKE_SOURCE_DIR}/tests/counting_secure_mem.c)
+target_link_libraries(bench_authd PRIVATE mldsa_bench mldsa_authd)
+target_include_directories(bench_authd PRIVATE ${CMAKE_SOURCE_DIR}/apps/authd
+                                               ${CMAKE_SOURCE_DIR}/apps/authd/store)
+target_compile_options(bench_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(bench_authd PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(bench_authd PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
 target_link_libraries(bench_primitives PRIVATE mldsa_demo)
 target_link_libraries(bench_handshake PRIVATE mldsa_demo)
 
@@ -46,6 +57,7 @@ add_test(NAME bench_smoke
     -DBENCH_PRIMITIVES=$<TARGET_FILE:bench_primitives>
     -DBENCH_HANDSHAKE=$<TARGET_FILE:bench_handshake>
     -DBENCH_SESSION=$<TARGET_FILE:bench_session>
+    -DBENCH_AUTHD=$<TARGET_FILE:bench_authd>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_smoke.cmake
 )
 set_tests_properties(bench_smoke PROPERTIES TIMEOUT 300)

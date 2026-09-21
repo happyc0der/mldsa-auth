@@ -22,7 +22,20 @@ REPS="${2:-3}"
 BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "build directory not found: $1"; exit 2; }
 OUT="$BUILD/bench-results"
 
-for t in primitives handshake session; do
+# The suite list is DERIVED from the build system, not restated here. It used
+# to be hardcoded in three places -- this check, the run loop, and the "3
+# suites" in the line below -- which is the same defect class as F49, where
+# run_fuzz.sh's per-target bounds were hardcoded beside a derived target list
+# and five targets were quietly fuzzed to half their intended max_len for four
+# steps. A suite added to bench/CMakeLists.txt is now picked up here the day
+# it is added, and one that is missing from the build fails loudly.
+SUITES=$(sed -n 's/^foreach(_bench \(.*\))$//p' "$(dirname "$0")/CMakeLists.txt")
+[ -n "$SUITES" ] || { echo "cannot derive the suite list from bench/CMakeLists.txt"; exit 2; }
+# add_executable targets declared outside the foreach are named explicitly.
+SUITES="$SUITES authd"
+NSUITES=$(printf '%s\n' $SUITES | wc -l | tr -d ' ')
+
+for t in $SUITES; do
     [ -x "$BUILD/bench/bench_$t" ] || {
         echo "bench_$t not built in $BUILD (configure with -DCMAKE_BUILD_TYPE=Release)"
         exit 2
@@ -30,12 +43,12 @@ for t in primitives handshake session; do
 done
 
 mkdir -p "$OUT"
-echo "running 3 suites x $REPS repetition(s) from $BUILD"
+echo "running $NSUITES suites x $REPS repetition(s) from $BUILD"
 i=1
 while [ "$i" -le "$REPS" ]; do
     : > "$OUT/run-$i.txt"
     : > "$OUT/run-$i.csv"
-    for t in primitives handshake session; do
+    for t in $SUITES; do
         "$BUILD/bench/bench_$t" >> "$OUT/run-$i.txt" 2>&1
         "$BUILD/bench/bench_$t" --csv >> "$OUT/run-$i.csv" 2>&1
     done

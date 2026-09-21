@@ -2997,6 +2997,10 @@ static void test_step4_cancel_semantics(void) {
  * Only a store whose slots are somewhere else can tell them apart, which is
  * what Pext-2 and Pext-6 do.
  */
+/* A check that only speaks when it fails -- for loops where 200 PASS lines
+ * would bury the result they are establishing. */
+#define CHECK_QUIET(cond) do { if (!(cond)) { CHECK(0, "step4 Pext-2b: an insert into the caller array failed"); } } while (0)
+
 static void store_fresh_ext(handshake_pending_store_t *s,
                             handshake_pending_entry_t *slots, size_t capacity) {
     if (handshake_pending_store_init_ext(s, slots, capacity, TEST_TTL_MS,
@@ -3049,6 +3053,31 @@ static void test_step4_external_ledger(void) {
           "step4 Pext-1c: init_ext zeroes the caller's array (0xAA prefill)");
     CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK,
           "step4 Pext-1c: ...and the store is usable afterwards");
+
+    /* Pext-2b: the same distinction at a capacity that FITS INSIDE the inline
+     * array. This is the check that catches a lookup still reading entries[]:
+     * at 2048 that read runs off the 256-entry inline array and ASan aborts
+     * before any check can print, so the abort -- a weaker verdict than a
+     * named failure -- is all a campaign would see. At 200 the wrong array is
+     * merely the wrong array: in bounds, empty, and the miss is reportable.
+     *
+     * It therefore runs BEFORE the 2048 case, not after: the abort would
+     * otherwise happen first and the named check would never print. */
+    {
+        static handshake_pending_entry_t small[200];
+        clock_reset();
+        store_fresh_ext(&s, small, 200);
+        for (size_t i = 0; i < 200u; i++) {
+            id_n(h, 3000u + i);
+            CHECK_QUIET(handshake_pending_insert(&s, h, th) == PENDING_OK);
+        }
+        CHECK(handshake_pending_active_count(&s) == 200u,
+              "step4 Pext-2b: 200 entries land in a caller array that fits inside entries[]");
+        id_n(h, 3000u + 199u);
+        CHECK(handshake_pending_get_digest(&s, h, out) == PENDING_OK && memcmp(out, th, 32) == 0,
+              "step4 Pext-2b: a caller-array entry is found, not one from the inline array");
+        handshake_pending_store_wipe(&s);
+    }
 
     /* Pext-2: capacity really is 2048, and the LAST slot is reachable. The
      * 2048th insert landing and the 2049th failing is what a missed
