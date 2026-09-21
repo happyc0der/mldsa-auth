@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "authd_config.h"  /* AUTHD_SLOTS_MAX, AUTHD_LOCAL_SLOTS_MAX */
 #include "conn_io.h"
 #include "listener.h"
 
@@ -97,10 +98,21 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
  * next to what occupies it. */
 #define AUTHD_MAX_LISTENERS 4u
 
-/* Upper bound on slots the loop will poll in one iteration. Equal to
- * AUTHD_SLOTS_MAX in authd_config.h; the poll arrays are static and sized from
- * it, so the loop allocates nothing even at maximum capacity. */
-#define AUTHD_SLOTS_POLL_MAX 4096u
+/* Upper bound on slots the loop polls in one iteration. The two pools share
+ * ONE poll set, so this is their SUM -- not the protocol pool's maximum.
+ *
+ * V4-9a wrote 4096 here: AUTHD_SLOTS_MAX, restated as a literal. That was
+ * audit finding F62. The set is filled protocol-pool-first, so a daemon at
+ * max_slots = 4096 with every protocol slot busy filled the array before it
+ * reached the local pool, and the site could not EXCHANGE precisely when
+ * logins were busiest -- the exact failure the separate pools exist to
+ * prevent, reintroduced by the array that polls them. Latent only because the
+ * default max_slots is 256; V4-12 raises capacity, so it stops being latent.
+ *
+ * DERIVED from the two maxima rather than restated, so a change to either
+ * cannot leave this behind. The poll arrays are static and sized from it, so
+ * the loop still allocates nothing at maximum capacity. */
+#define AUTHD_SLOTS_POLL_MAX (AUTHD_SLOTS_MAX + AUTHD_LOCAL_SLOTS_MAX)   /* 4160 */
 
 typedef struct {
     authd_slot_t *slots;         /* PROTO pool */

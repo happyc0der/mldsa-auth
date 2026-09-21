@@ -493,6 +493,101 @@ static void test_log_hygiene(void)
  * back is permitted only up to the hard limit, which is why the original is
  * captured and restored rather than guessed.
  */
+/* ------------------------------------------------------- F62: poll fairness */
+
+/*
+ * Audit finding F62. The two slot pools exist so that a burst of handshakes
+ * cannot lock the site out of the local API -- but both were polled through
+ * ONE array bounded by a single 4096 constant, filled protocol-pool-first. At
+ * max_slots = 4096 with every protocol slot busy the array was full before the
+ * local pool was reached, which is the very failure the pools prevent.
+ *
+ * The test needs a FULL protocol pool, and that is the only expensive part.
+ * It does NOT need 4096 file descriptors: poll() accepts the same fd many
+ * times over, and the set builder reads only fd/state/kind. One quiet socket
+ * stands in for every protocol slot; one chatty socket carries the local
+ * request that must still be seen.
+ */
+static int g_f62_lines = 0;
+static char g_f62_last[32];
+
+static ev_action_t f62_on_line(void *user, authd_slot_t *slot, const uint8_t *line, size_t len)
+{
+    (void)user; (void)slot;
+    g_f62_lines++;
+    const size_t n = (len < sizeof g_f62_last - 1u) ? len : sizeof g_f62_last - 1u;
+    memcpy(g_f62_last, line, n);
+    g_f62_last[n] = '\0';
+    return EV_ACTION_CONTINUE;
+}
+
+static void test_poll_fairness(void)
+{
+    /* Registration bounds first: they are what makes the array's own bound
+     * unreachable by CONTRACT rather than by coincidence. */
+    {
+        evloop_t ev;
+        static authd_slot_t one[1];
+        static authd_slot_t lone[1];
+        CHECK(evloop_init(&ev, one, (size_t)AUTHD_SLOTS_MAX + 1u, 5000u, 20000u,
+                          on_frame, on_close, NULL) == -1,
+              "ev: evloop_init refuses a protocol pool over AUTHD_SLOTS_MAX");
+        CHECK(evloop_init(&ev, one, 1u, 5000u, 20000u, on_frame, on_close, NULL) == 0,
+              "ev: ...and accepts one at the limit (canary: the check is not always-refuse)");
+        CHECK(evloop_set_local(&ev, lone, (size_t)AUTHD_LOCAL_SLOTS_MAX + 1u, f62_on_line) == -1,
+              "ev: evloop_set_local refuses a local pool over AUTHD_LOCAL_SLOTS_MAX");
+        CHECK(evloop_set_local(&ev, lone, 1u, f62_on_line) == 0,
+              "ev: ...and accepts one at the limit");
+    }
+
+    authd_slot_t *proto = calloc((size_t)AUTHD_SLOTS_MAX, sizeof *proto);
+    authd_slot_t *local = calloc(4u, sizeof *local);
+    if (proto == NULL || local == NULL) {
+        free(proto); free(local);
+        printf("SKIP: ev: F62 needs ~100 MB for a full protocol pool\n");
+        return;
+    }
+
+    int quiet[2] = { -1, -1 };
+    int chatty[2] = { -1, -1 };
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, quiet) == 0, "ev: F62 quiet socketpair");
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, chatty) == 0, "ev: F62 chatty socketpair");
+
+    evloop_t ev;
+    CHECK(evloop_init(&ev, proto, (size_t)AUTHD_SLOTS_MAX, 5000u, 20000u,
+                      on_frame, on_close, NULL) == 0, "ev: F62 init at AUTHD_SLOTS_MAX");
+    CHECK(evloop_set_local(&ev, local, 4u, f62_on_line) == 0, "ev: F62 local pool registered");
+
+    /* Every protocol slot busy, on one fd that never becomes readable. Only
+     * the five scalars the set builder reads are written, so the 24 KB of I/O
+     * buffers in each slot stay untouched -- calloc already left them zeroed,
+     * which is the state conn_io_reset produces. */
+    for (size_t i = 0; i < (size_t)AUTHD_SLOTS_MAX; i++) {
+        proto[i].fd = quiet[0];
+        proto[i].kind = SLOT_KIND_PROTO;
+        proto[i].state = SLOT_ACTIVE;
+        proto[i].index = i;
+        proto[i].deadline_ms = 1000u * 1000u;
+    }
+    local[0].fd = chatty[0];
+    local[0].kind = SLOT_KIND_LOCAL;
+    local[0].state = SLOT_ACTIVE;
+    local[0].deadline_ms = 1000u * 1000u;
+
+    g_f62_lines = 0;
+    g_f62_last[0] = '\0';
+    CHECK(write(chatty[1], "PING\n", 5) == 5, "ev: F62 the local peer sends a request");
+    (void)evloop_run_once(&ev, 0, 1000u);
+
+    /* THE check. Before the fix, nspfd hit 4096 inside the protocol pool and
+     * the local slot was never appended, so this line never fired. */
+    CHECK(g_f62_lines == 1 && strcmp(g_f62_last, "PING") == 0,
+          "ev: a local slot is still polled when the protocol pool is full (F62)");
+
+    close(quiet[0]); close(quiet[1]); close(chatty[0]); close(chatty[1]);
+    free(proto); free(local);
+}
+
 static void test_memlock(void)
 {
     /* The derived need, from literals rather than from the macros the
@@ -599,6 +694,7 @@ int main(void)
     test_conn_io();
     test_evloop();
     test_log_hygiene();
+    test_poll_fairness();
     test_memlock();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);

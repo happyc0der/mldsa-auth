@@ -19,7 +19,12 @@ int evloop_init(evloop_t *ev, authd_slot_t *slots, size_t n_slots,
                 uint32_t handshake_timeout_ms, uint32_t idle_timeout_ms,
                 evloop_on_frame_fn on_frame, evloop_on_close_fn on_close, void *user)
 {
-    if (ev == NULL || slots == NULL || n_slots == 0u || on_frame == NULL) {
+    /* The pool's own maximum is enforced HERE, at registration, which is what
+     * makes the poll array's bound unreachable by contract rather than by
+     * coincidence (F62). The daemon cannot exceed it -- authd_config.c parses
+     * max_slots against AUTHD_SLOTS_MAX -- but a test or a future tool can. */
+    if (ev == NULL || slots == NULL || n_slots == 0u || n_slots > AUTHD_SLOTS_MAX ||
+        on_frame == NULL) {
         return -1;
     }
     memset(ev, 0, sizeof *ev);
@@ -60,7 +65,8 @@ int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr)
 int evloop_set_local(evloop_t *ev, authd_slot_t *local_slots, size_t n_local_slots,
                      evloop_on_line_fn on_line)
 {
-    if (ev == NULL || local_slots == NULL || n_local_slots == 0u || on_line == NULL) {
+    if (ev == NULL || local_slots == NULL || n_local_slots == 0u ||
+        n_local_slots > AUTHD_LOCAL_SLOTS_MAX || on_line == NULL) {
         return -1;
     }
     ev->local_slots = local_slots;
@@ -433,10 +439,17 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
     for (int pool = 0; pool < 2; pool++) {
         authd_slot_t *arr = (pool == 0) ? ev->slots : ev->local_slots;
         const size_t n = (pool == 0) ? ev->n_slots : ev->n_local_slots;
+        /* Each pool is bounded by ITS OWN maximum, so a full protocol pool can
+         * never consume the local pool's share of the set (F62). With the
+         * array now sized from the sum and both maxima enforced at
+         * registration, this is belt to those braces -- and it is the half a
+         * test can actually observe. */
+        const size_t pool_max = (pool == 0) ? AUTHD_SLOTS_MAX : AUTHD_LOCAL_SLOTS_MAX;
+        size_t taken = 0;
         if (arr == NULL) {
             continue;
         }
-        for (size_t i = 0; i < n && nspfd < AUTHD_SLOTS_POLL_MAX; i++) {
+        for (size_t i = 0; i < n && taken < pool_max; i++) {
             authd_slot_t *s = &arr[i];
             if (s->state == SLOT_FREE || s->fd < 0) {
                 continue;
@@ -456,6 +469,7 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             all[npfd + nspfd].revents = 0;
             slot_ref[nspfd] = s;
             nspfd++;
+            taken++;
         }
     }
 
