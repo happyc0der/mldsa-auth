@@ -71,6 +71,43 @@
  */
 
 #define HANDSHAKE_PENDING_MAX 256u
+
+/* The ceiling for a CALLER-PROVIDED backing array (handshake_pending_store_init_ext).
+ *
+ * MEASURED, not round. find_slot is a deliberate constant-time full scan with
+ * no early exit, so per-handshake cost is linear in capacity: 19.90 us per
+ * scan at 2,048 and 39.88 us at 4,096 (V4-2 spike S2). A successful responder
+ * handshake performs FIVE walks of the store -- sweep, find_slot and the
+ * placement loop inside insert(), then one find_slot each in get_digest() and
+ * consume_success() -- so 2,048 costs about 99.5 us against the 100 us budget
+ * and 4,096 is far beyond it. (V4-2 recorded four walks; V4-12 counted them in
+ * the code and corrected it.)
+ *
+ * Above this the answer is an indexed store, which v4 does not attempt. */
+#define HANDSHAKE_PENDING_EXT_MAX 2048u
+
+/* Resolves an identity to its pinned ML-DSA-65 public key, in place of a
+ * keystore_t. Returns a BORROWED pointer to MLDSA_PUBLIC_KEY_BYTES that must
+ * stay valid and unchanged for the lifetime of the handshake context -- the
+ * same contract keystore_lookup() has (keystore.h), because ctx->peer_pk
+ * aliases whatever this returns and signature verification reads through it.
+ *
+ * NULL means "no pin for this identity", and is the ONLY failure this API
+ * has: the handshake maps it to HANDSHAKE_ERR_UNKNOWN_IDENTITY, exactly as it
+ * maps every non-KEYSTORE_OK status today. A caller that must not reveal WHY
+ * an identity has no pin therefore has nothing to leak through the return
+ * value -- but not leaking it some other way, by timing or by logging, stays
+ * the caller's job.
+ *
+ * Called at most once per handshake, on the responder's first message, before
+ * any signature work. It must not call back into the handshake context.
+ *
+ * Responder only, deliberately: an initiator pins the one identity it chose
+ * to dial and is a one-shot process, so it has no memory problem to solve,
+ * and fewer public entry points is less to verify. The internal resolver is
+ * role-agnostic, so an initiator form later is a ~10-line change. */
+typedef const uint8_t *(*handshake_lookup_fn)(void *lookup_ctx,
+                                              const uint8_t *id, size_t id_len);
 #define HANDSHAKE_PENDING_TTL_MS_DEFAULT 30000u
 #define HANDSHAKE_AUTH_FAILURE_LIMIT 3u /* N = 3 */
 
@@ -129,7 +166,16 @@ typedef struct {
 } handshake_pending_entry_t;
 
 typedef struct {
+    /* The INLINE backing array, used by handshake_pending_store_init. It stays
+     * because every existing caller declares a store and expects it usable
+     * with no second object. A store initialized with _init_ext leaves it
+     * unused; one store per process makes that a rounding error. */
     handshake_pending_entry_t entries[HANDSHAKE_PENDING_MAX];
+    /* Where the slots ACTUALLY are: &entries[0] after _init, the caller's
+     * array after _init_ext. Every access in this module goes through it, so
+     * there is exactly one place the two cases differ. NULL means never
+     * initialized, or wiped -- store_usable() rejects both. */
+    handshake_pending_entry_t *slots;
     size_t capacity;
     uint64_t ttl_ms;
     handshake_clock_fn clock_fn;
@@ -141,6 +187,25 @@ typedef struct {
 pending_status_t handshake_pending_store_init(handshake_pending_store_t *s, size_t capacity,
                                               uint64_t ttl_ms, handshake_clock_fn clock_fn,
                                               void *clock_ctx);
+
+/* Initializes a store over a CALLER-PROVIDED backing array, so capacity can
+ * exceed the inline HANDSHAKE_PENDING_MAX.
+ *
+ *   slots     at least `capacity` entries. BORROWED: it must outlive the
+ *             store, and this module never allocates or frees it. It is
+ *             zeroed here, so a reused static array is safe.
+ *   capacity  1 <= capacity <= HANDSHAKE_PENDING_EXT_MAX.
+ *
+ * NULL slots, an out-of-range capacity or ttl_ms == 0 -> PENDING_ERR_INVALID_ARG
+ * with the store left UNUSABLE, not merely unchanged.
+ *
+ * handshake_pending_store_wipe() zeroes the caller's array as well as the
+ * store. It does not free it. */
+pending_status_t handshake_pending_store_init_ext(handshake_pending_store_t *s,
+                                                  handshake_pending_entry_t *slots,
+                                                  size_t capacity, uint64_t ttl_ms,
+                                                  handshake_clock_fn clock_fn,
+                                                  void *clock_ctx);
 
 /* Zeroes the whole store (idempotent). */
 void handshake_pending_store_wipe(handshake_pending_store_t *s);
@@ -265,7 +330,11 @@ typedef struct {
     uint8_t local_id[WIRE_ID_MAX_LEN];
     uint8_t local_id_len;
     const mldsa_keypair_t *local_keypair; /* borrowed */
-    const keystore_t *keystore;           /* borrowed */
+    /* EXACTLY ONE of these resolves the peer's pinned key: keystore is set by
+     * the _init forms, lookup_fn by the _ext forms. Both are borrowed. */
+    const keystore_t *keystore;           /* borrowed; NULL when lookup_fn is set */
+    handshake_lookup_fn lookup_fn;        /* borrowed; NULL when keystore is set */
+    void *lookup_ctx;                     /* borrowed; MAY be NULL */
     handshake_pending_store_t *pending;   /* borrowed; responder only */
 
     uint8_t peer_id[WIRE_ID_MAX_LEN];
@@ -312,6 +381,17 @@ handshake_status_t handshake_responder_init(handshake_ctx_t *ctx,
                                             const mldsa_keypair_t *local_keypair,
                                             const keystore_t *keystore,
                                             handshake_pending_store_t *pending);
+
+/* As handshake_responder_init, but the peer's pinned key comes from a
+ * CALLBACK instead of a keystore_t. For a server holding one pin per
+ * connection this replaces a 64,552-byte keystore_t with whatever the
+ * callback closes over. lookup_fn must be non-NULL; lookup_ctx may be NULL.
+ * Both are borrowed and must outlive the context. */
+handshake_status_t handshake_responder_init_ext(handshake_ctx_t *ctx,
+                                                const uint8_t *local_id, size_t local_id_len,
+                                                const mldsa_keypair_t *local_keypair,
+                                                handshake_lookup_fn lookup_fn, void *lookup_ctx,
+                                                handshake_pending_store_t *pending);
 
 /* Idempotent; wipes and frees all secrets. Also the EXPLICIT CANCELLATION
  * path: a responder wiped while in SERVER_HELLO_CREATED first cancels its

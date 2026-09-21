@@ -2983,6 +2983,315 @@ static void test_step4_cancel_semantics(void) {
 
 /* ---- T33 (store API hygiene): invalid init, overflow-safe deadline ---- */
 
+/* ------------------------------------------------- V4-12: external ledger */
+
+/*
+ * The store's slots may live in a caller-provided array, so the daemon can
+ * exceed the inline HANDSHAKE_PENDING_MAX of 256.
+ *
+ * WHY THESE TESTS CARRY THE WEIGHT OF THE STEP. The change rewrote nine
+ * accessors from `s->entries[i]` to `s->slots[i]`, and every one of them
+ * STILL COMPILES if missed -- `entries` is a real array at a real offset.
+ * Worse, a missed site is invisible to every pre-existing test, because all
+ * of them use the inline path where the two expressions are the same address.
+ * Only a store whose slots are somewhere else can tell them apart, which is
+ * what Pext-2 and Pext-6 do.
+ */
+static void store_fresh_ext(handshake_pending_store_t *s,
+                            handshake_pending_entry_t *slots, size_t capacity) {
+    if (handshake_pending_store_init_ext(s, slots, capacity, TEST_TTL_MS,
+                                         test_clock_fn, &g_clock) != PENDING_OK) {
+        fatal("handshake_pending_store_init_ext");
+    }
+}
+
+static void id_n(uint8_t out[16], size_t n) {
+    memset(out, 0, 16);
+    out[0] = (uint8_t)(n & 0xFFu);
+    out[1] = (uint8_t)((n >> 8) & 0xFFu);
+    out[2] = 0xC7u; /* so no id is all-zero, which a FREE slot also is */
+}
+
+static void test_step4_external_ledger(void) {
+    static handshake_pending_store_t s;
+    static handshake_pending_entry_t big[HANDSHAKE_PENDING_EXT_MAX];
+    uint8_t h[16], th[32], out[32];
+    memset(th, 0x3C, sizeof th);
+    clock_reset();
+
+    /* Pext-1a: the bounds of init_ext, from literals. */
+    CHECK(handshake_pending_store_init_ext(&s, big, HANDSHAKE_PENDING_EXT_MAX, TEST_TTL_MS,
+                                           test_clock_fn, &g_clock) == PENDING_OK,
+          "step4 Pext-1a: init_ext accepts capacity 2048");
+    CHECK(handshake_pending_store_init_ext(&s, big, HANDSHAKE_PENDING_EXT_MAX + 1u, TEST_TTL_MS,
+                                           test_clock_fn, &g_clock) == PENDING_ERR_INVALID_ARG,
+          "step4 Pext-1a: init_ext rejects capacity 2049");
+    CHECK(handshake_pending_store_init_ext(&s, NULL, 16, TEST_TTL_MS, test_clock_fn, &g_clock) ==
+              PENDING_ERR_INVALID_ARG,
+          "step4 Pext-1a: init_ext rejects a NULL backing array");
+    CHECK(handshake_pending_store_init_ext(&s, big, 0, TEST_TTL_MS, test_clock_fn, &g_clock) ==
+              PENDING_ERR_INVALID_ARG,
+          "step4 Pext-1a: init_ext rejects capacity 0");
+    CHECK(handshake_pending_store_init_ext(&s, big, 16, 0, test_clock_fn, &g_clock) ==
+              PENDING_ERR_INVALID_ARG,
+          "step4 Pext-1a: init_ext rejects ttl 0");
+
+    /* Pext-1b: a rejected init leaves the store UNUSABLE, not merely unchanged. */
+    id_n(h, 1);
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_ERR_INVALID_ARG,
+          "step4 Pext-1b: a store whose init_ext was rejected is unusable");
+
+    /* Pext-1c: init_ext zeroes the caller's array. A reused static would
+     * otherwise carry stale bytes that read as occupied slots forever. */
+    memset(big, 0xAA, sizeof big);
+    store_fresh_ext(&s, big, 8);
+    CHECK(handshake_pending_active_count(&s) == 0u,
+          "step4 Pext-1c: init_ext zeroes the caller's array (0xAA prefill)");
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK,
+          "step4 Pext-1c: ...and the store is usable afterwards");
+
+    /* Pext-2: capacity really is 2048, and the LAST slot is reachable. The
+     * 2048th insert landing and the 2049th failing is what a missed
+     * entries->slots rewrite cannot fake. */
+    clock_reset();
+    store_fresh_ext(&s, big, HANDSHAKE_PENDING_EXT_MAX);
+    int inserted = 1;
+    for (size_t i = 0; i < HANDSHAKE_PENDING_EXT_MAX; i++) {
+        id_n(h, i);
+        if (handshake_pending_insert(&s, h, th) != PENDING_OK) { inserted = 0; break; }
+    }
+    CHECK(inserted == 1, "step4 Pext-2: all 2048 inserts succeed");
+    CHECK(handshake_pending_active_count(&s) == (size_t)HANDSHAKE_PENDING_EXT_MAX,
+          "step4 Pext-2: active_count is 2048");
+    id_n(h, HANDSHAKE_PENDING_EXT_MAX);
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_ERR_FULL,
+          "step4 Pext-2: the 2049th insert is FULL");
+    /* the entry at the last index is still found */
+    id_n(h, HANDSHAKE_PENDING_EXT_MAX - 1u);
+    CHECK(handshake_pending_get_digest(&s, h, out) == PENDING_OK && memcmp(out, th, 32) == 0,
+          "step4 Pext-2: the id at index 2047 is found with its digest");
+
+    /* Pext-3: expiry works past the inline array's 256 entries. */
+    clock_arm_expiry_after(0);
+    CHECK(handshake_pending_get_digest(&s, h, out) == PENDING_ERR_EXPIRED,
+          "step4 Pext-3: an entry past index 256 expires");
+    handshake_pending_sweep(&s);
+    CHECK(handshake_pending_active_count(&s) == 0u,
+          "step4 Pext-3: sweep frees the whole external array");
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK,
+          "step4 Pext-3: a swept slot is physically free again");
+
+    /* Pext-4: wipe zeroes the EXTERNAL array. Read through the CALLER's
+     * pointer -- the store's is NULL by then, which is the whole point. */
+    {
+        uint8_t known_id[16], known_th[32];
+        memset(known_id, 0x9E, sizeof known_id);
+        memset(known_th, 0x7D, sizeof known_th);
+        clock_reset();
+        store_fresh_ext(&s, big, 300);   /* past the inline 256 on purpose */
+        for (size_t i = 0; i < 299; i++) { id_n(h, i); (void)handshake_pending_insert(&s, h, th); }
+        CHECK(handshake_pending_insert(&s, known_id, known_th) == PENDING_OK,
+              "step4 Pext-4: a known id/digest is in the external array");
+        handshake_pending_store_wipe(&s);
+        int nonzero = 0;
+        const uint8_t *raw = (const uint8_t *)big;
+        for (size_t i = 0; i < 300u * sizeof(*big); i++) { if (raw[i] != 0) { nonzero++; } }
+        CHECK(nonzero == 0, "step4 Pext-4: wipe zeroes every byte of the EXTERNAL array");
+    }
+
+    /* Pext-5: the inline path is untouched -- same limits, same behaviour. */
+    {
+        static handshake_pending_store_t inl;
+        clock_reset();
+        CHECK(handshake_pending_store_init(&inl, HANDSHAKE_PENDING_MAX, TEST_TTL_MS,
+                                           test_clock_fn, &g_clock) == PENDING_OK,
+              "step4 Pext-5: the inline store still accepts capacity 256");
+        CHECK(handshake_pending_store_init(&inl, HANDSHAKE_PENDING_MAX + 1u, TEST_TTL_MS,
+                                           test_clock_fn, &g_clock) == PENDING_ERR_INVALID_ARG,
+              "step4 Pext-5: ...and still refuses 257, external limit or not");
+        clock_reset();
+        store_fresh(&inl, 4);
+        id_n(h, 42);
+        CHECK(handshake_pending_insert(&inl, h, th) == PENDING_OK &&
+                  handshake_pending_get_digest(&inl, h, out) == PENDING_OK &&
+                  handshake_pending_consume_success(&inl, h) == PENDING_OK &&
+                  handshake_pending_get_digest(&inl, h, out) == PENDING_ERR_CONSUMED,
+              "step4 Pext-5: insert/get/consume/replay still behave on the inline path");
+        handshake_pending_store_wipe(&inl);
+    }
+    handshake_pending_store_wipe(&s);
+}
+
+/* ------------------------------------------- V4-12: the lookup callback */
+
+/*
+ * A responder may resolve the peer's pin through a callback instead of a
+ * keystore_t, so a server holding one pin per connection need not carry a
+ * 64,552-byte table to do it.
+ *
+ * What these have to establish, beyond "it works": that ctx->peer_pk really
+ * came from the callback (Pcb-3 hands back a WRONG key and requires the
+ * signature to fail), and that the callback is asked about the PEER's
+ * identity rather than the local one (Pcb-5 records what it was asked).
+ */
+typedef struct {
+    const uint8_t *pk;      /* what to return, or NULL to refuse */
+    uint8_t seen_id[64];
+    size_t  seen_len;
+    int     calls;
+} cb_ctx_t;
+
+static const uint8_t *test_lookup(void *ctx, const uint8_t *id, size_t id_len) {
+    cb_ctx_t *c = (cb_ctx_t *)ctx;
+    /* NULL-safe on purpose: a resolver that dropped lookup_ctx would otherwise
+     * crash here, and a crash is a weaker verdict than a named check. */
+    if (c == NULL) {
+        return NULL;
+    }
+    c->calls++;
+    c->seen_len = (id_len <= sizeof c->seen_id) ? id_len : sizeof c->seen_id;
+    memcpy(c->seen_id, id, c->seen_len);
+    return c->pk;
+}
+
+/* Both directions agree, read through the accessors' out-parameter form. */
+static int keys_agree(const handshake_ctx_t *a, const handshake_ctx_t *b) {
+    const uint8_t *ac = NULL, *bc = NULL, *as = NULL, *bs = NULL;
+    if (handshake_session_key_c2s(a, &ac) != HANDSHAKE_OK ||
+        handshake_session_key_c2s(b, &bc) != HANDSHAKE_OK ||
+        handshake_session_key_s2c(a, &as) != HANDSHAKE_OK ||
+        handshake_session_key_s2c(b, &bs) != HANDSHAKE_OK) {
+        return 0;
+    }
+    return memcmp(ac, bc, 32) == 0 && memcmp(as, bs, 32) == 0;
+}
+
+static void test_step4_lookup_callback(void) {
+    static handshake_pending_store_t store;
+    static handshake_pending_entry_t big[300];
+    uint8_t out[32];
+    (void)out;
+
+    /* Pcb-4: argument validation, both directions. */
+    {
+        handshake_ctx_t r;
+        cb_ctx_t cb; memset(&cb, 0, sizeof cb); cb.pk = g_kp_a.public_key;
+        clock_reset(); store_fresh(&store, 4);
+        CHECK(handshake_responder_init_ext(&r, ID_B, sizeof(ID_B), &g_kp_b, NULL, &cb, &store) ==
+                  HANDSHAKE_ERR_INVALID_ARG,
+              "step4 Pcb-4: responder_init_ext refuses a NULL lookup_fn");
+        CHECK(handshake_responder_init_ext(&r, ID_B, sizeof(ID_B), &g_kp_b, test_lookup, &cb,
+                                           &store) == HANDSHAKE_OK,
+              "step4 Pcb-4: ...and accepts a real one (canary: not always-refuse)");
+        handshake_ctx_wipe(&r);
+        CHECK(handshake_responder_init(&r, ID_B, sizeof(ID_B), &g_kp_b, NULL, &store) ==
+                  HANDSHAKE_ERR_INVALID_ARG,
+              "step4 Pcb-4: responder_init still refuses a NULL keystore");
+        handshake_pending_store_wipe(&store);
+    }
+
+    /* Pcb-1: a full handshake through the callback reaches ESTABLISHED and
+     * both peers agree on both directions' keys. */
+    {
+        pair_t p;
+        cb_ctx_t cb; memset(&cb, 0, sizeof cb); cb.pk = g_kp_a.public_key;
+        clock_reset(); store_fresh(&store, 4);
+        memset(&p, 0, sizeof p);
+        if (handshake_initiator_init(&p.ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B,
+                                     sizeof(ID_B)) != HANDSHAKE_OK ||
+            handshake_responder_init_ext(&p.res, ID_B, sizeof(ID_B), &g_kp_b, test_lookup, &cb,
+                                         &store) != HANDSHAKE_OK) {
+            fatal("Pcb-1 init");
+        }
+        CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK && pair_finish_both(&p) == HANDSHAKE_OK,
+              "step4 Pcb-1: a handshake resolved by CALLBACK completes");
+        CHECK(keys_agree(&p.ini, &p.res),
+              "step4 Pcb-1: both peers derive identical c2s and s2c");
+        CHECK(cb.calls == 1, "step4 Pcb-1: the callback was asked exactly once");
+
+        /* Pcb-5: it was asked about the PEER's identity, not the local one. */
+        CHECK(cb.seen_len == sizeof(ID_A) && memcmp(cb.seen_id, ID_A, sizeof(ID_A)) == 0,
+              "step4 Pcb-5: the callback receives the ClientHello's identity");
+        pair_wipe(&p);
+        handshake_pending_store_wipe(&store);
+    }
+
+    /* Pcb-2: a callback that refuses -> UNKNOWN_IDENTITY and NO ledger entry. */
+    {
+        pair_t p;
+        cb_ctx_t cb; memset(&cb, 0, sizeof cb); cb.pk = NULL;
+        clock_reset(); store_fresh(&store, 4);
+        memset(&p, 0, sizeof p);
+        if (handshake_initiator_init(&p.ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B,
+                                     sizeof(ID_B)) != HANDSHAKE_OK ||
+            handshake_responder_init_ext(&p.res, ID_B, sizeof(ID_B), &g_kp_b, test_lookup, &cb,
+                                         &store) != HANDSHAKE_OK) {
+            fatal("Pcb-2 init");
+        }
+        CHECK(handshake_initiator_create_client_hello(&p.ini, p.ch, sizeof p.ch, &p.ch_len) ==
+                  HANDSHAKE_OK,
+              "step4 Pcb-2: the ClientHello is created");
+        CHECK(handshake_responder_accept_client_hello(&p.res, p.ch, p.ch_len) ==
+                  HANDSHAKE_ERR_UNKNOWN_IDENTITY,
+              "step4 Pcb-2: a callback returning NULL yields UNKNOWN_IDENTITY");
+        CHECK(handshake_pending_active_count(&store) == 0u,
+              "step4 Pcb-2: ...and no ledger entry was created");
+        pair_wipe(&p);
+        handshake_pending_store_wipe(&store);
+    }
+
+    /* Pcb-3: a callback handing back the WRONG key. This is what proves
+     * peer_pk genuinely came from the callback: everything up to sig_A
+     * succeeds, and the signature is what refuses. */
+    {
+        pair_t p;
+        cb_ctx_t cb; memset(&cb, 0, sizeof cb); cb.pk = g_kp_c.public_key; /* C, not A */
+        clock_reset(); store_fresh(&store, 4);
+        memset(&p, 0, sizeof p);
+        if (handshake_initiator_init(&p.ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B,
+                                     sizeof(ID_B)) != HANDSHAKE_OK ||
+            handshake_responder_init_ext(&p.res, ID_B, sizeof(ID_B), &g_kp_b, test_lookup, &cb,
+                                         &store) != HANDSHAKE_OK) {
+            fatal("Pcb-3 init");
+        }
+        CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK,
+              "step4 Pcb-3: the wrong pin still gets as far as ClientAuth");
+        CHECK(handshake_responder_verify_client_auth(&p.res, p.ca, p.ca_len) ==
+                  HANDSHAKE_ERR_SIGNATURE,
+              "step4 Pcb-3: a callback returning the WRONG key fails at sig_A");
+        pair_wipe(&p);
+        handshake_pending_store_wipe(&store);
+    }
+
+    /* Pext-6 / Pcb-6: the two features composed, which is how the daemon uses
+     * them -- a callback-resolved handshake against an EXTERNAL ledger,
+     * pre-filled past the inline array so the entry cannot land in entries[]. */
+    {
+        pair_t p;
+        cb_ctx_t cb; memset(&cb, 0, sizeof cb); cb.pk = g_kp_a.public_key;
+        uint8_t fid[16], fth[32];
+        memset(fth, 0x11, sizeof fth);
+        clock_reset();
+        store_fresh_ext(&store, big, 300);
+        for (size_t i = 0; i < 299; i++) { id_n(fid, i); (void)handshake_pending_insert(&store, fid, fth); }
+        CHECK(handshake_pending_active_count(&store) == 299u,
+              "step4 Pext-6: the external ledger is filled to 299 of 300");
+        memset(&p, 0, sizeof p);
+        if (handshake_initiator_init(&p.ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B,
+                                     sizeof(ID_B)) != HANDSHAKE_OK ||
+            handshake_responder_init_ext(&p.res, ID_B, sizeof(ID_B), &g_kp_b, test_lookup, &cb,
+                                         &store) != HANDSHAKE_OK) {
+            fatal("Pext-6 init");
+        }
+        CHECK(pair_to_client_auth(&p) == HANDSHAKE_OK && pair_finish_both(&p) == HANDSHAKE_OK,
+              "step4 Pext-6: a responder handshake completes against an EXTERNAL ledger");
+        CHECK(keys_agree(&p.ini, &p.res),
+              "step4 Pext-6: ...and both peers agree on the key");
+        pair_wipe(&p);
+        handshake_pending_store_wipe(&store);
+    }
+}
+
 static void test_step4_store_api(void) {
     static handshake_pending_store_t s;
     uint8_t h[16], th[32];
@@ -3057,7 +3366,9 @@ static void run_step4_tests(void) {
     test_step4_wipe_cancels();                  /* T30 */
     test_step4_cancel_semantics();              /* T31 */
     test_step4_responder_low_order(1);          /* T32 */
-    test_step4_store_api();                     /* store API hygiene */
+    test_step4_store_api();
+    test_step4_external_ledger();
+    test_step4_lookup_callback();                     /* store API hygiene */
 
     mldsa_keypair_free(&g_kp_a);
     mldsa_keypair_free(&g_kp_b);

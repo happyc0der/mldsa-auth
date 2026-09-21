@@ -49,9 +49,23 @@ uint64_t handshake_default_clock_ms(void *clock_ctx) {
     return default_monotonic_ms(clock_ctx);
 }
 
+/* WHICH capacity limit applies is DERIVED from where the slots are, never
+ * stored: a separate "this one is external" flag could disagree with the
+ * pointer, and then one of the two would be a lie. */
+static size_t cap_limit_for(const handshake_pending_store_t *s,
+                            const handshake_pending_entry_t *slots) {
+    return (slots == s->entries) ? HANDSHAKE_PENDING_MAX : HANDSHAKE_PENDING_EXT_MAX;
+}
+
+/* s->slots != NULL is load-bearing, not tidiness: every accessor dereferences
+ * it. It is also what makes a WIPED store fail closed, which the old code got
+ * only as a side effect of capacity becoming 0. A zeroed store has
+ * slots == NULL != entries, so cap_limit_for would answer the external limit
+ * -- which costs nothing, because slots != NULL and capacity >= 1 have already
+ * rejected it. */
 static bool store_usable(const handshake_pending_store_t *s) {
-    return s != NULL && s->clock_fn != NULL && s->capacity >= 1u &&
-           s->capacity <= HANDSHAKE_PENDING_MAX && s->ttl_ms > 0;
+    return s != NULL && s->slots != NULL && s->clock_fn != NULL && s->capacity >= 1u &&
+           s->capacity <= cap_limit_for(s, s->slots) && s->ttl_ms > 0;
 }
 
 static uint64_t store_now(const handshake_pending_store_t *s) {
@@ -77,7 +91,7 @@ static bool find_slot(const handshake_pending_store_t *s,
     bool found = false;
     size_t index = 0;
     for (size_t i = 0; i < s->capacity; i++) {
-        const handshake_pending_entry_t *e = &s->entries[i];
+        const handshake_pending_entry_t *e = &s->slots[i];
         const bool in_use = (e->state != PENDING_SLOT_FREE);
         const bool equal = (sodium_memcmp(e->handshake_id, handshake_id, WIRE_HANDSHAKE_ID_LEN) == 0);
         if (in_use && equal && !found) {
@@ -89,16 +103,26 @@ static bool find_slot(const handshake_pending_store_t *s,
     return found;
 }
 
-pending_status_t handshake_pending_store_init(handshake_pending_store_t *s, size_t capacity,
-                                              uint64_t ttl_ms, handshake_clock_fn clock_fn,
-                                              void *clock_ctx) {
+/* One implementation behind both public inits, so their validation cannot
+ * drift apart. `slots` selects which limit applies, via cap_limit_for. */
+static pending_status_t store_init_common(handshake_pending_store_t *s,
+                                          handshake_pending_entry_t *slots,
+                                          size_t capacity, uint64_t ttl_ms,
+                                          handshake_clock_fn clock_fn, void *clock_ctx) {
     if (s == NULL) {
         return PENDING_ERR_INVALID_ARG;
     }
     memset(s, 0, sizeof(*s)); /* a rejected init leaves the store unusable */
-    if (capacity < 1u || capacity > HANDSHAKE_PENDING_MAX || ttl_ms == 0) {
+    /* cap_limit_for reads only the ADDRESS of s->entries, never its contents,
+     * so calling it after the memset above is intentional and safe. */
+    if (slots == NULL || capacity < 1u || capacity > cap_limit_for(s, slots) || ttl_ms == 0) {
         return PENDING_ERR_INVALID_ARG;
     }
+    /* The caller's array may be a REUSED static: stale bytes would read as
+     * occupied slots that nothing ever frees. The inline array is zeroed twice,
+     * which costs one memset and removes a special case. */
+    memset(slots, 0, capacity * sizeof(*slots));
+    s->slots = slots;
     s->capacity = capacity;
     s->ttl_ms = ttl_ms;
     s->clock_fn = (clock_fn != NULL) ? clock_fn : default_monotonic_ms;
@@ -106,10 +130,36 @@ pending_status_t handshake_pending_store_init(handshake_pending_store_t *s, size
     return PENDING_OK;
 }
 
-void handshake_pending_store_wipe(handshake_pending_store_t *s) {
-    if (s != NULL) {
-        sodium_memzero(s, sizeof(*s));
+pending_status_t handshake_pending_store_init(handshake_pending_store_t *s, size_t capacity,
+                                              uint64_t ttl_ms, handshake_clock_fn clock_fn,
+                                              void *clock_ctx) {
+    if (s == NULL) {
+        return PENDING_ERR_INVALID_ARG;
     }
+    return store_init_common(s, s->entries, capacity, ttl_ms, clock_fn, clock_ctx);
+}
+
+pending_status_t handshake_pending_store_init_ext(handshake_pending_store_t *s,
+                                                  handshake_pending_entry_t *slots,
+                                                  size_t capacity, uint64_t ttl_ms,
+                                                  handshake_clock_fn clock_fn,
+                                                  void *clock_ctx) {
+    return store_init_common(s, slots, capacity, ttl_ms, clock_fn, clock_ctx);
+}
+
+void handshake_pending_store_wipe(handshake_pending_store_t *s) {
+    if (s == NULL) {
+        return;
+    }
+    /* The EXTERNAL array FIRST, through the pointer that is about to be
+     * zeroed. Reversing these two statements leaves a caller's ledger full of
+     * handshake_ids and transcript digests with nothing pointing at it --
+     * sizeof(*s) cannot reach an array this store does not contain. The array
+     * is BORROWED, so it is zeroed and never freed. */
+    if (s->slots != NULL && s->slots != s->entries) {
+        sodium_memzero(s->slots, s->capacity * sizeof(*s->slots));
+    }
+    sodium_memzero(s, sizeof(*s));
 }
 
 void handshake_pending_sweep(handshake_pending_store_t *s) {
@@ -118,7 +168,7 @@ void handshake_pending_sweep(handshake_pending_store_t *s) {
     }
     const uint64_t now = store_now(s);
     for (size_t i = 0; i < s->capacity; i++) {
-        handshake_pending_entry_t *e = &s->entries[i];
+        handshake_pending_entry_t *e = &s->slots[i];
         if (e->state != PENDING_SLOT_FREE && entry_expired(e, now)) {
             free_slot(e);
         }
@@ -144,7 +194,7 @@ pending_status_t handshake_pending_insert(handshake_pending_store_t *s,
     const uint64_t deadline = (now > UINT64_MAX - s->ttl_ms) ? UINT64_MAX : now + s->ttl_ms;
 
     for (size_t i = 0; i < s->capacity; i++) {
-        handshake_pending_entry_t *e = &s->entries[i];
+        handshake_pending_entry_t *e = &s->slots[i];
         if (e->state == PENDING_SLOT_FREE) {
             e->state = PENDING_SLOT_ACTIVE;
             memcpy(e->handshake_id, handshake_id, WIRE_HANDSHAKE_ID_LEN);
@@ -173,7 +223,7 @@ pending_status_t handshake_pending_get_digest(handshake_pending_store_t *s,
     if (!find_slot(s, handshake_id, &index)) {
         return PENDING_ERR_NOT_FOUND;
     }
-    handshake_pending_entry_t *e = &s->entries[index];
+    handshake_pending_entry_t *e = &s->slots[index];
     if (entry_expired(e, store_now(s))) { /* expiry before state, always */
         free_slot(e);
         return PENDING_ERR_EXPIRED;
@@ -205,7 +255,7 @@ pending_status_t handshake_pending_inspect(const handshake_pending_store_t *s,
     if (!find_slot(s, handshake_id, &index)) {
         return PENDING_ERR_NOT_FOUND;
     }
-    const handshake_pending_entry_t *e = &s->entries[index];
+    const handshake_pending_entry_t *e = &s->slots[index];
     *failure_count_out = e->failure_count;
     /* Report LOGICAL expiry without evicting: never describe an expired
      * entry as live, and never mutate anything. */
@@ -232,7 +282,7 @@ pending_status_t handshake_pending_record_failure(handshake_pending_store_t *s,
     if (!find_slot(s, handshake_id, &index)) {
         return PENDING_ERR_NOT_FOUND;
     }
-    handshake_pending_entry_t *e = &s->entries[index];
+    handshake_pending_entry_t *e = &s->slots[index];
     if (entry_expired(e, store_now(s))) {
         free_slot(e);
         return PENDING_ERR_EXPIRED;
@@ -262,7 +312,7 @@ pending_status_t handshake_pending_consume_success(handshake_pending_store_t *s,
     if (!find_slot(s, handshake_id, &index)) {
         return PENDING_ERR_NOT_FOUND;
     }
-    handshake_pending_entry_t *e = &s->entries[index];
+    handshake_pending_entry_t *e = &s->slots[index];
     if (entry_expired(e, store_now(s))) { /* re-checked: may have expired since get_digest */
         free_slot(e);
         return PENDING_ERR_EXPIRED;
@@ -286,7 +336,7 @@ pending_status_t handshake_pending_cancel(handshake_pending_store_t *s,
     if (!find_slot(s, handshake_id, &index)) {
         return PENDING_ERR_NOT_FOUND;
     }
-    handshake_pending_entry_t *e = &s->entries[index];
+    handshake_pending_entry_t *e = &s->slots[index];
     /* Uniform expiry rule first: an expired entry of ANY state is evicted
      * now, so it never lingers occupying capacity until a later sweep. */
     if (entry_expired(e, store_now(s))) {
@@ -311,7 +361,7 @@ size_t handshake_pending_active_count(const handshake_pending_store_t *s) {
     const uint64_t now = store_now(s);
     size_t n = 0;
     for (size_t i = 0; i < s->capacity; i++) {
-        const handshake_pending_entry_t *e = &s->entries[i];
+        const handshake_pending_entry_t *e = &s->slots[i];
         if (e->state == PENDING_SLOT_ACTIVE && !entry_expired(e, now)) {
             n++;
         }
@@ -408,10 +458,37 @@ static int derive_traffic_keys(uint8_t out[SESSION_KEYS_LEN],
     return 0;
 }
 
+/* The ONE place a peer's pinned key is resolved, for both roles and both
+ * initialization forms.
+ *
+ * The keystore path is bit-identical to the code this replaced:
+ * keystore_lookup() sets *out = NULL on EVERY non-KEYSTORE_OK status, so
+ * "NULL" and "!= KEYSTORE_OK" are the same condition, not an approximation.
+ *
+ * The ctx->keystore == NULL guard is not decorative. Without it a context
+ * carrying neither resolver would dereference NULL inside keystore_lookup,
+ * turning a mutation that forgets to set lookup_fn into a segfault instead of
+ * a named check failure. */
+static const uint8_t *resolve_peer_pk(const handshake_ctx_t *ctx,
+                                      const uint8_t *id, size_t id_len) {
+    if (ctx->lookup_fn != NULL) {
+        return ctx->lookup_fn(ctx->lookup_ctx, id, id_len);
+    }
+    if (ctx->keystore == NULL) {
+        return NULL;
+    }
+    const uint8_t *pk = NULL;
+    if (keystore_lookup(ctx->keystore, id, id_len, &pk) != KEYSTORE_OK) {
+        return NULL;
+    }
+    return pk;
+}
+
 static handshake_status_t init_common(handshake_ctx_t *ctx, handshake_role_t role,
                                       const uint8_t *local_id, size_t local_id_len,
                                       const mldsa_keypair_t *local_keypair,
-                                      const keystore_t *keystore) {
+                                      const keystore_t *keystore,
+                                      handshake_lookup_fn lookup_fn, void *lookup_ctx) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->state = HANDSHAKE_STATE_FAILED; /* unusable until fully initialized */
 
@@ -427,6 +504,8 @@ static handshake_status_t init_common(handshake_ctx_t *ctx, handshake_role_t rol
     ctx->local_id_len = (uint8_t)local_id_len;
     ctx->local_keypair = local_keypair;
     ctx->keystore = keystore;
+    ctx->lookup_fn = lookup_fn;
+    ctx->lookup_ctx = lookup_ctx;
     ctx->state = HANDSHAKE_STATE_NEW;
     return HANDSHAKE_OK;
 }
@@ -451,7 +530,7 @@ handshake_status_t handshake_initiator_init(handshake_ctx_t *ctx,
         return HANDSHAKE_ERR_INVALID_ARG;
     }
     handshake_status_t st = init_common(ctx, HANDSHAKE_ROLE_INITIATOR, local_id, local_id_len,
-                                        local_keypair, keystore);
+                                        local_keypair, keystore, NULL, NULL);
     if (st != HANDSHAKE_OK) {
         return st;
     }
@@ -460,27 +539,53 @@ handshake_status_t handshake_initiator_init(handshake_ctx_t *ctx,
     return HANDSHAKE_OK;
 }
 
-handshake_status_t handshake_responder_init(handshake_ctx_t *ctx,
-                                            const uint8_t *local_id, size_t local_id_len,
-                                            const mldsa_keypair_t *local_keypair,
-                                            const keystore_t *keystore,
-                                            handshake_pending_store_t *pending) {
+/* Both responder entry points go through here so their validation cannot
+ * drift apart -- the shape V4-9b's authd_config_check_paths() established:
+ * one validator, two entry points. */
+static handshake_status_t responder_init_impl(handshake_ctx_t *ctx,
+                                              const uint8_t *local_id, size_t local_id_len,
+                                              const mldsa_keypair_t *local_keypair,
+                                              const keystore_t *keystore,
+                                              handshake_lookup_fn lookup_fn, void *lookup_ctx,
+                                              handshake_pending_store_t *pending) {
     if (ctx == NULL) {
         return HANDSHAKE_ERR_INVALID_ARG;
     }
+    /* EXACTLY one resolver. Neither is API misuse, and so is both: a context
+     * carrying two answers has no defined precedence, and inventing one here
+     * would make which resolver wins a property nobody stated. */
+    const bool one_resolver = ((keystore != NULL) != (lookup_fn != NULL));
     if (local_id == NULL || !id_len_valid(local_id_len) || local_keypair == NULL ||
-        local_keypair->secret_key == NULL || keystore == NULL || !store_usable(pending)) {
+        local_keypair->secret_key == NULL || !one_resolver || !store_usable(pending)) {
         memset(ctx, 0, sizeof(*ctx));
         ctx->state = HANDSHAKE_STATE_FAILED;
         return HANDSHAKE_ERR_INVALID_ARG;
     }
     handshake_status_t st = init_common(ctx, HANDSHAKE_ROLE_RESPONDER, local_id, local_id_len,
-                                        local_keypair, keystore);
+                                        local_keypair, keystore, lookup_fn, lookup_ctx);
     if (st != HANDSHAKE_OK) {
         return st;
     }
     ctx->pending = pending;
     return HANDSHAKE_OK;
+}
+
+handshake_status_t handshake_responder_init(handshake_ctx_t *ctx,
+                                            const uint8_t *local_id, size_t local_id_len,
+                                            const mldsa_keypair_t *local_keypair,
+                                            const keystore_t *keystore,
+                                            handshake_pending_store_t *pending) {
+    return responder_init_impl(ctx, local_id, local_id_len, local_keypair, keystore,
+                               NULL, NULL, pending);
+}
+
+handshake_status_t handshake_responder_init_ext(handshake_ctx_t *ctx,
+                                                const uint8_t *local_id, size_t local_id_len,
+                                                const mldsa_keypair_t *local_keypair,
+                                                handshake_lookup_fn lookup_fn, void *lookup_ctx,
+                                                handshake_pending_store_t *pending) {
+    return responder_init_impl(ctx, local_id, local_id_len, local_keypair, NULL,
+                               lookup_fn, lookup_ctx, pending);
 }
 
 void handshake_ctx_wipe(handshake_ctx_t *ctx) {
@@ -632,7 +737,8 @@ handshake_status_t handshake_initiator_verify_server_hello(handshake_ctx_t *ctx,
     }
 
     /* 4. Pinned key for that identity. */
-    if (keystore_lookup(ctx->keystore, msg.id, msg.id_len, &ctx->peer_pk) != KEYSTORE_OK) {
+    ctx->peer_pk = resolve_peer_pk(ctx, msg.id, msg.id_len);
+    if (ctx->peer_pk == NULL) {
         result = HANDSHAKE_ERR_UNKNOWN_IDENTITY;
         goto fail;
     }
@@ -861,7 +967,8 @@ handshake_status_t handshake_responder_accept_client_hello(handshake_ctx_t *ctx,
     }
 
     /* Unknown initiator: fail closed WITHOUT creating any pending entry. */
-    if (keystore_lookup(ctx->keystore, msg.id, msg.id_len, &ctx->peer_pk) != KEYSTORE_OK) {
+    ctx->peer_pk = resolve_peer_pk(ctx, msg.id, msg.id_len);
+    if (ctx->peer_pk == NULL) {
         result = HANDSHAKE_ERR_UNKNOWN_IDENTITY;
         goto fail;
     }
