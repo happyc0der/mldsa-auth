@@ -5038,6 +5038,19 @@ add five things and adds one is a step nobody can check — and because the four
 flags would have been added either way, with three of them doing nothing and
 no one the wiser.
 
+**And "one property" turns out to be compiler-dependent — which the CI control
+found, not the measurement.** Removing `-Wl,-z,now` on the bring-up branch
+turned the clang release job red (`BIND_NOW no`, three properties absent) and
+left the **gcc** one green: Ubuntu patches gcc's default specs to link
+`-z now` already, so on that toolchain the property is present whether this
+project asks for it or not. Two consequences worth stating plainly. The flag is
+doing real work for clang and no work for Ubuntu's gcc — and the gcc job's
+green tick therefore does *not* demonstrate that our flags work, only that the
+shipped binary has the property, which is the thing that actually matters for
+deployment. A gate that reads the BINARY rather than the build files is why
+both statements can be true at once, and is the reason `check_hardening.sh` was
+written that way in V4-1.
+
 Two platform facts constrain how they are added, both established by probe
 rather than recall: `-Wl,-z,...` **does not link on macOS** (`ld: unknown
 options: -z`), and `-fcf-protection` is rejected on arm64. So the flags are

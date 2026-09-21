@@ -161,3 +161,87 @@ jobs:
           ./build-fuzz/tests/fuzz/fuzz_keys_replay --scan-secret-dirs \
             tests/fuzz/regressions tests/fuzz/dict | tee scan.log
           grep -q " 0 violation" scan.log || { echo "::error::secret scan found violations"; exit 1; }
+
+  release:
+    name: Release + install + hardening (Linux, ${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # The configuration a deployment actually uses, which until V4-11 was
+      # never built in CI: Release, with a NAMED CPU target rather than the
+      # `auto` default that tunes for the building machine. ubuntu-latest is
+      # x86_64, so this is also the only place the documented `x86-64-v3`
+      # recipe is exercised -- the developer machine is arm64.
+      - name: Configure and build Release
+        run: |
+          cmake -S . -B build-release -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+                -DCMAKE_BUILD_TYPE=Release -DMLDSA_OQS_OPT_TARGET=x86-64-v3
+          cmake --build build-release -j
+
+      - name: Standing rule 3 + suite
+        run: tools/check_build_current.sh build-release && ctest --test-dir build-release --output-on-failure
+
+      # --component is load-bearing, not tidiness: liboqs is vendored with
+      # FetchContent and defines its own install() rules, so a bare install
+      # also writes a pin-locked, -march-tuned liboqs.a and its headers into
+      # the prefix (finding F73).
+      - name: Install
+        run: cmake --install build-release --prefix "$PWD/stage" --component mldsa-authd
+
+      - name: The install tree is exactly what ships
+        run: |
+          find stage -type f | sort | tee installed.txt
+          test "$(wc -l < installed.txt)" -eq 6 || {
+            echo "::error::the install tree is not the six files that ship"; exit 1; }
+
+      # THE gate this job exists for. It is meaningful here and much weaker on
+      # macOS, where RELRO and BIND_NOW are reported n/a because they are ELF
+      # concepts -- so it is required on Linux and nowhere else.
+      - name: Hardening, REQUIRED, on the install tree
+        run: tools/audit/check_hardening.sh "$PWD/stage" --require
+
+      - name: One optimized backend, no portable-C
+        run: tools/check_backend_symbols.sh build-release
+
+  deploy:
+    name: unit + offline build (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # CI runs the SAME TWO SCRIPTS a developer runs, rather than a second
+      # implementation of them in YAML. Both need Docker -- systemd's own
+      # analysers are not on a macOS host, and an offline build has to happen
+      # somewhere its network can actually be taken away -- and Docker is
+      # preinstalled on this runner.
+      #
+      # Both scripts SKIP rather than fail when Docker is missing, which is
+      # right for a developer and wrong for a gate, so each run is required
+      # not to have skipped. A gate that can pass by not running is not a gate.
+      - name: The unit, per systemd's own analysers
+        run: |
+          sh tests/deploy_checks.sh 2>&1 | tee unit.log
+          grep -q "^SKIP:" unit.log && { echo "::error::the unit gate skipped"; exit 1; }
+          grep -q "^PASS: DEPLOY: all checks" unit.log || {
+            echo "::error::the unit gate did not report all checks passing"; exit 1; }
+
+      - name: Populate the dependency cache
+        run: sh deploy/fetch-deps.sh "$RUNNER_TEMP/deps"
+
+      # The happy path AND three controls: a cache git cannot read, one
+      # changed byte, and a clone moved off the pinned commit. The controls
+      # are the point -- an offline cache is the one place a mistake would
+      # silently WEAKEN a pin.
+      - name: Build with the network switched off, and prove the cache is checked
+        run: |
+          sh tests/offline_build.sh "$RUNNER_TEMP/deps" 2>&1 | tee offline.log
+          grep -q "^SKIP:" offline.log && { echo "::error::the offline gate skipped"; exit 1; }
+          grep -q "^PASS: OFFLINE: all checks" offline.log || {
+            echo "::error::the offline gate did not report all checks passing"; exit 1; }

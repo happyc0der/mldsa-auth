@@ -47,13 +47,21 @@ inc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y
   || fail "cannot install the toolchain"
 inc "mkdir -p /src /cache"
 
-# COPYFILE_DISABLE and --no-mac-metadata/--no-xattrs: `docker cp` rejects
-# macOS's com.apple.provenance xattr outright, and a bind mount is not an
-# option either, because this tree may live under a path containing spaces
-# (F13) which libsodium's libtool cannot handle.
-(cd "$REPO" && COPYFILE_DISABLE=1 tar -c --no-mac-metadata --no-xattrs \
+# The tree goes in as a TAR STREAM, not a bind mount, for two reasons: this
+# checkout may live under a path containing spaces (F13), which libsodium's
+# libtool cannot handle, and `docker cp` rejects macOS's com.apple.provenance
+# xattr outright -- which is what COPYFILE_DISABLE and the two flags below
+# suppress. GNU tar has neither flag and needs neither, so they are added only
+# where they mean something.
+case "$(uname -s)" in
+  Darwin) TARX="--no-mac-metadata --no-xattrs" ;;
+  *)      TARX="" ;;
+esac
+# shellcheck disable=SC2086
+(cd "$REPO" && COPYFILE_DISABLE=1 tar -c $TARX \
    --exclude='./build*' --exclude='./.git' --exclude='./crash-*' .) | docker cp - "$NAME:/src"
-(cd "$CACHE" && COPYFILE_DISABLE=1 tar -c --no-mac-metadata --no-xattrs .) | docker cp - "$NAME:/cache"
+# shellcheck disable=SC2086
+(cd "$CACHE" && COPYFILE_DISABLE=1 tar -c $TARX .) | docker cp - "$NAME:/cache"
 
 docker network disconnect bridge "$NAME" 2>/dev/null || true
 inc "timeout 8 getent hosts github.com" > /dev/null 2>&1 \
