@@ -746,6 +746,11 @@ static void test_chacha20poly1305_rfc8439_vector(void) {
  * ------------------------------------------------------------------- */
 
 int main(void) {
+    /* Unbuffered, so every PASS/FAIL line already reported survives even if a
+     * later check crashes the process. Under ctest stdout is a pipe and fully
+     * buffered, and Linux ASan exits without flushing it: v52's P4 lost its
+     * named failure that way on the nightly while macOS kept it. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) {
         fprintf(stderr, "FATAL: sodium_init() failed\n");
         return EXIT_FAILURE;

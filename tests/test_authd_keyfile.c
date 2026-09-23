@@ -59,6 +59,11 @@ static long fsize(const char *p) { struct stat st; return stat(p, &st) == 0 ? (l
 static int fmode(const char *p) { struct stat st; return stat(p, &st) == 0 ? (int)(st.st_mode & 0777) : -1; }
 
 int main(void) {
+    /* Unbuffered, so every PASS/FAIL line already reported survives even if a
+     * later check crashes the process. Under ctest stdout is a pipe and fully
+     * buffered, and Linux ASan exits without flushing it: v52's P4 lost its
+     * named failure that way on the nightly while macOS kept it. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { puts("sodium_init failed"); return 2; }
     snprintf(g_dir, sizeof(g_dir), "/tmp/authd_kf_%d", (int)getpid());
     if (mkdir(g_dir, 0700) != 0) { perror("mkdir"); return 2; }

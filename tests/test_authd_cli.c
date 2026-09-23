@@ -576,6 +576,11 @@ static void test_key_plan(void)
 
 int main(void)
 {
+    /* Unbuffered, so every PASS/FAIL line already reported survives even if a
+     * later check crashes the process. Under ctest stdout is a pipe and fully
+     * buffered, and Linux ASan exits without flushing it: v52's P4 lost its
+     * named failure that way on the nightly while macOS kept it. */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
     (void)snprintf(g_dir, sizeof g_dir, "/tmp/authd-cli-%ld", (long)getpid());
     if (mkdir(g_dir, 0700) != 0) { printf("FAIL: mkdir %s\n", g_dir); return 1; }
