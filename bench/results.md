@@ -540,14 +540,54 @@ the real one. The bench requires `allocs > 0` before trusting the balance —
 two ever differ, so a leak is a gate rather than a note. The register's
 estimate was "~10".
 
+### x86_64, measured (bench.yml run 35812305959)
+
+`decisions.md` has said since V4-2 that the x86_64 figure must be measured
+rather than ported. Dispatched on `main` at `3728c78`, three repetitions;
+**every figure below is the median of the three run medians** from
+`bench-results/run-{1,2,3}.txt` in that run's artifact. A GitHub-hosted runner
+is a shared VM, so these are an upper bound on latency, not a bare-metal
+figure. The environment block, verbatim in the parts that matter:
+
+```
+  os                         Linux 6.17.0-1022-azure x86_64
+  cpu                        AMD EPYC 9V74 80-Core Processor (4 logical cores online)
+  virtualization             DMI vendor Microsoft Corporation
+  compiler                   clang 18.1.3 (1ubuntu1)
+  ml-dsa backend             AVX2-optimized (x86_64), selected at build time (OQS_DIST_BUILD=OFF: no per-call branch)
+  conn slot                  6256 B (authd_conn_t)
+  slot total                 31736 B
+```
+
+| | arm64 (M4 Pro) | x86_64 (EPYC 9V74) |
+|---|---|---|
+| one scan, capacity 256 | 3.08 µs | 5.02 µs |
+| one scan, capacity 1024 | 9.50 µs | 19.94 µs |
+| one scan, capacity 2048 | 20.00 µs | **39.80 µs** |
+| handshake, capacity 8 | 437.00 µs | 784.94 µs |
+| handshake, capacity 1024 | 499.08 µs | 908.95 µs |
+| handshake, capacity 2048 | 573.75 µs | 1.030 ms |
+| **ledger's share at 1024** | 62.1 µs (12.4 %) | **123.3 µs (13.6 %)** |
+| **ledger's share at 2048** | 136.8 µs (23.8 %) | **248.7 µs (24.0 %)** |
+| secure allocations | 12 / 12 | 12 / 12 |
+
+(The arm64 column is a single run, not a median of three; see above.)
+
+**The absolute cost doubles; the fraction does not move.** At capacity 2048
+the ledger is 24 % of a handshake on both machines, because the scan and the
+ML-DSA work around it slow down together. That is the reading worth keeping,
+and it answers a question erratum 30 left open: on x86_64 **even capacity 1024
+exceeds V4-2's 100 µs budget** (123 µs). An absolute microsecond budget was
+never going to survive the move to the deployment platform. The ledger's
+share of the handshake does, which is the form §17 now states it in.
+
 ### What these numbers do not establish
 
-They are **arm64 only**, and `decisions.md` has said since V4-2 that the x86_64
-figure must be measured rather than ported. That measurement has not happened
-yet; until `bench.yml` runs on `ubuntu-latest`, the capacity limit rests on
-this architecture alone.
+They are two machines, not a population, and the x86_64 one is a **shared
+VM** — its spread (p99 1.29 ms against a 1.03 ms median at capacity 2048) is
+at least partly neighbours, not ledger.
 
-They are also a **quiet laptop**, not a loaded VPS. The handshake medians carry
+The arm64 figures are also a **quiet laptop**, not a loaded VPS. The handshake medians carry
 a wide spread (p99 838 µs against a 574 µs median at capacity 2048), which is
 scheduling noise, not ledger cost — the ledger's share is a difference of
 medians and is the stable part.

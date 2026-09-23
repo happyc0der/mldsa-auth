@@ -5252,6 +5252,16 @@ handshake already dominated by ML-DSA. The cost — 24 % of a handshake, where
 V4-2's budget would have allowed about 18 % — is accepted with the number
 written down. Recorded as F77 and spec erratum 30.
 
+**Measured on x86_64 afterwards** (`bench.yml` run 35812305959, AMD EPYC 9V74
+on a shared Azure VM, median of three runs): one scan at 2048 costs 39.80 µs,
+twice arm64's, and the ledger's share of a handshake is **248.7 µs — 24.0 %**,
+against arm64's 23.8 %. The microseconds double and the fraction does not
+move, because the scan and the ML-DSA around it slow down together. On x86_64
+even capacity 1024 costs 123 µs, over the 100 µs budget. So the decision to
+keep 2048 and state the cost as a share of the handshake turned out to be the
+only framing that survives the change of architecture: V4-2's budget, in
+absolute microseconds, was never portable.
+
 The benchmark had to be corrected too, and the mistake is instructive: its
 first draft compared handshakes by ledger **occupancy**. `find_slot` iterates
 `i < s->capacity` whatever the store holds, so both rows paid the same scan and

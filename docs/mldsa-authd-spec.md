@@ -926,7 +926,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Quantity | Value | Source |
 |---|---|---|
 | Handshakes per second per vCPU | ~2000 (Release) | spec-v2 §5.1 measurements |
-| Pending-ledger capacity | ≤ **2048** | V4-12, measured: the ledger costs **137 µs**, 24 % of a 560 µs handshake. V4-2 S2 estimated 79.6 µs and was wrong twice over — see §20 erratum 30 |
+| Pending-ledger capacity | ≤ **2048** | V4-12, measured: at 2048 the ledger is **24 % of a handshake** on both arm64 (137 µs of 574) and x86_64 (249 µs of 1,030). The fraction is the portable figure; the microseconds are not. V4-2 S2 estimated 79.6 µs and was wrong twice over — see §20 erratum 30 |
 | Sustained handshake rate | capacity ÷ TTL | consumed entries are reclaimed only at expiry; 205/s at 2048 with the default 10 s timeout |
 | RSS per in-flight handshake | ~95 KiB | V4-2 S1: 9.5 KiB × ~10 secure blocks |
 | `AUTHD_MAX_RECORD` | 12313 B | §6.1 |
@@ -1070,7 +1070,12 @@ tooling has since disproved. The capacity limit itself is unchanged at 2048.
 
 What the corrected number means is stated rather than buried: at 2048 the
 ledger is **24 % of a handshake**, where V4-2's 100 µs budget would have
-allowed about 18 %. That budget was itself asserted in V4-2 without a stated
+allowed about 18 %. Measured on x86_64 as well, the fraction is the same —
+24 % of a 1,030 µs handshake, 249 µs — and there **even capacity 1024 exceeds
+the 100 µs budget** (123 µs). A budget in absolute microseconds could not have
+held on the deployment platform whichever capacity was chosen; §17 therefore
+states the cost as a share of the handshake, the figure that survived the move
+between architectures. That budget was itself asserted in V4-2 without a stated
 derivation, and the trade it was weighed against is concrete — capacity is the
 throughput ceiling (§17), so 2048 buys **205 handshakes/s** against 1024's
 102/s, on a handshake already dominated by ML-DSA. The cost is accepted with
