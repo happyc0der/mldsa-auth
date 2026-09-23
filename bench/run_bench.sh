@@ -29,7 +29,7 @@ OUT="$BUILD/bench-results"
 # and five targets were quietly fuzzed to half their intended max_len for four
 # steps. A suite added to bench/CMakeLists.txt is now picked up here the day
 # it is added, and one that is missing from the build fails loudly.
-SUITES=$(sed -n 's/^foreach(_bench \(.*\))$//p' "$(dirname "$0")/CMakeLists.txt")
+SUITES=$(sed -n 's/^foreach(_bench \(.*\))$/\1/p' "$(dirname "$0")/CMakeLists.txt")
 [ -n "$SUITES" ] || { echo "cannot derive the suite list from bench/CMakeLists.txt"; exit 2; }
 # add_executable targets declared outside the foreach are named explicitly.
 SUITES="$SUITES authd"
