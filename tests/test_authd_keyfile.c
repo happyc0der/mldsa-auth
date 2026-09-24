@@ -208,7 +208,12 @@ int main(void) {
             "parity: the file API opens what the buffer API sealed -- same key, same KEK");
       mldsa_keypair_free(&b);
       /* file -> buffer: the bytes keyfile_seal wrote open in memory */
-      { long fl = fsize(ek); uint8_t *fb = malloc((size_t)fl);
+      /* fsize() is -1 for a missing file, and gcc -O2 sees (size_t)-1 reach
+       * malloc and refuses it (-Werror=alloc-size-larger-than) -- the Linux
+       * gcc Release job caught this; a missing fixture aborts instead. */
+      { const long fl = fsize(ek);
+        if (fl <= 0) { puts("fixture: the sealed file is missing"); return 2; }
+        uint8_t *fb = malloc((size_t)fl);
         FILE *f = fopen(ek, "rb"); size_t rn = f ? fread(fb, 1, (size_t)fl, f) : 0; if (f) fclose(f);
         uint8_t k3[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
         CHECK(rn == (size_t)fl && keyfile_open_buf(fb, rn, ID_A, IDLEN, PASS, strlen(PASS), &b, k3) == KEYFILE_OK &&
