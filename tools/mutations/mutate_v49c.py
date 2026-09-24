@@ -66,6 +66,7 @@ AM = "apps/authd/authmsg.c"
 CN = "apps/authd/authd_conn.c"
 ST = "apps/authd/store/store.c"
 CL = "apps/authd/authd_cli.c"
+CC = "apps/authd/client_core.c"
 M = {
  # flags leaves the signed tuple, so changing it after signing goes unnoticed
  "W1": (AM, [("    (void)crypto_hash_sha256_update(&st, &flags, 1u);",
@@ -104,8 +105,13 @@ M = {
  "W13": (AM, [("    if (o != len) {\n        return AUTHMSG_ERR_BAD_LENGTH;\n    }",
                "    if (o > len) {\n        return AUTHMSG_ERR_BAD_LENGTH;\n    } /* MUTATION W13: trailing bytes tolerated */")]),
  # a failed probe is taken as licence to delete the other key
- "W14": (CL, [("    if (next_present && next_ok) {\n        return KEY_PLAN_PROMOTE_NEXT;\n    }\n    return KEY_PLAN_REFUSE;",
-               "    if (next_present) {\n        return KEY_PLAN_PROMOTE_NEXT;   /* MUTATION W14 */\n    }\n    return KEY_PLAN_REFUSE;")]),
+ # V4-13a: moved with client_key_plan into client_core.c, and RE-AUTHORED.
+ # The original replacement (`if (next_present)`) left next_ok unused, so
+ # -Werror refused to build it and W14 scored KILLED(compile) every night
+ # since V4-9c without a test ever running against it (audit F79). This form
+ # compiles -- next_ok is still read, just no longer decides anything.
+ "W14": (CC, [("    if (next_present && next_ok) {\n        return KEY_PLAN_PROMOTE_NEXT;\n    }\n    return KEY_PLAN_REFUSE;",
+               "    if (next_present && next_ok >= 0) {\n        return KEY_PLAN_PROMOTE_NEXT;   /* MUTATION W14 */\n    }\n    return KEY_PLAN_REFUSE;")]),
  # rotate leaves the device's .pub naming the superseded key
  "W15": (CL, [("        if (rename(pub_tmp, pub_path) != 0) {\n            fprintf(stderr, \"%s rotate: the key rotated but %s could not be updated; \"\n                            \"it still names the OLD key\\n\", prog, pub_path);\n        }",
                "        /* MUTATION W15: the device .pub is never updated */")]),

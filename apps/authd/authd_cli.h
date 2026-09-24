@@ -30,20 +30,9 @@
  * writer racing the first.
  */
 
-/* Which key file is live after an interrupted rotation (spec 10.2).
- *
- * Exposed for tests: it is the subtlest decision in the client, and the only
- * way to exercise every branch without staging a crash mid-round-trip. The
- * rule is NOT the spec's wording -- see authd_cli.c for why "if it is unknown,
- * the server never committed" cannot be implemented, and why only .ek
- * authenticating licenses discarding .ek.next. */
-typedef enum {
-    KEY_PLAN_USE_EK = 0,    /* .ek is current; if .ek.next exists it is stale */
-    KEY_PLAN_PROMOTE_NEXT,  /* .ek.next is live: finish the interrupted rename */
-    KEY_PLAN_REFUSE         /* neither authenticates: say so, change nothing */
-} key_plan_t;
-
-key_plan_t client_key_plan(int ek_ok, int next_present, int next_ok);
+/* key_plan_t and client_key_plan() -- the .ek.next decision -- are declared in
+ * client_core.h since V4-13a, and included here for existing callers. */
+#include "client_core.h"
 
 /* argv[0] is the program name, argv[1] the subcommand. */
 int authd_cli_admin(int argc, char **argv);

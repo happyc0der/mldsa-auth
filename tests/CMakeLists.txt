@@ -145,6 +145,29 @@ target_compile_definitions(test_authd_cli PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_S
 target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_cli COMMAND test_authd_cli)
 
+# V4-13a: the client core, against the in-process daemon and a fake server.
+# The TIMEOUT is a guard, not a budget (the test takes seconds): it flips every
+# envelope header byte, and a mutant that removed the KDF bounds would send a
+# flipped opslimit into Argon2id for hours instead of failing.
+add_executable(test_client_core test_client_core.c)
+target_link_libraries(test_client_core PRIVATE mldsa_authd)
+target_compile_options(test_client_core PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_client_core PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_client_core PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_client_core COMMAND test_client_core)
+set_tests_properties(test_client_core PROPERTIES TIMEOUT 300)
+
+# The KAT links the CLIENT libraries only -- no daemon, no store, no sqlite --
+# which is also the proof that the core stands on its own, as the wasm build
+# (13b) will need it to. The golden is the contract that build must reproduce.
+add_executable(test_client_core_kat test_client_core_kat.c)
+target_link_libraries(test_client_core_kat PRIVATE mldsa_client)
+target_compile_options(test_client_core_kat PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_client_core_kat PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_client_core_kat PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_client_core_kat
+         COMMAND test_client_core_kat ${CMAKE_CURRENT_SOURCE_DIR}/golden/client_core_kat.txt)
+
 add_executable(test_authd_localapi test_authd_localapi.c)
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})

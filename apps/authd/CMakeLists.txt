@@ -3,7 +3,8 @@
 # lives only in mldsa_authd). The browser build (13b) compiles exactly these.
 #
 #   mldsa_ws      the WebSocket framing and its SHA-1 (RFC 6455 accept key)
-#   mldsa_client  the MLDSAEK1 envelope and the application messages
+#   mldsa_client  the MLDSAEK1 envelope, the application messages, and
+#                 client_core.c: the whole client as bytes in, bytes out
 #
 # authmsg.c includes store.h and conn_io.h for two constants (STORE_ID_MAX,
 # AUTHD_MAX_CONTENT) and calls nothing in either, hence the include
@@ -21,6 +22,7 @@ target_link_options(mldsa_ws PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LI
 add_library(mldsa_client STATIC
   keyfile.c
   authmsg.c
+  client_core.c
 )
 target_include_directories(mldsa_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
 target_link_libraries(mldsa_client PUBLIC mldsa_keys mldsa_ws mldsa_core)

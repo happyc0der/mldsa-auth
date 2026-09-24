@@ -1248,42 +1248,7 @@ static void client_say_bye(client_session_t *cs)
 
 /* ---- the .ek.next state machine (spec 10.2) ------------------------------ */
 
-/* What to do about a leftover <handle>.ek.next.
- *
- * Spec 10.2 says: "if it is unknown, the server never committed". That rule
- * CANNOT BE IMPLEMENTED, and implementing it as written would be dangerous.
- * Req 6 and 7.3 guarantee a client cannot distinguish an unknown key from a
- * revoked one from a wrong signature -- every one of them pins the decoy and
- * fails at the same point. "Unknown" is not observable, so "unknown therefore
- * the server never committed" is an inference from something the client never
- * learns.
- *
- * The sound rule is the contrapositive on the OTHER file, and it is stronger:
- *
- *     .ek authenticating PROVES the server did not commit -- there is exactly
- *     one active key per handle (the one_active_key index, spec 9.1) -- and
- *     only then may .ek.next be discarded. .ek.next failing proves nothing.
- *
- * So this never deletes on ambiguity. A stale file costs one confusing entry
- * in a directory; a wrong delete costs the only copy of a live key, and there
- * is no recovery path from that but re-enrolment by an administrator.
- *
- * Recorded as errata against 10.2 rather than silently deviated from. */
-/* `ek_ok` / `next_ok` are "this file opened AND the daemon accepted it".
- * `next_present` distinguishes "no .ek.next" from "one that did not work".
- *
- * Exported (authd_cli.h) ONLY so a test can drive every combination without a
- * network round trip nobody can crash in the middle of. */
-key_plan_t client_key_plan(int ek_ok, int next_present, int next_ok)
-{
-    if (ek_ok) {
-        return KEY_PLAN_USE_EK;
-    }
-    if (next_present && next_ok) {
-        return KEY_PLAN_PROMOTE_NEXT;
-    }
-    return KEY_PLAN_REFUSE;
-}
+/* client_key_plan (the .ek.next decision) lives in client_core.c since V4-13a. */
 
 static int cmd_client_keygen(int argc, char **argv, const char *prog)
 {
