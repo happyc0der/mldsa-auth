@@ -55,7 +55,7 @@ RL = "apps/authd/ratelimit.c"
 CN = "apps/authd/authd_conn.c"
 EV = "apps/authd/evloop.c"
 CI = "apps/authd/conn_io.c"
-CL = "apps/authd/authd_cli.c"
+CL = "apps/authd/client_cli.c"   # authd_client, since V4-13a (was authd_cli.c)
 
 M = {
  # J1 -- only the FIRST signature byte is compared, so eleven of the twelve
@@ -122,6 +122,7 @@ M = {
 
  # J12 -- audit finding F55, restored: authd_client's raw transport recurses
  # into itself instead of calling frame_send. Only a login over --port sees it.
+ # V4-13a: moved with cs_send into client_cli.c, text unchanged.
  "J12": (CL, [("        return frame_send(&cs->conn, buf, payload_len, cs->deadline);",
                "        return cs_send(cs, buf, payload_len); /* MUTATION J12: F55 restored */")]),
 

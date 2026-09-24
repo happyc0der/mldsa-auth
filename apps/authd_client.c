@@ -4,14 +4,16 @@
  * post-quantum handshake and prints the login code the site exchanges for a
  * token. `rotate` is V4-9c.
  *
- * A thin main(): the subcommands live in authd_cli.c, for the same reason
- * demo_cli_keygen() does -- so the tests drive them without fork/exec.
+ * A thin main(): the subcommands live in authd/client_cli.c (on the shared
+ * client core since V4-13a), for the same reason demo_cli_keygen() does -- so
+ * the tests drive them without fork/exec. This binary links no store and no
+ * sqlite3; client_links_no_sqlite checks that on every build.
  */
 #include <stdio.h>
 
 #include <sodium.h>
 
-#include "authd_cli.h"
+#include "client_cli.h"
 
 int main(int argc, char **argv)
 {

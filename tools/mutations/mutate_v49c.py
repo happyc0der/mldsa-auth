@@ -65,7 +65,7 @@ REPO = pathlib.Path(sys.argv[1]); MID = sys.argv[2]
 AM = "apps/authd/authmsg.c"
 CN = "apps/authd/authd_conn.c"
 ST = "apps/authd/store/store.c"
-CL = "apps/authd/authd_cli.c"
+CL = "apps/authd/client_cli.c"   # authd_client, since V4-13a (was authd_cli.c)
 CC = "apps/authd/client_core.c"
 M = {
  # flags leaves the signed tuple, so changing it after signing goes unnoticed
@@ -113,6 +113,7 @@ M = {
  "W14": (CC, [("    if (next_present && next_ok) {\n        return KEY_PLAN_PROMOTE_NEXT;\n    }\n    return KEY_PLAN_REFUSE;",
                "    if (next_present && next_ok >= 0) {\n        return KEY_PLAN_PROMOTE_NEXT;   /* MUTATION W14 */\n    }\n    return KEY_PLAN_REFUSE;")]),
  # rotate leaves the device's .pub naming the superseded key
+ # V4-13a: moved with rotate into client_cli.c, text unchanged.
  "W15": (CL, [("        if (rename(pub_tmp, pub_path) != 0) {\n            fprintf(stderr, \"%s rotate: the key rotated but %s could not be updated; \"\n                            \"it still names the OLD key\\n\", prog, pub_path);\n        }",
                "        /* MUTATION W15: the device .pub is never updated */")]),
 }

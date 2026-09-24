@@ -139,7 +139,7 @@ add_test(NAME test_authd_ws COMMAND test_authd_ws)
 # sessions. Shares tests/authd_harness.h with test_authd_conn so both drive
 # the same in-process daemon.
 add_executable(test_authd_cli test_authd_cli.c)
-target_link_libraries(test_authd_cli PRIVATE mldsa_authd)
+target_link_libraries(test_authd_cli PRIVATE mldsa_authd mldsa_client_cli)
 target_compile_options(test_authd_cli PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_cli PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
 target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
@@ -167,6 +167,19 @@ target_compile_definitions(test_client_core_kat PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_client_core_kat PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_client_core_kat
          COMMAND test_client_core_kat ${CMAKE_CURRENT_SOURCE_DIR}/golden/client_core_kat.txt)
+
+# V4-13a: authd_client links no sqlite3 and no store. Checked on the linked
+# binary by symbol, because a static library links whatever it is never asked
+# for and "it built" proves nothing. The _control test runs the same script on
+# the DAEMON, which must have both, and is expected to fail: a gate that could
+# not fail would pass forever once the symbol names changed.
+add_test(NAME client_links_no_sqlite
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/client_links_no_sqlite.sh
+                 $<TARGET_FILE:authd_client_bin> $<TARGET_FILE:mldsa_authd_bin>)
+add_test(NAME client_links_no_sqlite_control
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/client_links_no_sqlite.sh
+                 $<TARGET_FILE:mldsa_authd_bin> $<TARGET_FILE:mldsa_authd_bin>)
+set_tests_properties(client_links_no_sqlite_control PROPERTIES WILL_FAIL TRUE)
 
 add_executable(test_authd_localapi test_authd_localapi.c)
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)

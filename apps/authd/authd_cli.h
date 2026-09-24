@@ -8,7 +8,7 @@
  *                 enroll-operator, disable-user, enable-user,
  *                 list-users, list-devices, audit-tail, backup    (via admin.sock)
  *                 --check-config
- *   authd_client  keygen, login
+ *   authd_client  keygen, login, rotate -- client_cli.c since V4-13a
  *
  * The subcommands live here, as library functions returning a process exit
  * status, rather than inside the two main() files -- the demo_cli_keygen()
@@ -30,12 +30,13 @@
  * writer racing the first.
  */
 
-/* key_plan_t and client_key_plan() -- the .ek.next decision -- are declared in
- * client_core.h since V4-13a, and included here for existing callers. */
+/* Since V4-13a authd_client lives in client_cli.c (declared in client_cli.h)
+ * and the .ek.next decision, key_plan_t / client_key_plan(), in client_core.h.
+ * Both are included here so a caller of either tool needs one header. */
 #include "client_core.h"
+#include "client_cli.h"
 
 /* argv[0] is the program name, argv[1] the subcommand. */
 int authd_cli_admin(int argc, char **argv);
-int authd_cli_client(int argc, char **argv);
 
 #endif /* MLDSA_AUTHD_CLI_H */

@@ -30,10 +30,31 @@ target_compile_options(mldsa_client PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SAN
 target_compile_definitions(mldsa_client PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_client PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
+# The two CLIs' shared piece: passphrase files (authd_secret.c, also read by
+# the daemon for its key passphrase). Their small printing helpers are
+# header-only, in cli_common.h.
+add_library(mldsa_cli_common STATIC
+  authd_secret.c
+)
+target_include_directories(mldsa_cli_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mldsa_cli_common PUBLIC mldsa_core)
+target_compile_options(mldsa_cli_common PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(mldsa_cli_common PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(mldsa_cli_common PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
+# authd_client's subcommands (client_cli.c): the client core plus sockets,
+# files and stderr. No store, no sqlite3 -- the reason for this split.
+add_library(mldsa_client_cli STATIC
+  client_cli.c
+)
+target_link_libraries(mldsa_client_cli PUBLIC mldsa_client mldsa_cli_common mldsa_demo)
+target_compile_options(mldsa_client_cli PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(mldsa_client_cli PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(mldsa_client_cli PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
 # The authentication daemon (V4-6 onward): the store, the event loop, the
 # local API and the CLIs' subcommands, over the client libraries above.
 add_library(mldsa_authd STATIC
-  authd_secret.c
   memlock.c
   store/store.c
   authd_config.c
@@ -54,7 +75,7 @@ add_library(mldsa_authd STATIC
 target_include_directories(mldsa_authd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
 # sqlite3 is PRIVATE: the store's API is pure C types, so no consumer of
 # mldsa_authd needs sqlite3.h on its include path.
-target_link_libraries(mldsa_authd PUBLIC mldsa_client mldsa_demo PRIVATE sqlite3)
+target_link_libraries(mldsa_authd PUBLIC mldsa_client mldsa_cli_common mldsa_demo PRIVATE sqlite3)
 target_compile_options(mldsa_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_authd PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
@@ -68,8 +89,9 @@ target_compile_definitions(mldsa_authd_bin PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd_bin PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 # The two command-line tools (V4-9b, spec 13). Both are thin main()s over
-# authd_cli.c, which is in the library so tests can call the subcommands
-# directly. authd_client.c lives in apps/ rather than apps/authd/ because it is
+# library code so tests can call the subcommands directly: authd_admin over
+# authd_cli.c (in mldsa_authd), authd_client over client_cli.c (in
+# mldsa_client_cli, since V4-13a). authd_client.c lives in apps/ rather than apps/authd/ because it is
 # the DEVICE's tool, not part of the daemon.
 add_executable(authd_admin_bin authd_admin.c)
 set_target_properties(authd_admin_bin PROPERTIES OUTPUT_NAME authd_admin)
@@ -80,7 +102,7 @@ target_link_options(authd_admin_bin PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARD
 
 add_executable(authd_client_bin ${CMAKE_CURRENT_SOURCE_DIR}/../authd_client.c)
 set_target_properties(authd_client_bin PROPERTIES OUTPUT_NAME authd_client)
-target_link_libraries(authd_client_bin PRIVATE mldsa_authd)
+target_link_libraries(authd_client_bin PRIVATE mldsa_client_cli)   # NOT mldsa_authd: no store, no sqlite3
 target_compile_options(authd_client_bin PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(authd_client_bin PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(authd_client_bin PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
