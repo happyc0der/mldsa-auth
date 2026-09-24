@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.3, V4-3 + V4-10c/V4-11/V4-12 errata)
+# mldsa-authd — deployment specification (v1.4, V4-3 + V4-10c/V4-11/V4-12/V4-13a errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -758,8 +758,11 @@ Architecture: the protocol C code compiled to wasm with an explicit export
 list; a thin JavaScript transport that moves bytes between the module and a
 WebSocket; IndexedDB holding `{handle, MLDSAEK1 envelope, pinned server
 MLDSAPK1}` with `navigator.storage.persist()`. **No cryptography in
-JavaScript.** The secret key is opened into wasm memory only to sign
-`ClientAuth` and wiped immediately after; it is not needed for the session.
+JavaScript.** The secret key is in wasm memory for one round trip — from
+`ClientHello`, whose handshake context holds it, until `ClientAuth` is
+signed — and wiped then; the session does not need it. During a rotation
+the old key is kept one step longer, until `ROTATE` is signed, and no
+further (erratum 31).
 The wasm build requires `-sSTACK_SIZE=8MB` — the 64 KiB default faults
 immediately on this codebase's 4 KB keys.
 
@@ -1081,3 +1084,19 @@ throughput ceiling (§17), so 2048 buys **205 handshakes/s** against 1024's
 102/s, on a handshake already dominated by ML-DSA. The cost is accepted with
 the number written down, and the alternative for anyone who needs more is an
 indexed store, which v4 does not attempt.
+
+### Revision v1.4 (V4-13a)
+
+One correction, found by implementing the sentence rather than reading it:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 31 | 14 | the secret key's lifetime stated as the protocol allows it: from `ClientHello` until `ClientAuth` is signed — one round trip — and, during a rotation, until `ROTATE` is signed | §14 said the key is opened "only to sign `ClientAuth`". That cannot be met: `handshake_initiator_init` takes the keypair, so the key exists from the first message, a round trip before it signs anything; and rotation signs `ROTATE` with the old key after the session exists. Recorded as finding **F82** |
+
+The direction of fit is the usual one — the sentence moved, not the protocol
+-- and the corrected lifetime is not a weaker promise but a checked one:
+`client_core.c` frees a key it opened the moment `ClientAuth` is built and on
+every refusal, drops a lent key's pointer at the same point, and keeps the old
+key past `ClientAuth` only when asked to for a rotation. `test_client_core`
+asserts each of those, and campaign v53 (F3, F4) shows the assertions fail when
+the frees are removed.

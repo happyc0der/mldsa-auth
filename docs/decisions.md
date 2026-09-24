@@ -5353,3 +5353,170 @@ reintroduced by the array that polls them. Latent only because the default was
 derived from both maxima, bounded per pool, and refused at registration, and
 the test drives a genuinely full 4,096-slot pool — one quiet socket standing in
 for every slot, since `poll()` accepts the same fd repeatedly.
+
+## V4-13a — one client, two transports
+
+Milestone B is people signing in from a browser, and spec §14 had already
+decided how: the protocol's own C code compiled to wasm, a thin JavaScript
+transport, no cryptography in JavaScript. Planning found the obstacle was not
+logic — every client protocol step already existed as a pure C function --
+but packaging. The client's login, rotate and keygen were tangled with
+sockets, files and stdout inside `authd_cli.c`, which also held the admin
+commands, so `authd_client` linked sqlite3; the MLDSAEK1 envelope could be
+sealed only to a path and opened only from one; and the one piece of client
+logic with real consequences — the `.ek.next` rotation recovery — had no
+end-to-end test at all.
+
+V4-13 was split three ways (user decision): **13a** a single client core,
+everything native, fully verified; **13b** that core in wasm, logging in
+against the real daemon from Node, in CI; **13c** the browser. And the native
+CLI is rebuilt on the core rather than left beside it — one implementation,
+so every e2e login is now a regression test for exactly the code a browser
+will run.
+
+### Characterise first
+
+The refactor's first commit touches no C. It adds three legs to the e2e that
+pin what the shipped client does after an interrupted rotation: a stale
+`.ek.next` beside a live `.ek` (use `.ek`, say so, delete nothing); neither
+file authenticating (refuse, and both files byte-identical afterwards);
+the server committed but the rename was lost (the next login finishes it).
+They describe the client as it WAS, so the refactor cannot change it unseen,
+and the audit row that says the path had no test (**F80**) is closed by them.
+
+The REFUSE leg asserts the files before the message, because `fail()` stops at
+the first failure and the property — not its report — is what a defect
+should be caught by. Its probe exposed something older, below.
+
+### W14, and eleven more like it
+
+v49c's W14 promotes a `.ek.next` that does not authenticate. Its committed
+replacement, `if (next_present)`, leaves `next_ok` unused, so `-Werror`
+refuses to build it and the runner scores `KILLED(compile)`. It had scored
+that every night since V4-9c without a single test ever running against it.
+Re-authored as `next_ok >= 0` it compiles, and the REFUSE leg catches it.
+
+A compile kill proves the compiler works. The last full nightly had **12 of
+180**: v24 M8 is legitimate (it trips a `_Static_assert`, which is the point
+of that mutation); v24 M4 has rotted (it names `KEX_KDF_LABEL`, which no
+longer exists); the other ten — v26 Q5, v48a D6, v48b C4, v49a A1 T4 T5,
+v49b L2, v49c W1 W7 W14 — delete a use rather than change a value. Recorded
+as **F79**. W14 is re-authored here because it moved with this step's code;
+the rest are separate work, not folded into a step that did not touch them.
+v53 is written to the rule F79 implies: every mutation changes what a value
+is, none deletes a use.
+
+The count also depends on the compiler. Re-running v49b here, C2 scored
+`KILLED(compile)` too: Apple clang 21's `-Wuninitialized-const-pointer`
+refuses it, while the Linux nightly's clang builds it and a test kills it by
+name. It does the same on the tree before this step, so it is not this step's
+doing, but it means a campaign's verdict is a fact about a compiler as well as
+a tree, and a macOS-only compile kill hides from the nightly that is supposed
+to catch it.
+
+### The core
+
+`apps/authd/client_core.{c,h}`: buffer in, buffer out, a caller-owned state
+struct, no sockets, no files, no stdout, no statics. Every message is one
+whole `len4 || payload` frame — one WebSocket message — and the header must
+equal the bytes present and lie inside the bounds of the state that is
+waiting; the payload is then `msg+4` for `msg_len-4`, never the header's
+claim. Any failure is terminal and wipes every secret the core holds. The
+clock is injected, because a browser tab's timers are not something to trust
+with session expiry, and a test proves the injected one is what governs.
+
+**The secret key's lifetime is as short as the protocol allows**, and that is
+shorter than §14 promised but longer than it said. §14: "opened into wasm
+memory only to sign ClientAuth". `handshake_initiator_init` takes the keypair
+(`handshake.c:525`), so the key must exist from ClientHello until ClientAuth is
+signed — one round trip — and rotation signs ROTATE with the old key after
+the session exists. The core frees an owned key the moment ClientAuth is
+built and on every failure, drops a lent key's pointer at the same point, and
+`CC_KEEP_FOR_ROTATE` extends that to `cc_rotate_build` and no further. The
+spec is corrected (erratum 31, finding **F82**) rather than the code bent to a
+sentence it could not meet.
+
+**One deliberate behaviour change**: the handshake is finished and the session
+keyed *before* ClientAuth leaves, not after. Both are local steps the peer
+cannot influence in between; the difference is observable only if one of them
+fails internally, and adding an API step for a path that cannot occur was
+worse than stating it here.
+
+### The CLI on the core, and proof its words did not change
+
+`client_cli.c` keeps only what a browser does differently: sockets, the PROXY
+v2 preamble, the WebSocket upgrade, files with custody rules, passphrase
+files, stderr. The transport code moved verbatim, J12's F55 guard and W15's
+`.pub` rename included. The core reports failures in the stage names the CLI
+always printed (`cc_diag_t`), and the claim that nothing an operator sees
+changed was tested, not asserted: the e2e ran once with the pre-split client
+(built from the previous commit in a scratch worktree) and once with the new
+one, every call's stderr and exit status logged through a shim. After
+normalising handles, temp paths, pids and seconds-remaining: **identical**,
+44 lines over 15 calls, four of them failures.
+
+`authd_client` now links `mldsa_client_cli` and nothing of the daemon's. That
+is proven on the binary by symbol — a static library links whatever it is
+never asked for, so "it built" proves nothing — with a canary that must show
+the daemon's 270 `sqlite3_` symbols, and a `WILL_FAIL` control that runs the
+same script on the daemon forever.
+
+### The KAT is 13b's contract
+
+`test_client_core_kat` substitutes a deterministic generator (TEST ONLY) for
+libsodium's, routes liboqs to it through `cc_use_sodium_rng_for_oqs()` — the
+very function wasm init will call — runs one device lifetime against a fake
+server, and diffs the SHA-256 of eleven artefacts against a committed golden.
+Two runs in one process must also agree with each other, so randomness that
+escapes the generator is reported by the artefact where it first appears.
+13b's wasm build must reproduce every line. The routing function exists
+because liboqs's default under Emscripten may `fopen("/dev/urandom")` and
+`exit()`; it mutates process-global state, so it is called by the KAT and
+by wasm init only — never by the CLI, never by a test that shares a process
+with the daemon.
+
+### Fuzzing what a phishing server controls
+
+`fuzz_client` hands the core every frame the daemon sends — ServerHello,
+first record, rotate reply — after replaying a whole login from a reset
+generator, so the genuine frame for each moment is the same bytes on every
+input and the oracle is exact: accepted **iff** byte-identical to the genuine
+one; otherwise FAILED, nothing written, no key reachable, every later call
+refused. `fuzz_envelope` gained the matching property for the in-memory
+opener, run only on headers the model rejects, since an accepted one costs at
+least 8 MiB of Argon2id per input.
+600 s each on the libFuzzer tree: `fuzz_client` 373,381 runs, `fuzz_envelope`
+122,901,616, `fuzz_keys` (which gained buffer-versus-file parity) 1,841,144 —
+no crash, no artifact. Two probes show `fuzz_client`'s oracle is not
+decorative: a refusal that leaves the core usable, and a record that failed
+authentication being parsed anyway, each abort the replay on the named
+property.
+
+### What 13c has to decide, recorded now
+
+Two things the specification does not say and the browser cannot avoid
+(**F83**): how the login code gets from the page to the site (the CLI prints
+it for a human to paste), and what replaces the `.ek.next` file rule in
+IndexedDB, where "rename over" is not an operation. And a promise V4-10b made
+and did not keep: its plan said the per-address rate limit's hostility to a
+carrier NAT would be "recorded as a finding for V4-13 rather than discovered
+there". It had not been. It is now, as **F81**.
+
+### Verification
+
+Seven commits, each built normal, fresh ASan and fresh UBSan, each tree proven
+current and instrumented in the same invocation as its suite (35 tests at the
+end). Every new test shown able to fail by a marked probe with a build
+fingerprint and a byte-exact restore, before the campaign that makes it
+permanent. Campaigns re-run in full wherever this step's edits could reach an
+anchor: v46 and v29 (the envelope and key-file buffer paths), v49b, v49c, v50b
+and v50c (the CLI split) — 58 mutations, all killed — and v53 itself, **12 of
+12 by name, none by the compiler**.
+
+v53's first run was 9 killed and 3 `SURVIVED(BAD)`, and all three were the
+campaign's own defects: two spec lines named two tests as `^(a|b)$`, and the
+spec format's field separator is `|`; and F4 predicted a check would fail that
+could not see what F4 does — `cc_wipe` zeroes the struct, so a leaked key's
+pointer reads NULL too. The check was renamed to what it asserts and F4 is
+killed where the free is observable. A survivor that exposes a check weaker
+than its name is the campaign working.

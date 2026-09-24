@@ -9,7 +9,7 @@
 # The deterministic test-only RNG in fuzz_common.c is linked ONLY into these
 # executables.
 
-set(FUZZ_TARGETS wire handshake session frame keys envelope authd_config authd_conn localapi authmsg ws)
+set(FUZZ_TARGETS wire handshake session frame keys envelope authd_config authd_conn localapi authmsg ws client)
 
 # CI smoke budget (deterministic fallback mutations per target).
 set(FUZZ_ITER_wire 20000)
@@ -23,6 +23,9 @@ set(FUZZ_ITER_authd_conn 300)
 set(FUZZ_ITER_localapi 5000)
 set(FUZZ_ITER_authmsg 20000)
 set(FUZZ_ITER_ws 5000)
+# client replays a whole login per input (ML-DSA sign/verify, ML-KEM), as
+# handshake and authd_conn do, so its budget is theirs.
+set(FUZZ_ITER_client 300)
 
 # libFuzzer -max_len per target (the harnesses enforce the same bound).
 set(FUZZ_MAXLEN_envelope 8192)
@@ -36,6 +39,7 @@ set(FUZZ_MAXLEN_handshake 16384)
 set(FUZZ_MAXLEN_session 140000)
 set(FUZZ_MAXLEN_frame 140000)
 set(FUZZ_MAXLEN_keys 8192)
+set(FUZZ_MAXLEN_client 8192)
 
 # Under UBSan, undefined behavior must FAIL the replay test, not just print.
 set(FUZZ_REPLAY_EXTRA_FLAGS "")

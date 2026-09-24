@@ -542,9 +542,14 @@ static void test_offline(void)
       CHECK(cc_login_begin_sealed(&g_cc, hid, hl, ek, el, PASS, strlen(PASS), 0u, g_out, sizeof g_out, &n) ==
                 CC_OK && cc_state(&g_cc) == CC_STATE_WAIT_SERVER_HELLO && n > 4u,
             "retry: the right passphrase then produces a ClientHello");
+      /* What this CAN see is the end state. Whether the key was FREED it
+       * cannot: cc_wipe zeroes the whole struct afterwards, so a leaked key's
+       * pointer reads NULL here too (v53 F4 proved it). The free is asserted
+       * where it is observable -- "phish: the owned key is freed on refusal",
+       * before any wipe -- and a leak is LeakSanitizer's on Linux. */
       cc_wipe(&g_cc);
       CHECK(cc_state(&g_cc) == CC_STATE_FAILED && g_cc.own_kp.secret_key == NULL,
-            "wipe: cc_wipe frees the owned key and leaves the core FAILED");
+            "wipe: cc_wipe leaves the core FAILED with no key reachable");
       mldsa_keypair_free(&s); }
 
     /* The .ek.next decision is exported from the core now; its full table is

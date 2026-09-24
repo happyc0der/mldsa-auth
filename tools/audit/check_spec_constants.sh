@@ -148,6 +148,25 @@ for pair in "recovery_ops=RECOVERY_OPS_SPEC" "recovery_mem=RECOVERY_MEM_SPEC" \
   fi
 done
 
+# --- key-at-rest parameters by role, §12 (V4-13a) ---------------------------
+# Three roles, three places in the tree: the server's in authd_cli.c (its only
+# user), the operator's in cli_common.h (both CLIs), the browser's in
+# client_core.h (the core the wasm build compiles). The text match is scoped
+# to §12's "Parameters by role" sentence, which names all three -- "ops=3"
+# alone appears twice in it, so a whole-file grep would pass on the wrong role.
+mib() { grep -hoE "#define $1[[:space:]]+\(([0-9]+)u \* 1024u \* 1024u\)" $2 | grep -oE '\(([0-9]+)u' | head -1 | tr -d '(u'; }
+S_OPS=$(hdr KDF_OPS_SERVER apps/authd/authd_cli.c)
+O_OPS=$(hdr KDF_OPS_OPERATOR apps/authd/cli_common.h)
+CLI_MEM=$(mib KDF_MEM_256MIB apps/authd/cli_common.h)
+B_OPS=$(hdr CC_KDF_OPS_BROWSER apps/authd/client_core.h)
+B_MEM=$(mib CC_KDF_MEM_BROWSER apps/authd/client_core.h)
+ROLES=$(grep -A3 -F '**Parameters by role:**' "$SPEC" | tr '\n' ' ' | tr -s ' ')
+in_roles() { case "$ROLES" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
+                              *) printf '  FAIL  %-34s derived %s, not in §12 by role\n' "$1" "$2"; fail=1;; esac; }
+in_roles "KDF by role: server"   "server \`ops=$S_OPS, mem=$CLI_MEM MiB\`"
+in_roles "KDF by role: operator" "operator \`ops=$O_OPS, mem=$CLI_MEM MiB\`"
+in_roles "KDF by role: browser"  "browser \`ops=$B_OPS, mem=$B_MEM MiB\`"
+
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"

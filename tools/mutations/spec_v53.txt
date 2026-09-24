@@ -1,0 +1,12 @@
+F1|^test_client_core$|frame: a header claiming one byte MORE than is present is refused;frame: a header claiming one byte LESS than is present is refused
+F2|^test_client_core$|frame: a self-consistent ServerHello one byte over the bound is refused
+F3|^test_client_core$|daemon/raw: the owned key was freed when ClientAuth was built;daemon/ws: the owned key was freed when ClientAuth was built
+F4|^test_client_core$|phish: the owned key is freed on refusal
+F5|^test_(authd_keyfile)?(client_core)?$|pub: a same-length different id -> ID_MISMATCH;server-pub: a same-length different id -> ID_MISMATCH, key zeroed
+F6|^test_client_core$|fake: a BYE as the first record is refused, not skipped;fake: an ERROR as the first record is refused
+F7|^test_client_core$|fake: a ROTATE_ACK naming a DIFFERENT key is refused
+F8|^test_client_core$|fake: a ROTATE_ACK naming a different handle of the SAME length is refused
+F9|^test_client_core$|clock: past the injected clock's hard limit the session refuses to seal
+F10|^test_authd_keyfile$|write_sealed refuses an envelope with out-of-range KDF parameters, writes nothing;write_sealed refuses a plaintext MLDSASK2 image (FORMAT), writes nothing
+F11|^test_client_core(_kat)?$|browser: the KDF parameters are ops 3, 64 MiB (spec 12);golden says 'sealed-browser
+F12|^test_client_core_kat$|two runs from the same generator state differ first at

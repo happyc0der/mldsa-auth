@@ -1,0 +1,12 @@
+# fuzz_client: the moment selector and the frame lengths the client core bounds.
+# All lengths are 4-byte big-endian frame headers (len4 || payload).
+at_server_hello="\x00"
+at_first_record="\x01"
+at_rotate_reply="\x02"
+len_server_hello_max_4545="\x00\x00\x11\xc1"
+len_server_hello_over_4546="\x00\x00\x11\xc2"
+len_record_min_27="\x00\x00\x00\x1b"
+len_record_bucket256_281="\x00\x00\x01\x19"
+len_confirm_max_4121="\x00\x00\x10\x19"
+len_confirm_over_4122="\x00\x00\x10\x1a"
+len_zero="\x00\x00\x00\x00"
