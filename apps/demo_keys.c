@@ -184,6 +184,51 @@ static void fsync_dir(const char *dir) {
  * it with keyfile_seal(), and use this to publish the public half. */
 static void fsync_parent_dir(const char *path);
 
+size_t demo_keys_public_image_len(size_t id_len) {
+    if (id_len < 1u || id_len > 64u) {
+        return 0u;
+    }
+    return PUB_FILE_LEN(id_len);
+}
+
+demo_keys_status_t demo_keys_build_public_image(uint8_t *out, size_t out_cap, const uint8_t *id, size_t id_len,
+                                                const uint8_t public_key[MLDSA_PUBLIC_KEY_BYTES]) {
+    if (out == NULL || public_key == NULL || !demo_keys_id_filename_safe(id, id_len) ||
+        out_cap < PUB_FILE_LEN(id_len)) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    put_header(out, DEMO_KEY_MAGIC_PUBLIC, id, id_len);
+    memcpy(out + HDR_LEN + id_len, public_key, MLDSA_PUBLIC_KEY_BYTES);
+    return DEMO_KEYS_OK;
+}
+
+demo_keys_status_t demo_keys_parse_public(const uint8_t *buf, size_t len, const uint8_t *expect_id, size_t id_len,
+                                          uint8_t pk_out[MLDSA_PUBLIC_KEY_BYTES]) {
+    if (pk_out == NULL) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    memset(pk_out, 0, MLDSA_PUBLIC_KEY_BYTES);
+    if (buf == NULL || expect_id == NULL || id_len < 1u || id_len > 64u) {
+        return DEMO_KEYS_ERR_ARG;
+    }
+    /* Size range, magic, then EXACT size for the id length the header claims:
+     * a trailing byte is FORMAT, never ignored. */
+    if (len < PUB_FILE_LEN(1) || len > PUB_FILE_LEN(64) ||
+        memcmp(buf, DEMO_KEY_MAGIC_PUBLIC, DEMO_KEY_MAGIC_LEN) != 0) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    const size_t idl = buf[DEMO_KEY_MAGIC_LEN];
+    if (idl < 1u || idl > 64u || len != PUB_FILE_LEN(idl)) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    /* The id is compared by length AND bytes: "bob" must not match "bobby". */
+    if (idl != id_len || memcmp(buf + HDR_LEN, expect_id, idl) != 0) {
+        return DEMO_KEYS_ERR_ID_MISMATCH;
+    }
+    memcpy(pk_out, buf + HDR_LEN + idl, MLDSA_PUBLIC_KEY_BYTES);
+    return DEMO_KEYS_OK;
+}
+
 demo_keys_status_t demo_keys_write_public(const char *path, const uint8_t *id, size_t id_len,
                                           const uint8_t public_key[MLDSA_PUBLIC_KEY_BYTES]) {
     char tmp_path[PATH_MAX];
@@ -204,8 +249,9 @@ demo_keys_status_t demo_keys_write_public(const char *path, const uint8_t *id, s
     if (lstat(path, &st) == 0) {
         return DEMO_KEYS_ERR_EXISTS;
     }
-    put_header(pub_file, DEMO_KEY_MAGIC_PUBLIC, id, id_len);
-    memcpy(pub_file + HDR_LEN + id_len, public_key, MLDSA_PUBLIC_KEY_BYTES);
+    if (demo_keys_build_public_image(pub_file, sizeof(pub_file), id, id_len, public_key) != DEMO_KEYS_OK) {
+        return DEMO_KEYS_ERR_ARG;
+    }
 
     if (write_new_file(tmp_path, pub_file, PUB_FILE_LEN(id_len), 0644, &tmp_made) != 0) {
         goto out;
@@ -325,49 +371,6 @@ out:
 }
 
 /* ---- load ------------------------------------------------------------------- */
-
-/* Public-key files (MLDSAPK1): opens path (no symlinks), checks it is a
- * regular file of exactly the size its header implies, and validates magic
- * and id. On DEMO_KEYS_OK *fd_out is open, positioned just after the id. */
-static demo_keys_status_t open_public(const char *path, const uint8_t *expect_id, size_t expect_len, int *fd_out) {
-    uint8_t hdr[HDR_LEN];
-    uint8_t id[64];
-    struct stat st;
-
-    *fd_out = -1;
-    if (path == NULL || expect_id == NULL || expect_len < 1u || expect_len > 64u) {
-        return DEMO_KEYS_ERR_ARG;
-    }
-    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (fd < 0) {
-        return DEMO_KEYS_ERR_IO;
-    }
-    demo_keys_status_t r = DEMO_KEYS_ERR_FORMAT;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        r = DEMO_KEYS_ERR_IO;
-        goto fail;
-    }
-    if (st.st_size < 0 || (size_t)st.st_size < PUB_FILE_LEN(1) || (size_t)st.st_size > PUB_FILE_LEN(64)) {
-        goto fail;
-    }
-    if (read_all_fd(fd, hdr, sizeof(hdr)) != 0 || memcmp(hdr, DEMO_KEY_MAGIC_PUBLIC, DEMO_KEY_MAGIC_LEN) != 0) {
-        goto fail;
-    }
-    const size_t idl = hdr[DEMO_KEY_MAGIC_LEN];
-    if (idl < 1u || idl > 64u || (size_t)st.st_size != PUB_FILE_LEN(idl) || read_all_fd(fd, id, idl) != 0) {
-        goto fail;
-    }
-    if (idl != expect_len || memcmp(id, expect_id, idl) != 0) {
-        r = DEMO_KEYS_ERR_ID_MISMATCH;
-        goto fail;
-    }
-    *fd_out = fd;
-    return DEMO_KEYS_OK;
-
-fail:
-    (void)close(fd);
-    return r;
-}
 
 size_t demo_keys_sk2_image_len(size_t id_len) {
     if (id_len < 1u || id_len > 64u) {
@@ -675,20 +678,36 @@ done:
 
 demo_keys_status_t demo_keys_load_public(const char *pub_path, const uint8_t *expect_id, size_t id_len,
                                          uint8_t pk_out[MLDSA_PUBLIC_KEY_BYTES]) {
+    uint8_t pub_file[PUB_FILE_LEN(64)];
+    struct stat st;
+
     if (pk_out == NULL) {
         return DEMO_KEYS_ERR_ARG;
     }
     memset(pk_out, 0, MLDSA_PUBLIC_KEY_BYTES);
-    int fd = -1;
-    const demo_keys_status_t r = open_public(pub_path, expect_id, id_len, &fd);
-    if (r != DEMO_KEYS_OK) {
-        return r;
+    if (pub_path == NULL || expect_id == NULL || id_len < 1u || id_len > 64u) {
+        return DEMO_KEYS_ERR_ARG;
     }
-    const int rd = read_all_fd(fd, pk_out, MLDSA_PUBLIC_KEY_BYTES);
-    (void)close(fd);
-    if (rd != 0) {
-        memset(pk_out, 0, MLDSA_PUBLIC_KEY_BYTES);
+    /* Custody here (no symlinks, a regular file, a size worth reading); every
+     * rule about the CONTENT is demo_keys_parse_public's, shared with callers
+     * that hold the bytes in memory. */
+    const int fd = open(pub_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+        return DEMO_KEYS_ERR_IO;
+    }
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        (void)close(fd);
+        return DEMO_KEYS_ERR_IO;
+    }
+    if (st.st_size < 0 || (size_t)st.st_size < PUB_FILE_LEN(1) || (size_t)st.st_size > PUB_FILE_LEN(64)) {
+        (void)close(fd);
         return DEMO_KEYS_ERR_FORMAT;
     }
-    return DEMO_KEYS_OK;
+    const size_t len = (size_t)st.st_size;
+    const int rd = read_all_fd(fd, pub_file, len);
+    (void)close(fd);
+    if (rd != 0) {
+        return DEMO_KEYS_ERR_FORMAT;
+    }
+    return demo_keys_parse_public(pub_file, len, expect_id, id_len, pk_out);
 }

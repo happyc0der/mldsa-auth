@@ -1,7 +1,8 @@
 /* V4-6: the MLDSAEK1 header parser (apps/authd/keyfile.c:keyfile_parse_header).
  *
  * This is the first envelope code to touch an attacker-influenced file, so it
- * is fuzzed -- but only the parse, which stops BEFORE the KDF. Fuzzing the
+ * is fuzzed -- but only the parse, which stops BEFORE the KDF (and, since
+ * V4-13a, keyfile_open_buf on every input the parse must refuse). Fuzzing the
  * whole open would let an in-bounds memlimit of up to 1 GiB burn a gigabyte
  * per input; the KDF/AEAD/image path is covered by test_authd_keyfile at low
  * parameters instead.
@@ -16,6 +17,7 @@
 #include "keyfile.h"
 #include "demo_keys.h"
 #include <sodium.h>
+#include "mldsa_wrap.h"
 
 const char *const fuzz_target_name = "envelope";
 const size_t fuzz_target_max_len = 8192;
@@ -71,6 +73,23 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FUZZ_ASSERT((size_t)hdr.ct_len == size - (size_t)HDR &&
                         hdr.img_len == hdr.ct_len - 16u,
                     "parsed lengths inconsistent with the input size");
+    } else {
+        /* V4-13a: the in-memory opener -- which the browser build hands bytes
+         * from storage -- must reject exactly what the model rejects, with the
+         * same status, and hand back nothing. It is only run on inputs the
+         * model rejects: those must be refused before the KDF, so each costs a
+         * parse; an accepted header would cost >= 8 MiB of Argon2id per input,
+         * and that path belongs to test_authd_keyfile. A mutant that reached
+         * the KDF here would either disagree on the status or stall the run. */
+        mldsa_keypair_t kp;
+        uint8_t kek[32];
+        memset(kek, 0xA5, sizeof(kek));
+        const keyfile_status_t ob = keyfile_open_buf(in, size, (const uint8_t *)"alice", 5u,
+                                                     "passphrase", 10u, &kp, kek);
+        FUZZ_ASSERT(ob == want, "keyfile_open_buf disagrees with the model on a rejected header");
+        FUZZ_ASSERT(kp.secret_key == NULL && sodium_is_zero(kp.public_key, sizeof(kp.public_key)) &&
+                        sodium_is_zero(kek, sizeof(kek)),
+                    "keyfile_open_buf left key material behind on a rejected header");
     }
     return 0;
 }

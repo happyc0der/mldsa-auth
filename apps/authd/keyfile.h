@@ -95,6 +95,40 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
                               const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                               uint8_t *kek_out);
 
+/* ---- buffer in, buffer out (V4-13a) -----------------------------------------
+ *
+ * The same envelope with no file system: the client core -- and through it the
+ * browser build, which has no files to open -- seals and opens in memory. The
+ * file functions above are thin wrappers over these (custody and I/O around
+ * them, nothing else), so there is one sealer and one opener, not two. */
+
+/* The exact MLDSAEK1 size for an image_len-byte MLDSASK2 image; 0 when
+ * image_len is outside (0, demo_keys_sk2_image_len(64)]. */
+size_t keyfile_sealed_len(size_t image_len);
+
+/* Seals into `out` (out_cap >= keyfile_sealed_len(image_len)). Same argument
+ * rules, parameter bounds and statuses as keyfile_seal minus EXISTS/IO. On any
+ * failure the first keyfile_sealed_len(image_len) bytes of `out` are zeroed,
+ * so a caller can never persist a header without its ciphertext. */
+keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *sk2_image, size_t image_len,
+                                  const char *passphrase, size_t pass_len,
+                                  uint32_t opslimit, uint64_t memlimit);
+
+/* Opens an in-memory envelope: keyfile_parse_header first -- so FORMAT and
+ * PARAMS are decided before any key-derivation work -- then the KDF, the AEAD
+ * and the shared MLDSASK2 validator. Same statuses, same *kp and kek_out
+ * guarantees as keyfile_open (which reads the file and calls this). */
+keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_t *expect_id, size_t id_len,
+                                  const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                  uint8_t *kek_out);
+
+/* Publishes an already-sealed envelope at `path`, exactly as keyfile_seal
+ * publishes (temp + link, mode 0600, EXISTS rather than overwrite) -- but only
+ * after keyfile_parse_header accepts it, so nothing that is not a well-formed
+ * MLDSAEK1 envelope can be written as a key file this way. Returns the parse
+ * status (FORMAT/PARAMS) unchanged when it does not. */
+keyfile_status_t keyfile_write_sealed(const char *path, const uint8_t *buf, size_t len);
+
 /* Atomically replaces `to` with `from` (rename(2)), after checking `from`'s
  * custody the way keyfile_open does: O_NOFOLLOW, a regular file, owned by this
  * euid, no group or other permission bits.

@@ -140,23 +140,26 @@ keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_
     return KEYFILE_OK;
 }
 
-keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, size_t image_len,
-                              const char *passphrase, size_t pass_len,
-                              uint32_t opslimit, uint64_t memlimit) {
-    if (out_path == NULL || sk2_image == NULL || passphrase == NULL || image_len == 0u ||
-        image_len > demo_keys_sk2_image_len(64)) {
+size_t keyfile_sealed_len(size_t image_len) {
+    if (image_len == 0u || image_len > demo_keys_sk2_image_len(64)) {
+        return 0u;
+    }
+    return KEYFILE_HEADER_LEN + image_len + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+}
+
+keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *sk2_image, size_t image_len,
+                                  const char *passphrase, size_t pass_len,
+                                  uint32_t opslimit, uint64_t memlimit) {
+    if (out == NULL || sk2_image == NULL || passphrase == NULL || image_len == 0u ||
+        image_len > demo_keys_sk2_image_len(64) || out_cap < keyfile_sealed_len(image_len)) {
         return KEYFILE_ERR_ARG;
     }
     if (!params_ok(opslimit, memlimit)) {
         return KEYFILE_ERR_PARAMS;
     }
     const size_t ct_len = image_len + crypto_aead_xchacha20poly1305_ietf_ABYTES;
-    const size_t total = KEYFILE_HEADER_LEN + ct_len;
-    uint8_t *out = secure_mem_alloc(total);
     uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
-    if (out == NULL || key == NULL) {
-        if (out) { secure_mem_free(out, total); }
-        if (key) { secure_mem_free(key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES); }
+    if (key == NULL) {
         return KEYFILE_ERR_CRYPTO;
     }
     memcpy(out + OFF_MAGIC, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN);
@@ -180,10 +183,97 @@ keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, si
         }
     }
     secure_mem_free(key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+    if (r != KEYFILE_OK) {
+        /* never hand back a half-built envelope: no header without its ciphertext */
+        sodium_memzero(out, KEYFILE_HEADER_LEN + ct_len);
+    }
+    return r;
+}
+
+keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, size_t image_len,
+                              const char *passphrase, size_t pass_len,
+                              uint32_t opslimit, uint64_t memlimit) {
+    const size_t total = keyfile_sealed_len(image_len);
+    if (out_path == NULL || sk2_image == NULL || passphrase == NULL || total == 0u) {
+        return KEYFILE_ERR_ARG;
+    }
+    uint8_t *out = secure_mem_alloc(total);
+    if (out == NULL) {
+        return KEYFILE_ERR_CRYPTO;
+    }
+    keyfile_status_t r = keyfile_seal_buf(out, total, sk2_image, image_len, passphrase, pass_len,
+                                          opslimit, memlimit);
     if (r == KEYFILE_OK) {
         r = publish(out_path, out, total);
     }
     secure_mem_free(out, total);
+    return r;
+}
+
+keyfile_status_t keyfile_write_sealed(const char *path, const uint8_t *buf, size_t len) {
+    if (path == NULL || buf == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    /* Only a well-formed envelope may reach the disk: whatever produced `buf`
+     * (the client core, in memory), this is the last point before it becomes
+     * the only copy of an identity. */
+    keyfile_header_t hdr;
+    const keyfile_status_t hs = keyfile_parse_header(buf, len, &hdr);
+    if (hs != KEYFILE_OK) {
+        return hs;
+    }
+    return publish(path, buf, len);
+}
+
+keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_t *expect_id, size_t id_len,
+                                  const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                  uint8_t *kek_out) {
+    if (kek_out != NULL) {
+        /* zeroed up front, so every failure path below leaves it clean */
+        sodium_memzero(kek_out, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+    }
+    if (kp == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    memset(kp->public_key, 0, sizeof(kp->public_key));
+    kp->secret_key = NULL;
+    if (buf == NULL || expect_id == NULL || passphrase == NULL || id_len < 1u || id_len > 64u) {
+        return KEYFILE_ERR_ARG;
+    }
+    /* The header is validated -- sizes, algorithm ids, KDF bounds -- BEFORE a
+     * byte of key-derivation work, so hostile bytes cost a parse, not Argon2id. */
+    keyfile_header_t hdr;
+    keyfile_status_t r = keyfile_parse_header(buf, total, &hdr);
+    if (r != KEYFILE_OK) {
+        return r;
+    }
+    const uint32_t ct_len = hdr.ct_len;
+    uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+    uint8_t *img = NULL;
+    if (key == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
+    r = derive_key(key, passphrase, pass_len, buf + OFF_SALT, hdr.opslimit, hdr.memlimit);
+    if (r != KEYFILE_OK) { goto freebufs; }
+
+    const size_t img_len = hdr.img_len;
+    img = secure_mem_alloc(img_len);
+    if (img == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
+    {
+        unsigned long long mlen = 0;
+        if (crypto_aead_xchacha20poly1305_ietf_decrypt(img, &mlen, NULL, buf + KEYFILE_HEADER_LEN, ct_len,
+                                                       buf, KEYFILE_HEADER_LEN, buf + OFF_NONCE, key) != 0) {
+            r = KEYFILE_ERR_DECRYPT; goto freebufs;
+        }
+        /* The image validator runs the same digest/id/self-test as the file
+         * loader; map any image failure to a single coarse status. */
+        r = (demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp) == DEMO_KEYS_OK)
+                ? KEYFILE_OK : KEYFILE_ERR_IMAGE;
+        if (r == KEYFILE_OK && kek_out != NULL) {
+            memcpy(kek_out, key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+        }
+    }
+freebufs:
+    if (img) { secure_mem_free(img, ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES); }
+    if (key) { secure_mem_free(key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES); }
     return r;
 }
 
@@ -220,46 +310,20 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
         r = KEYFILE_ERR_FORMAT; goto done;
     }
     const size_t total = (size_t)st.st_size;
-    uint8_t *buf = secure_mem_alloc(total);
-    uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
-    uint8_t *img = NULL;
-    if (buf == NULL || key == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
+    uint8_t *fbuf = secure_mem_alloc(total);
+    if (fbuf == NULL) { r = KEYFILE_ERR_CRYPTO; goto done; }
     {
         size_t off = 0; ssize_t n;
-        while (off < total && (n = read(fd, buf + off, total - off)) != 0) {
-            if (n < 0) { if (errno == EINTR) { continue; } r = KEYFILE_ERR_IO; goto freebufs; }
+        while (off < total && (n = read(fd, fbuf + off, total - off)) != 0) {
+            if (n < 0) { if (errno == EINTR) { continue; } r = KEYFILE_ERR_IO; goto freefile; }
             off += (size_t)n;
         }
-        if (off != total) { r = KEYFILE_ERR_FORMAT; goto freebufs; }
+        if (off != total) { r = KEYFILE_ERR_FORMAT; goto freefile; }
     }
-    keyfile_header_t hdr;
-    r = keyfile_parse_header(buf, total, &hdr);
-    if (r != KEYFILE_OK) { goto freebufs; }
-    const uint32_t ct_len = hdr.ct_len;
-    r = derive_key(key, passphrase, pass_len, buf + OFF_SALT, hdr.opslimit, hdr.memlimit);
-    if (r != KEYFILE_OK) { goto freebufs; }
-
-    const size_t img_len = hdr.img_len;
-    img = secure_mem_alloc(img_len);
-    if (img == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
-    {
-        unsigned long long mlen = 0;
-        if (crypto_aead_xchacha20poly1305_ietf_decrypt(img, &mlen, NULL, buf + KEYFILE_HEADER_LEN, ct_len,
-                                                       buf, KEYFILE_HEADER_LEN, buf + OFF_NONCE, key) != 0) {
-            r = KEYFILE_ERR_DECRYPT; goto freebufs;
-        }
-        /* The image validator runs the same digest/id/self-test as the file
-         * loader; map any image failure to a single coarse status. */
-        r = (demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp) == DEMO_KEYS_OK)
-                ? KEYFILE_OK : KEYFILE_ERR_IMAGE;
-        if (r == KEYFILE_OK && kek_out != NULL) {
-            memcpy(kek_out, key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
-        }
-    }
-freebufs:
-    if (img) { secure_mem_free(img, ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES); }
-    if (key) { secure_mem_free(key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES); }
-    if (buf) { secure_mem_free(buf, total); }
+    /* custody checked and bytes read: the rest is the buffer path, unchanged */
+    r = keyfile_open_buf(fbuf, total, expect_id, id_len, passphrase, pass_len, kp, kek_out);
+freefile:
+    secure_mem_free(fbuf, total);
 done:
     (void)close(fd);
     return r;

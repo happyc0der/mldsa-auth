@@ -410,6 +410,16 @@ static void run_public(const uint8_t *p, size_t n, const uint8_t *eid, size_t el
     write_candidate(p, n);
     const demo_keys_status_t st = demo_keys_load_public(g_path, eid, elen, pk);
     const int m = model_public(p, n, eid, elen);
+    /* V4-13a: the in-memory parser is what the file loader now calls, and what
+     * the client core calls with no file at all -- same bytes, same verdict,
+     * same key. */
+    {
+        uint8_t bk[MLDSA_PUBLIC_KEY_BYTES];
+        memset(bk, 0x5A, sizeof(bk));
+        const demo_keys_status_t bs = demo_keys_parse_public(p, n, eid, elen, bk);
+        FUZZ_ASSERT(bs == st, "public: parse_public (buffer) and load_public (file) disagree");
+        FUZZ_ASSERT(memcmp(bk, pk, sizeof(bk)) == 0, "public: buffer and file paths return different key bytes");
+    }
     if (m == M_VALID) {
         FUZZ_ASSERT(st == DEMO_KEYS_OK, "public: a structurally valid file must load");
         FUZZ_ASSERT(memcmp(pk, p + HDR + p[8], MLDSA_PUBLIC_KEY_BYTES) == 0, "public: loaded key == file key bytes");

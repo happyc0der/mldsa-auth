@@ -174,6 +174,129 @@ int main(void) {
           (void)unlink(lnk);
       } }
 
+    /* ---- V4-13a: the buffer API, and parity with the file API ------------ */
+    { const size_t want = KEYFILE_HEADER_LEN + ilen + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+      CHECK(keyfile_sealed_len(ilen) == want && keyfile_sealed_len(0) == 0u &&
+            keyfile_sealed_len(demo_keys_sk2_image_len(64) + 1u) == 0u,
+            "buffer: sealed_len is header + image + tag, and 0 outside the image range");
+
+      uint8_t *sb = malloc(want);
+      CHECK(keyfile_seal_buf(sb, want - 1u, img, ilen, PASS, strlen(PASS), OPS, MEM) == KEYFILE_ERR_ARG,
+            "buffer: seal into a buffer one byte short -> ARG");
+      memset(sb, 0xAA, want);
+      CHECK(keyfile_seal_buf(sb, want, img, ilen, PASS, strlen(PASS), KEYFILE_OPSLIMIT_MAX + 1u, MEM) ==
+                KEYFILE_ERR_PARAMS && memcmp(sb, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN) != 0,
+            "buffer: seal opslimit over the ceiling -> PARAMS, and no envelope is produced");
+      CHECK(keyfile_seal_buf(sb, want, img, ilen, PASS, strlen(PASS), OPS, MEM) == KEYFILE_OK &&
+                memcmp(sb, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN) == 0,
+            "buffer: seal_buf produces an MLDSAEK1 envelope");
+
+      /* buffer -> buffer */
+      uint8_t k1[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+      uint8_t k2[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+      mldsa_keypair_t a, b;
+      CHECK(keyfile_open_buf(sb, want, ID_A, IDLEN, PASS, strlen(PASS), &a, k1) == KEYFILE_OK &&
+                a.secret_key != NULL,
+            "buffer: open_buf recovers the identity");
+      /* buffer -> file -> file API: write_sealed publishes exactly these bytes */
+      char eb[256]; path(eb, sizeof(eb), "frombuf.ek");
+      CHECK(keyfile_write_sealed(eb, sb, want) == KEYFILE_OK && fmode(eb) == 0600 && fsize(eb) == (long)want,
+            "buffer: write_sealed publishes the envelope, mode 0600, byte count unchanged");
+      CHECK(keyfile_open(eb, ID_A, IDLEN, PASS, strlen(PASS), &b, k2) == KEYFILE_OK &&
+                memcmp(a.public_key, b.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0 &&
+                memcmp(k1, k2, sizeof(k1)) == 0,
+            "parity: the file API opens what the buffer API sealed -- same key, same KEK");
+      mldsa_keypair_free(&b);
+      /* file -> buffer: the bytes keyfile_seal wrote open in memory */
+      { long fl = fsize(ek); uint8_t *fb = malloc((size_t)fl);
+        FILE *f = fopen(ek, "rb"); size_t rn = f ? fread(fb, 1, (size_t)fl, f) : 0; if (f) fclose(f);
+        uint8_t k3[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+        CHECK(rn == (size_t)fl && keyfile_open_buf(fb, rn, ID_A, IDLEN, PASS, strlen(PASS), &b, k3) == KEYFILE_OK &&
+                  keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp, k2) == KEYFILE_OK &&
+                  memcmp(b.public_key, kp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0 &&
+                  memcmp(k3, k2, sizeof(k3)) == 0,
+              "parity: the buffer API opens what the file API sealed -- same key, same KEK");
+        mldsa_keypair_free(&b); mldsa_keypair_free(&kp); free(fb); }
+      mldsa_keypair_free(&a);
+
+      /* open_buf failures leave nothing behind */
+      memset(k1, 0xAA, sizeof(k1));
+      CHECK(keyfile_open_buf(sb, want, ID_A, IDLEN, "wrong pass", 10, &a, k1) == KEYFILE_ERR_DECRYPT &&
+                a.secret_key == NULL && sodium_is_zero(k1, sizeof(k1)),
+            "buffer: a wrong passphrase -> DECRYPT, no key, KEK zeroed");
+      CHECK(keyfile_open_buf(sb, want - 1u, ID_A, IDLEN, PASS, strlen(PASS), &a, NULL) == KEYFILE_ERR_FORMAT,
+            "buffer: a truncated envelope -> FORMAT (ct_len disagrees with the length)");
+      { uint8_t *t = malloc(want); memcpy(t, sb, want);
+        t[10] = 0; t[11] = 0; t[12] = 0; t[13] = (uint8_t)(KEYFILE_OPSLIMIT_MAX + 1u);
+        CHECK(keyfile_open_buf(t, want, ID_A, IDLEN, PASS, strlen(PASS), &a, NULL) == KEYFILE_ERR_PARAMS,
+              "buffer: a header opslimit over the ceiling -> PARAMS (before the KDF)");
+
+        /* write_sealed: only a well-formed envelope reaches the disk */
+        char wb[256]; path(wb, sizeof(wb), "refused.ek");
+        CHECK(keyfile_write_sealed(wb, t, want) == KEYFILE_ERR_PARAMS && fsize(wb) == -1,
+              "write_sealed refuses an envelope with out-of-range KDF parameters, writes nothing");
+        memcpy(t, img, ilen < want ? ilen : want); /* an MLDSASK2 plaintext image is not an envelope */
+        CHECK(keyfile_write_sealed(wb, t, ilen) == KEYFILE_ERR_FORMAT && fsize(wb) == -1,
+              "write_sealed refuses a plaintext MLDSASK2 image (FORMAT), writes nothing");
+        free(t); }
+      /* never overwrites: a second write of DIFFERENT valid bytes leaves the first */
+      { uint8_t *s2 = malloc(want);
+        CHECK(keyfile_seal_buf(s2, want, img, ilen, PASS, strlen(PASS), OPS, MEM) == KEYFILE_OK &&
+                  memcmp(s2, sb, want) != 0 && keyfile_write_sealed(eb, s2, want) == KEYFILE_ERR_EXISTS,
+              "write_sealed over an existing file -> EXISTS");
+        uint8_t *on = malloc(want); FILE *f = fopen(eb, "rb"); size_t rn = f ? fread(on, 1, want, f) : 0;
+        if (f) fclose(f);
+        CHECK(rn == want && memcmp(on, sb, want) == 0, "write_sealed: the existing file is byte-for-byte untouched");
+        free(on); free(s2); }
+      free(sb); }
+
+    /* ---- V4-13a: MLDSAPK1 in memory ---------------------------------------- */
+    { mldsa_keypair_t pk_kp;
+      const uint8_t bob[] = {'b','o','b'};
+      const uint8_t bobby[] = {'b','o','b','b','y'};
+      if (mldsa_keypair_generate(&pk_kp) != 0) { puts("fixture failed"); return 2; }
+      const size_t pl = demo_keys_public_image_len(3);
+      uint8_t pi[16 + 64 + MLDSA_PUBLIC_KEY_BYTES];
+      uint8_t got[MLDSA_PUBLIC_KEY_BYTES];
+      CHECK(pl == 8u + 1u + 3u + MLDSA_PUBLIC_KEY_BYTES && demo_keys_public_image_len(0) == 0u &&
+                demo_keys_public_image_len(65) == 0u,
+            "pub: image length is magic + id_len + id + key, 0 outside 1..64");
+      CHECK(demo_keys_build_public_image(pi, pl - 1u, bob, 3, pk_kp.public_key) == DEMO_KEYS_ERR_ARG,
+            "pub: build into a buffer one byte short -> ARG");
+      { const uint8_t dotted[] = {'.','x'};
+        CHECK(demo_keys_build_public_image(pi, sizeof(pi), dotted, 2, pk_kp.public_key) == DEMO_KEYS_ERR_ARG,
+              "pub: build refuses an id that is not filename-safe, as write_public does"); }
+      CHECK(demo_keys_build_public_image(pi, sizeof(pi), bob, 3, pk_kp.public_key) == DEMO_KEYS_OK &&
+                demo_keys_parse_public(pi, pl, bob, 3, got) == DEMO_KEYS_OK &&
+                memcmp(got, pk_kp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
+            "pub: build then parse returns the same public key");
+      memset(got, 0xA5, sizeof(got));
+      CHECK(demo_keys_parse_public(pi, pl, bobby, 5, got) == DEMO_KEYS_ERR_ID_MISMATCH &&
+                sodium_is_zero(got, sizeof(got)),
+            "pub: 'bob' does not match an expected 'bobby' (length compared), key zeroed");
+      CHECK(demo_keys_parse_public(pi, pl, (const uint8_t *)"bot", 3, got) == DEMO_KEYS_ERR_ID_MISMATCH,
+            "pub: a same-length different id -> ID_MISMATCH");
+      pi[pl] = 0;
+      CHECK(demo_keys_parse_public(pi, pl + 1u, bob, 3, got) == DEMO_KEYS_ERR_FORMAT,
+            "pub: one trailing byte -> FORMAT, never ignored");
+      CHECK(demo_keys_parse_public(pi, pl - 1u, bob, 3, got) == DEMO_KEYS_ERR_FORMAT,
+            "pub: one byte short -> FORMAT");
+      pi[0] ^= 0x01u;
+      CHECK(demo_keys_parse_public(pi, pl, bob, 3, got) == DEMO_KEYS_ERR_FORMAT, "pub: wrong magic -> FORMAT");
+      pi[0] ^= 0x01u;
+      /* parity with the file loader on the same bytes */
+      { char pp[256]; path(pp, sizeof(pp), "bob.pub");
+        uint8_t fk[MLDSA_PUBLIC_KEY_BYTES];
+        CHECK(demo_keys_write_public(pp, bob, 3, pk_kp.public_key) == DEMO_KEYS_OK &&
+                  fsize(pp) == (long)pl && demo_keys_load_public(pp, bob, 3, fk) == DEMO_KEYS_OK &&
+                  memcmp(fk, pk_kp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0 &&
+                  demo_keys_load_public(pp, bobby, 5, fk) == DEMO_KEYS_ERR_ID_MISMATCH,
+              "pub parity: write_public's file loads to the same key, and refuses 'bobby'");
+        uint8_t fb[16 + 64 + MLDSA_PUBLIC_KEY_BYTES]; FILE *f = fopen(pp, "rb");
+        size_t rn = f ? fread(fb, 1, sizeof(fb), f) : 0; if (f) fclose(f);
+        CHECK(rn == pl && memcmp(fb, pi, pl) == 0, "pub parity: write_public writes exactly the built image"); }
+      mldsa_keypair_free(&pk_kp); }
+
     secure_mem_free(img, ilen);
     { char cmd[300]; snprintf(cmd, sizeof(cmd), "rm -rf %s", g_dir);
       /* see the note in test_authd_conn.c: (void) does not silence gcc here */

@@ -139,7 +139,27 @@ demo_keys_status_t demo_keys_build_sk2_image(uint8_t *img, size_t img_cap, const
 demo_keys_status_t demo_keys_migrate_legacy(const char *in_path, const char *out_path, const uint8_t *expect_id,
                                             size_t id_len);
 
-/* Loads a pinned public key; the embedded id must equal expect_id. */
+/* ---- MLDSAPK1 in memory (V4-13a) ---------------------------------------------
+ * The file functions read and write these images; the client core -- and the
+ * browser build through it -- use them directly, with no file system. */
+
+/* The exact MLDSAPK1 length ("MLDSAPK1" || id_len || id || pk) for an id of
+ * id_len bytes; 0 for an out-of-range id_len. */
+size_t demo_keys_public_image_len(size_t id_len);
+
+/* Builds an MLDSAPK1 image into out (out_cap >= demo_keys_public_image_len).
+ * The id must be filename-safe, as for demo_keys_write_public. OK or ARG. */
+demo_keys_status_t demo_keys_build_public_image(uint8_t *out, size_t out_cap, const uint8_t *id, size_t id_len,
+                                                const uint8_t public_key[MLDSA_PUBLIC_KEY_BYTES]);
+
+/* Parses an in-memory MLDSAPK1 image. Order: size range -> magic -> exact
+ * size for the embedded id length (FORMAT) -> id, compared by length and bytes
+ * (ID_MISMATCH). pk_out is zeroed unless the result is OK. */
+demo_keys_status_t demo_keys_parse_public(const uint8_t *buf, size_t len, const uint8_t *expect_id, size_t id_len,
+                                          uint8_t pk_out[MLDSA_PUBLIC_KEY_BYTES]);
+
+/* Loads a pinned public key; the embedded id must equal expect_id. Custody
+ * (O_NOFOLLOW, a regular file) and I/O, then demo_keys_parse_public. */
 demo_keys_status_t demo_keys_load_public(const char *pub_path, const uint8_t *expect_id, size_t id_len,
                                          uint8_t pk_out[MLDSA_PUBLIC_KEY_BYTES]);
 
