@@ -431,6 +431,68 @@ rc=0
 [ "$rc" -ne 0 ] || fail "the SUPERSEDED key still obtained a login code: there is an overlap window"
 echo "PASS: E2E: the superseded key gets no login code (no overlap window, spec 10.2)"
 
+# ------------------------------------- rotation recovery, characterised
+#
+# client_resolve_key's .ek / .ek.next recovery (spec 10.2) had NO end-to-end
+# test: this script only checked that no .next survived an acknowledged
+# rotation. These three legs pin what the shipped client does TODAY, before
+# V4-13a moves it onto a shared core -- so the refactor cannot change it
+# unseen. They assert observed behaviour, not intended behaviour.
+#
+# State here: .ek holds the LIVE (rotated) key, save-old.ek the SUPERSEDED one.
+hash_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+EK="$TMP/dev/$HANDLE.ek"
+NEXT="$TMP/dev/$HANDLE.ek.next"
+LIVE_HASH=$(hash_of "$EK")
+OLD_HASH=$(hash_of "$TMP/save-old.ek")
+
+# 1. USE_EK: .ek is live and .ek.next was never committed. Login must succeed
+#    on .ek, say so, and -- by design, "login should not delete files" --
+#    leave .ek.next where it is.
+cp "$TMP/save-old.ek" "$NEXT"; chmod 600 "$NEXT"
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/rec1.txt" 2> "$TMP/rec1.err" \
+    || { cat "$TMP/rec1.err"; fail "recovery USE_EK: login with a stale .ek.next present exited nonzero"; }
+[ "$(wc -c < "$TMP/rec1.txt" | tr -d ' ')" -eq 44 ] || fail "recovery USE_EK: no 43-character login code"
+grep -q "is still the live key" "$TMP/rec1.err" || fail "recovery USE_EK: did not report .ek as the live key"
+grep -q "was never committed" "$TMP/rec1.err" || fail "recovery USE_EK: did not report .ek.next as never committed"
+[ -e "$NEXT" ] || fail "recovery USE_EK: login DELETED .ek.next -- login must not delete files"
+[ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery USE_EK: login changed .ek"
+echo "PASS: E2E: recovery USE_EK -- a stale .ek.next is reported and left alone; .ek logs in"
+rm -f "$NEXT"
+
+# 2. REFUSE: neither file authenticates. Deleting either would be guessing
+#    with the only copies of an identity, so NOTHING may be touched.
+cp "$TMP/save-old.ek" "$EK"; chmod 600 "$EK"
+cp "$TMP/save-old.ek" "$NEXT"; chmod 600 "$NEXT"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec2.err" || rc=$?
+# The files FIRST: that nothing was deleted or changed is the property; the
+# message saying so is only a report of it. fail() stops at the first
+# failure, so this order decides which check a defect is caught by.
+[ -e "$EK" ] && [ -e "$NEXT" ] || fail "recovery REFUSE: a key file was deleted when neither authenticated"
+[ "$(hash_of "$EK")" = "$OLD_HASH" ] && [ "$(hash_of "$NEXT")" = "$OLD_HASH" ] \
+    || fail "recovery REFUSE: a key file was modified when neither authenticated"
+[ "$rc" -ne 0 ] || fail "recovery REFUSE: login succeeded although neither key is live"
+grep -q "NOTHING has been deleted" "$TMP/rec2.err" || fail "recovery REFUSE: did not say that nothing was deleted"
+echo "PASS: E2E: recovery REFUSE -- neither key live, both files untouched"
+
+# 3. PROMOTE_NEXT: the server committed and the rename was interrupted --
+#    .ek is stale, .ek.next is live. Login must finish the rename.
+cp "$TMP/current.ek" "$NEXT"; chmod 600 "$NEXT"
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/rec3.txt" 2> "$TMP/rec3.err" \
+    || { cat "$TMP/rec3.err"; fail "recovery PROMOTE: login with a committed .ek.next exited nonzero"; }
+[ "$(wc -c < "$TMP/rec3.txt" | tr -d ' ')" -eq 44 ] || fail "recovery PROMOTE: no 43-character login code"
+grep -q "completed the interrupted rotation" "$TMP/rec3.err" || fail "recovery PROMOTE: did not report completing the rotation"
+[ ! -e "$NEXT" ] || fail "recovery PROMOTE: .ek.next survived its own promotion"
+[ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery PROMOTE: .ek does not hold the live key after promotion"
+echo "PASS: E2E: recovery PROMOTE -- an interrupted rotation is completed by the next login"
+
 # The rotation is audited, and attributed to a user.
 "$ADMIN" audit-tail --socket "$TMP/a.sock" --n 10 > "$TMP/audit2.txt" || fail "audit-tail after rotation failed"
 grep -q 'event=key-rotate' "$TMP/audit2.txt" || fail "the rotation was not audited"
