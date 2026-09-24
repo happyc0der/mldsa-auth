@@ -1,18 +1,44 @@
-# The authentication daemon (V4-6 onward). keyfile.c is the MLDSAEK1 key
-# envelope; later steps add the store, the event loop and the local API.
-add_library(mldsa_authd STATIC
+# V4-13a: what a CLIENT needs, split out of mldsa_authd so a client can be
+# built without the daemon -- and, in particular, without sqlite3 (the store
+# lives only in mldsa_authd). The browser build (13b) compiles exactly these.
+#
+#   mldsa_ws      the WebSocket framing and its SHA-1 (RFC 6455 accept key)
+#   mldsa_client  the MLDSAEK1 envelope and the application messages
+#
+# authmsg.c includes store.h and conn_io.h for two constants (STORE_ID_MAX,
+# AUTHD_MAX_CONTENT) and calls nothing in either, hence the include
+# directories below and no link to the store.
+add_library(mldsa_ws STATIC
+  sha1.c
+  ws.c
+)
+target_include_directories(mldsa_ws PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mldsa_ws PUBLIC sodium)   # base64 and memzero only
+target_compile_options(mldsa_ws PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(mldsa_ws PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(mldsa_ws PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
+add_library(mldsa_client STATIC
   keyfile.c
+  authmsg.c
+)
+target_include_directories(mldsa_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
+target_link_libraries(mldsa_client PUBLIC mldsa_keys mldsa_ws mldsa_core)
+target_compile_options(mldsa_client PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(mldsa_client PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(mldsa_client PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
+# The authentication daemon (V4-6 onward): the store, the event loop, the
+# local API and the CLIs' subcommands, over the client libraries above.
+add_library(mldsa_authd STATIC
   authd_secret.c
   memlock.c
   store/store.c
   authd_config.c
   base32.c
   recovery.c
-  sha1.c
-  ws.c
   proxy_v2.c
   ratelimit.c
-  authmsg.c
   tokens.c
   localapi.c
   localcli.c
@@ -26,7 +52,7 @@ add_library(mldsa_authd STATIC
 target_include_directories(mldsa_authd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
 # sqlite3 is PRIVATE: the store's API is pure C types, so no consumer of
 # mldsa_authd needs sqlite3.h on its include path.
-target_link_libraries(mldsa_authd PUBLIC mldsa_demo PRIVATE sqlite3)
+target_link_libraries(mldsa_authd PUBLIC mldsa_client mldsa_demo PRIVATE sqlite3)
 target_compile_options(mldsa_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(mldsa_authd PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_authd PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
