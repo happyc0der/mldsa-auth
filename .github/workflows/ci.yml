@@ -223,7 +223,7 @@ jobs:
   # Linux only: the claim under test is "wasm equals native", and the native
   # side is already checked on both platforms by the suite jobs.
   wasm:
-    name: wasm client (Emscripten 6.0.9, Node 24.21.0)
+    name: wasm client (Emscripten 6.0.9, Node 24.21.0, Chrome for Testing 154)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -231,6 +231,8 @@ jobs:
       EMSCRIPTEN_VERSION: "6.0.9"
       NODE_VERSION: v24.21.0
       NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  # node-v24.21.0-linux-x64.tar.xz
+      CHROME_VERSION: 154.0.8037.57
+      CHROME_SHA256: ceee2972074d441ea7c4ba8bcc0eaab77e7e87680f6653d73d3065851fe10302  # chrome-linux64.zip (MD5 matches the bucket)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -262,15 +264,37 @@ jobs:
           cmake --build build-wasm -j4
           tools/check_build_current.sh build-wasm && ctest --test-dir build-wasm --output-on-failure
 
+      # Chrome for Testing, pinned like Node (V4-13c): by version from Google's
+      # own bucket, verified by SHA-256 before it runs. The runner's
+      # preinstalled Chrome is not used -- it moves under us.
+      # Ubuntu 24.04 forbids unprivileged user namespaces through AppArmor,
+      # which is what Chrome's sandbox needs. The runner VM is lifted from that
+      # rule rather than the browser run with --no-sandbox: the test's pages
+      # are exactly what a sandbox is for.
+      - name: Chrome for Testing, pinned by version and SHA-256
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/chrome.zip" \
+            "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chrome-linux64.zip"
+          echo "$CHROME_SHA256  $RUNNER_TEMP/chrome.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/chrome.zip" -d "$RUNNER_TEMP"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          "$RUNNER_TEMP/chrome-linux64/chrome" --version
+
       # A separate step, so the native tree is configured without emsdk's
-      # environment (its CC, its node) in the way.
-      - name: The native daemon fixture, and the wasm client logging in to it
+      # environment (its CC, its node) in the way. browser_e2e exists only
+      # when a browser is named, so its presence is asserted: a gate that can
+      # pass by not having the test is not a gate.
+      - name: The native daemon fixture, the wasm client logging in to it, and the browser
         run: |
           cmake -S . -B build-native -DMLDSA_WASM_DIR="$PWD/build-wasm" \
-            -DMLDSA_NODE="$RUNNER_TEMP/node/bin/node"
+            -DMLDSA_NODE="$RUNNER_TEMP/node/bin/node" \
+            -DMLDSA_BROWSER="$RUNNER_TEMP/chrome-linux64/chrome"
           cmake --build build-native -j4
+          ctest --test-dir build-native -N -R '^browser_e2e$' | grep -q 'Total Tests: 1' || \
+            { echo "::error::browser_e2e is not registered"; exit 1; }
           tools/check_build_current.sh build-native && \
-            ctest --test-dir build-native --output-on-failure -R '^(wasm_interop|web_no_crypto|test_client_wasm)$'
+            ctest --test-dir build-native --output-on-failure \
+              -R '^(wasm_interop|web_no_crypto|test_client_wasm|test_passphrase|web_flows|browser_e2e)$'
 
   deploy:
     name: unit + offline build (Linux)
