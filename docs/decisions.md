@@ -5520,3 +5520,23 @@ could not see what F4 does — `cc_wipe` zeroes the struct, so a leaked key's
 pointer reads NULL too. The check was renamed to what it asserts and F4 is
 killed where the free is observable. A survivor that exposes a check weaker
 than its name is the campaign working.
+
+### After the push
+
+Two things only CI could say. The Linux gcc Release job refused a test this
+step added: `malloc((size_t)fsize(ek))`, where `fsize` returns -1 for a
+missing file, which gcc follows at `-O3` into an allocation of `SIZE_MAX`
+(`-Werror=alloc-size-larger-than`). Local verification never built with gcc.
+It was reproduced before the fix was pushed — Homebrew gcc 16 with the Release
+tree's own flags gives CI's exact error — and every C file the step touched
+was compiled the same way. One more failure appeared, `fuzz_keys.c:865`, which
+is older than this step and which CI's gcc 13.3 accepts; it is **F86**, the
+first error of a compiler upgrade nobody has scheduled.
+
+The nightly bring-up then went 37/38, 37/38 (the control, v53 red as
+intended), 38/38. The first run's red was not v53 but v52: `authd_e2e` failed
+1.24 s into a clean suite and passed in both later runs. Why is not known,
+because the campaign keeps only ctest's summary for a failing clean suite —
+**F84** records the failure and its leading, unconfirmed hypothesis (a fixed
+e2e port inside Linux's ephemeral range), and **F85** the missing evidence,
+which has to be fixed before F84 can be diagnosed rather than guessed at.
