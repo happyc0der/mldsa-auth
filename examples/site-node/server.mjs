@@ -44,7 +44,7 @@ const REPO = resolve(HERE, '..', '..');
 
 export const CSP = [
   "default-src 'none'",
-  "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'",   // CONTROL: CI must go red
+  "script-src 'self' 'wasm-unsafe-eval'",
   "connect-src 'self'",
   "style-src 'self'",
   "img-src 'self'",
