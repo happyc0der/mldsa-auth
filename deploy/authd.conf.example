@@ -51,6 +51,13 @@ proxy_uids = 33
 # Rate limiting, keyed on the address the PROXY v2 preamble states. Generous to
 # a person, useless to a prober; §7.3 assigns the decoy flow's per-probe
 # signature cost to exactly this.
+#
+# A login that AUTHENTICATES gets its token back (spec §7.3, V4-13d), so only
+# handshakes that fail drain an address -- which is what lets thousands of
+# phone users behind one carrier-NAT address log in at these numbers. What it
+# cannot fix: a prober behind that same address still drains it for everyone
+# there until it refills (§18). If that bites, raise rate_burst; the global
+# bucket below bounds the cost either way.
 rate_per_min = 5
 rate_burst = 10
 rate_global_per_sec = 50

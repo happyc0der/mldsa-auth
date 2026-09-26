@@ -95,6 +95,7 @@ typedef struct {
     uint64_t denied_addr;
     uint64_t denied_global;
     uint64_t denied_table;
+    uint64_t refunded;
 } ratelimit_t;
 
 /* Zeroes the table, draws a fresh SipHash key and starts every bucket FULL, so
@@ -116,7 +117,34 @@ ratelimit_verdict_t ratelimit_admit(ratelimit_t *r, const authd_addr_t *addr, ui
  * returned: they paid for a handshake that happened. */
 void ratelimit_release(ratelimit_t *r, const authd_addr_t *addr);
 
+/* Gives back the ONE per-address token a connection paid for, because it
+ * authenticated an enrolled, active key (V4-13d, audit finding F81).
+ *
+ * The bucket exists to price the decoy flow (spec §7.3): every probe costs a
+ * signature, and the limiter makes an address pay for it. A login that
+ * authenticates is not a probe, but it drew from the same bucket -- so behind
+ * a carrier-grade NAT, where thousands of people share one IPv4 address, the
+ * people logging in were spending each other's budget. With the refund, only
+ * handshakes that do NOT authenticate drain an address: failures, decoys,
+ * abandoned connections.
+ *
+ * What it does not fix, stated rather than hidden: an attacker behind the
+ * same address can still drain it with probes and lock the neighbours out.
+ * Nothing that runs before ClientAuth can tell them apart.
+ *
+ * The caller refunds at most once per connection (there is one handshake per
+ * connection) and only after a login code has been issued. The bucket is
+ * refilled to `now_ms` first, then credited, and never exceeds the burst. The
+ * GLOBAL bucket is not refunded: it bounds the daemon's total signing work,
+ * and an authenticated handshake did that work. An address the table no
+ * longer holds is a no-op; one with an open connection cannot be reclaimed. */
+void ratelimit_refund(ratelimit_t *r, const authd_addr_t *addr, uint64_t now_ms);
+
 /* Connections currently counted for `addr`. For tests and for the log. */
 uint32_t ratelimit_conns(const ratelimit_t *r, const authd_addr_t *addr);
+
+/* The address's tokens in milli-tokens, as of its last update (no refill), or
+ * 0 for an address the table does not hold. For tests. */
+uint64_t ratelimit_tokens_milli(const ratelimit_t *r, const authd_addr_t *addr);
 
 #endif /* MLDSA_AUTHD_RATELIMIT_H */

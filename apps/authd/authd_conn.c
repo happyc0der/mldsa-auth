@@ -416,6 +416,14 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
     (void)store_touch_last_seen(app->store, c->handle, c->handle_len);
 
     app->logins_issued++;
+    /* F81: an authenticated login is not a probe, so it does not keep the
+     * token it paid at admission. Here and nowhere else: after ClientAuth has
+     * verified against an ACTIVE key and a code exists -- a decoy cannot get
+     * this far (above) -- and once, because a connection carries exactly one
+     * handshake. See ratelimit_refund. */
+    if (slot->addr_admitted && app->rl != NULL) {
+        ratelimit_refund(app->rl, conn_io_client_addr(&slot->io), app->now_ms);
+    }
     authd_log_slot_id(AUTHD_LOG_INFO, "login-code-issued", slot->index, c->handle, c->handle_len);
     c->stage = CONN_STAGE_SERVING;
     return EV_ACTION_CONTINUE;

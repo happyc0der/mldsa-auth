@@ -235,6 +235,41 @@ void ratelimit_release(ratelimit_t *r, const authd_addr_t *addr)
     }
 }
 
+void ratelimit_refund(ratelimit_t *r, const authd_addr_t *addr, uint64_t now_ms)
+{
+    if (r == NULL) {
+        return;
+    }
+    uint8_t key[16];
+    const size_t key_len = authd_addr_key(addr, key);
+    if (key_len == 0u) {
+        return;
+    }
+    const size_t at = find_idx(r, key, key_len);
+    if (at == RATELIMIT_ENTRIES) {
+        return;
+    }
+    ratelimit_entry_t *e = &r->e[at];
+    refill_addr(r, e, now_ms);
+    const uint64_t cap = (uint64_t)r->burst * 1000u;
+    e->tokens_milli = (e->tokens_milli + 1000u > cap) ? cap : e->tokens_milli + 1000u;
+    r->refunded++;
+}
+
+uint64_t ratelimit_tokens_milli(const ratelimit_t *r, const authd_addr_t *addr)
+{
+    if (r == NULL) {
+        return 0u;
+    }
+    uint8_t key[16];
+    const size_t key_len = authd_addr_key(addr, key);
+    if (key_len == 0u) {
+        return 0u;
+    }
+    const size_t at = find_idx(r, key, key_len);
+    return (at != RATELIMIT_ENTRIES) ? r->e[at].tokens_milli : 0u;
+}
+
 uint32_t ratelimit_conns(const ratelimit_t *r, const authd_addr_t *addr)
 {
     if (r == NULL) {

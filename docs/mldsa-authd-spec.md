@@ -393,6 +393,21 @@ This costs one signature per probe, which is the rate limiter's problem, and it
 is the only way to close the enumeration channel without changing the verified
 handshake code.
 
+**An authenticated login is not a probe** (erratum 38). Every connection pays
+one token from its address's bucket at admission (§7.2), before any signature.
+When its `ClientAuth` verifies against an **active** key and a login code has
+been issued, that token is given back — refilled to now, then credited, never
+above `rate_burst` — once per connection. The daemon-wide bucket is not
+refunded: it bounds total signing work, and an authenticated handshake did that
+work. So only handshakes that do not authenticate drain an address: failures,
+decoys, abandoned connections. Behind a carrier-grade NAT, where many users
+share one IPv4 address, people logging in no longer spend each other's budget.
+
+The refund depends only on the peer holding an active key's secret, which a
+prober does not have whether the handle it names exists or not, so an unknown
+identity and a known one with a wrong signature are charged identically and
+Req 6 is untouched. What it does **not** fix is recorded in §18.
+
 ## 8. Local socket protocol
 
 Two Unix sockets. One request per line, one response per request, at most one
@@ -1013,7 +1028,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Recovery lockout | 5 failures → 1 hour | §10.3 |
 | Key rotation cadence | `rotation_due_age_s`, default 180 days, `0` disables | §6.2 |
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
-| Handshakes per address | `rate_per_min` 5, `rate_burst` 10 | §7.2 |
+| Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
 
 The last four are **operator policy with a documented default**, not protocol
@@ -1035,6 +1050,12 @@ different numbers sets them. The rest are normative.
 - **Periodic publication of the audit head MAC to the journal is not
   implemented** (§9.2). `authd_admin audit-verify` is the operator's means of
   checking the chain, and running it on a timer is the deployment's job.
+- **Users behind one shared address can be locked out by one of them** (§7.3).
+  The refund stops honest logins from draining a carrier-NAT address, but a
+  prober behind the same address still drains it, and every neighbour is then
+  refused until it refills. Nothing that runs before `ClientAuth` can tell the
+  prober from the neighbours; `rate_per_min` and `rate_burst` are the operator's
+  lever, and the daemon-wide bucket bounds the cost either way. Finding **F81**.
 - **Only the first of §7.2's two mechanisms for obtaining a client address is
   implemented.** A deployment behind a proxy that cannot speak PROXY v2 has no
   supported configuration today.
@@ -1193,3 +1214,4 @@ What a public deployment needs that milestone A did not:
 |---|---|---|---|
 | 36 | 15, 18 | `log_identities = full \| hashed \| off`, the `idh` field, `key_log` and `authd_admin pseudonym`; the §18 limitation "there are no switches" removed | V4-10c (F46) found the switches named here and implemented nowhere; for public users an identifier in the journal is personal data. Finding **F14** |
 | 37 | 15 | `log_client_ip = full \| prefix \| off`, and `src`'s alphabet corrected to `[0-9a-f.:/]` or `none` | the same, for addresses. The old sentence also said `[0-9a-f.:]` while the renderer has always written `none` for a connection with no address |
+| 38 | 7.3, 17, 18 | an authenticated login's per-address token is refunded; the shared-address lockout recorded as a limitation | behind a carrier-grade NAT thousands of users share one IPv4 address and, at 5 a minute, were spending each other's budget on logins that were never probes. Finding **F81** |

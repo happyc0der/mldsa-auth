@@ -714,6 +714,37 @@ static void test_ratelimit(void)
        * the whole expiry condition. Reclaiming it forgets nothing. */
       CHECK(ratelimit_admit(&r, &fresh, 60000u) == RATELIMIT_ALLOW,
             "limiter: an idle, refilled entry is reclaimed so the table recovers"); }
+
+    /* V4-13d, F81: the refund an authenticated login earns. Exact values in
+     * milli-tokens, because "it went up" would pass a refund of two. */
+    ratelimit_init(&r, 1u, 3u, 10000u, 8u, 0u);      /* 1 a minute: no refill inside a second */
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW && ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
+          ratelimit_tokens_milli(&r, &a) == 1000u,
+          "refund: two admissions leave 1 of a burst of 3 (the canary)");
+    { const uint64_t g = r.global_tokens_milli;
+      ratelimit_refund(&r, &a, 0u);
+      CHECK(ratelimit_tokens_milli(&r, &a) == 2000u,
+            "refund: gives back exactly one token");
+      CHECK(r.global_tokens_milli == g,
+            "refund: the global bucket is not refunded (it bounds the daemon's signing work)");
+      CHECK(r.refunded == 1u, "refund: counted");
+      CHECK(ratelimit_conns(&r, &a) == 2u, "refund: the connection count is not touched"); }
+    ratelimit_refund(&r, &a, 0u);
+    ratelimit_refund(&r, &a, 0u);
+    CHECK(ratelimit_tokens_milli(&r, &a) == 3000u,
+          "refund: never above the burst");
+    /* refilled to now FIRST, then credited: 30 s at 1 a minute is half a token */
+    ratelimit_init(&r, 1u, 3u, 10000u, 8u, 0u);
+    (void)ratelimit_admit(&r, &a, 0u); (void)ratelimit_admit(&r, &a, 0u); (void)ratelimit_admit(&r, &a, 0u);
+    ratelimit_refund(&r, &a, 30000u);
+    CHECK(ratelimit_tokens_milli(&r, &a) == 1500u,
+          "refund: the bucket is refilled to now before the token is credited");
+    /* an address the table does not hold is not created by a refund */
+    ratelimit_refund(&r, &b, 0u);
+    CHECK(ratelimit_tokens_milli(&r, &b) == 0u && ratelimit_conns(&r, &b) == 0u,
+          "refund: an unknown address is a no-op, not a new entry");
+    ratelimit_refund(&r, &none, 0u);
+    CHECK(r.refunded == 1u, "refund: no address, no refund");
 }
 
 /* --------------------------------------- the limiter, through the real loop */
@@ -753,6 +784,14 @@ static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *o
     (void)close(fd);
     for (int i = 0; i < 50; i++) { h_tick(d); }   /* let the daemon reap the slot */
     return (int)n;
+}
+
+/* Occurrences of `needle` in a NUL-terminated `hay` (NULL is none). */
+static size_t count_of(const char *hay, const char *needle)
+{
+    size_t n = 0;
+    for (const char *q = hay; q != NULL && (q = strstr(q, needle)) != NULL; q++) { n++; }
+    return n;
 }
 
 static void test_proxy_through_loop(void)
@@ -805,6 +844,65 @@ static void test_proxy_through_loop(void)
             "proxy-loop: the next one is answered 429 at the upgrade, not at the handshake");
       CHECK(handshake_pending_active_count(&d.pending) == 0u,
             "proxy-loop: a refused connection cost no ServerHello signature (7.3)"); }
+
+    /* V4-13d, F81, through the loop. A burst of 2 at 1 a minute: without the
+     * refund the third login from one address is refused. With it, five in a
+     * row get their codes -- the carrier-NAT case -- while handshakes that do
+     * not authenticate still drain the address and are refused at the burst. */
+    { ratelimit_init(&d.rl, 1u, 2u, 10000u, 8u, d.app.now_ms);
+      int all = 1;
+      for (int i = 0; i < 5; i++) {
+          h_client_t c;
+          uint8_t code[32];
+          if (h_login_on(&d, &c, HANDLE1, sizeof HANDLE1, &kp, "st9") != 0 ||
+              h_get_login_code(&d, &c, code) != 0) { all = 0; }
+          h_client_close(&c);
+          if (!H_PUMP_UNTIL(&d, ratelimit_conns(&d.rl, &A) == 0u)) { all = 0; }
+      }
+      CHECK(all, "refund: five logins in a row from one address, burst 2, all get codes");
+      CHECK(d.rl.refunded == 5u && ratelimit_tokens_milli(&d.rl, &A) == 2000u,
+            "refund: each authenticated login gave its token back, and the bucket is full");
+
+      /* The prober's side: an unenrolled handle gets the decoy flow, a real
+       * ServerHello and no code, and pays. Two probes empty the bucket.
+       *
+       * A decoy's ClientAuth fails RETRYABLY, so the daemon keeps the
+       * connection open and says nothing; waiting for a code would sit out the
+       * whole read loop. What matters is that the daemon has PROCESSED the
+       * ClientAuth -- only then is "no refund" a statement about the failure
+       * path rather than about a connection closed too early -- so the pump
+       * runs until the daemon has logged the retryable failure, by count. */
+      static const uint8_t STRANGER[] = { 'd','1','5','7' };
+      mldsa_keypair_t skp;
+      CHECK(mldsa_keypair_generate(&skp) == 0, "refund: a stranger's key");
+      char *lb = NULL;
+      size_t ll = 0;
+      FILE *lf = open_memstream(&lb, &ll);
+      CHECK(lf != NULL, "refund: capture the log");
+      authd_log_init(lf, AUTHD_LOG_INFO);
+      const uint64_t logins = d.app.logins_issued;
+      int probes = 0;
+      for (int i = 0; i < 2 && lf != NULL; i++) {
+          h_client_t c;
+          if (h_login_on(&d, &c, STRANGER, sizeof STRANGER, &skp, "st9") == 0 &&
+              H_PUMP_UNTIL(&d, (fflush(lf), count_of(lb, "event=client-auth-retryable") == (size_t)i + 1u))) {
+              probes++;
+          }
+          h_client_close(&c);
+          (void)H_PUMP_UNTIL(&d, ratelimit_conns(&d.rl, &A) == 0u);
+      }
+      authd_log_init(stderr, AUTHD_LOG_ERROR);
+      if (lf != NULL) { fclose(lf); }
+      free(lb);
+      CHECK(probes == 2 && d.app.logins_issued == logins,
+            "refund: two decoy handshakes were processed to a failed ClientAuth and issued no code");
+      CHECK(d.rl.refunded == 5u && ratelimit_tokens_milli(&d.rl, &A) == 0u,
+            "refund: ...earned no refund, and emptied the bucket");
+      char resp[512];
+      const int n = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
+      CHECK(n > 0 && strncmp(resp, "HTTP/1.1 429", 12) == 0,
+            "refund: after the probes, the address is refused (429) -- for everyone behind it");
+      mldsa_keypair_free(&skp); }
 
     mldsa_keypair_free(&kp);
     h_stop(&d);
