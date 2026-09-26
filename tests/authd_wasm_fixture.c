@@ -42,6 +42,18 @@ int main(int argc, char **argv)
 
     static h_daemon_t d;
     if (h_start_opts(&d, dir, "wasm.sqlite3", 1, 0, 1) != 0) { fprintf(stderr, "h_start_opts failed\n"); return 1; }
+    /* The harness sizes the pending-handshake ledger to its 8 slots, which
+     * suits the C tests. The browser tests run a handshake per login AND per
+     * recovery probe, and a completed handshake holds its replay tombstone for
+     * the 10 s TTL -- so 8 entries cap the fixture at 0.8 handshakes/s and the
+     * daemon (correctly) refuses the rest (V4-12's capacity ceiling). A real
+     * daemon sizes it to max_slots; this fixture uses the inline maximum. */
+    handshake_pending_store_wipe(&d.pending);
+    if (handshake_pending_store_init(&d.pending, HANDSHAKE_PENDING_MAX, 10000u, authd_app_clock, &d.app) !=
+            PENDING_OK) {
+        fprintf(stderr, "pending store failed\n");
+        return 1;
+    }
     /* Node is on the wall clock; so must the codes be (authd_node_fixture.c). */
     d.app.now_unix = (int64_t)time(NULL);
 

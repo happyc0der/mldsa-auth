@@ -62,6 +62,26 @@ export class AuthdClient {
                           h ? this.str(this.M._ccw_diag_detail(h)) : '', framesSent);
   }
 
+  // The .ek.next decision (spec 10.2), client_key_plan in the core, so the
+  // browser follows the CLI's rule exactly: 0 use the current key, 1 promote
+  // the pending one, 2 refuse and touch nothing.
+  keyPlan(ekOk, nextPresent, nextOk) {
+    return this.M._ccw_key_plan(ekOk ? 1 : 0, nextPresent ? 1 : 0, nextOk ? 1 : 0);
+  }
+
+  // The passphrase policy (passphrase.h): { verdict, name, codePoints, bits, reasons }.
+  checkPassphrase(passphrase) {
+    const M = this.M;
+    const pass = te.encode(passphrase);
+    const pp = this.put(pass), cps = this.u32Slot(), bits = this.u32Slot(), rs = this.u32Slot();
+    try {
+      const verdict = M._ccw_passphrase_check(pp, pass.length, cps, bits, rs);
+      return { verdict, ok: verdict === 0, codePoints: this.u32(cps), bits: this.u32(bits), reasons: this.u32(rs) };
+    } finally {
+      this.drop(pp, pass.length); pass.fill(0); this.drop(cps, 8); this.drop(bits, 8); this.drop(rs, 8);
+    }
+  }
+
   newHandle() {
     const p = this.M._malloc(64);
     this.M._ccw_new_handle(p);

@@ -276,6 +276,12 @@ if(MLDSA_WASM_DIR)
             $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
             ${PROJECT_SOURCE_DIR}/web/client/authd-client.mjs)
   set_tests_properties(wasm_interop PROPERTIES TIMEOUT 180)
+  # V4-13c: the browser's login/rotation flows, against the real daemon.
+  add_test(NAME web_flows
+    COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_flows.mjs
+            $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
+            ${PROJECT_SOURCE_DIR}/web/client)
+  set_tests_properties(web_flows PROPERTIES TIMEOUT 240)
 endif()
 
 # Milestone A, automated: the shipped daemon and both CLIs as real processes.
