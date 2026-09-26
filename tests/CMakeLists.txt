@@ -282,6 +282,30 @@ if(MLDSA_WASM_DIR)
             $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
             ${PROJECT_SOURCE_DIR}/web/client)
   set_tests_properties(web_flows PROPERTIES TIMEOUT 240)
+
+  # V4-13c: the pages, the reference site and the module in a REAL browser
+  # (headless Chromium over the DevTools protocol, tests/browser/cdp.mjs).
+  # Only where a Chromium-family browser exists -- MLDSA_BROWSER, or found
+  # here; CI pins Chrome for Testing and names it. A tree without one does not
+  # have the test, rather than a test that silently skips.
+  find_program(MLDSA_BROWSER NAMES google-chrome google-chrome-stable chromium chromium-browser
+               PATHS "/Applications/Google Chrome.app/Contents/MacOS"
+                     "/Applications/Microsoft Edge.app/Contents/MacOS"
+                     "/Applications/Chromium.app/Contents/MacOS"
+               NAMES_PER_DIR)
+  if(NOT MLDSA_BROWSER)
+    find_program(MLDSA_BROWSER NAMES "Google Chrome" "Microsoft Edge" Chromium
+                 PATHS "/Applications/Google Chrome.app/Contents/MacOS"
+                       "/Applications/Microsoft Edge.app/Contents/MacOS"
+                       "/Applications/Chromium.app/Contents/MacOS" NO_DEFAULT_PATH)
+  endif()
+  if(MLDSA_BROWSER)
+    add_test(NAME browser_e2e
+      COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/browser_e2e.mjs
+              $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web "${MLDSA_BROWSER}"
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(browser_e2e PROPERTIES TIMEOUT 600)
+  endif()
 endif()
 
 # Milestone A, automated: the shipped daemon and both CLIs as real processes.
