@@ -30,6 +30,16 @@ target_compile_options(mldsa_client PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SAN
 target_compile_definitions(mldsa_client PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_client PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
+# V4-13b: client_core's flat export surface for JavaScript. Built natively
+# too, so test_client_wasm and campaign v54 exercise it on the ASan tree.
+add_library(mldsa_client_wasm STATIC
+  client_wasm.c
+)
+target_link_libraries(mldsa_client_wasm PUBLIC mldsa_client)
+target_compile_options(mldsa_client_wasm PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(mldsa_client_wasm PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(mldsa_client_wasm PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
 if(EMSCRIPTEN)
   # V4-13b: the client libraries above are all a browser build needs.
   return()

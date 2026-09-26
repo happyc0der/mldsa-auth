@@ -186,6 +186,14 @@ target_link_options(test_client_core PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HAR
 add_test(NAME test_client_core COMMAND test_client_core)
 set_tests_properties(test_client_core PROPERTIES TIMEOUT 300)
 
+# V4-13b: the wasm export shim, natively, driven the way JavaScript drives it.
+add_executable(test_client_wasm test_client_wasm.c)
+target_link_libraries(test_client_wasm PRIVATE mldsa_client_wasm)
+target_compile_options(test_client_wasm PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_client_wasm PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_client_wasm PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_client_wasm COMMAND test_client_wasm)
+
 # The KAT links the CLIENT libraries only -- no daemon, no store, no sqlite --
 # which is also the proof that the core stands on its own, as the wasm build
 # (13b) will need it to. The golden is the contract that build must reproduce.

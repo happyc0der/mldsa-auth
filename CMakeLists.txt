@@ -159,6 +159,10 @@ if(EMSCRIPTEN)
   # The one flag V4-2 S6 found indispensable: the 64 KiB default stack faults
   # at once on 4 KB keys and a ~3.9 KB handshake context.
   set(MLDSA_WASM_LINK_FLAGS -sSTACK_SIZE=8MB -sALLOW_MEMORY_GROWTH=1)
+  # The link-hardening probe above PASSES under emcc -- wasm-ld only warns on
+  # an unknown -z value -- so RELRO/BIND_NOW/noexecstack would reach every wasm
+  # link as noise. They are ELF properties; a wasm module has none of them.
+  set(MLDSA_HARDENING_LINK_FLAGS "")
   message(STATUS "WebAssembly build: Emscripten ${EMSCRIPTEN_VERSION} (pinned), client only")
 endif()
 
