@@ -209,6 +209,69 @@ jobs:
       - name: One optimized backend, no portable-C
         run: tools/check_backend_symbols.sh build-release
 
+  # V4-13b: the browser client. The client core compiled to WebAssembly must
+  # reproduce the native KAT golden byte-for-byte, the module must export
+  # exactly web/exports.txt within its size budget, and the module plus the JS
+  # transport must log in to the real daemon from Node.
+  #
+  # Both toolchains are PINNED the way this project pins its libraries, and
+  # neither comes through a third-party action (V4-13b decision):
+  #   * emsdk cloned at the commit its 6.0.9 tag names, checked after checkout,
+  #     then SDK 6.0.9 installed by emsdk itself. CMakeLists.txt refuses any
+  #     other Emscripten, so a drift fails at configure, not in the golden.
+  #   * Node from nodejs.org by version, verified by SHA-256 before it runs.
+  # Linux only: the claim under test is "wasm equals native", and the native
+  # side is already checked on both platforms by the suite jobs.
+  wasm:
+    name: wasm client (Emscripten 6.0.9, Node 24.21.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EMSDK_COMMIT: 5eb0bde7585670252e8ba05e9d361627bffd08b5   # emsdk tag 6.0.9
+      EMSCRIPTEN_VERSION: "6.0.9"
+      NODE_VERSION: v24.21.0
+      NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  # node-v24.21.0-linux-x64.tar.xz
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Node, pinned by version and SHA-256
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/node.tar.xz" \
+            "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz"
+          echo "$NODE_SHA256  $RUNNER_TEMP/node.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/node"
+          tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node" --strip-components=1
+          "$RUNNER_TEMP/node/bin/node" --version
+
+      - name: Emscripten, pinned (emsdk at a fixed commit, SDK 6.0.9)
+        run: |
+          git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          git -C "$RUNNER_TEMP/emsdk" checkout --quiet --detach "$EMSDK_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = "$EMSDK_COMMIT"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSCRIPTEN_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION"
+
+      # CTest runs the wasm tests with the PINNED node, named explicitly --
+      # left alone it would use whichever node Emscripten's config names.
+      - name: The wasm tree -- standing rule 3 + its suite (KATs, module gates)
+        run: |
+          . "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcc --version | head -1
+          emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CROSSCOMPILING_EMULATOR="$RUNNER_TEMP/node/bin/node"
+          cmake --build build-wasm -j4
+          tools/check_build_current.sh build-wasm && ctest --test-dir build-wasm --output-on-failure
+
+      # A separate step, so the native tree is configured without emsdk's
+      # environment (its CC, its node) in the way.
+      - name: The native daemon fixture, and the wasm client logging in to it
+        run: |
+          cmake -S . -B build-native -DMLDSA_WASM_DIR="$PWD/build-wasm" \
+            -DMLDSA_NODE="$RUNNER_TEMP/node/bin/node"
+          cmake --build build-native -j4
+          tools/check_build_current.sh build-native && \
+            ctest --test-dir build-native --output-on-failure -R '^(wasm_interop|web_no_crypto|test_client_wasm)$'
+
   deploy:
     name: unit + offline build (Linux)
     runs-on: ubuntu-latest
