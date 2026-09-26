@@ -224,6 +224,23 @@ if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
   message(STATUS "libsodium from the offline cache: ${_mldsa_sodium_url}")
 endif()
 
+# Native: ./configure && make. WebAssembly (V4-13b): the SAME tarball, the
+# same hash, through Emscripten's wrappers, with the three options libsodium's
+# own dist-build/emscripten.sh passes -- no stack protector (wasm has no
+# guard-page canary support in libsodium's build), no assembly, no pthreads.
+# libsodium detects Emscripten itself and draws randomness from the host's
+# crypto.getRandomValues, which is the only generator a browser offers.
+if(EMSCRIPTEN)
+  set(_mldsa_sodium_configure emconfigure <SOURCE_DIR>/configure
+      --prefix=${LIBSODIUM_PREFIX} --disable-shared --enable-static
+      --disable-ssp --disable-asm --without-pthreads)
+  set(_mldsa_sodium_make emmake make)
+else()
+  set(_mldsa_sodium_configure <SOURCE_DIR>/configure
+      --prefix=${LIBSODIUM_PREFIX} --disable-shared --enable-static)
+  set(_mldsa_sodium_make make)
+endif()
+
 ExternalProject_Add(
   libsodium_ext
   URL               ${_mldsa_sodium_url}
@@ -231,12 +248,9 @@ ExternalProject_Add(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_DIR        ${LIBSODIUM_BUILD_DIR}
   UPDATE_COMMAND    ""
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure
-                     --prefix=${LIBSODIUM_PREFIX}
-                     --disable-shared
-                     --enable-static
-  BUILD_COMMAND     make -j
-  INSTALL_COMMAND   make install
+  CONFIGURE_COMMAND ${_mldsa_sodium_configure}
+  BUILD_COMMAND     ${_mldsa_sodium_make} -j
+  INSTALL_COMMAND   ${_mldsa_sodium_make} install
   BUILD_IN_SOURCE   TRUE
   BUILD_BYPRODUCTS  ${LIBSODIUM_LIBRARY}
 )
@@ -249,6 +263,11 @@ set_target_properties(sodium PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES ${LIBSODIUM_INCLUDE_DIR}
 )
 add_dependencies(sodium libsodium_ext)
+
+if(EMSCRIPTEN)
+  # The store is the daemon's; a browser build has no use for sqlite.
+  return()
+endif()
 
 # --- SQLite 3.53.4 (amalgamation) --------------------------------------------
 # The daemon's store (V4-7). Pinned like the other dependencies: the exact

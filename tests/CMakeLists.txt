@@ -1,3 +1,32 @@
+# --- WebAssembly (V4-13b) ----------------------------------------------------
+# Under Emscripten only the tests that prove the wasm build computes what the
+# native one does are built: test_vectors (V4-2 S6's 27 checks, now permanent)
+# and the client core's KAT, against the SAME golden file native CTest uses.
+# CTest runs them through Node (emcmake sets CMAKE_CROSSCOMPILING_EMULATOR);
+# NODERAWFS gives them the real filesystem, so the golden and liboqs's KAT
+# JSON are read from the tree exactly as natively -- no copies to drift.
+if(EMSCRIPTEN)
+  set(_mldsa_wasm_test_link ${MLDSA_WASM_LINK_FLAGS} -sNODERAWFS=1 -sEXIT_RUNTIME=1)
+
+  add_executable(test_vectors test_vectors.c)
+  target_link_libraries(test_vectors PRIVATE mldsa_core oqs-internal)
+  target_compile_options(test_vectors PRIVATE ${MLDSA_HARDENING_FLAGS})
+  target_compile_definitions(test_vectors PRIVATE ${MLDSA_HARDENING_DEFS}
+      MLDSA_AUTH_LIBOQS_KATS_SIG_JSON="${liboqs_SOURCE_DIR}/tests/KATs/sig/kats.json"
+      MLDSA_AUTH_LIBOQS_KATS_KEM_JSON="${liboqs_SOURCE_DIR}/tests/KATs/kem/kats.json")
+  target_link_options(test_vectors PRIVATE ${_mldsa_wasm_test_link})
+  add_test(NAME test_vectors COMMAND test_vectors)
+
+  add_executable(test_client_core_kat test_client_core_kat.c)
+  target_link_libraries(test_client_core_kat PRIVATE mldsa_client)
+  target_compile_options(test_client_core_kat PRIVATE ${MLDSA_HARDENING_FLAGS})
+  target_compile_definitions(test_client_core_kat PRIVATE ${MLDSA_HARDENING_DEFS})
+  target_link_options(test_client_core_kat PRIVATE ${_mldsa_wasm_test_link})
+  add_test(NAME test_client_core_kat
+           COMMAND test_client_core_kat ${CMAKE_CURRENT_SOURCE_DIR}/golden/client_core_kat.txt)
+  return()
+endif()
+
 add_executable(test_vectors test_vectors.c)
 target_link_libraries(test_vectors PRIVATE mldsa_core)
 

@@ -42,7 +42,7 @@ case "$(uname -s)" in
     MLDSA_TEXTTOOL="otool -X -t"
     sha256() { shasum -a 256 "$1"; }
     textdump() { otool -X -t "$1" 2>/dev/null; }
-    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*Mach-O*executable*) return 0 ;; esac; return 1; } ;;
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*Mach-O*executable*|*WebAssembly*) return 0 ;; esac; return 1; } ;;
   Linux)
     MLDSA_PLATFORM="Linux"
     if command -v objdump > /dev/null 2>&1; then MLDSA_TEXTTOOL="objdump -d --section=.text"
@@ -56,7 +56,7 @@ case "$(uname -s)" in
       esac
     }
     # ELF executables are ET_EXEC ("executable") or ET_DYN ("pie executable").
-    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*ELF*executable*|*ELF*pie*) return 0 ;; esac; return 1; } ;;
+    is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*ELF*executable*|*ELF*pie*|*WebAssembly*) return 0 ;; esac; return 1; } ;;
   *)
     echo "FAIL: unsupported platform $(uname -s)"; exit 2 ;;
 esac
@@ -68,8 +68,14 @@ executables() {
     while IFS= read -r f; do is_exe "$f" && echo "$f"; done | sort
 }
 h()  { sha256 "$1" | cut -c1-16; }
+# WebAssembly (V4-13b): an Emscripten tree's executables are .wasm modules on
+# either host. otool/objdump cannot read them, and a wasm module carries no
+# UUID or build-id for a relink to move, so the WHOLE module is the
+# fingerprint. (The .js glue beside each module is generated from link flags
+# and the module; a changed flag changes the module too.)
+is_wasm() { case "$(file -b "$1" 2>/dev/null)" in (*WebAssembly*) return 0 ;; esac; return 1; }
 # Text section only: a relink can move LC_UUID / build-id without changing code.
-ht() { textdump "$1" | sha256 /dev/stdin | cut -c1-16; }
+ht() { if is_wasm "$1"; then h "$1"; else textdump "$1" | sha256 /dev/stdin | cut -c1-16; fi; }
 snapshot() {
   while IFS= read -r o; do [ -f "$o" ] && echo "obj $o $(h "$o")"; done < <(objects)
   while IFS= read -r e; do [ -f "$e" ] && echo "bin $e $(ht "$e")"; done < <(executables)
@@ -89,7 +95,7 @@ fi
 # so the gate would pass vacuously -- V3-1 mutation W4. Prove the tool works
 # on a real binary before trusting any comparison built from it.
 _probe=$(executables | head -1)
-if [ -z "$(textdump "$_probe" 2>/dev/null | head -c 64)" ]; then
+if ! is_wasm "$_probe" && [ -z "$(textdump "$_probe" 2>/dev/null | head -c 64)" ]; then
   echo "FAIL: cannot read the text section of $_probe using '$MLDSA_TEXTTOOL' on $MLDSA_PLATFORM (executable fingerprints would all be empty and compare equal)"
   exit 1
 fi

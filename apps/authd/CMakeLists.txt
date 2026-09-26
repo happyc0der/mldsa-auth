@@ -30,6 +30,11 @@ target_compile_options(mldsa_client PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SAN
 target_compile_definitions(mldsa_client PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_client PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
+if(EMSCRIPTEN)
+  # V4-13b: the client libraries above are all a browser build needs.
+  return()
+endif()
+
 # The two CLIs' shared piece: passphrase files (authd_secret.c, also read by
 # the daemon for its key passphrase). Their small printing helpers are
 # header-only, in cli_common.h.

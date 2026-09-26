@@ -10,6 +10,13 @@ target_compile_options(mldsa_keys PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANIT
 target_compile_definitions(mldsa_keys PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(mldsa_keys PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
+if(EMSCRIPTEN)
+  # A browser has no sockets for the reference transport and no daemon to run;
+  # apps/authd builds only the client libraries under Emscripten.
+  add_subdirectory(authd)
+  return()
+endif()
+
 # Step 6 reference transport (spec §6.5): socket I/O, framing, connection
 # logic and (through mldsa_keys) demo-only key files, shared by the two apps
 # and tests/test_net.c.

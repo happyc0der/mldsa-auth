@@ -132,6 +132,36 @@ set(MLDSA_OQS_OPT_TARGET "auto" CACHE STRING
     "liboqs optimisation target: auto (this CPU, not portable), generic (portable), or a CPU name")
 set_property(CACHE MLDSA_OQS_OPT_TARGET PROPERTY STRINGS auto generic)
 
+# --- WebAssembly (V4-13b) --------------------------------------------------
+# `emcmake cmake -S . -B build-wasm` builds the CLIENT only -- the core, the key
+# formats, the WebSocket framing and client_core -- plus the tests that prove
+# the wasm build computes what the native one does. No daemon, no store, no
+# sqlite: a browser runs none of them.
+#
+# The Emscripten version is PINNED and checked, not assumed: the wasm build's
+# claim is that it reproduces the native KAT byte-for-byte, and a compiler that
+# moves under that claim moves the claim. 6.0.9 is what emsdk installs in CI
+# (release f04ea239d533260dd1db760dd2d668d5f9a88d6b) and what V4-13b was built
+# with. Change it deliberately, with the KAT re-run, or not at all.
+if(EMSCRIPTEN)
+  set(MLDSA_EMSCRIPTEN_VERSION "6.0.9")
+  if(NOT EMSCRIPTEN_VERSION STREQUAL MLDSA_EMSCRIPTEN_VERSION)
+    message(FATAL_ERROR
+      "Emscripten ${EMSCRIPTEN_VERSION} found, ${MLDSA_EMSCRIPTEN_VERSION} required "
+      "(MLDSA_EMSCRIPTEN_VERSION): the wasm build's KAT golden is only a contract "
+      "for the compiler it was checked against")
+  endif()
+  if(ENABLE_ASAN OR ENABLE_UBSAN OR MLDSA_FUZZ)
+    message(FATAL_ERROR "sanitizers and fuzzing are native-only; configure a separate native tree")
+  endif()
+  # wasm has no CPU to tune for: liboqs's portable C, as V4-2 S6 proved.
+  set(MLDSA_OQS_OPT_TARGET "generic" CACHE STRING "" FORCE)
+  # The one flag V4-2 S6 found indispensable: the 64 KiB default stack faults
+  # at once on 4 KB keys and a ~3.9 KB handshake context.
+  set(MLDSA_WASM_LINK_FLAGS -sSTACK_SIZE=8MB -sALLOW_MEMORY_GROWTH=1)
+  message(STATUS "WebAssembly build: Emscripten ${EMSCRIPTEN_VERSION} (pinned), client only")
+endif()
+
 # --- Dependencies (pinned versions; see cmake/Dependencies.cmake) ---------
 include(cmake/Dependencies.cmake)
 
@@ -143,4 +173,6 @@ enable_testing()
 add_subdirectory(src)
 add_subdirectory(apps)
 add_subdirectory(tests)
-add_subdirectory(bench)
+if(NOT EMSCRIPTEN)
+  add_subdirectory(bench)
+endif()
