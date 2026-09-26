@@ -1,0 +1,28 @@
+# The module's C exports, exactly (V4-13b). tests/wasm_module_gates.mjs fails
+# if the built .wasm exports any C symbol not listed here, or lacks one that
+# is. EMSCRIPTEN_KEEPALIVE exports a function whether or not it is listed, so
+# this file is checked against the MODULE, not merely passed to the linker.
+_ccw_init
+_ccw_new
+_ccw_free
+_ccw_set_now_ms
+_ccw_frame_buf_bytes
+_ccw_sealed_len
+_ccw_public_len
+_ccw_new_handle
+_ccw_seal_new_identity
+_ccw_pin_server_pub
+_ccw_login_begin
+_ccw_on_server_hello
+_ccw_on_record
+_ccw_bye
+_ccw_rotate_build
+_ccw_rotate_on_reply
+_ccw_state
+_ccw_recv_max
+_ccw_diag_stage
+_ccw_diag_detail
+_ccw_status_name
+_ccw_key_plan
+_malloc
+_free
