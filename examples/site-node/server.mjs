@@ -7,6 +7,8 @@
  *                   --server-id authd --server-pub server.pub \
  *                   --module-dir build-wasm/web --invite <signup secret> [--port 0]
  *
+ * (opt.host and opt.onTiming exist for tools/phone_timing.mjs only.)
+ *
  * What it demonstrates, because a site gets each of these wrong at its peril:
  *
  *   * THE LOGIN CODE ARRIVES IN A REQUEST BODY (spec 14, erratum 34). The page
@@ -107,6 +109,21 @@ export async function startSite(opt) {
   });
 
   const api = {
+    // Only for tools/phone_timing.mjs (V4-13d), and only when it asked: a
+    // site without opt.onTiming has no such route. The page's numbers are
+    // checked for shape and nothing else -- they are a measurement report
+    // from a device the operator is holding, not an input to anything.
+    ...(opt.onTiming ? { 'POST /api/timing': async (req, res) => {
+      const t = await body(req);
+      const num = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x < 600000;
+      if (!num(t.sealMs) || !Array.isArray(t.loginMs) || t.loginMs.length < 1 || t.loginMs.length > 10 ||
+          !t.loginMs.every(num) || typeof t.ua !== 'string' || t.ua.length > 512) {
+        return send(res, 400, { error: 'malformed timing' });
+      }
+      opt.onTiming({ ua: t.ua, cores: Number.isInteger(t.cores) ? t.cores : null,
+                     memoryGiB: num(t.memoryGiB) ? t.memoryGiB : null, sealMs: t.sealMs, loginMs: t.loginMs });
+      send(res, 200, { ok: true });
+    } } : {}),
     // The page's starting point: a FRESH state for its next login, and the
     // server identity to pin (a real site would ship the pin in the page itself).
     'GET /api/session': async (req, res, s) => {
@@ -216,7 +233,8 @@ export async function startSite(opt) {
     sock.on('error', () => up.destroy());
   });
 
-  await new Promise((r) => server.listen(opt.port ?? 0, '127.0.0.1', r));
+  // Loopback unless told otherwise; only the phone timing tool says otherwise.
+  await new Promise((r) => server.listen(opt.port ?? 0, opt.host ?? '127.0.0.1', r));
   return { server, port: server.address().port, sessions };
 }
 
