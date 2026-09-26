@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enroll this device</title><link rel="stylesheet" href="/site.css">
+<script type="module" src="/enroll.mjs"></script></head>
+<body>
+<nav><a href="/login.html">Log in</a><a href="/enroll.html">Enroll</a><a href="/account.html">Account</a><a href="/recover.html">Recover</a></nav>
+<h1>Enroll this device</h1>
+<div class="limits">
+<p><strong>What this protects, and what it does not.</strong> Your key is created in this browser and never leaves it; the site stores only its public half. But:</p>
+<ul>
+<li>a script injected into this site while your key is unlocked could read it, or copy the sealed key and try to guess your passphrase offline &mdash; the guessing is deliberately slow, but a weak passphrase still loses, which is why short and common ones are refused;</li>
+<li>there is no hardware protecting it, as a passkey has;</li>
+<li>your browser may clear this site's storage, and a copy of it would be an undetectable clone of this device.</li>
+</ul>
+<p>Keep your recovery codes (from the Account page) somewhere safe.</p>
+</div>
+<label for="user">Account name</label><input id="user" autocomplete="username">
+<label for="invite">Invitation</label><input id="invite">
+<label for="passphrase">Passphrase (at least 12 characters)</label><input id="passphrase" type="password" autocomplete="new-password">
+<p id="meter" aria-live="polite"></p>
+<button id="go" type="button">Create this device's key</button>
+<p id="status" role="status"></p>
+</body>
+</html>

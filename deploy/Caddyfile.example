@@ -24,11 +24,29 @@
 #
 # Replace the site address and let Caddy manage the certificate; the TLS half
 # is Caddy's job and the daemon never sees it.
+#
+# The browser client (V4-13c) adds the rest of the SITE behind the same origin:
+# the pages, the wasm module and the site's own endpoints, here a site app on
+# 127.0.0.1:9080 (examples/site-node/server.mjs --port 9080, or yours). Same origin matters
+# twice: the page's WebSocket to /authd/v1 is covered by `connect-src 'self'`,
+# and the login code is POSTed back to the site without ever leaving it.
+#
+# The headers are the reference site's (examples/site-node/server.mjs, CSP):
+# `'wasm-unsafe-eval'` is REQUIRED to compile the WebAssembly module and allows
+# nothing else -- no inline script, no eval. Caddy serves `.wasm` as
+# application/wasm by itself, which streaming compilation needs.
 
 authd.example.com {
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Strict-Transport-Security "max-age=31536000"
+	}
 	reverse_proxy /authd/v1* unix//run/mldsa-authd/p.sock {
 		transport http {
 			proxy_protocol v2
 		}
 	}
+	reverse_proxy 127.0.0.1:9080
 }

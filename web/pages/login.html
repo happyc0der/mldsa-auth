@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in</title><link rel="stylesheet" href="/site.css">
+<script type="module" src="/login.mjs"></script></head>
+<body>
+<nav><a href="/login.html">Log in</a><a href="/enroll.html">Enroll</a><a href="/account.html">Account</a><a href="/recover.html">Recover</a></nav>
+<h1>Log in</h1>
+<p>This device proves who you are with a post-quantum key it keeps, sealed under your passphrase. No password is sent anywhere.</p>
+<label for="identity">Identity on this device</label><select id="identity"></select>
+<label for="passphrase">Passphrase</label><input id="passphrase" type="password" autocomplete="current-password">
+<button id="go" type="button">Log in</button>
+<p id="status" role="status"></p>
+</body>
+</html>

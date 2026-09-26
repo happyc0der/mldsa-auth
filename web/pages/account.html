@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Account</title><link rel="stylesheet" href="/site.css">
+<script type="module" src="/account.mjs"></script></head>
+<body>
+<nav><a href="/login.html">Log in</a><a href="/enroll.html">Enroll</a><a href="/account.html">Account</a><a href="/recover.html">Recover</a></nav>
+<h1>Account</h1>
+<p id="who"></p>
+<label for="passphrase">Passphrase (to rotate this device's key)</label><input id="passphrase" type="password" autocomplete="current-password">
+<button id="rotate" type="button">Rotate key</button>
+<button id="codes" type="button">New recovery codes</button>
+<button id="logout" type="button">Log out</button>
+<pre id="codelist"></pre>
+<p id="status" role="status"></p>
+</body>
+</html>
