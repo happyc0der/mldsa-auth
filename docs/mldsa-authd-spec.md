@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.5, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b errata)
+# mldsa-authd — deployment specification (v1.6, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -583,6 +583,19 @@ server never committed" asks the client to branch on a distinction Req 6
 exists to destroy. Never deleting on ambiguity costs one confusing file; the
 other way costs a permanently unusable identity.
 
+**In a browser** (erratum 33) there are no files and no rename, but there are
+transactions that commit whole or not at all, and the same rule holds with
+them. The identity record carries the current envelope and, during a rotation
+only, a *pending* one. The pending envelope is written in its own transaction,
+and `ROTATE` is not sent until that transaction has **committed**; on
+`ROTATE_ACK` a single transaction makes the pending envelope current and clears
+it, so there is never a moment with two current keys or none. After an
+interrupted rotation the next login decides exactly as the CLI does — the same
+function, `client_key_plan` — probing the current key first: only the current
+key authenticating licenses discarding the pending one (and only a rotation
+discards it); the pending key authenticating, and the current one not, means
+the daemon committed and the page finishes the swap; neither changes nothing.
+
 **On the server there is no overlap window**: `one_active_key` makes two
 simultaneously-active keys for a handle unrepresentable, and that is enforced
 by the schema rather than asserted. What the paragraph above describes is a
@@ -779,6 +792,25 @@ and a login cannot begin until it has been set; and liboqs draws its randomness
 from libsodium, which draws from the host's `crypto.getRandomValues`. Measured
 at V4-13b: 187,603 bytes (module and glue), Argon2id(3, 64 MiB) 101–128 ms and
 a whole login 106–118 ms under Node 24 on the development machine.
+
+**The login code's way to the site** (erratum 34). The page POSTs the code in a
+request **body** to the site's own endpoint, on the same origin, carrying the
+site's session cookie (HttpOnly, SameSite=Strict); the site checks the
+`Origin`, `EXCHANGE`s the code with the `state` it placed in that session and
+put in the WebSocket URL (§7.1), and keeps the token server-side. The code is
+never in a URL — so never in a proxy log, a `Referer` or history — and the
+token never reaches page script. Pages are served under a CSP of
+`script-src 'self' 'wasm-unsafe-eval'` and `connect-src 'self'` with no inline
+script; `'wasm-unsafe-eval'` is required to compile the module and permits
+nothing else. `examples/site-node/server.mjs` is the reference.
+
+**The passphrase policy** (erratum 35), enforced inside the module so a page
+cannot seal around it: at least 12 characters (code points, not bytes); not a
+listed common password, nor one with digits or symbols wrapped around it
+(9,913 entries, pinned by hash); and an estimate of at least 50 bits, in which
+repeats, runs, keyboard walks and one repeated unit count for almost nothing.
+It refuses the obviously weak; it does not certify strength, and the page says
+so. `apps/authd/passphrase.h` is normative for the details.
 
 **Honest limits, which the enrollment page states, not only this document:**
 an XSS on the origin can read wasm memory while the key is unlocked and can
@@ -1123,3 +1155,14 @@ described only in outline:
 | # | § | Change | Why |
 |---|---|---|---|
 | 32 | 14 | the browser module's contract: the pinned Emscripten version, the golden it must reproduce, its exact export set, no filesystem or dynamic code, what it fixes rather than the page, and its measured size and times | §14 said "an explicit export list" and nothing about what was on it. The list is now a file the build checks the module against, and the version is one `tools/audit/check_spec_constants.sh` checks this section against (`MLDSA_EMSCRIPTEN_VERSION`) |
+
+### Revision v1.6 (V4-13c)
+
+Two gaps V4-13a recorded (F83) closed, and a policy the section named but did
+not define:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 33 | 10.2 | the `.ek.next` rule restated for a browser's storage: a pending envelope durable before `ROTATE`, one transaction to promote it, the same decision function after an interruption | §10.2 was written for files and `rename(2)`; IndexedDB has neither, and a browser implementation left to infer the rule would be the one most likely to delete the only copy of a live key. Finding **F83**(b) |
+| 34 | 14 | how the login code reaches the site — a same-origin POST body, never a URL — and the CSP the pages are served under, including the `'wasm-unsafe-eval'` WebAssembly requires | the section described the module and not the page around it; the hand-off was unspecified. Finding **F83**(a) |
+| 35 | 14 | the passphrase policy: 12 code points, a pinned common-password list, a 50-bit estimate, enforced in the module | "a minimum length is enforced" named a requirement without saying what it was, or where it lived |

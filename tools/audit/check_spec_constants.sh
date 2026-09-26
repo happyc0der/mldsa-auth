@@ -174,6 +174,18 @@ EMV=$(grep -oE 'set\(MLDSA_EMSCRIPTEN_VERSION "[0-9.]+"\)' CMakeLists.txt | grep
 S14=$(awk '/^## 14\. /{f=1} /^## 15\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
 case "$S14" in *"Emscripten $EMV"*) printf '  ok    %-34s %s\n' "browser module: Emscripten pin" "$EMV";;
                *) printf '  FAIL  %-34s CMakeLists pins %s, §14 does not say so\n' "browser module: Emscripten pin" "${EMV:-<none>}"; fail=1;; esac
+# --- the passphrase policy, §14 (V4-13c) ------------------------------------
+# Its numbers live in passphrase.h and the generated list; §14 states them.
+PPH=apps/authd/passphrase.h
+PP_CP=$(hdr PP_MIN_CODE_POINTS $PPH)
+PP_BITS=$(hdr PP_MIN_BITS $PPH)
+PP_N=$(grep -oE 'pp_common_count = [0-9]+u' apps/authd/passphrase_common.c | grep -oE '[0-9]+')
+PP_N_FMT=$(printf "%'d" "$PP_N" 2>/dev/null | tr -d ' '); case "$PP_N_FMT" in *,*) ;; *) PP_N_FMT=$(echo "$PP_N" | sed -E 's/([0-9])([0-9]{3})$/\1,\2/');; esac
+in_s14() { case "$S14" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
+                        *) printf '  FAIL  %-34s derived %s, not in §14\n' "$1" "$2"; fail=1;; esac; }
+in_s14 "passphrase: minimum length"   "at least $PP_CP characters"
+in_s14 "passphrase: estimate floor"   "at least $PP_BITS bits"
+in_s14 "passphrase: common list size" "$PP_N_FMT entries"
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"

@@ -5654,3 +5654,145 @@ compiled every C file the step added or changed, before any push (13a's lesson).
 Anchors 223 across 24 campaigns. `check_spec_constants.sh` now also checks
 §14's Emscripten version against the CMake pin (control: 6.0.8 in the spec
 fails it).
+
+## V4-13c — the browser client, end to end
+
+13b left a module that logs in from Node. 13c is the part a user sees: pages,
+storage, the site around them, and a real browser driving all of it. It closes
+**F83**, the two things 13a found the specification did not say. V4-13 was split
+again (user decision): **13c** is the browser; **13d** is the deployment switches
+F14 and F81, the CLI's interactive prompt, phone timings and the public runbook.
+
+### What was decided (user decisions in brackets)
+
+- **The login code reaches the site in a POST body** [same-origin POST]. The
+  page sends it to the site's own endpoint on the same origin. The site checks
+  `Origin`, EXCHANGEs the code with the per-login `state` it put in the session
+  (and the page put in the WebSocket URL), and keeps the token server-side. The
+  code is never in a URL, so never in a proxy log, a `Referer` or history, and
+  page script never holds the token. The alternatives were a redirect with the
+  code in the query (every log on the path) or `postMessage` to a site frame
+  (a second origin to get right). Spec erratum 34.
+- **The `.ek.next` rule as transactions** (erratum 33). IndexedDB has no
+  rename, but it has transactions that commit whole or not at all. The pending
+  envelope is written in its own transaction, and `ROTATE` is not sent until
+  that transaction has *committed*. One transaction promotes it. After an
+  interruption the decision is `client_key_plan`, the CLI's own function,
+  reached through the shim, so the browser cannot reimplement it slightly
+  differently. A pending key is discarded only by a rotation, and only after
+  the current key has been proven live by a real handshake.
+- **One passphrase policy, in the C core** [policy in the C core]. It needs at
+  least 12 code points (not bytes) and strict UTF-8. It refuses a pinned
+  9,913-entry common list, including those passwords with digits or symbols
+  wrapped around them, and needs an estimate of at least 50 bits, where
+  repeats, runs, keyboard walks and a repeated unit count for almost nothing.
+  The estimate is integer milli-bits from a table: no libm, so the number is
+  the same on every platform, wasm included. `ccw_seal_new_identity` enforces
+  it, so a page cannot seal around it. The CLI's prompt calls the same
+  function in 13d. It refuses the obviously weak and does not certify
+  strength, and the enrollment page says so. Erratum 35.
+- **A reference site, not a framework.** `examples/site-node/server.mjs` uses
+  `node:http` and nothing else. It sets HttpOnly SameSite=Strict session
+  cookies, refuses a POST from another origin, and sends one strict CSP on
+  every response: `script-src 'self' 'wasm-unsafe-eval'`, `connect-src
+  'self'`, `default-src 'none'`. `'wasm-unsafe-eval'` is what compiling
+  WebAssembly requires and it allows nothing else. There is no inline script
+  or style on any page. The site proxies `/authd/v1` to the daemon, the job
+  Caddy does in production, so the test's page is same-origin with its
+  WebSocket exactly as a deployed one is. `deploy/Caddyfile.example` gained
+  the same headers and the site route.
+- **A browser test with no dependencies** [CDP driver, no deps].
+  `tests/browser/cdp.mjs` speaks the DevTools protocol over Node 24's
+  built-in WebSocket to a headless Chrome or Edge found at configure time
+  (`MLDSA_BROWSER`). There is no Puppeteer or Playwright, and nothing
+  downloaded at test time.
+
+### What the browser test shows
+
+`browser_e2e` runs the real daemon fixture, the reference site and headless
+Edge 154.0.4258.37. Every check passed:
+
+- Enrollment with the policy enforced in wasm (a weak passphrase refused by
+  the policy), then login.
+- The code in the POST body and in **none of the 11 URLs** the browser
+  requested; the session cookie invisible to page script; `/api/me` answers
+  who is logged in and never with the token.
+- An injected inline script blocked, with the violation reported.
+- A cross-origin POST refused with 403.
+- In IndexedDB: a stale pending key left alone by login, and a lost ACK
+  completed by the next login in one transaction.
+- A rotation from the account page, after which the new key logs in; five
+  recovery codes; and a ServerHello signed by the wrong key refused after one
+  frame (`server-hello/1`).
+- Recovery on a fresh browser profile enrolling a new device.
+
+`web_flows` drives the same flows under Node with a `MemoryStore`, one
+scenario per branch of the rule, including the one the browser test does not
+reach: neither key works → refused, store untouched.
+
+**Measured in the browser** (headless Edge 154, Apple silicon): Argon2id at
+3/64 MiB **89–94 ms**, a whole login round trip **89–96 ms**, across the runs
+recorded. That is faster than Node's 101–128 ms (13b). Phones remain 13d's.
+
+Headless Edge did not grant `navigator.storage.persist()`. The enrollment page
+reports this ("the browser did not promise to keep this storage") rather than
+hiding it. §14 already lists eviction among the honest limits, and recovery
+codes are the answer to it.
+
+### Controls, each run and each restored byte-exactly
+
+- **C1**, the CSP with `'unsafe-inline'` → both CSP checks fail.
+- **C2**, the code also put in the URL → both hand-off checks fail.
+- **C4**, the site returning the token to the page → the token check fails.
+- Login discarding a pending key it had only proven stale → `web_flows`'
+  "LEAVES the pending key alone" fails.
+- Guessing on ambiguity (promoting when neither key works) → `web_flows`'
+  "store is exactly as it was" fails. `browser_e2e` stays green for that one,
+  because it does not drive that branch; `web_flows` is where it is covered.
+- A tampered common-password source → the generator refuses it (pinned
+  SHA-256).
+- 49 bits in the spec → `check_spec_constants.sh` fails.
+
+### Campaign v55 — PP, the passphrase policy
+
+Twelve mutations, each changing a value (F79): the minimum one short or
+counted in bytes, two UTF-8 rules (high surrogates, overlongs), the core's
+stripping and case folding, the list's binary search, the repeat,
+keyboard-walk and repeated-unit discounts, the floor lowered to 39 bits, and
+the shim sealing under a refused passphrase. On the ASan tree the first run was 10 killed by name, PP5
+`KILLED(compile)` and PP7 `SURVIVED(BAD)`. Both were the campaign's defects, not
+the code's:
+
+- **PP5** first read `c >= 0xD800u && c <= 0xD7FFu`, an empty range that
+  clang refuses under `-Werror`, so the compiler killed it and nothing was
+  tested. It now lets the high surrogates through, and is killed by name.
+- **PP7** disabled the repeat discount. The test's only repeat case was also
+  caught by the repeated-unit rule, so the mutant was invisible. The test
+  gained `ggggmmmmssssxxxx`, four runs in no repeating unit, asserted at
+  exactly 30 bits. PP7 re-run: killed.
+
+**12 of 12 by name.** Anchors: 235 across 25 campaigns.
+
+### Two things that were the test's fault
+
+- `web_flows`' lost-ACK case was refused at first. The fixture's handshake
+  ledger had 8 entries, and each login leaves a 10 s tombstone, so the fixture
+  throttled itself to 0.8 handshakes a second. Four probes in a row ran out.
+  The fixture now sizes its ledger `HANDSHAKE_PENDING_MAX` (256), as the daemon
+  does; the throttle was the fixture's, not the daemon's.
+- `tests/caddy_proxy.sh` failed its login leg once `Caddyfile.example` routed
+  everything else to `localhost:8080`, which is the test's own port. The
+  example now names `127.0.0.1:9080`, and all seven Caddy checks pass.
+
+### Verification
+
+- Every tree proven current by the from-scratch gate in the same invocation as
+  its suite. Native normal, fresh ASan and fresh UBSan: **41/41** each,
+  `browser_e2e` included (the daemon fixture under each sanitizer). The wasm
+  tree: 3/3.
+- `tests/caddy_proxy.sh`: 7/7.
+- gcc 16 at `-O3 -Wall -Wextra -Werror` compiled all seven C files the step
+  added or changed. A control with a known truncation fails it.
+- Anchors OK, spec constants OK, `git diff --check` clean.
+- The CI browser job (a pinned Chrome for Testing) and v55's nightly row come
+  with the bring-up.

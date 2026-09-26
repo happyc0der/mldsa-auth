@@ -195,13 +195,21 @@ cmake -S . -B build -DMLDSA_WASM_DIR="$PWD/build-wasm"
 cmake --build build -j8 && ctest --test-dir build -R wasm_interop
 ```
 
+The pages a user sees are in `web/pages/` (enroll, log in, account, recover),
+served by a reference site, `examples/site-node/server.mjs`: `node:http` only,
+a strict CSP (`script-src 'self' 'wasm-unsafe-eval'`, no inline script), the
+login code taken in a same-origin POST body and exchanged server-side, and the
+`/authd/v1` WebSocket proxied to the daemon as Caddy does in production
+(`deploy/Caddyfile.example`). `ctest -R browser_e2e` drives it end to end in a
+headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
+
 ## Tests
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
 
-37 tests in a native tree, 38 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below), and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+38 tests in a native tree, 40 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 41 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
@@ -224,6 +232,9 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | `test_client_core` | The client core (V4-13a) — the code `authd_client` runs and the browser build will. Against the **in-process daemon over raw and WebSocket**: a login whose code the site socket `EXCHANGE`s for a token; a ServerHello not signed by the pinned key refused with not one byte of ClientAuth written (spec §4); a rotation the daemon acknowledges, after which only the new key logs in; the injected clock governing the session. Against a **fake server**, for what the daemon never sends: `BYE` or `ERROR` as the first record, a `ROTATE_ACK` naming another key, a same-length other handle or a prefix of the handle. And the secret key's lifetime (freed when ClientAuth is built and on refusal), frame header vs size, every envelope header byte flipped, and the browser's Argon2id parameters |
 | `test_client_core_kat` | A deterministic generator (test only) with liboqs routed to it through the core; one device lifetime; the SHA-256 of 11 artefacts must match `tests/golden/client_core_kat.txt` and two in-process runs must match each other. The golden is the contract the wasm build (V4-13b) must reproduce. Links the client libraries only — no daemon |
 | `client_links_no_sqlite` | `authd_client` contains no `sqlite3_` and no `store_` symbol, read from the linked binary; the daemon is the canary that must contain both. `client_links_no_sqlite_control` runs the same check on the daemon and is expected to fail |
+| `test_passphrase` | The passphrase policy (V4-13c): 12 code points not bytes, strict UTF-8, the pinned 9,913-entry common list with its core stripped of wrapping digits and symbols, and the estimator's discounts for repeats, runs, keyboard walks and a repeated unit, with the exact estimates asserted |
+| `web_flows` | Only with `-DMLDSA_WASM_DIR`: the browser's login and rotation flows against the real daemon, one scenario per branch of the `.ek.next` rule — a stale pending key left by login and discarded by rotate, a lost ACK completed by the next login, neither key working refused with the store untouched |
+| `browser_e2e` | With a WebAssembly tree **and** a Chromium-family browser: the reference site, the daemon and headless Chromium over the DevTools protocol — enrollment with the policy enforced in wasm, login with the code handed off in a POST body and in no URL, the token never visible to page script, the CSP blocking an injected script, the IndexedDB recovery scenarios, rotation, recovery codes on a fresh profile, a wrong pinned key refused, and timings measured in the browser |
 | `test_client_wasm` | The wasm export shim (V4-13b), compiled natively and driven the way JavaScript drives it: a login cannot begin before the caller sets the clock, which must be finite, non-negative and monotonic; identities sealed at the browser's Argon2id parameters; `ccw_init` routing liboqs to libsodium's generator (two identities from one deterministic state are identical); lengths reported equal bytes written; a refused record leaves no code behind; rotation through the shim |
 | `web_no_crypto` | Spec §14's *no cryptography in JavaScript*, as a check on `web/client/`: no WebCrypto, `getRandomValues`, Node crypto or `Math.random` |
 | `wasm_interop` | Only with `-DMLDSA_WASM_DIR`: the browser module and JS transport, under Node, logging in to the real daemon (in-process, WebSocket on loopback TCP): enroll through the site socket, log in and EXCHANGE the code once, a wrong pinned key refused with only the ClientHello sent, a wrong passphrase refused with nothing sent, a rotation after which only the new key logs in; prints Argon2id and login timings |
@@ -278,7 +289,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, **all 201** must-kill mutations in
+at 03:17 UTC every day, and on demand, **all 213** must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
@@ -751,7 +762,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all twenty-four committed campaigns against fresh ASan trees — twenty-three on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all twenty-five committed campaigns against fresh ASan trees — twenty-four on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by
@@ -774,7 +785,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
 | `deploy/` | What a deployment needs and nothing else: the systemd unit, a commented example config, `fetch-deps.sh` for an offline dependency cache, and `RUNBOOK.md` — the numbered checklist from an empty VPS to a first login |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 201 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 213 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
 
 ## License
 
