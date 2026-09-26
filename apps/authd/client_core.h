@@ -76,7 +76,8 @@ typedef enum {
     CC_ERR_ACK_MISMATCH,  /* ROTATE_ACK names a different handle or key */
     CC_ERR_KEYFILE,       /* an MLDSAEK1 envelope failed (cc_diag_t names why) */
     CC_ERR_KEYS,          /* an MLDSAPK1 image failed (cc_diag_t names why) */
-    CC_ERR_CRYPTO         /* key generation, signing, allocation */
+    CC_ERR_CRYPTO,        /* key generation, signing, allocation */
+    CC_ERR_PASSPHRASE     /* refused by the passphrase policy (passphrase.h); V4-13c */
 } cc_status_t;
 
 typedef enum {

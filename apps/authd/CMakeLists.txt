@@ -23,6 +23,8 @@ add_library(mldsa_client STATIC
   keyfile.c
   authmsg.c
   client_core.c
+  passphrase.c
+  passphrase_common.c
 )
 target_include_directories(mldsa_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
 target_link_libraries(mldsa_client PUBLIC mldsa_keys mldsa_ws mldsa_core)

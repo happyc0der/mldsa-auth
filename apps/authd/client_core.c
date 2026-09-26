@@ -36,6 +36,7 @@ const char *cc_status_name(cc_status_t st)
     case CC_ERR_KEYFILE:      return "key-envelope";
     case CC_ERR_KEYS:         return "public-key-file";
     case CC_ERR_CRYPTO:       return "crypto-error";
+    case CC_ERR_PASSPHRASE:   return "passphrase-policy";
     }
     return "unknown";
 }

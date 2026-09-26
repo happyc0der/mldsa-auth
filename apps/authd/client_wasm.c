@@ -9,6 +9,7 @@
 #include "demo_keys.h"
 #include "frame.h"
 #include "keyfile.h"
+#include "passphrase.h"
 
 static int g_ready = 0;
 
@@ -92,12 +93,28 @@ int ccw_new_handle(char *out)
     return CC_OK;
 }
 
+int ccw_passphrase_check(const char *pass, uint32_t pass_len, uint32_t *code_points,
+                         uint32_t *est_bits, uint32_t *reasons)
+{
+    pp_report_t r;
+    const pp_verdict_t v = pp_check((const uint8_t *)pass, pass_len, &r);
+    if (code_points != NULL) { *code_points = r.code_points; }
+    if (est_bits != NULL) { *est_bits = r.est_bits; }
+    if (reasons != NULL) { *reasons = r.reasons; }
+    return (int)v;
+}
+
 int ccw_seal_new_identity(const uint8_t *hid, uint32_t hid_len, const char *pass, uint32_t pass_len,
                           uint8_t *ek_out, uint32_t ek_cap, uint32_t *ek_len,
                           uint8_t *pub_out, uint32_t pub_cap, uint32_t *pub_len)
 {
     if (!g_ready || ek_len == NULL || pub_len == NULL) {
         return CC_ERR_ARG;
+    }
+    *ek_len = 0u;
+    *pub_len = 0u;
+    if (pp_check((const uint8_t *)pass, pass_len, NULL) != PP_OK) {
+        return CC_ERR_PASSPHRASE;
     }
     size_t el = 0, pl = 0;
     const cc_status_t st = cc_seal_new_identity(hid, hid_len, pass, pass_len,

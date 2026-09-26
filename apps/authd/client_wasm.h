@@ -22,7 +22,9 @@
  *     would make "the injected clock governs the session" untrue in exactly
  *     the environment the injection exists for;
  *   - ccw_init routes liboqs's randomness to libsodium's generator, which
- *     under Emscripten draws from the host's crypto.getRandomValues.
+ *     under Emscripten draws from the host's crypto.getRandomValues;
+ *   - a new identity is sealed only under a passphrase the policy accepts
+ *     (passphrase.h, V4-13c).
  */
 
 #include <stddef.h>
@@ -66,7 +68,14 @@ CCW_EXPORT uint32_t ccw_public_len(uint32_t hid_len);     /* an MLDSAPK1 image f
 /* Writes CC_HANDLE_LEN characters and a NUL. */
 CCW_EXPORT int ccw_new_handle(char *out);
 
-/* A new identity for `hid`, sealed at the BROWSER's Argon2id parameters. */
+/* The passphrase policy (passphrase.h): returns a pp_verdict_t (0 = ok) and
+ * fills the counters a page shows. Any out-parameter may be NULL. */
+CCW_EXPORT int ccw_passphrase_check(const char *pass, uint32_t pass_len, uint32_t *code_points,
+                                    uint32_t *est_bits, uint32_t *reasons);
+
+/* A new identity for `hid`, sealed at the BROWSER's Argon2id parameters.
+ * A passphrase the policy refuses is CC_ERR_PASSPHRASE and nothing is
+ * generated: the page cannot seal around the policy (V4-13c). */
 CCW_EXPORT int ccw_seal_new_identity(const uint8_t *hid, uint32_t hid_len, const char *pass, uint32_t pass_len,
                                      uint8_t *ek_out, uint32_t ek_cap, uint32_t *ek_len,
                                      uint8_t *pub_out, uint32_t pub_cap, uint32_t *pub_len);

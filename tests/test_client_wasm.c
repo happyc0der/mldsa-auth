@@ -27,6 +27,7 @@
 #include "demo_keys.h"
 #include "frame.h"
 #include "keyfile.h"
+#include "passphrase.h"
 
 static int g_fail = 0;
 #define CHECK(cond, msg) do { if (cond) { printf("PASS: %s\n", msg); } \
@@ -125,6 +126,20 @@ int main(void)
                 hd.memlimit == 64u * 1024u * 1024u,
             "seal: sealed at the browser's Argon2id parameters, ops 3 and 64 MiB (spec 12)"); }
     CHECK(ccw_frame_buf_bytes() == FRAME_BUF_BYTES, "sizes: the frame buffer size is the transport's");
+
+    /* ---- the passphrase policy, through the shim (V4-13c) ---- */
+    { uint32_t cps = 0, bits = 0, reasons = 0;
+      CHECK(ccw_passphrase_check("password1234", 12u, &cps, &bits, &reasons) == PP_COMMON && cps == 12u,
+            "policy: the shim reports the policy's verdict (common) and counts");
+      CHECK(ccw_passphrase_check(PASS, (uint32_t)strlen(PASS), NULL, NULL, NULL) == PP_OK,
+            "policy: the test passphrase itself is acceptable");
+      wdev_t w;
+      memset(&w, 0, sizeof w);
+      w.ek_len = 77u; w.pub_len = 77u;
+      CHECK(ccw_seal_new_identity((const uint8_t *)"d1weak", 6u, "zzzzzzzzzzzz", 12u, w.ek, sizeof w.ek, &w.ek_len,
+                                  w.pub, sizeof w.pub, &w.pub_len) == CC_ERR_PASSPHRASE &&
+                w.ek_len == 0u && w.pub_len == 0u && sodium_is_zero(w.ek, sizeof w.ek),
+            "policy: sealing under a refused passphrase is CC_ERR_PASSPHRASE and produces nothing"); }
 
     /* ---- the clock ---- */
     { ccw_t *h = ccw_new();

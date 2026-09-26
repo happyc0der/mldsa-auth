@@ -43,8 +43,8 @@ check(unlisted.length === 0,
 check(missing.length === 0,
   `a page can call every function web/exports.txt lists (${listed.length})` +
   (missing.length ? ` -- MISSING: ${missing.join(', ')}` : ''));
-check(listed.filter((n) => n.startsWith('_ccw_')).length === 22,
-  'the list names the 22 ccw_ entry points of apps/authd/client_wasm.h');
+check(listed.filter((n) => n.startsWith('_ccw_')).length === 23,
+  'the list names the 23 ccw_ entry points of apps/authd/client_wasm.h');
 
 const raw = WebAssembly.Module.exports(new WebAssembly.Module(wasm));
 const kinds = {};

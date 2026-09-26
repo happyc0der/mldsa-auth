@@ -10,6 +10,7 @@ _ccw_frame_buf_bytes
 _ccw_sealed_len
 _ccw_public_len
 _ccw_new_handle
+_ccw_passphrase_check
 _ccw_seal_new_identity
 _ccw_pin_server_pub
 _ccw_login_begin

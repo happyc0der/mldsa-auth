@@ -186,6 +186,14 @@ target_link_options(test_client_core PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HAR
 add_test(NAME test_client_core COMMAND test_client_core)
 set_tests_properties(test_client_core PROPERTIES TIMEOUT 300)
 
+# V4-13c: the passphrase policy.
+add_executable(test_passphrase test_passphrase.c)
+target_link_libraries(test_passphrase PRIVATE mldsa_client)
+target_compile_options(test_passphrase PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_passphrase PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_passphrase PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_passphrase COMMAND test_passphrase)
+
 # V4-13b: the wasm export shim, natively, driven the way JavaScript drives it.
 add_executable(test_client_wasm test_client_wasm.c)
 target_link_libraries(test_client_wasm PRIVATE mldsa_client_wasm)
