@@ -243,6 +243,33 @@ if(MLDSA_NODE)
     ENVIRONMENT "AUTHD_FIXTURE=$<TARGET_FILE:authd_node_fixture>")
 endif()
 
+# V4-13b: the wasm client logging in to the real daemon, from Node. The module
+# is built in a SEPARATE Emscripten tree, so this test exists only when that
+# tree is named: -DMLDSA_WASM_DIR=<build-wasm>. CI's wasm job always names it;
+# a native-only tree simply does not have the test, rather than a test that
+# silently skips.
+add_executable(authd_wasm_fixture authd_wasm_fixture.c)
+target_link_libraries(authd_wasm_fixture PRIVATE mldsa_authd)
+target_compile_options(authd_wasm_fixture PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(authd_wasm_fixture PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(authd_wasm_fixture PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+if(MLDSA_NODE)
+  # Spec 14's "no cryptography in JavaScript", as a check on web/client/.
+  add_test(NAME web_no_crypto COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_no_crypto.mjs
+                                      ${PROJECT_SOURCE_DIR}/web/client)
+endif()
+set(MLDSA_WASM_DIR "" CACHE PATH "An Emscripten build tree (web/mldsa_client.mjs) for the wasm interop test")
+if(MLDSA_WASM_DIR)
+  if(NOT MLDSA_NODE)
+    message(FATAL_ERROR "MLDSA_WASM_DIR is set but node was not found: the wasm interop test needs it")
+  endif()
+  add_test(NAME wasm_interop
+    COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/wasm_interop.mjs
+            $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
+            ${PROJECT_SOURCE_DIR}/web/client/authd-client.mjs)
+  set_tests_properties(wasm_interop PROPERTIES TIMEOUT 180)
+endif()
+
 # Milestone A, automated: the shipped daemon and both CLIs as real processes.
 # The node arguments are optional -- the script prints a named SKIP line for
 # the EXCHANGE/VERIFY leg when node is absent, rather than failing or (worse)

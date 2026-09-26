@@ -59,6 +59,7 @@ typedef struct {
     int                       site_fd;
     int                       admin_fd;
     int                       ws_fd;      /* the proxy-facing listener: WebSocket */
+    uint16_t                  ws_port;    /* set when the WebSocket listener is loopback TCP */
     uint16_t                  port;
     size_t                    nslots;
     char                      dir[256];
@@ -78,8 +79,14 @@ static const uint8_t H_KEK[32] = {
  * attaches the rate limiter, which is the deployed configuration (spec §7.2).
  * A test that wants different limits re-runs ratelimit_init on d->rl after
  * this returns. */
-static inline int h_start_ex(h_daemon_t *d, const char *dir, const char *dbname,
-                             int with_local, int proxy_v2)
+/* `ws_over_tcp` puts the WebSocket listener on loopback TCP (d->ws_port)
+ * INSTEAD of the Unix socket (V4-13b). A deployment never does this -- Caddy
+ * reaches the daemon over the Unix socket -- but Node's built-in WebSocket can
+ * only dial TCP, and the wasm interop test must reach the real daemon. It
+ * replaces rather than adds a listener because the fixture already uses all
+ * AUTHD_MAX_LISTENERS (4): raw TCP, WebSocket, site, admin. */
+static inline int h_start_opts(h_daemon_t *d, const char *dir, const char *dbname,
+                               int with_local, int proxy_v2, int ws_over_tcp)
 {
     memset(d, 0, sizeof *d);
     d->lfd = d->site_fd = d->admin_fd = -1;
@@ -138,8 +145,12 @@ static inline int h_start_ex(h_daemon_t *d, const char *dir, const char *dbname,
     /* The same daemon also offers the proxy-facing listener, which speaks
      * WebSocket (spec §7.1). Having both in one fixture is what lets a test
      * show that the two transports carry the SAME protocol. */
-    snprintf(d->ws_path, sizeof d->ws_path, "%s/w.sock", d->dir);
-    if (listener_open_unix(d->ws_path, 8, LISTENER_MODE_GROUP, &d->ws_fd) != LISTENER_OK) { return -1; }
+    if (ws_over_tcp) {
+        if (listener_open_loopback(0, 16, &d->ws_fd, &d->ws_port) != LISTENER_OK) { return -1; }
+    } else {
+        snprintf(d->ws_path, sizeof d->ws_path, "%s/w.sock", d->dir);
+        if (listener_open_unix(d->ws_path, 8, LISTENER_MODE_GROUP, &d->ws_fd) != LISTENER_OK) { return -1; }
+    }
     if (evloop_add_ws_listener(&d->ev, d->ws_fd, NULL, 0u, d->proxy_v2) != 0) { return -1; }
 
     if (with_local) {
@@ -153,6 +164,12 @@ static inline int h_start_ex(h_daemon_t *d, const char *dir, const char *dbname,
         if (evloop_add_local_listener(&d->ev, d->admin_fd, me, 1u, 1) != 0) { return -1; }
     }
     return 0;
+}
+
+static inline int h_start_ex(h_daemon_t *d, const char *dir, const char *dbname,
+                             int with_local, int proxy_v2)
+{
+    return h_start_opts(d, dir, dbname, with_local, proxy_v2, 0);
 }
 
 static inline int h_start(h_daemon_t *d, const char *dir, const char *dbname, int with_local)
