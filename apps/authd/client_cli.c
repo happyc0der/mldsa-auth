@@ -15,6 +15,7 @@
 #include "client_cli.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@
 #include "authd_secret.h"
 #include "authmsg.h"
 #include "cli_common.h"
+#include "cli_prompt.h"
 #include "client_core.h"
 #include "demo_app.h"
 #include "demo_keys.h"
@@ -35,6 +37,7 @@
 #include "keyfile.h"
 #include "mldsa_wrap.h"
 #include "net_io.h"
+#include "passphrase.h"
 #include "ws.h"
 
 #define LOGIN_TIMEOUT_MS  20000u
@@ -378,17 +381,54 @@ static int client_seal_new_identity(const char *prog, const char *sub, const cha
     return EX_OK;
 }
 
+/* A passphrase from a FILE or from the TERMINAL (V4-13d) -- never argv or the
+ * environment (spec 12). The terminal is /dev/tty, opened here, so neither the
+ * prompt nor the passphrase goes near stdin or stdout: stdout carries the
+ * handle or the login code a script may be capturing. `fresh` asks for a NEW
+ * passphrase: typed twice and held to the policy (cli_prompt_new). */
+static int get_pass(const char *prog, const char *sub, const char *path, int prompt,
+                    const char *what, int fresh, uint8_t **out, size_t *out_len)
+{
+    if (!prompt) {
+        return read_pass(prog, sub, path, out, out_len);
+    }
+    const int fd = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "%s %s: --passphrase-prompt: %s (use --passphrase-file)\n", prog, sub,
+                cli_prompt_status_name(CLI_PROMPT_ERR_NOT_TTY));
+        return EX_CONFIG;
+    }
+    char who[96];
+    (void)snprintf(who, sizeof who, "%s %s", prog, sub);
+    cli_prompt_status_t st;
+    if (fresh) {
+        st = cli_prompt_new(fd, who, out, out_len);
+    } else {
+        char line[160];
+        (void)snprintf(line, sizeof line, "Passphrase for %s: ", what);
+        st = cli_prompt_read(fd, line, out, out_len);
+    }
+    (void)close(fd);
+    if (st != CLI_PROMPT_OK) {
+        fprintf(stderr, "%s %s: --passphrase-prompt: %s\n", prog, sub, cli_prompt_status_name(st));
+        return (st == CLI_PROMPT_ERR_NOT_TTY) ? EX_CONFIG : EX_FAIL;
+    }
+    return EX_OK;
+}
+
 static int cmd_client_keygen(int argc, char **argv, const char *prog)
 {
     const char *dir = NULL, *pass_path = NULL;
+    int prompt = 0;
     for (int i = 2; i < argc; i++) {
         const int has = (i + 1 < argc);
         if (strcmp(argv[i], "--dir") == 0 && has)                  { dir = argv[++i]; }
         else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { pass_path = argv[++i]; }
+        else if (strcmp(argv[i], "--passphrase-prompt") == 0)      { prompt = 1; }
         else { return unexpected(prog, "keygen", argv[i]); }
     }
-    if (dir == NULL || pass_path == NULL) {
-        return need(prog, "keygen", "--dir DIR --passphrase-file PATH");
+    if (dir == NULL || (pass_path == NULL) == (prompt == 0)) {
+        return need(prog, "keygen", "--dir DIR (--passphrase-file PATH | --passphrase-prompt)");
     }
 
     /* Spec 3.1: the handle comes from the core, from 16 random bytes, made
@@ -401,16 +441,31 @@ static int cmd_client_keygen(int argc, char **argv, const char *prog)
     (void)snprintf(ek_name, sizeof ek_name, "%s.ek", handle);
     (void)snprintf(pub_name, sizeof pub_name, "%s.pub", handle);
     if (join(ek, sizeof ek, dir, ek_name) != 0 || join(pub, sizeof pub, dir, pub_name) != 0) {
-        return need(prog, "keygen", "--dir DIR --passphrase-file PATH");
+        return need(prog, "keygen", "--dir DIR (--passphrase-file PATH | --passphrase-prompt)");
     }
     if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
         return failed(prog, "keygen", dir, "cannot-create-directory");
     }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
-    int rc = read_pass(prog, "keygen", pass_path, &pass, &pass_len);
+    int rc = get_pass(prog, "keygen", pass_path, prompt, NULL, 1, &pass, &pass_len);
     if (rc != EX_OK) {
         return rc;
+    }
+    /* ONE policy for every new passphrase (passphrase.h), whichever way it
+     * arrived: the prompt has already applied it, a file has not. Only keygen
+     * checks -- rotate re-seals under the SAME passphrase, and refusing there
+     * would strand an existing identity that predates the policy. */
+    {
+        pp_report_t rep;
+        const pp_verdict_t v = pp_check(pass, pass_len, &rep);
+        if (v != PP_OK) {
+            char why[160];
+            (void)pp_explain(v, &rep, why, sizeof why);
+            authd_secret_free(pass, pass_len);
+            fprintf(stderr, "%s keygen: failed: passphrase-policy: %s\n", prog, why);
+            return EX_FAIL;
+        }
     }
     rc = client_seal_new_identity(prog, "keygen", ek, pub, (const uint8_t *)handle, strlen(handle),
                                   (const char *)pass, pass_len, NULL);
@@ -434,6 +489,7 @@ typedef struct {
     const uint8_t *sid; size_t sid_len;
     const char *key_path;
     const char *pass_path;
+    int pass_prompt;              /* --passphrase-prompt instead of a file */
     const char *server_pub;
     const char *unix_path;
     uint16_t port;
@@ -471,6 +527,7 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         if (strcmp(argv[i], "--handle") == 0 && has)               { handle = argv[++i]; }
         else if (strcmp(argv[i], "--key") == 0 && has)             { a->key_path = argv[++i]; }
         else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { a->pass_path = argv[++i]; }
+        else if (strcmp(argv[i], "--passphrase-prompt") == 0)      { a->pass_prompt = 1; }
         else if (strcmp(argv[i], "--server-id") == 0 && has)       { server_id = argv[++i]; }
         else if (strcmp(argv[i], "--server-pub") == 0 && has)      { a->server_pub = argv[++i]; }
         else if (strcmp(argv[i], "--unix") == 0 && has)            { a->unix_path = argv[++i]; }
@@ -481,15 +538,16 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         else { return unexpected(prog, sub, argv[i]); }
     }
     uint64_t port = 0;
-    if (handle == NULL || a->key_path == NULL || a->pass_path == NULL || server_id == NULL ||
+    if (handle == NULL || a->key_path == NULL || (a->pass_path == NULL) == (a->pass_prompt == 0) ||
+        server_id == NULL ||
         a->server_pub == NULL || (a->unix_path == NULL) == (port_s == NULL) ||
         demo_parse_id(handle, &a->hid, &a->hid_len) != 0 ||
         demo_parse_id(server_id, &a->sid, &a->sid_len) != 0 ||
         (port_s != NULL && demo_parse_u64(port_s, 1u, 65535u, &port) != 0)) {
         return need(prog, sub,
-                    "--handle H --key H.ek --passphrase-file PATH --server-id ID "
-                    "--server-pub server.pub (--unix PATH | --port N) [--state S] "
-                    "[--proxy-v2] [--ws]");
+                    "--handle H --key H.ek (--passphrase-file PATH | --passphrase-prompt) "
+                    "--server-id ID --server-pub server.pub (--unix PATH | --port N) "
+                    "[--state S] [--proxy-v2] [--ws]");
     }
     a->port = (uint16_t)port;
     return EX_OK;
@@ -607,7 +665,7 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
     }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
-    rc = read_pass(prog, "login", a.pass_path, &pass, &pass_len);
+    rc = get_pass(prog, "login", a.pass_path, a.pass_prompt, a.key_path, 0, &pass, &pass_len);
     if (rc != EX_OK) { return rc; }
 
     /* Every invocation of this tool is a "startup", so the interrupted-rename
@@ -657,7 +715,7 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
     }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
-    rc = read_pass(prog, "rotate", a.pass_path, &pass, &pass_len);
+    rc = get_pass(prog, "rotate", a.pass_path, a.pass_prompt, a.key_path, 0, &pass, &pass_len);
     if (rc != EX_OK) { return rc; }
 
     char next_path[PATH_MAX];
@@ -818,11 +876,11 @@ static void client_usage(const char *prog)
 {
     fprintf(stderr,
             "usage:\n"
-            "  %s keygen --dir DIR --passphrase-file PATH\n"
-            "  %s login  --handle H --key H.ek --passphrase-file PATH\n"
+            "  %s keygen --dir DIR (--passphrase-file PATH | --passphrase-prompt)\n"
+            "  %s login  --handle H --key H.ek (--passphrase-file PATH | --passphrase-prompt)\n"
             "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
             "            [--state S] [--proxy-v2] [--ws]\n"
-            "  %s rotate --handle H --key H.ek --passphrase-file PATH\n"
+            "  %s rotate --handle H --key H.ek (--passphrase-file PATH | --passphrase-prompt)\n"
             "            --server-id ID --server-pub server.pub (--unix PATH | --port N)\n"
             "            [--state S] [--proxy-v2] [--ws]\n"
             "\n"
@@ -838,8 +896,11 @@ static void client_usage(const char *prog)
             "preamble, and without it the daemon fails the connection closed (spec 7.2).\n"
             "--ws speaks WebSocket over --port as well, which is the shape a browser takes\n"
             "through a TLS proxy.\n"
-            "Passphrases are FILES (mode 0600, owned by you): argv and the environment are\n"
-            "readable by other processes on this machine.\n"
+            "A passphrase comes from a FILE (mode 0600, owned by you) or is typed at the\n"
+            "terminal with --passphrase-prompt; never argv or the environment, which other\n"
+            "processes on this machine can read. keygen holds a new passphrase to the policy\n"
+            "the browser uses (at least 12 characters, not a common password, not\n"
+            "predictable) and asks for it twice.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",
             prog, prog, prog);
 }

@@ -134,8 +134,13 @@ inc "/src/b/apps/authd/mldsa-authd --config /etc/authd.conf > /tmp/authd.log 2>&
      for i in \$(seq 1 100); do grep -q event=started /tmp/authd.log && exit 0; sleep 0.1; done; exit 1" \
     || { inc "cat /tmp/authd.log"; fail "the daemon did not start"; }
 
+# The DEVICE's own passphrase, not the server's: the server's is 32 raw random
+# bytes, which V4-13d's keygen refuses as not valid text -- and a device sharing
+# the server's passphrase was never a shape anyone should copy.
+inc "head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /run/dev.pass && chmod 600 /run/dev.pass" \
+    || fail "could not write the device passphrase"
 HANDLE=$(inc "/src/b/apps/authd/authd_client keygen --dir /run/dev \
-              --passphrase-file /run/mldsa-authd/pass 2>/dev/null") || fail "keygen failed"
+              --passphrase-file /run/dev.pass 2>/dev/null") || fail "keygen failed"
 inc "/src/b/apps/authd/authd_admin enroll-operator --socket /run/mldsa-authd/a.sock \
      --user alice --handle $HANDLE --pub /run/dev/$HANDLE.pub > /dev/null" \
     || fail "enroll-operator failed"
@@ -147,7 +152,7 @@ inc "for i in \$(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:8080/ && ex
 # ------------------------------------------------------------- the login
 
 CODE=$(inc "/src/b/apps/authd/authd_client login --handle $HANDLE \
-        --key /run/dev/$HANDLE.ek --passphrase-file /run/mldsa-authd/pass \
+        --key /run/dev/$HANDLE.ek --passphrase-file /run/dev.pass \
         --server-id authd --server-pub /run/mldsa-authd/server.pub \
         --port 8080 --ws --state s1 2>/tmp/login.err") \
     || { inc "cat /tmp/login.err; tail -20 /tmp/authd.log"; fail "the login through Caddy failed"; }
@@ -175,7 +180,7 @@ inc "grep -q '^:8081 {' /etc/Caddyfile.nopp && ! grep -q proxy_protocol /etc/Cad
 inc "caddy start --config /etc/Caddyfile.nopp --adapter caddyfile > /tmp/caddy2.log 2>&1" \
     || { inc "cat /tmp/caddy2.log"; fail "the second caddy would not start"; }
 if inc "/src/b/apps/authd/authd_client login --handle $HANDLE \
-        --key /run/dev/$HANDLE.ek --passphrase-file /run/mldsa-authd/pass \
+        --key /run/dev/$HANDLE.ek --passphrase-file /run/dev.pass \
         --server-id authd --server-pub /run/mldsa-authd/server.pub \
         --port 8081 --ws > /dev/null 2>&1"; then
     fail "a login SUCCEEDED with no PROXY v2 preamble (Req 12 fails open behind a real proxy)"

@@ -761,7 +761,9 @@ should be destroyed once the new file is verified.
 
 `authd_admin`: `init`, `keygen-server`, `migrate-key`, `rewrap`,
 `enroll-operator`, `disable-user`, `enable-user`, `list-users`,
-`list-devices`, `audit-tail`, `audit-verify`, `backup`, `--check-config`.
+`list-devices`, `audit-tail`, `audit-verify`, `pseudonym`, `backup`,
+`--check-config`. `pseudonym` is offline like `audit-verify` and prints the
+`idh=` a daemon with `log_identities = hashed` writes for one identifier (§15).
 
 `audit-verify` is **offline**: it opens the key envelope for the KEK, opens the
 store, re-computes the whole MAC chain and prints the head MAC and a verdict.
@@ -770,6 +772,17 @@ a backup as well as on the live store. Exit 0 means the chain verified.
 
 `authd_client`: `keygen`, `login`, `rotate`. `login` prints the login code as
 base64url for pasting into the site's form (milestone A has no browser).
+
+**A device passphrase comes from a file or from the terminal** (erratum 39):
+`--passphrase-file PATH` (§12's custody rules) or `--passphrase-prompt`, which
+opens `/dev/tty` — so neither the prompt nor the passphrase touches stdin or
+stdout, where `login` prints the code — reads one line with echo off into
+locked memory, and restores the terminal on every path, a signal included.
+Never argv, never the environment. `keygen` holds a **new** passphrase to §14's
+policy whichever way it arrives, explaining a refusal in the enrollment page's
+words, and the prompt asks for it twice. `rotate` re-seals under the same
+passphrase and does not re-check it, so an identity that predates the policy
+can still rotate.
 
 Exit codes: 0 success, 1 operation failed, 2 usage error, 3 configuration
 error. Every failure prints a status name from the same enums the daemon logs.
@@ -1215,3 +1228,4 @@ What a public deployment needs that milestone A did not:
 | 36 | 15, 18 | `log_identities = full \| hashed \| off`, the `idh` field, `key_log` and `authd_admin pseudonym`; the §18 limitation "there are no switches" removed | V4-10c (F46) found the switches named here and implemented nowhere; for public users an identifier in the journal is personal data. Finding **F14** |
 | 37 | 15 | `log_client_ip = full \| prefix \| off`, and `src`'s alphabet corrected to `[0-9a-f.:/]` or `none` | the same, for addresses. The old sentence also said `[0-9a-f.:]` while the renderer has always written `none` for a connection with no address |
 | 38 | 7.3, 17, 18 | an authenticated login's per-address token is refunded; the shared-address lockout recorded as a limitation | behind a carrier-grade NAT thousands of users share one IPv4 address and, at 5 a minute, were spending each other's budget on logins that were never probes. Finding **F81** |
+| 39 | 13 | `authd_client --passphrase-prompt`; `keygen` enforces the passphrase policy on a file too; `pseudonym` added to §13's command list (erratum 36 missed it) | a person's passphrase in a file is a copy of it at rest; the terminal is the other channel no other process can read. The policy was the browser's alone, so the CLI could seal a key under `password` |

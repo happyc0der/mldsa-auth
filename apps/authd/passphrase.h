@@ -60,6 +60,14 @@ typedef struct {
 pp_verdict_t pp_check(const uint8_t *pass, size_t len, pp_report_t *report);
 const char *pp_verdict_name(pp_verdict_t v);
 
+/* The verdict in the words the enrollment page uses (web/pages/enroll.mjs),
+ * so a refusal reads the same at a terminal as in a browser: "too short (9 of
+ * 12 characters)", "too predictable (~30 bits: repeated characters)",
+ * "acceptable (~74 bits estimated)". Writes a NUL-terminated string and
+ * returns its length, or 0 (and "" when cap > 0) if `cap` is too small.
+ * `report` may be NULL, which reads as zeros. Contains no passphrase byte. */
+size_t pp_explain(pp_verdict_t v, const pp_report_t *report, char *out, size_t cap);
+
 /* The generated table (passphrase_common.c): sorted bytewise, lower-case. */
 extern const size_t pp_common_count;
 extern const char *const pp_common[];

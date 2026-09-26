@@ -1,5 +1,6 @@
 #include "passphrase.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include <sodium.h>
@@ -31,6 +32,53 @@ static const uint32_t POOL_MILLIBITS[32] = {
 static const char *const KEYBOARD_ROWS[] = {
     "qwertyuiop", "asdfghjkl", "zxcvbnm", "1234567890", "!@#$%^&*()",
 };
+
+size_t pp_explain(pp_verdict_t v, const pp_report_t *report, char *out, size_t cap)
+{
+    if (out == NULL || cap == 0u) {
+        return 0u;
+    }
+    static const struct { uint32_t bit; const char *text; } why[] = {
+        { PP_R_REPEATS,       "repeated characters" },
+        { PP_R_SEQUENCE,      "a run like abc or 321" },
+        { PP_R_KEYBOARD,      "a keyboard walk" },
+        { PP_R_REPEATED_UNIT, "one piece repeated" },
+        { PP_R_ONE_CLASS,     "only one kind of character" },
+    };
+    const uint32_t cps = (report != NULL) ? report->code_points : 0u;
+    const uint32_t bits = (report != NULL) ? report->est_bits : 0u;
+    const uint32_t rs = (report != NULL) ? report->reasons : 0u;
+    int n = -1;
+    switch (v) {
+    case PP_OK:        n = snprintf(out, cap, "acceptable (~%u bits estimated)", (unsigned)bits); break;
+    case PP_NOT_UTF8:  n = snprintf(out, cap, "not valid text"); break;
+    case PP_TOO_LONG:  n = snprintf(out, cap, "too long"); break;
+    case PP_TOO_SHORT: n = snprintf(out, cap, "too short (%u of %u characters)",
+                                    (unsigned)cps, (unsigned)PP_MIN_CODE_POINTS); break;
+    case PP_COMMON:    n = snprintf(out, cap, "a common password"); break;
+    case PP_PREDICTABLE: {
+        n = snprintf(out, cap, "too predictable (~%u bits", (unsigned)bits);
+        const char *sep = ": ";
+        for (size_t i = 0; i < sizeof why / sizeof why[0] && n >= 0 && (size_t)n < cap; i++) {
+            if ((rs & why[i].bit) != 0u) {
+                const int k = snprintf(out + n, cap - (size_t)n, "%s%s", sep, why[i].text);
+                n = (k < 0) ? -1 : n + k;
+                sep = ", ";
+            }
+        }
+        if (n >= 0 && (size_t)n < cap) {
+            const int k = snprintf(out + n, cap - (size_t)n, ")");
+            n = (k < 0) ? -1 : n + k;
+        }
+        break;
+    }
+    }
+    if (n < 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return 0u;
+    }
+    return (size_t)n;
+}
 
 const char *pp_verdict_name(pp_verdict_t v)
 {

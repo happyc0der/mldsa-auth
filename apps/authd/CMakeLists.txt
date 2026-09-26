@@ -63,6 +63,7 @@ target_link_options(mldsa_cli_common PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARD
 # files and stderr. No store, no sqlite3 -- the reason for this split.
 add_library(mldsa_client_cli STATIC
   client_cli.c
+  cli_prompt.c
 )
 target_link_libraries(mldsa_client_cli PUBLIC mldsa_client mldsa_cli_common mldsa_demo)
 target_compile_options(mldsa_client_cli PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})

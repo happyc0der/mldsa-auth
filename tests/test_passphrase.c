@@ -8,6 +8,7 @@
  * as a named failure rather than as a policy that quietly moved.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "passphrase.h"
@@ -18,7 +19,31 @@ static int g_fail = 0;
 
 static pp_verdict_t v(const char *s, pp_report_t *r) { return pp_check((const uint8_t *)s, strlen(s), r); }
 
-int main(void)
+/* The whole of a small text file, NUL-terminated, or NULL. */
+static char *slurp(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) { return NULL; }
+    static char buf[65536];
+    const size_t n = fread(buf, 1u, sizeof buf - 1u, f);
+    fclose(f);
+    buf[n] = '\0';
+    return buf;
+}
+
+static int explains(pp_verdict_t vd, uint32_t cps, uint32_t bits, uint32_t rs, const char *want)
+{
+    const pp_report_t rep = { cps, bits, rs };
+    char out[200];
+    const size_t n = pp_explain(vd, &rep, out, sizeof out);
+    if (strcmp(out, want) != 0 || n != strlen(want)) {
+        printf("  pp_explain gave \"%s\", wanted \"%s\"\n", out, want);
+        return 0;
+    }
+    return 1;
+}
+
+int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     pp_report_t r;
@@ -99,6 +124,52 @@ int main(void)
 
     CHECK(strcmp(pp_verdict_name(PP_COMMON), "common") == 0 && strcmp(pp_verdict_name(PP_PREDICTABLE), "predictable") == 0,
           "names: verdicts have the names a page shows");
+
+    /* ---- pp_explain (V4-13d): the enrollment page's words, for the CLI ---- */
+    CHECK(explains(PP_OK, 16u, 74u, 0u, "acceptable (~74 bits estimated)") &&
+          explains(PP_NOT_UTF8, 0u, 0u, 0u, "not valid text") &&
+          explains(PP_TOO_LONG, 0u, 0u, 0u, "too long") &&
+          explains(PP_TOO_SHORT, 9u, 0u, 0u, "too short (9 of 12 characters)") &&
+          explains(PP_COMMON, 12u, 0u, 0u, "a common password"),
+          "explain: each verdict in the page's words");
+    CHECK(explains(PP_PREDICTABLE, 16u, 30u, PP_R_REPEATS | PP_R_ONE_CLASS,
+                   "too predictable (~30 bits: repeated characters, only one kind of character)") &&
+          explains(PP_PREDICTABLE, 12u, 17u,
+                   PP_R_REPEATS | PP_R_SEQUENCE | PP_R_KEYBOARD | PP_R_REPEATED_UNIT | PP_R_ONE_CLASS,
+                   "too predictable (~17 bits: repeated characters, a run like abc or 321, a keyboard walk, "
+                   "one piece repeated, only one kind of character)") &&
+          explains(PP_PREDICTABLE, 12u, 44u, 0u, "too predictable (~44 bits)"),
+          "explain: predictable lists every reason, in the page's order, and none when there are none");
+    { char tiny[8];
+      memset(tiny, 'x', sizeof tiny);
+      const pp_report_t z = { 9u, 0u, 0u };
+      CHECK(pp_explain(PP_TOO_SHORT, &z, tiny, sizeof tiny) == 0u && tiny[0] == '\0',
+            "explain: a buffer too small gives 0 and an empty string, never a cut sentence"); }
+    { char out[200];
+      pp_report_t rr;
+      const pp_verdict_t vd = v("ggggmmmmssssxxxx", &rr);
+      (void)pp_explain(vd, &rr, out, sizeof out);
+      CHECK(strstr(out, "gggg") == NULL && strncmp(out, "too predictable (~30 bits: repeated characters", 46) == 0,
+            "explain: a real refusal names its reasons and contains no passphrase byte"); }
+
+    /* The SAME words as the browser: every phrase above must appear in
+     * web/pages/enroll.mjs, so the two cannot drift apart unseen. */
+    if (argc > 1) {
+        const char *js = slurp(argv[1]);
+        static const char *const phrases[] = {
+            "repeated characters", "a run like abc or 321", "a keyboard walk", "one piece repeated",
+            "only one kind of character", "not valid text", "too long", "a common password",
+            "of 12 characters)", "too predictable (~", "acceptable (~", " bits estimated)",
+        };
+        int all = js != NULL;
+        for (size_t i = 0; all && i < sizeof phrases / sizeof phrases[0]; i++) {
+            if (strstr(js, phrases[i]) == NULL) { printf("  missing from %s: %s\n", argv[1], phrases[i]); all = 0; }
+        }
+        CHECK(all, "explain: every phrase is the enrollment page's own (web/pages/enroll.mjs)");
+    } else {
+        printf("FAIL: explain: no path to web/pages/enroll.mjs was given\n");
+        g_fail = 1;
+    }
 
     printf(g_fail ? "\nFAILED\n" : "\nAll checks passed\n");
     return g_fail;

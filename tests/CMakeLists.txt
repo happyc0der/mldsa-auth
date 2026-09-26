@@ -174,6 +174,18 @@ target_compile_definitions(test_authd_cli PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_S
 target_link_options(test_authd_cli PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_cli COMMAND test_authd_cli)
 
+# V4-13d: authd_client --passphrase-prompt, through a real pseudo-terminal.
+add_executable(test_client_prompt test_client_prompt.c)
+target_link_libraries(test_client_prompt PRIVATE mldsa_client_cli)
+if(NOT APPLE)
+  target_link_libraries(test_client_prompt PRIVATE util)   # openpty, forkpty
+endif()
+target_compile_options(test_client_prompt PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_client_prompt PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_client_prompt PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_client_prompt COMMAND test_client_prompt)
+set_tests_properties(test_client_prompt PROPERTIES TIMEOUT 300)
+
 # V4-13a: the client core, against the in-process daemon and a fake server.
 # The TIMEOUT is a guard, not a budget (the test takes seconds): it flips every
 # envelope header byte, and a mutant that removed the KDF bounds would send a
@@ -192,7 +204,7 @@ target_link_libraries(test_passphrase PRIVATE mldsa_client)
 target_compile_options(test_passphrase PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_passphrase PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_passphrase PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
-add_test(NAME test_passphrase COMMAND test_passphrase)
+add_test(NAME test_passphrase COMMAND test_passphrase ${PROJECT_SOURCE_DIR}/web/pages/enroll.mjs)
 
 # V4-13b: the wasm export shim, natively, driven the way JavaScript drives it.
 add_executable(test_client_wasm test_client_wasm.c)
