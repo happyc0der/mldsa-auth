@@ -18,10 +18,20 @@
 # and build-ubsan was missing from the one rm list that mattered. Nothing in
 # any output said so.
 #
-# The proof is a no-op rebuild: rebuild, then show every project object and
-# executable is byte-identical afterwards. A stale object cannot survive a
-# rebuild unchanged. mtimes are deliberately NOT used -- `touch` and
-# `git checkout` forge them, and they say nothing about content.
+# The proof is a FROM-SCRATCH rebuild of the project's own artefacts: delete
+# every project object, archive and executable (never _deps), rebuild, and
+# show the results byte-identical to what was there. mtimes are deliberately
+# NOT trusted -- `touch` and `git checkout` forge them, and they say nothing
+# about content.
+#
+# It used to be a no-op rebuild ("a stale object cannot survive a rebuild
+# unchanged"), which is only true if the build tool SEES the change. V4-13b
+# found where it does not: macOS's /usr/bin/make is GNU make 3.81, which
+# compares timestamps to the second, so a source restored in the same second
+# as the previous link leaves a stale module that make calls up to date -- and
+# the no-op rebuild then agreed with it. Deleting the artefacts takes the
+# timestamps out of the question; the campaign runner has always done this
+# (run_mutations_v2.sh forced_build) and was never fooled.
 set -u
 BUILD="${1:?usage: check_build_current.sh <build-dir>}"
 [ -f "$BUILD/CMakeCache.txt" ] || { echo "FAIL: $BUILD is not a configured build directory"; exit 2; }
@@ -62,6 +72,7 @@ case "$(uname -s)" in
 esac
 
 objects() { find "$BUILD" -path "$BUILD/_deps" -prune -o -name '*.o' -print 2>/dev/null | sort; }
+archives() { find "$BUILD" -path "$BUILD/_deps" -prune -o -name '*.a' -print 2>/dev/null | sort; }
 executables() {
   find "$BUILD" -path "$BUILD/_deps" -prune -o -path '*/CMakeFiles/*' -prune -o \
        -type f -perm -u+x -print 2>/dev/null |
@@ -104,6 +115,9 @@ before=$(snapshot)
 # BSD mktemp accepts a bare -t prefix; GNU mktemp demands XXXXXX in the
 # template. This form is correct on both.
 log=$(mktemp "${TMPDIR:-/tmp}/mldsa-check-current.XXXXXX")
+# From scratch: the project's own artefacts only (_deps is pruned by every
+# finder above, so liboqs is not rebuilt; libsodium lives outside the tree).
+{ objects; archives; executables; } | while IFS= read -r f; do rm -f "$f"; done
 if ! cmake --build "$BUILD" -j8 > "$log" 2>&1; then
   echo "FAIL: $BUILD does not build from the current working tree"
   grep -m 3 -E "error:" "$log" | sed 's/^/      /'
@@ -115,7 +129,7 @@ after=$(snapshot)
 
 if [ "$before" = "$after" ]; then
   fp=$(echo "$after" | shasum -a 256 | cut -c1-16)
-  echo "OK: $BUILD is current with the working tree ($nobj object(s), $nbin executable(s); a rebuild changed nothing; fingerprint $fp) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
+  echo "OK: $BUILD is current with the working tree ($nobj object(s), $nbin executable(s); a from-scratch rebuild reproduced every one; fingerprint $fp) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
   exit 0
 fi
 
