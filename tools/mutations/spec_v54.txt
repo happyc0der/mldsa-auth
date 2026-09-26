@@ -1,0 +1,9 @@
+WA1|^test_client_wasm$|clock: a login cannot begin before the caller has set the clock
+WA2|^test_client_wasm$|clock: time may stand still but never run backwards
+WA3|^test_client_wasm$|clock: a negative, NaN or infinite time is refused
+WA4|^test_client_wasm$|seal: sealed at the browser's Argon2id parameters, ops 3 and 64 MiB (spec 12)
+WA5|^test_client_wasm$|init: after ccw_init, ML-DSA keygen draws from libsodium's generator (same state, same key)
+WA6|^test_client_wasm$|refuse: a record that does not authenticate leaves no code, flags or expiry in the caller's buffers
+WA7|^test_client_wasm$|login: ClientHello and ClientAuth through the shim
+WA8|^test_client_wasm$|pin: a server public key naming a different id is refused, named id-mismatch
+WA9|^test_client_wasm$|init: no handle before ccw_init

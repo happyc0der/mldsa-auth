@@ -195,7 +195,9 @@ int main(void)
       (void)ccw_set_now_ms(h, 1000.0);
       (void)login_to_record(h, &fs, &d, 0);
       size_t m = 0;
-      (void)fs_send_login_code(&fs, 0u, 0x42, 1u, g_in, sizeof g_in, &m);
+      /* A failed login upstream leaves no record (m == 0): never index
+       * g_in[m - 1] then -- v54 WA7 crashed here before this guard. */
+      if (fs_send_login_code(&fs, 0u, 0x42, 1u, g_in, sizeof g_in, &m) != 0 || m == 0u) { m = 1u; g_in[0] = 0u; }
       g_in[m - 1u] ^= 0x01u;   /* the tag no longer authenticates */
       uint8_t code[32]; uint32_t flags = 7u; double exp = 7.0;
       memset(code, 0xA5, sizeof code);

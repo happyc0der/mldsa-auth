@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.4, V4-3 + V4-10c/V4-11/V4-12/V4-13a errata)
+# mldsa-authd — deployment specification (v1.5, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -766,6 +766,20 @@ further (erratum 31).
 The wasm build requires `-sSTACK_SIZE=8MB` — the 64 KiB default faults
 immediately on this codebase's 4 KB keys.
 
+**The module's contract** (V4-13b, addition 32). It is built with **Emscripten
+6.0.9** exactly, and its known-answer test must reproduce the native golden
+(`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
+functions in `web/exports.txt` — the 22 `ccw_` entry points of
+`apps/authd/client_wasm.h`, `malloc` and `free` — and the raw module exports
+nothing beyond those, one runtime constructor and its memory. It has no
+filesystem and no dynamic code execution, so a CSP without `unsafe-eval` can
+serve it. Three things are fixed inside it rather than chosen by the page: the
+Argon2id parameters are the browser's above; the session clock is the page's,
+and a login cannot begin until it has been set; and liboqs draws its randomness
+from libsodium, which draws from the host's `crypto.getRandomValues`. Measured
+at V4-13b: 187,603 bytes (module and glue), Argon2id(3, 64 MiB) 101–128 ms and
+a whole login 106–118 ms under Node 24 on the development machine.
+
 **Honest limits, which the enrollment page states, not only this document:**
 an XSS on the origin can read wasm memory while the key is unlocked and can
 exfiltrate the sealed blob for offline guessing (Argon2id slows that; a weak
@@ -1100,3 +1114,12 @@ every refusal, drops a lent key's pointer at the same point, and keeps the old
 key past `ClientAuth` only when asked to for a rotation. `test_client_core`
 asserts each of those, and campaign v53 (F3, F4) shows the assertions fail when
 the frees are removed.
+
+### Revision v1.5 (V4-13b)
+
+One addition, because the implementation now has a surface the section
+described only in outline:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 32 | 14 | the browser module's contract: the pinned Emscripten version, the golden it must reproduce, its exact export set, no filesystem or dynamic code, what it fixes rather than the page, and its measured size and times | §14 said "an explicit export list" and nothing about what was on it. The list is now a file the build checks the module against, and the version is one `tools/audit/check_spec_constants.sh` checks this section against (`MLDSA_EMSCRIPTEN_VERSION`) |

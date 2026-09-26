@@ -167,6 +167,13 @@ in_roles "KDF by role: server"   "server \`ops=$S_OPS, mem=$CLI_MEM MiB\`"
 in_roles "KDF by role: operator" "operator \`ops=$O_OPS, mem=$CLI_MEM MiB\`"
 in_roles "KDF by role: browser"  "browser \`ops=$B_OPS, mem=$B_MEM MiB\`"
 
+# --- the browser module's compiler, §14 (V4-13b) -----------------------------
+# The Emscripten version is pinned in CMakeLists.txt and stated in §14; the
+# wasm KAT golden is only a contract for that compiler, so the two must agree.
+EMV=$(grep -oE 'set\(MLDSA_EMSCRIPTEN_VERSION "[0-9.]+"\)' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+S14=$(awk '/^## 14\. /{f=1} /^## 15\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
+case "$S14" in *"Emscripten $EMV"*) printf '  ok    %-34s %s\n' "browser module: Emscripten pin" "$EMV";;
+               *) printf '  FAIL  %-34s CMakeLists pins %s, §14 does not say so\n' "browser module: Emscripten pin" "${EMV:-<none>}"; fail=1;; esac
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"

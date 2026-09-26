@@ -5540,3 +5540,117 @@ because the campaign keeps only ctest's summary for a failing clean suite —
 **F84** records the failure and its leading, unconfirmed hypothesis (a fixed
 e2e port inside Linux's ephemeral range), and **F85** the missing evidence,
 which has to be fixed before F84 can be diagnosed rather than guessed at.
+
+## V4-13b — the same client, in WebAssembly
+
+13a built one client core and a golden file of eleven SHA-256 hashes, and
+called the golden a contract for the wasm build. 13b is that build, and the
+first thing it did was keep the contract: **the wasm KAT reproduced the native
+golden byte-for-byte on its first run**, all eleven artefacts, with
+`test_vectors`' 27 checks alongside (V4-2 S6's result, now a permanent test).
+
+### What was decided (user decisions in brackets)
+
+- **One pinned compiler.** `emcmake cmake` builds the client only — core, key
+  formats, WebSocket framing, client core — and configure refuses any
+  Emscripten but 6.0.9 (`MLDSA_EMSCRIPTEN_VERSION`; a control with 6.0.8 is
+  refused). A KAT golden is a contract for the compiler it was checked
+  against. libsodium is the same tarball and hash through
+  `emconfigure`/`emmake` with its own emscripten script's options; liboqs is
+  the same commit, still verified twice, at `generic`.
+- **An export shim, built natively too** [shim built natively too].
+  `client_wasm.c` is 22 flat functions over the core — pointers, 32-bit
+  lengths, ints, doubles — and plain C, so `test_client_wasm` drives it on
+  the ASan tree and campaign v54 mutates it with the ordinary runner. It
+  decides three things no page can override: identities are sealed at the
+  browser's Argon2id parameters; the session clock is the caller's, finite,
+  monotonic, and a login cannot *begin* until it is set; `ccw_init` routes
+  liboqs to libsodium's generator (proved with a deterministic generator:
+  two identities from one state are identical).
+- **A module whose surface is checked, not declared.** `web/mldsa_client.mjs`
+  + `.wasm`: an ES module factory for the web, workers and Node, with no
+  filesystem and no dynamic code (`-sDYNAMIC_EXECUTION=0`, so a strict CSP can
+  serve it). `wasm_module_gates` loads it as a page does and requires its
+  callable functions to be exactly `web/exports.txt`, and the raw module to
+  export exactly those plus one runtime function and one memory —
+  `EMSCRIPTEN_KEEPALIVE` exports a function whether or not it is listed, so
+  the list is checked against the module. **187,603 bytes** against S6's
+  1.5 MB budget.
+- **A minimal transport** [minimal transport]. `web/client/authd-client.mjs`
+  moves whole frames between a WebSocket and the module and nothing else;
+  `web_no_crypto` fails the build if it ever reaches WebCrypto, Node's crypto,
+  `getRandomValues` or `Math.random`.
+- **The real daemon, reached from Node** [test fixture TCP-WS]. Node's
+  WebSocket dials only TCP; the daemon offers WebSocket only on the Unix socket
+  Caddy reaches. The harness gained an option that puts the WebSocket listener
+  on loopback TCP *instead* (the fixture already uses all four listener slots),
+  and `wasm_interop` logs in with the same two files a page loads.
+
+### What the interop test shows
+
+Ten checks against the in-process daemon, passing on the first run and under
+the ASan and UBSan fixtures: a wasm-made key enrolled through the site socket;
+a login over `ws://` whose code the site EXCHANGEs once and only once; a
+different key pinned under the server's id → refused at `server-hello`,
+`signature`, **with only the ClientHello ever sent**; a wrong passphrase →
+`decryption-failed` with **nothing** sent; a rotation the daemon acknowledges,
+after which the old key is refused and the new one logs in.
+
+Measured (Node 24.21.0, Apple silicon): Argon2id at 3/64 MiB **101.5–128.4
+ms** across runs (S6: 111.5 ms); a whole login round trip, opening the key
+included, **106–118 ms**. Real browsers and phones remain 13c's to measure.
+
+### The gate that was fooled (F87)
+
+A probe added one unlisted export to the shim; the export gate caught it;
+the source was restored byte-exactly — and the next suite still found the
+export. macOS's `/usr/bin/make` is GNU make 3.81, which compares timestamps to
+the second, and the restore landed in the same second as the probe's link.
+Make called the module up to date, and **`check_build_current.sh` agreed**,
+because its proof was a no-op rebuild. It now rebuilds the project's own
+artefacts from scratch (never `_deps`), the semantics the campaign runner has
+always had and which never fooled it. A deterministic control — probe built,
+source restored with an older mtime — shows the old gate saying "current"
+with the probe string still in the object, and the new one reporting STALE.
+On first use it found two native trees stale; every suite was re-run on trees
+it had just proven current.
+
+### Things Emscripten 6.0.9 would not do, recorded
+
+- Export names are minified at `-O2`, and neither way of keeping them works
+  with `MODULARIZE` (`MINIFY_WASM_EXPORT_NAMES` is internal;
+  `DECLARE_ASM_MODULE_EXPORTS=0` is refused). The raw export check is
+  therefore by count, and the named check is on what a page can call.
+- The ELF link-hardening probe passes under `emcc` — `wasm-ld` only warns on
+  an unknown `-z` — so `relro`/`now`/`noexecstack` reached every wasm link as
+  noise until emptied for Emscripten. The modules' bytes did not change.
+- CTest runs the wasm tests with the node Emscripten's config names (locally
+  Homebrew's 26.8.2); CI passes its own pinned Node explicitly.
+
+### Campaign v54 — the first two-letter IDs
+
+v53 took F, the last free letter, so v54's IDs are a letter pair and a number
+(`WA` = wasm shim), assigned per campaign and never reused; nothing in the
+runner or the anchors checker changes, an ID having only ever been a string.
+Nine mutations of the shim, every one changing a value (F79): the clock guard,
+a backwards clock, a NaN clock, the operator's KDF memory, liboqs unrouted, a
+refused record's code left behind, a reported length one too long, the pin's id
+checked against itself, a handle before init. On the fresh ASan tree **9 of 9
+killed by name**. WA7 first scored `KILLED(5 named via abort)`: the broken
+login left the test indexing `g_in[m - 1]` with `m == 0`. The test was
+guarded — a failure path must report, not crash — and WA7 re-run: `KILLED(10
+named)`, clean. The JavaScript transport and the module gates are outside the
+runner's reach (it snapshots and rebuilds C); their controls were run by hand —
+an unlisted export fails both export checks, a `getRandomValues` line fails
+`web_no_crypto`, a transport that ignores the ServerHello refusal fails the
+interop test's phishing check.
+
+### Verification
+
+Every tree proven current by the from-scratch gate in the same invocation as
+its suite: native normal, ASan and UBSan 38/38 (with `wasm_interop`, the daemon
+fixture under each sanitizer), the wasm tree 3/3. gcc 16 at the Release flags
+compiled every C file the step added or changed, before any push (13a's lesson).
+Anchors 223 across 24 campaigns. `check_spec_constants.sh` now also checks
+§14's Emscripten version against the CMake pin (control: 6.0.8 in the spec
+fails it).
