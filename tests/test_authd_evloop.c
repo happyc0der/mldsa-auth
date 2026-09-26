@@ -112,6 +112,32 @@ static void test_config(void)
           strcmp(cfg.key_passphrase_file, "/p") == 0,
           "cfg: key_passphrase_file is parsed into its own field");
 
+    /* V4-13d: what the journal may say about a peer (spec §15). The default is
+     * what every earlier release logged, so an upgrade changes nothing. */
+    CHECK(parse_str(BASE, &cfg, &line) == AUTHD_CFG_OK &&
+          cfg.log_identities == AUTHD_LOG_IDS_FULL && cfg.log_client_ip == AUTHD_LOG_IP_FULL,
+          "cfg: log_identities and log_client_ip default to full");
+    CHECK(parse_str(BASE "log_identities = hashed\nlog_client_ip = prefix\n", &cfg, &line) == AUTHD_CFG_OK &&
+          cfg.log_identities == AUTHD_LOG_IDS_HASHED && cfg.log_client_ip == AUTHD_LOG_IP_PREFIX,
+          "cfg: log_identities = hashed and log_client_ip = prefix parse");
+    CHECK(parse_str(BASE "log_identities = off\nlog_client_ip = off\n", &cfg, &line) == AUTHD_CFG_OK &&
+          cfg.log_identities == AUTHD_LOG_IDS_OFF && cfg.log_client_ip == AUTHD_LOG_IP_OFF,
+          "cfg: both switches accept off");
+    CHECK(parse_str(BASE "log_identities = full\nlog_client_ip = full\n", &cfg, &line) == AUTHD_CFG_OK &&
+          cfg.log_identities == AUTHD_LOG_IDS_FULL && cfg.log_client_ip == AUTHD_LOG_IP_FULL,
+          "cfg: both switches accept full");
+    CHECK(parse_str(BASE "log_identities = yes\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+          parse_str(BASE "log_identities = Hashed\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+          parse_str(BASE "log_identities = prefix\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+          parse_str(BASE "log_identities = \n", &cfg, &line) == AUTHD_CFG_ERR_VALUE,
+          "cfg: log_identities refuses anything but its three words (one of ip's included)");
+    CHECK(parse_str(BASE "log_client_ip = /24\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+          parse_str(BASE "log_client_ip = hashed\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+          parse_str(BASE "log_client_ip = prefixes\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE,
+          "cfg: log_client_ip refuses anything but its three words (one of ids' included)");
+    CHECK(parse_str(BASE "log_client_ip = off\nlog_client_ip = full\n", &cfg, &line) == AUTHD_CFG_ERR_DUPLICATE_KEY,
+          "cfg: a repeated log switch is a duplicate key");
+
     /* the contract the fuzzer found broken: a failed parse applies nothing */
     {
         authd_config_t def;

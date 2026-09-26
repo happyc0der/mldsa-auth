@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "authd_log.h"   /* the log privacy modes */
 #include "ratelimit.h"   /* the limiter's bounds and defaults */
 
 /*
@@ -93,6 +94,12 @@ typedef struct {
     uint32_t rate_burst;
     uint32_t rate_global_per_sec;
     uint32_t max_conns_per_addr;
+    /* What the journal may say about a peer (spec §15, audit finding F14).
+     * Both default to `full`, which is what every deployment before V4-13d
+     * logged, so an upgrade changes nothing it was not asked to. A public
+     * deployment sets `hashed` and `prefix` (deploy/authd.conf.example). */
+    authd_log_ids_t log_identities;
+    authd_log_ip_t  log_client_ip;
     /* The local API (spec 8). Two sockets so an administrative command is
      * unreachable from the site's uid by construction, not by a flag. */
     char     site_socket[AUTHD_PATH_MAX + 1u];

@@ -33,12 +33,14 @@
 #define K_RATE_BURST "rate_burst"
 #define K_RATE_GLOBAL "rate_global_per_sec"
 #define K_MAX_CONNS  "max_conns_per_addr"
+#define K_LOG_IDS    "log_identities"
+#define K_LOG_IP     "log_client_ip"
 
 /* bit index per key, for duplicate and missing detection */
 enum { B_STORE, B_KEY, B_PASS, B_SERVER_ID, B_UNIX, B_PORT, B_SLOTS, B_HS_MS, B_IDLE_MS, B_BUCKET,
        B_SITE_SOCK, B_ADMIN_SOCK, B_SITE_UIDS, B_ADMIN_UIDS, B_LOCAL_SLOTS, B_ROT_AGE,
        B_PROXY_UIDS, B_PROXY_PROTO, B_RATE_MIN, B_RATE_BURST, B_RATE_GLOBAL, B_MAX_CONNS,
-       B_COUNT };
+       B_LOG_IDS, B_LOG_IP, B_COUNT };
 
 /* `seen` is a uint32_t, so the key count is a compile-time invariant rather
  * than something a future key silently overflows. */
@@ -79,6 +81,8 @@ void authd_config_defaults(authd_config_t *out)
     out->rate_burst = RATELIMIT_BURST_DEFAULT;
     out->rate_global_per_sec = RATELIMIT_GLOBAL_PER_SEC_DEF;
     out->max_conns_per_addr = RATELIMIT_MAX_CONNS_DEFAULT;
+    out->log_identities = AUTHD_LOG_IDS_FULL;
+    out->log_client_ip = AUTHD_LOG_IP_FULL;
     /* The admin socket defaults to root only; the site socket has no default
      * allowlist, so a deployment must name the uid that may reach it. */
     out->admin_uids[0] = (uid_t)0;
@@ -280,6 +284,8 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
         else if (key_is(k, kn, K_RATE_BURST)) { bit = B_RATE_BURST; }
         else if (key_is(k, kn, K_RATE_GLOBAL)) { bit = B_RATE_GLOBAL; }
         else if (key_is(k, kn, K_MAX_CONNS)) { bit = B_MAX_CONNS; }
+        else if (key_is(k, kn, K_LOG_IDS))   { bit = B_LOG_IDS; }
+        else if (key_is(k, kn, K_LOG_IP))    { bit = B_LOG_IP; }
         else {
             if (err_line != NULL) { *err_line = line_no; }
             return AUTHD_CFG_ERR_UNKNOWN_KEY;
@@ -355,6 +361,12 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
             r = parse_u32(v, vn, 1u, RATELIMIT_GLOBAL_MAX, &cfg.rate_global_per_sec);
         } else if (bit == B_MAX_CONNS) {
             r = parse_u32(v, vn, 1u, RATELIMIT_MAX_CONNS_MAX, &cfg.max_conns_per_addr);
+        } else if (bit == B_LOG_IDS) {
+            /* Words, not a boolean, for the reason proxy_protocol is: the three
+             * settings are three different journals, and "yes" names none. */
+            if (authd_log_ids_parse(v, vn, &cfg.log_identities) != 0) { r = AUTHD_CFG_ERR_VALUE; }
+        } else if (bit == B_LOG_IP) {
+            if (authd_log_ip_parse(v, vn, &cfg.log_client_ip) != 0) { r = AUTHD_CFG_ERR_VALUE; }
         } else if (bit == B_ROT_AGE) {
             /* 0 is legal and means "never hint", so the minimum is 0, not 1. */
             r = parse_u32(v, vn, 0u, AUTHD_ROTATION_AGE_MAX, &cfg.rotation_due_age_s);

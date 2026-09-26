@@ -121,6 +121,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                         cfg.max_conns_per_addr <= RATELIMIT_MAX_CONNS_MAX,
                     "max_conns_per_addr out of range on OK");
         FUZZ_ASSERT(cfg.n_proxy_uids <= AUTHD_MAX_UIDS, "too many proxy_uids on OK");
+        /* V4-13d. A mode outside its enum would reach authd_log_set_privacy,
+         * which refuses it -- at start-up, after the operator was told the
+         * file is valid. */
+        FUZZ_ASSERT(cfg.log_identities == AUTHD_LOG_IDS_FULL ||
+                        cfg.log_identities == AUTHD_LOG_IDS_HASHED ||
+                        cfg.log_identities == AUTHD_LOG_IDS_OFF,
+                    "log_identities outside its three words on OK");
+        FUZZ_ASSERT(cfg.log_client_ip == AUTHD_LOG_IP_FULL ||
+                        cfg.log_client_ip == AUTHD_LOG_IP_PREFIX ||
+                        cfg.log_client_ip == AUTHD_LOG_IP_OFF,
+                    "log_client_ip outside its three words on OK");
         FUZZ_ASSERT((cfg.proxy_protocol_v2 == 0 && cfg.n_proxy_uids == 0u) ||
                         cfg.listen_unix[0] != '\0',
                     "OK with proxy settings but no proxy listener");
@@ -169,6 +180,12 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_str(emit, ctx, "proxy-protocol-bogus",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
              "listen_unix = /run/p.sock\nproxy_protocol = yes\n");
+    emit_str(emit, ctx, "log-privacy",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_port = 1\nlog_identities = hashed\nlog_client_ip = prefix\n");
+    emit_str(emit, ctx, "log-privacy-bogus",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_port = 1\nlog_identities = yes\nlog_client_ip = /24\n");
     emit_str(emit, ctx, "rate-zero",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
              "listen_port = 1\nrate_per_min = 0\n");

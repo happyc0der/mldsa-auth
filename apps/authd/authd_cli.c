@@ -732,6 +732,79 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
     return EX_OK;
 }
 
+/* ---- authd_admin pseudonym ----------------------------------------------- */
+
+/* The `idh=` a daemon running with log_identities = hashed writes for one
+ * identifier (a user id or a device handle), so an operator can find that
+ * user's lines -- `journalctl -u mldsa-authd | grep -F "$(authd_admin
+ * pseudonym ...)"` -- without the journal holding the identifier itself.
+ *
+ * Offline, like audit-verify, and for the same reason: the pseudonym key is
+ * derived from the envelope KEK (key_log = HKDF(KEK, store_id,
+ * "mldsa-authd/v1/log-pseudonym")), so computing one takes the passphrase,
+ * which is exactly who should be able to reverse a pseudonymous journal by
+ * guessing. The key stays inside the store; this prints only the result. */
+static int cmd_pseudonym(int argc, char **argv, const char *prog)
+{
+    const char *db = NULL, *ek = NULL, *pass_path = NULL, *server_id = NULL, *who = NULL;
+    for (int i = 2; i < argc; i++) {
+        const int has = (i + 1 < argc);
+        if (strcmp(argv[i], "--store") == 0 && has)            { db = argv[++i]; }
+        else if (strcmp(argv[i], "--key") == 0 && has)         { ek = argv[++i]; }
+        else if (strcmp(argv[i], "--passphrase-file") == 0 && has) { pass_path = argv[++i]; }
+        else if (strcmp(argv[i], "--server-id") == 0 && has)   { server_id = argv[++i]; }
+        else if (strcmp(argv[i], "--id") == 0 && has)          { who = argv[++i]; }
+        else { return unexpected(prog, "pseudonym", argv[i]); }
+    }
+    const uint8_t *id = NULL;
+    size_t id_len = 0;
+    if (db == NULL || ek == NULL || pass_path == NULL || server_id == NULL || who == NULL ||
+        who[0] == '\0' || demo_parse_id(server_id, &id, &id_len) != 0) {
+        return need(prog, "pseudonym",
+                    "--store store.sqlite3 --key server.ek --passphrase-file PATH "
+                    "--server-id ID --id USER-OR-HANDLE");
+    }
+
+    uint8_t *pass = NULL;
+    size_t pass_len = 0;
+    int rc = read_pass(prog, "pseudonym", pass_path, &pass, &pass_len);
+    if (rc != EX_OK) {
+        return rc;
+    }
+    mldsa_keypair_t kp;
+    memset(&kp, 0, sizeof kp);
+    uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+    if (kek == NULL) {
+        authd_secret_free(pass, pass_len);
+        return failed(prog, "pseudonym", ek, "allocation-failed");
+    }
+    const keyfile_status_t ks = keyfile_open(ek, id, id_len, (const char *)pass, pass_len, &kp, kek);
+    authd_secret_free(pass, pass_len);
+    if (ks != KEYFILE_OK) {
+        secure_mem_free(kek, STORE_KEK_BYTES);
+        return failed(prog, "pseudonym", ek, keyfile_status_name(ks));
+    }
+    mldsa_keypair_free(&kp);          /* the KEK is all this needs */
+
+    store_t *store = NULL;
+    const store_status_t so = store_open(db, kek, &store);
+    secure_mem_free(kek, STORE_KEK_BYTES);
+    if (so != STORE_OK) {
+        return failed(prog, "pseudonym", db, store_status_name(so));
+    }
+    uint8_t p[STORE_PSEUDONYM_BYTES];
+    const store_status_t ps = store_log_pseudonym(store, (const uint8_t *)who, strlen(who), p);
+    store_close(store);
+    if (ps != STORE_OK) {
+        return failed(prog, "pseudonym", db, store_status_name(ps));
+    }
+    char hex[2u * STORE_PSEUDONYM_BYTES + 1u];
+    sodium_bin2hex(hex, sizeof hex, p, sizeof p);
+    printf("idh=%s\n", hex);
+    sodium_memzero(p, sizeof p);
+    return EX_OK;
+}
+
 /* ---- authd_admin: --check-config ---------------------------------------- */
 
 /* Delegates to the SAME authd_config_load() and authd_config_check_paths()
@@ -768,8 +841,9 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
         return EX_CONFIG;
     }
     printf("%s: %s is valid (max_slots=%u handshake_timeout_ms=%u idle_timeout_ms=%u "
-           "pad_bucket=%u)\n", prog, path, cfg.max_slots, cfg.handshake_timeout_ms,
-           cfg.idle_timeout_ms, cfg.pad_bucket);
+           "pad_bucket=%u log_identities=%s log_client_ip=%s)\n", prog, path, cfg.max_slots,
+           cfg.handshake_timeout_ms, cfg.idle_timeout_ms, cfg.pad_bucket,
+           authd_log_ids_name(cfg.log_identities), authd_log_ip_name(cfg.log_client_ip));
     return EX_OK;
 }
 
@@ -793,16 +867,19 @@ static void admin_usage(const char *prog)
             "  %s backup          --socket S --path /absolute/destination\n"
             "  %s audit-verify    --store DB --key server.ek --passphrase-file PATH\n"
             "                     --server-id ID              (offline; no daemon needed)\n"
+            "  %s pseudonym       --store DB --key server.ek --passphrase-file PATH\n"
+            "                     --server-id ID --id USER-OR-HANDLE   (offline)\n"
             "  %s --check-config  --config PATH\n"
             "\n"
             "Every subcommand above --check-config except init, keygen-server, migrate-key,\n"
-            "rewrap and audit-verify talks to a running daemon; those five work on files.\n"
-            "audit-verify re-computes the whole audit MAC chain and prints its head, so it\n"
-            "runs against a backup as readily as against the live store.\n"
+            "rewrap, audit-verify and pseudonym talks to a running daemon; those six work on\n"
+            "files. audit-verify re-computes the whole audit MAC chain and prints its head, so\n"
+            "it runs against a backup as readily as against the live store. pseudonym prints\n"
+            "the idh= a daemon with log_identities = hashed logs for that identifier.\n"
             "Passphrases are FILES (mode 0600, owned by you). There is no prompt and no\n"
             "environment variable: argv and the environment are readable by other processes.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",
-            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 int authd_cli_admin(int argc, char **argv)
@@ -821,6 +898,7 @@ int authd_cli_admin(int argc, char **argv)
     if (strcmp(sub, "enroll-operator") == 0){ return cmd_enroll_operator(argc, argv, prog); }
     if (strcmp(sub, "backup") == 0)         { return cmd_backup(argc, argv, prog); }
     if (strcmp(sub, "audit-verify") == 0)   { return cmd_audit_verify(argc, argv, prog); }
+    if (strcmp(sub, "pseudonym") == 0)      { return cmd_pseudonym(argc, argv, prog); }
     if (strcmp(sub, "--check-config") == 0) { return cmd_check_config(argc, argv, prog); }
 
     if (strcmp(sub, "disable-user") == 0) {

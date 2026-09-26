@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.6, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c errata)
+# mldsa-authd — deployment specification (v1.7, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -827,20 +827,22 @@ One `key=value` line per event to stderr (journald), prefixed by a level
 adds one.
 
 **Fields.** This list is normative and complete; the daemon's logging API can
-emit no other key. The first nine are structural, fixed by the function that
+emit no other key. The first ten are structural, fixed by the function that
 writes them; the rest are the names an event may give to a single counted
 quantity.
 
 ```
-event slot cmd uid pid id fp src detail
+event slot cmd uid pid id idh fp src detail
 accepted closed codes count logins need port revoked superseded tickets tokens
 ```
 
 `id` is escaped — any byte outside printable ASCII becomes `.` and the field
 is truncated to 64 bytes — so a hostile identifier can neither inject a
-newline nor smuggle binary. `fp` is a 32-byte public-key fingerprint in hex and
-nothing else: its prototype fixes the width. `src` is a client address from
-§7.2, rendered so it can contain only `[0-9a-f.:]`.
+newline nor smuggle binary. `idh` replaces it under `log_identities = hashed`
+(below): 16 hex characters, or `unavailable`. `fp` is a 32-byte public-key
+fingerprint in hex and nothing else: its prototype fixes the width. `src` is a
+client address from §7.2, rendered so it can contain only `[0-9a-f.:/]` or the
+word `none`; the `/` appears only under `log_client_ip = prefix`.
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
@@ -911,13 +913,32 @@ device-revoked user-disabled
 swept sweep-failed
 ```
 
-**Identities and addresses are logged**, and for public users both are
-personal data. Device handles are pseudonymous but stable; a client address is
-not pseudonymous at all. Milestone A logs both unconditionally, which is
-appropriate for a handful of operators on a host they own. **Milestone B needs
-switches and there are none**: earlier revisions of this section named
-`log_identities` and `log_client_ip` as though they existed — they are not
-config keys, constants or fields anywhere (§18).
+**Identities and addresses, and the two switches** (errata 36, 37). For public
+users an identifier and a client address are both personal data: a device
+handle is pseudonymous but stable, a user id may be an e-mail address, and a
+client address is not pseudonymous at all. Two configuration keys decide what
+the journal keeps; both default to `full`, which is what milestone A logged
+and is right for a handful of operators on a host they own.
+
+| Key | Value | Written |
+|---|---|---|
+| `log_identities` | `full` | `id=` the escaped identifier |
+| | `hashed` | `idh=` the first 8 bytes, in hex, of keyed BLAKE2b-128 of the **whole** identifier, under `key_log = HKDF-SHA256(ikm = KEK, salt = store_id, info = "mldsa-authd/v1/log-pseudonym")` — `key_audit`'s derivation (§9.2.4) under its own label. A pseudonym that cannot be computed is `idh=unavailable`, never the identifier |
+| | `off` | no identifier field |
+| `log_client_ip` | `full` | `src=` the address |
+| | `prefix` | `src=` the address with the host part zeroed and its width stated: `/24` for IPv4, `/48` for IPv6 |
+| | `off` | no `src` field |
+
+`key_log` never leaves the store. Because it is derived from the KEK, a
+pseudonym is stable across restarts and can be computed only by someone who
+holds the server passphrase: `authd_admin pseudonym --id X` prints the `idh=`
+for one identifier, so an operator can find a user's lines and a reader of the
+journal cannot test guesses against it. The switches change **only the
+journal**: the store's audit table (§9.2) records the real identifiers under
+every setting, and the rate limiter keys on the full address in memory.
+`fp` is unaffected — it is a hash of a public key, required on every
+enrollment above — so a journal reader can still tell that two lines concern
+one key, without learning whose.
 
 ## 16. Deployment
 
@@ -1014,9 +1035,6 @@ different numbers sets them. The rest are normative.
 - **Periodic publication of the audit head MAC to the journal is not
   implemented** (§9.2). `authd_admin audit-verify` is the operator's means of
   checking the chain, and running it on a timer is the deployment's job.
-- **There are no `log_identities` / `log_client_ip` switches** (§15). Milestone
-  A logs handles and client addresses unconditionally; milestone B needs the
-  switches and a step that adds them.
 - **Only the first of §7.2's two mechanisms for obtaining a client address is
   implemented.** A deployment behind a proxy that cannot speak PROXY v2 has no
   supported configuration today.
@@ -1166,3 +1184,12 @@ not define:
 | 33 | 10.2 | the `.ek.next` rule restated for a browser's storage: a pending envelope durable before `ROTATE`, one transaction to promote it, the same decision function after an interruption | §10.2 was written for files and `rename(2)`; IndexedDB has neither, and a browser implementation left to infer the rule would be the one most likely to delete the only copy of a live key. Finding **F83**(b) |
 | 34 | 14 | how the login code reaches the site — a same-origin POST body, never a URL — and the CSP the pages are served under, including the `'wasm-unsafe-eval'` WebAssembly requires | the section described the module and not the page around it; the hand-off was unspecified. Finding **F83**(a) |
 | 35 | 14 | the passphrase policy: 12 code points, a pinned common-password list, a 50-bit estimate, enforced in the module | "a minimum length is enforced" named a requirement without saying what it was, or where it lived |
+
+### Revision v1.7 (V4-13d)
+
+What a public deployment needs that milestone A did not:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 36 | 15, 18 | `log_identities = full \| hashed \| off`, the `idh` field, `key_log` and `authd_admin pseudonym`; the §18 limitation "there are no switches" removed | V4-10c (F46) found the switches named here and implemented nowhere; for public users an identifier in the journal is personal data. Finding **F14** |
+| 37 | 15 | `log_client_ip = full \| prefix \| off`, and `src`'s alphabet corrected to `[0-9a-f.:/]` or `none` | the same, for addresses. The old sentence also said `[0-9a-f.:]` while the renderer has always written `none` for a connection with no address |

@@ -233,6 +233,14 @@ target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _
 target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_localapi COMMAND test_authd_localapi)
 
+# V4-13d: the log privacy switches (spec §15), on the exact bytes written.
+add_executable(test_authd_log test_authd_log.c)
+target_link_libraries(test_authd_log PRIVATE mldsa_authd)
+target_compile_options(test_authd_log PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_authd_log PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(test_authd_log PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_authd_log COMMAND test_authd_log)
+
 # A real daemon for the Node reference handler to talk to. Not a CTest itself:
 # it is spawned by examples/site-node/authd.test.mjs.
 add_executable(authd_node_fixture authd_node_fixture.c)

@@ -63,11 +63,16 @@ static int store_fault_fire(void)
 struct store {
     sqlite3 *db;
     uint8_t *key_audit;                       /* secure_mem, STORE_AUDIT_MAC_BYTES */
+    uint8_t *key_log;                         /* secure_mem, STORE_LOG_KEY_BYTES */
     uint8_t store_id[STORE_STORE_ID_BYTES];
     uint8_t decoy_pk[STORE_PK_BYTES];
 };
 
 #define AUDIT_LABEL "mldsa-authd/v1/audit-mac"
+#define LOG_LABEL   "mldsa-authd/v1/log-pseudonym"
+_Static_assert(STORE_LOG_KEY_BYTES >= crypto_generichash_KEYBYTES_MIN &&
+               STORE_LOG_KEY_BYTES <= crypto_generichash_KEYBYTES_MAX, "key_log is a BLAKE2b key");
+_Static_assert(STORE_PSEUDONYM_BYTES <= crypto_generichash_BYTES_MIN, "the pseudonym is a prefix of the hash");
 
 const char *store_status_name(store_status_t st)
 {
@@ -474,6 +479,23 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         r = STORE_ERR_CRYPTO;
         goto fail;
     }
+    /* key_log = HKDF-SHA256(ikm=KEK, salt=store_id, info=LOG_LABEL) (§15,
+     * log_identities = hashed). The same derivation as key_audit under its own
+     * label, so the pseudonyms are stable across restarts and computable
+     * offline by an operator who holds the passphrase -- and by nobody else.
+     * It never leaves this module: callers get a pseudonym, not the key. */
+    s->key_log = secure_mem_alloc(STORE_LOG_KEY_BYTES);
+    if (s->key_log == NULL) {
+        r = STORE_ERR_CRYPTO;
+        goto fail;
+    }
+    if (kex_hkdf_sha256(s->key_log, STORE_LOG_KEY_BYTES,
+                        kek, STORE_KEK_BYTES,
+                        s->store_id, sizeof s->store_id,
+                        (const uint8_t *)LOG_LABEL, sizeof(LOG_LABEL) - 1u) != 0) {
+        r = STORE_ERR_CRYPTO;
+        goto fail;
+    }
 
     *out = s;
     return STORE_OK;
@@ -494,6 +516,10 @@ void store_close(store_t *s)
         secure_mem_free(s->key_audit, STORE_AUDIT_MAC_BYTES);
         s->key_audit = NULL;
     }
+    if (s->key_log != NULL) {
+        secure_mem_free(s->key_log, STORE_LOG_KEY_BYTES);
+        s->key_log = NULL;
+    }
     if (s->db != NULL) {
         sqlite3_close(s->db);
         s->db = NULL;
@@ -506,6 +532,26 @@ store_status_t store_get_store_id(const store_t *s, uint8_t out[STORE_STORE_ID_B
 {
     if (s == NULL || out == NULL) { return STORE_ERR_ARG; }
     memcpy(out, s->store_id, STORE_STORE_ID_BYTES);
+    return STORE_OK;
+}
+
+store_status_t store_log_pseudonym(const store_t *s, const uint8_t *id, size_t id_len,
+                                   uint8_t out[STORE_PSEUDONYM_BYTES])
+{
+    if (out != NULL) { memset(out, 0, STORE_PSEUDONYM_BYTES); }
+    if (s == NULL || s->key_log == NULL || out == NULL || (id == NULL && id_len > 0u)) {
+        return STORE_ERR_ARG;
+    }
+    /* Keyed BLAKE2b, 16 bytes (libsodium's minimum), of which the first
+     * STORE_PSEUDONYM_BYTES are the pseudonym. Keyed, so a log reader cannot
+     * test a guessed user id against it; the operator can, with the key. */
+    uint8_t h[crypto_generichash_BYTES_MIN];
+    if (crypto_generichash(h, sizeof h, id, id_len, s->key_log, STORE_LOG_KEY_BYTES) != 0) {
+        sodium_memzero(h, sizeof h);
+        return STORE_ERR_CRYPTO;
+    }
+    memcpy(out, h, STORE_PSEUDONYM_BYTES);
+    sodium_memzero(h, sizeof h);
     return STORE_OK;
 }
 

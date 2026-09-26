@@ -249,6 +249,29 @@ static void test_init(void)
 
     CHECK(RUN_ADMIN("init", "--dir", dir, "--server-id") == 2, "init: a missing value is usage (2)");
     CHECK(RUN_ADMIN("init", "--dir", dir, "--bogus", "x") == 2, "init: an unknown option is usage (2)");
+
+    /* V4-13d: pseudonym, offline against the store init just made. Its VALUE
+     * is authd_e2e's to check against a real daemon's journal; these are its
+     * refusals, which decide whether an operator's typo is told apart from a
+     * wrong key. */
+    CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", pass,
+                    "--server-id", "authd", "--id", "alice") == 0,
+          "pseudonym: prints a pseudonym for an id (0)");
+    CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", pass,
+                    "--server-id", "authd") == 2, "pseudonym: no --id is usage (2)");
+    CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", pass,
+                    "--server-id", "authd", "--id", "") == 2, "pseudonym: an empty --id is usage (2)");
+    CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", pass,
+                    "--server-id", "authd", "--id", "a", "--bogus", "x") == 2,
+          "pseudonym: an unknown option is usage (2)");
+    {
+        char wrong[256];
+        (void)snprintf(wrong, sizeof wrong, "%s/wrong-pass", g_dir);
+        CHECK(write_file(wrong, "not the server passphrase\n", 0600) == 0, "pseudonym: wrong passphrase fixture");
+        CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", wrong,
+                        "--server-id", "authd", "--id", "alice") == 1,
+              "pseudonym: a wrong passphrase fails (1): no pseudonym without the key");
+    }
 }
 
 /* ------------------------------------------------------- keys and rewrap */

@@ -24,6 +24,7 @@
 
 #include "store.h"
 #include "mldsa_wrap.h"
+#include "kex.h"          /* kex_hkdf_sha256, to recompute key_log independently */
 
 void store_fault_arm(int n_steps);   /* test-only, from store.c under the hook */
 
@@ -512,6 +513,73 @@ int main(void)
                   "the audit chain does NOT verify under a different KEK");
             store_close(s2);
         }
+    }
+
+    /* ---- the log pseudonym (V4-13d, spec §15 log_identities = hashed) ---- */
+    {
+        store_t *s = fresh_store("lp.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open lp\n"); return 1; }
+        uint8_t a1[STORE_PSEUDONYM_BYTES], a2[STORE_PSEUDONYM_BYTES], b1[STORE_PSEUDONYM_BYTES];
+        CHECK(store_log_pseudonym(s, U1, sizeof U1, a1) == STORE_OK &&
+              store_log_pseudonym(s, U1, sizeof U1, a2) == STORE_OK &&
+              memcmp(a1, a2, sizeof a1) == 0, "pseudonym: deterministic for one id");
+        CHECK(store_log_pseudonym(s, U2, sizeof U2, b1) == STORE_OK &&
+              memcmp(a1, b1, sizeof a1) != 0, "pseudonym: two ids, two pseudonyms");
+
+        /* The derivation, recomputed from its definition rather than from the
+         * store: key_log = HKDF-SHA256(ikm=KEK, salt=store_id,
+         * info="mldsa-authd/v1/log-pseudonym"), pseudonym = the first 8 bytes
+         * of keyed BLAKE2b-128(id). authd_admin pseudonym and the daemon share
+         * the code, so only an independent recomputation can pin the value an
+         * operator's saved grep depends on -- and tell key_log from key_audit. */
+        {
+            uint8_t sid[STORE_STORE_ID_BYTES], k[32], h[crypto_generichash_BYTES_MIN];
+            static const char label[] = "mldsa-authd/v1/log-pseudonym";
+            int ok = store_get_store_id(s, sid) == STORE_OK &&
+                     kex_hkdf_sha256(k, sizeof k, KEK, sizeof KEK, sid, sizeof sid,
+                                     (const uint8_t *)label, sizeof label - 1u) == 0 &&
+                     crypto_generichash(h, sizeof h, U1, sizeof U1, k, sizeof k) == 0;
+            CHECK(ok && memcmp(h, a1, STORE_PSEUDONYM_BYTES) == 0,
+                  "pseudonym: equals BLAKE2b under HKDF(KEK, store_id, log-pseudonym), recomputed");
+            static const char alabel[] = "mldsa-authd/v1/audit-mac";
+            ok = kex_hkdf_sha256(k, sizeof k, KEK, sizeof KEK, sid, sizeof sid,
+                                 (const uint8_t *)alabel, sizeof alabel - 1u) == 0 &&
+                 crypto_generichash(h, sizeof h, U1, sizeof U1, k, sizeof k) == 0;
+            CHECK(ok && memcmp(h, a1, STORE_PSEUDONYM_BYTES) != 0,
+                  "pseudonym: not keyed by the audit key (its own label)");
+            sodium_memzero(k, sizeof k);
+        }
+        /* the empty id is an id; a NULL with a length is not */
+        CHECK(store_log_pseudonym(s, NULL, 0u, b1) == STORE_OK, "pseudonym: the empty id has one");
+        memset(b1, 0xaa, sizeof b1);
+        CHECK(store_log_pseudonym(s, NULL, 3u, b1) == STORE_ERR_ARG &&
+              b1[0] == 0 && b1[STORE_PSEUDONYM_BYTES - 1u] == 0,
+              "pseudonym: NULL with a length is refused and the output zeroed");
+        store_close(s);
+
+        /* stable across a restart: the same store and KEK give the same value */
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "pseudonym: reopen");
+        if (s2 != NULL) {
+            CHECK(store_log_pseudonym(s2, U1, sizeof U1, a2) == STORE_OK &&
+                  memcmp(a1, a2, sizeof a1) == 0, "pseudonym: stable across a restart");
+            store_close(s2);
+        }
+        /* and keyed: a different KEK, or a different store, gives another */
+        uint8_t other[32];
+        memcpy(other, KEK, sizeof other);
+        other[31] ^= 0x80u;
+        CHECK(store_open(dbp, other, &s2) == STORE_OK, "pseudonym: open under another KEK");
+        if (s2 != NULL) {
+            CHECK(store_log_pseudonym(s2, U1, sizeof U1, a2) == STORE_OK &&
+                  memcmp(a1, a2, sizeof a1) != 0, "pseudonym: another KEK, another pseudonym");
+            store_close(s2);
+        }
+        char dbp2[600];
+        store_t *s3 = fresh_store("lp2.sqlite3", dbp2, sizeof dbp2);
+        CHECK(s3 != NULL && store_log_pseudonym(s3, U1, sizeof U1, a2) == STORE_OK &&
+              memcmp(a1, a2, sizeof a1) != 0, "pseudonym: another store (store_id), another pseudonym");
+        store_close(s3);
     }
 
     /* ---- backup / restore ------------------------------------------------ */

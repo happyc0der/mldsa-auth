@@ -30,8 +30,53 @@ typedef enum {
 } authd_log_level_t;
 
 /* Sets the destination (default stderr) and the minimum level. Passing NULL
- * leaves the stream unchanged. Used by the tests to capture output. */
+ * leaves the stream unchanged. Used by the tests to capture output. It does
+ * not touch the privacy modes below. */
 void authd_log_init(FILE *dest, authd_log_level_t min_level);
+
+/*
+ * What the two peer-influenced fields may reveal (V4-13d, audit finding F14,
+ * spec §15 `log_identities` / `log_client_ip`).
+ *
+ * For a handful of operators on their own host, a handle or a user id and a
+ * client address in the journal are an audit feature. For public users they
+ * are personal data, and the journal is usually kept longer and read more
+ * widely than the store. The store's MAC-chained audit table records the real
+ * identifiers either way (spec §9.2), so neither setting below loses the
+ * authoritative record -- they decide only what the journal keeps.
+ *
+ *   ids  FULL    id=<escaped identifier>                 (the default)
+ *        HASHED  idh=<16 hex>: a keyed pseudonym, from the callback, which is
+ *                the store's -- the key never reaches this module
+ *        OFF     no identifier field at all
+ *   ip   FULL    src=<address>                           (the default)
+ *        PREFIX  src=<address>/24 for IPv4, /48 for IPv6, the rest zeroed
+ *        OFF     no src field at all
+ *
+ * HASHED never falls back to the identifier: a pseudonym that cannot be
+ * computed is written `idh=unavailable`. The rate limiter is unaffected; it
+ * keys on the full address in memory and logs nothing of its own.
+ */
+typedef enum { AUTHD_LOG_IDS_FULL = 0, AUTHD_LOG_IDS_HASHED, AUTHD_LOG_IDS_OFF } authd_log_ids_t;
+typedef enum { AUTHD_LOG_IP_FULL = 0, AUTHD_LOG_IP_PREFIX, AUTHD_LOG_IP_OFF } authd_log_ip_t;
+
+#define AUTHD_LOG_PSEUDONYM_BYTES 8u    /* == STORE_PSEUDONYM_BYTES; authd_main asserts it */
+
+/* Returns 0 and fills `out`, or nonzero. */
+typedef int (*authd_log_pseudonym_fn)(void *ctx, const uint8_t *id, size_t id_len,
+                                      uint8_t out[AUTHD_LOG_PSEUDONYM_BYTES]);
+
+/* Sets both modes. Returns 0, or -1 (and changes nothing) for HASHED without
+ * a callback or a value outside either enum. */
+int authd_log_set_privacy(authd_log_ids_t ids, authd_log_ip_t ip,
+                          authd_log_pseudonym_fn fn, void *ctx);
+
+/* The config words for the modes, and back. Parse returns -1 on anything
+ * else; the config parser refuses what these refuse. */
+const char *authd_log_ids_name(authd_log_ids_t m);
+const char *authd_log_ip_name(authd_log_ip_t m);
+int authd_log_ids_parse(const uint8_t *v, size_t n, authd_log_ids_t *out);
+int authd_log_ip_parse(const uint8_t *v, size_t n, authd_log_ip_t *out);
 
 /* An event with no subject. */
 void authd_log_event(authd_log_level_t lvl, const char *event);
@@ -48,7 +93,8 @@ void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot
  * to 64 bytes, so a hostile identifier can neither inject a newline into the
  * log nor smuggle binary through it. Identities ARE logged (they are not
  * secret); spec §15 and the V4-1 audit finding F14 note that for end users an
- * identifier is PII, which is why it is the only peer-influenced field here. */
+ * identifier is PII, which is why it is the only peer-influenced field here,
+ * and why authd_log_set_privacy() can pseudonymise or drop it. */
 void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
                        const uint8_t *id, size_t id_len);
 
@@ -80,7 +126,8 @@ void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32]
  *
  * Addresses are not secret, but for public users they ARE personal data
  * (audit finding F14, and spec §15's `log_client_ip`), which is why this is
- * the second and last peer-influenced field in this interface. */
+ * the second and last peer-influenced field in this interface, and why
+ * authd_log_set_privacy() can truncate or drop it. */
 struct authd_addr;
 void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
                          const struct authd_addr *addr, const char *detail);

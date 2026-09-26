@@ -56,6 +56,29 @@ rate_burst = 10
 rate_global_per_sec = 50
 max_conns_per_addr = 8
 
+# --- what the journal keeps about a peer (spec §15) -------------------------
+#
+# Both default to `full`: the escaped identifier and the whole client address,
+# which is right for a handful of operators on a host they own and is what
+# every release before V4-13d logged. For PUBLIC users both are personal data,
+# and the journal is usually kept longer and read more widely than the store,
+# so a public deployment sets:
+#
+#   log_identities = hashed   idh=<16 hex>, a keyed pseudonym. The key is
+#                             derived from the server key's KEK, so the value
+#                             is stable across restarts and only someone with
+#                             the passphrase can find a user's lines:
+#                               authd_admin pseudonym --store ... --id alice
+#                   off       no identifier at all
+#   log_client_ip  = prefix   203.0.113.0/24 for IPv4, /48 for IPv6
+#                   off       no address at all
+#
+# Neither loses evidence: the store's MAC-chained audit table keeps the real
+# identifiers (authd_admin audit-verify), and the rate limiter still keys on
+# the full address in memory.
+log_identities = hashed
+log_client_ip = prefix
+
 # --- capacity --------------------------------------------------------------
 # ~91 KiB per slot, so 256 slots is about 24 MB. RAISE LimitMEMLOCK IN THE UNIT
 # IF YOU RAISE THIS: the requirement is 4 KiB x 10 x max_slots, and the daemon

@@ -139,7 +139,13 @@ def main(repo):
     # listed here. A new logging function is then covered the day it is
     # declared, and `authd_log_init` (which takes a stream and a level, and no
     # event) is excluded without naming it.
-    hdr = open("apps/authd/authd_log.h").read()
+    #
+    # Comments are stripped first. The pattern spans newlines up to the next
+    # `;`, and a comment has none: V4-13d's header mentioned
+    # `authd_log_set_privacy()` in prose, the match ran from that mention into
+    # the NEXT prototype, called set_privacy an event function and hid
+    # authd_log_slot_id -- eight events "never emitted" at once.
+    hdr = re.sub(r'/\*.*?\*/', ' ', open("apps/authd/authd_log.h").read(), flags=re.S)
     evfns = set(re.findall(
         r'\b(authd_log_[a-z_]+)\s*\([^;]*?authd_log_level_t\s+\w+\s*,\s*const char \*event',
         hdr, re.S))

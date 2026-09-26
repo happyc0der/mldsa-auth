@@ -59,6 +59,16 @@ static uint64_t now_ms(void)
     return 0u;
 }
 
+_Static_assert(AUTHD_LOG_PSEUDONYM_BYTES == STORE_PSEUDONYM_BYTES,
+               "the log prints exactly the pseudonym the store computes");
+
+/* log_identities = hashed: the store computes the pseudonym and keeps the key. */
+static int log_pseudonym(void *ctx, const uint8_t *id, size_t id_len,
+                         uint8_t out[AUTHD_LOG_PSEUDONYM_BYTES])
+{
+    return (store_log_pseudonym((const store_t *)ctx, id, id_len, out) == STORE_OK) ? 0 : -1;
+}
+
 static void usage(const char *prog)
 {
     fprintf(stderr,
@@ -125,11 +135,13 @@ int main(int argc, char **argv)
     if (check_only) {
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
                "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
-               "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u)\n",
+               "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "
+               "log_identities=%s log_client_ip=%s)\n",
                cfg_path, cfg.max_slots, cfg.handshake_timeout_ms,
                cfg.idle_timeout_ms, cfg.pad_bucket,
                cfg.proxy_protocol_v2 ? "v2" : "none", cfg.rate_per_min,
-               cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr);
+               cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr,
+               authd_log_ids_name(cfg.log_identities), authd_log_ip_name(cfg.log_client_ip));
         return 0;
     }
 
@@ -404,6 +416,15 @@ int main(int argc, char **argv)
         }
     }
 
+    /* The privacy modes take effect here, before the first connection can be
+     * accepted and after everything that could fail has: until this point no
+     * line carries an identifier or an address. The store is the callback's
+     * context, so the key stays inside the store. */
+    if (authd_log_set_privacy(cfg.log_identities, cfg.log_client_ip, log_pseudonym, store) != 0) {
+        fprintf(stderr, "mldsa-authd: cannot apply log_identities/log_client_ip\n");
+        goto listener_failed;
+    }
+
     authd_log_event(AUTHD_LOG_INFO, "started");
 
     int draining = 0;
@@ -439,6 +460,7 @@ int main(int argc, char **argv)
     listener_close(&site_fd, site_path);
     listener_close(&admin_fd, admin_path);
     handshake_pending_store_wipe(&pending);
+    (void)authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL);
     store_close(store);
     mldsa_keypair_free(&server_kp);
     sodium_memzero(conns, (size_t)cfg.max_slots * sizeof *conns);

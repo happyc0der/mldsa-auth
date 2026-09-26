@@ -616,6 +616,78 @@ grep -q 'audit-chain-corrupt' "$TMP/audit3.txt" \
     && fail "audit-verify blamed the chain for a wrong passphrase"
 echo "PASS: E2E: a wrong passphrase is a key failure, not a chain failure"
 
+# ------------------------------------------ the log privacy switches (V4-13d)
+#
+# The shipped daemon with log_identities = hashed and log_client_ip = prefix
+# (spec §15, finding F14), on the same store. test_authd_localapi proves the
+# logger and the store agree in-process; only this can prove authd_main
+# applies the config it parsed, and that `authd_admin pseudonym` -- the
+# operator's one way back from a pseudonymous journal -- prints what the
+# daemon wrote.
+sed '/^listen_port/d' "$TMP/authd.conf" > "$TMP/priv.conf"
+printf 'log_identities = hashed\nlog_client_ip = prefix\n' >> "$TMP/priv.conf"
+"$ADMIN" --check-config --config "$TMP/priv.conf" > "$TMP/privcheck.txt" \
+    || fail "the privacy config is invalid"
+grep -q 'log_identities=hashed log_client_ip=prefix' "$TMP/privcheck.txt" \
+    || { cat "$TMP/privcheck.txt"; fail "--check-config does not report the privacy modes"; }
+"$DAEMON" --config "$TMP/priv.conf" > "$TMP/priv.log" 2>&1 &
+DPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/priv.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$DPID" 2>/dev/null || fail "the privacy daemon exited during start-up"
+    [ "$i" -gt 400 ] && fail "the privacy daemon never logged event=started"
+    sleep 0.05
+done
+CAROL=$("$CLIENT" keygen --dir "$TMP/carol" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+    || fail "keygen for carol exited nonzero"
+"$ADMIN" enroll-operator --socket "$TMP/a.sock" --user carol --handle "$CAROL" \
+    --pub "$TMP/carol/$CAROL.pub" > /dev/null || fail "enroll-operator carol failed"
+"$CLIENT" login --handle "$CAROL" --key "$TMP/carol/$CAROL.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err" \
+    || fail "login through the privacy daemon failed"
+kill -TERM "$DPID"
+i=0
+while kill -0 "$DPID" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 200 ] && fail "the privacy daemon did not exit on SIGTERM"
+    sleep 0.05
+done
+wait "$DPID" 2>/dev/null || true
+DPID=""
+
+IDH=$("$ADMIN" pseudonym --store "$TMP/d/store.sqlite3" --key "$TMP/d/server.ek" \
+        --passphrase-file "$TMP/d/pass" --server-id authd --id "$CAROL") \
+    || fail "authd_admin pseudonym exited nonzero"
+case "$IDH" in
+    idh=[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) fail "authd_admin pseudonym printed '$IDH', expected idh= and 16 hex characters" ;;
+esac
+# canaries first: the lines exist, so the absences below mean something
+grep -q 'event=client-hello' "$TMP/priv.log" && grep -q 'event=login-code-issued' "$TMP/priv.log" \
+    || { cat "$TMP/priv.log"; fail "the privacy daemon logged no login"; }
+N=$(grep -c -- "$IDH" "$TMP/priv.log" || true)
+[ "$N" -ge 3 ] || { cat "$TMP/priv.log"; fail "carol's pseudonym is on $N lines, expected enroll, client-hello and login-code-issued"; }
+echo "PASS: E2E: log_identities = hashed -- authd_admin pseudonym finds carol's $N lines"
+grep -q -- "$CAROL" "$TMP/priv.log" && fail "carol's handle appears in the hashed journal"
+grep -q ' id=' "$TMP/priv.log" && fail "a line in the hashed journal carries id="
+echo "PASS: E2E: carol's handle appears nowhere in the hashed journal"
+grep -q 'src=127.0.0.0/24 ' "$TMP/priv.log" || fail "log_client_ip = prefix did not log the /24"
+grep -q '127\.0\.0\.1' "$TMP/priv.log" && fail "the client's full address appears in the prefix journal"
+echo "PASS: E2E: log_client_ip = prefix -- the journal keeps 127.0.0.0/24 and not the address"
+# The authoritative record is untouched: the store's audit chain still names
+# carol's device, which is why hashing the journal loses no evidence.
+"$ADMIN" audit-verify --store "$TMP/d/store.sqlite3" --key "$TMP/d/server.ek" \
+    --passphrase-file "$TMP/d/pass" --server-id authd > /dev/null 2>&1 \
+    || fail "audit-verify failed after the privacy daemon ran"
+python3 - "$TMP/d/store.sqlite3" "$CAROL" <<'PYEOF' || fail "the audit table does not name carol's device"
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+n = c.execute("SELECT COUNT(*) FROM audit WHERE handle = ?", (sys.argv[2].encode(),)).fetchone()[0]
+sys.exit(0 if n >= 1 else 1)
+PYEOF
+echo "PASS: E2E: the audit chain still records carol's real handle and verifies"
+
 # --------------------------------------------------------- secret scan
 
 # The passphrase bytes must not appear in any log. Unlike the daemon's logger,

@@ -29,6 +29,8 @@
 #define STORE_HASH_BYTES        32u                       /* SHA-256 of a token/code/ticket/state */
 #define STORE_AUDIT_MAC_BYTES   32u                       /* crypto_auth output */
 #define STORE_KEK_BYTES         32u
+#define STORE_LOG_KEY_BYTES     32u                       /* crypto_generichash_KEYBYTES */
+#define STORE_PSEUDONYM_BYTES   8u                        /* 16 hex characters in a log line */
 #define STORE_HSID_BYTES        16u                       /* WIRE_HANDSHAKE_ID_LEN */
 
 /* The schema version this build writes and requires; PING reports it so an
@@ -63,11 +65,20 @@ const char *store_status_name(store_status_t st);
  * secure memory for the store's lifetime. On any failure *out is NULL. */
 store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
-/* Closes and frees; wipes key_audit. Idempotent on NULL. */
+/* Closes and frees; wipes key_audit and key_log. Idempotent on NULL. */
 void store_close(store_t *s);
 
 /* meta accessors (read-only, no transaction). */
 store_status_t store_get_store_id(const store_t *s, uint8_t out[STORE_STORE_ID_BYTES]);
+
+/* The log pseudonym of an identifier (spec §15, log_identities = hashed):
+ * the first STORE_PSEUDONYM_BYTES of keyed BLAKE2b(id) under
+ * key_log = HKDF-SHA256(ikm=KEK, salt=store_id, info="mldsa-authd/v1/log-pseudonym"),
+ * which is derived in store_open and never leaves the store. Stable for the
+ * life of the store and the server key; `authd_admin pseudonym` computes the
+ * same value offline. On failure `out` is zeroed. */
+store_status_t store_log_pseudonym(const store_t *s, const uint8_t *id, size_t id_len,
+                                   uint8_t out[STORE_PSEUDONYM_BYTES]);
 store_status_t store_get_decoy_pk(const store_t *s, uint8_t out[STORE_PK_BYTES]);
 
 /* --- users ------------------------------------------------------------- */

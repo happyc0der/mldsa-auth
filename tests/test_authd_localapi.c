@@ -507,6 +507,75 @@ static void test_log_hygiene(void)
     free(buf);
 }
 
+/* ---------------------------- logging: the privacy switches (V4-13d, F14) */
+
+/* The daemon's own wiring, as authd_main does it: the store computes the
+ * pseudonym, so the key never reaches the logger. */
+static int store_pseudonym_cb(void *ctx, const uint8_t *id, size_t id_len,
+                              uint8_t out[AUTHD_LOG_PSEUDONYM_BYTES])
+{
+    return store_log_pseudonym((const store_t *)ctx, id, id_len, out) == STORE_OK ? 0 : -1;
+}
+
+/* A whole login through the deployed path -- PROXY v2 from 203.0.113.7, the
+ * WebSocket listener, EXCHANGE on the site socket -- with log_identities =
+ * hashed and log_client_ip = prefix. Every line that would have carried the
+ * handle carries the store's pseudonym instead, and every address its /24. */
+static void test_log_privacy(void)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    if (f == NULL) { printf("SKIP: open_memstream unavailable\n"); return; }
+
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start_opts(&d, g_dir, "logpriv.sqlite3", 1, 1, 0) == 0, "privacy: daemon starts behind PROXY v2");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    uint8_t p[STORE_PSEUDONYM_BYTES];
+    char want[64], hexp[2u * STORE_PSEUDONYM_BYTES + 1u];
+    CHECK(store_log_pseudonym(d.store, HANDLE1, sizeof HANDLE1, p) == STORE_OK, "privacy: the store's pseudonym");
+    h_hex(hexp, sizeof hexp, p, sizeof p);
+    snprintf(want, sizeof want, "idh=%s", hexp);
+
+    CHECK(authd_log_set_privacy(AUTHD_LOG_IDS_HASHED, AUTHD_LOG_IP_PREFIX,
+                                store_pseudonym_cb, d.store) == 0, "privacy: hashed + prefix applied");
+    authd_log_init(f, AUTHD_LOG_INFO);
+
+    h_client_t c;
+    uint8_t code[32];
+    CHECK(h_login_on(&d, &c, HANDLE1, sizeof HANDLE1, &kp, "stpriv") == 0, "privacy: login over PROXY v2");
+    CHECK(h_get_login_code(&d, &c, code) == 0, "privacy: code received");
+    int fd = h_dial_unix(d.site_path);
+    char hexcode[80], req[512], resp[16384];
+    hx(hexcode, sizeof hexcode, code, sizeof code);
+    snprintf(req, sizeof req, "EXCHANGE code=%s state=737470726976", hexcode);   /* "stpriv" */
+    CHECK(fd >= 0 && h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK token="),
+          "privacy: exchange succeeds");
+    fflush(f);
+
+    /* canaries: the events are there, so absence below means something */
+    CHECK(strstr(buf, "event=client-hello") != NULL && strstr(buf, "event=login-code-issued") != NULL &&
+          strstr(buf, "event=exchange") != NULL && strstr(buf, "event=client-address") != NULL,
+          "privacy: client-hello, login-code-issued, exchange and client-address are logged (canary)");
+    { size_t n = 0;
+      for (const char *q = buf; (q = strstr(q, want)) != NULL; q++) { n++; }
+      CHECK(n >= 3u, "privacy: the handle's lines carry the STORE's pseudonym (client-hello, login-code-issued, exchange)"); }
+    CHECK(strstr(buf, " id=") == NULL, "privacy: no line carries id=");
+    CHECK(strstr(buf, "src=203.0.113.0/24 ") != NULL, "privacy: the client address is logged as its /24");
+    CHECK(strstr(buf, "203.0.113.7") == NULL, "privacy: the client's full address appears nowhere");
+
+    (void)authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL);
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    if (fd >= 0) { (void)close(fd); }
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+    fclose(f);
+    free(buf);
+}
+
 /* ------------------------------------------------------------- recovery */
 
 /* Pulls the first code out of an `OK codes=c1,c2,...` reply. */
@@ -917,6 +986,7 @@ int main(void)
     test_enroll();
     test_sweep();
     test_log_hygiene();
+    test_log_privacy();
     test_base32();
     test_recovery();
     test_recovery_policy();
