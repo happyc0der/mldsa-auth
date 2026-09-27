@@ -6065,3 +6065,78 @@ Both old shapes and the new one were demonstrated by hand.
   the gate, when these commits are pushed.
 - **Documents.** Anchors OK; spec constants and names OK; `git diff --check`
   clean.
+
+## V4-14b — the review packet
+
+V4-1 said the work needed an outside reviewer, because the author of every
+line had also audited it. This step builds what that reviewer gets:
+`docs/review/`, a claim map checked against the tree, the first comparison of
+the pinned dependencies with published advisories, and a tag to freeze it
+(user decisions: in-repo plus an annotated tag; the advisory check done
+online).
+
+### The claim map, and what building it found
+
+Both specifications number their security requirements: 13 in spec-v2 §4 and
+14 in the deployment spec's §5. §5 says each requirement is "pinned by a named
+test", and cited almost no pins. `docs/review/CLAIMS.md` now maps all 27 to
+their evidence: 94 named checks, 60 mutations, 2 ProVerif queries, 15 fuzz
+oracles, 13 gate scripts and 5 CI jobs, each with a line on what it does
+**not** establish.
+
+`tools/audit/check_claim_map.py` fails when:
+- a requirement in either spec lacks an entry, or an entry's title differs
+  from its requirement's;
+- a cited check text is not in its test, a mutation is not in its campaign, a
+  query is not expected by `formal/run.sh`, or a CI job is not named by any
+  workflow.
+
+All 189 citations resolved on the first run. Five controls then each failed
+on exactly the defect injected: a changed check text, a missing entry, a
+nonexistent mutation, a wrong title and a nonexistent job. The checker reads
+the citations, not the prose; "not established" stays a judgement.
+
+Three read-only agents drafted the evidence. Their most serious limits were
+verified in the code before any was recorded. Five became findings:
+
+- **F92** (Med). An omitted `site_uids` or `proxy_uids` turns off the
+  peer-credential check Req 11 requires, and a config naming neither passes
+  `--check-config` as valid (demonstrated).
+- **F93** (Med). RECOVERY-USE with `revoke=all` spends the code and then
+  revokes each device in its own transaction, which is the partial lifecycle
+  change Req 14 forbids.
+- **F94** (Med). The UBSan build does not stop on undefined behaviour, so a
+  UB report prints and the test still passes. The last local run and the
+  latest CI sanitizer jobs contain no `runtime error` line, but that gate had
+  never been able to fail on UB.
+- **F95** (Low). Req 3 lists secret hashes among the values compared in
+  constant time; the store finds them by SQLite equality.
+- **F96** (Info). A login code is "bound to `handshake_id`" only in the sense
+  of "recorded with": nothing checks it when the code is spent.
+
+None is fixed in this step. The packet names them first.
+
+### The advisories
+
+Nothing had ever compared the pins with published advisories. Now it has been
+done, with controls, since a lookup that can only say "nothing" proves
+nothing. OSV.dev was queried by commit and returns CVE-2025-6965 for SQLite
+3.50.1, so that channel works. **OSV does not cover libsodium at all**: even
+1.0.18 returns nothing. The libsodium answer therefore rests on NVD and on
+reading the pinned source: CVE-2025-69277's fix is in 1.0.22's
+`ge25519_is_on_main_subgroup`, and the project never calls the affected
+function.
+
+One advisory is in range: **GHSA-wh5q-mpc8-67wf** (2026-09-22), an LMS/HSS
+out-of-bounds read patched in liboqs 0.17.0. The build compiles only ML-DSA-65
+and ML-KEM-768, and the library holds 0 LMS/HSS symbols, so it is not exposed
+(F91, with a pin bump to do). Also recorded: **F90**, the nine mutations the
+V4-14a nightly showed killed without a named check.
+
+### What was not done here
+
+- The formal model was not re-run locally, because ProVerif is not installed
+  on this machine. `REPRODUCE.md` points at the nightly job's log instead.
+- The phones remain unmeasured (V4-13d).
+- The tag is created only on instruction, after the CI step that runs the
+  checker has been brought up on a branch and shown red.
