@@ -70,7 +70,7 @@ CC = "apps/authd/client_core.c"
 M = {
  # flags leaves the signed tuple, so changing it after signing goes unnoticed
  "W1": (AM, [("    (void)crypto_hash_sha256_update(&st, &flags, 1u);",
-              "    /* MUTATION W1: flags not bound into the digest */")]),
+              "    { const uint8_t zero = (uint8_t)(flags & 0u); (void)crypto_hash_sha256_update(&st, &zero, 1u); } /* MUTATION W1: flags not bound into the digest (was deleted, which left flags unused: F79) */")]),
  # the label stops separating the two signatures
  "W2": (AM, [("    (void)crypto_hash_sha256_update(&st, (const unsigned char *)label, strlen(label));",
               "    (void)crypto_hash_sha256_update(&st, (const unsigned char *)\"x\", 1u); /* MUTATION W2 */")]),
@@ -88,7 +88,7 @@ M = {
               "    if (0) { /* MUTATION W6: any handle accepted */")]),
  # the device/user active predicate leaves the transaction
  "W7": (ST, [("    r = device_and_user_active(s, handle, handle_len, &live);\n    if (r != STORE_OK) { tx_rollback(s); return r; }",
-              "    live = 1; /* MUTATION W7: revoked and disabled can rotate */")]),
+              "    r = device_and_user_active(s, handle, handle_len, &live);\n    if (r != STORE_OK) { tx_rollback(s); return r; }\n    live = 1; /* MUTATION W7: revoked and disabled can rotate (the check still runs; was replaced, which left it unused: F79) */")]),
  # the store stamps its own wall clock again instead of the caller's
  "W8": (ST, [("    if (r == STORE_OK && rotated_at_out != NULL) { *rotated_at_out = now; }",
               "    if (r == STORE_OK && rotated_at_out != NULL) { *rotated_at_out = now_unix(); } /* MUTATION W8 */")]),

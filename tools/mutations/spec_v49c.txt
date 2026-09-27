@@ -3,7 +3,7 @@ W2|^test_authd_conn$|the digest matches the hand-built spec 6.3 vector for both 
 W3|^test_authd_conn$|a ROTATE whose sig_new is by the OLD key is REJECTED
 W4|^test_authd_conn$|that session's ROTATE is REJECTED
 W5|^test_authd_conn$|a ROTATE captured from one session is REJECTED on a second
-W7|^test_authd_store$|a revoked device cannot rotate its key
+W7|^test_authd_store$|a disabled user's device cannot rotate its key
 W8|^test_authd_store$|rotate stamps the caller's clock, not its own wall time
 W9|^test_authd_conn$|a SECOND ROTATE on the same session is refused with ERROR(0x02)
 W11|^test_authd_conn$|pk-in-use and bad-signature produce the SAME error code

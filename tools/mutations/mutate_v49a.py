@@ -31,13 +31,14 @@ M = {
               "    if (0) {\n        *verdict = STORE_TOKEN_EXPIRED;\n        return STORE_OK;\n    } /* MUTATION T3 */")]),
  # LOGOUT reports success without deleting anything
  "T4": (LA, [("    const store_status_t s = store_delete_token(app->store, token_hash, &n);",
-              "    const store_status_t s = STORE_OK; n = 1u; /* MUTATION T4: logout deletes nothing */")]),
+              "    uint8_t other_hash[sizeof token_hash]; memcpy(other_hash, token_hash, sizeof other_hash); other_hash[0] ^= 1u;\n"
+              "    const store_status_t s = store_delete_token(app->store, other_hash, &n); /* MUTATION T4: logout deletes another token (was `s = STORE_OK`, which left token_hash unused: F79) */")]),
  # the sweep never removes anything
  "T5": (ST, [('    if ((r = sweep_one(s, "DELETE FROM tokens WHERE expires_at<=?1 OR idle_expires_at<=?1;",\n                       now, &counts->tokens)) == STORE_OK &&\n        (r = sweep_one(s, "DELETE FROM login_codes WHERE expires_at<=?1;",\n                       now, &counts->login_codes)) == STORE_OK) {\n        r = sweep_one(s, "DELETE FROM enroll_tickets WHERE expires_at<=?1;", now, &counts->tickets);\n    }',
-              '    r = STORE_OK; /* MUTATION T5: sweep removes nothing */')]),
+              '    if ((r = sweep_one(s, "DELETE FROM tokens WHERE expires_at<=?1-1000000000 OR idle_expires_at<=?1-1000000000;",\n                       now, &counts->tokens)) == STORE_OK &&\n        (r = sweep_one(s, "DELETE FROM login_codes WHERE expires_at<=?1-1000000000;",\n                       now, &counts->login_codes)) == STORE_OK) {\n        r = sweep_one(s, "DELETE FROM enroll_tickets WHERE expires_at<=?1-1000000000;", now, &counts->tickets);\n    } /* MUTATION T5: sweep removes nothing (cutoff a billion seconds back; was `r = STORE_OK`, which left sweep_one unused: F79) */')]),
  # the admin table is served on the site socket (Req 11)
  "A1": (LA, [("    const entry_t *table = slot->is_admin ? ADMIN_TABLE : SITE_TABLE;\n    const size_t n = slot->is_admin ? (sizeof ADMIN_TABLE / sizeof ADMIN_TABLE[0])\n                                    : (sizeof SITE_TABLE / sizeof SITE_TABLE[0]);",
-              "    const entry_t *table = ADMIN_TABLE; /* MUTATION A1: admin table everywhere */\n    const size_t n = sizeof ADMIN_TABLE / sizeof ADMIN_TABLE[0];")]),
+              "    const entry_t *table = (slot->is_admin || slot->index != (size_t)-1) ? ADMIN_TABLE : SITE_TABLE; /* MUTATION A1: admin table everywhere (was a bare ADMIN_TABLE, which left SITE_TABLE unused: F79) */\n    const size_t n = (slot->is_admin || slot->index != (size_t)-1) ? (sizeof ADMIN_TABLE / sizeof ADMIN_TABLE[0])\n                                    : (sizeof SITE_TABLE / sizeof SITE_TABLE[0]);")]),
  # requests are logged without the peer's uid and pid (spec 8)
  "A2": (LA, [('    authd_log_local(AUTHD_LOG_INFO, "local-request", req.cmd, slot->peer.uid, slot->peer.pid,\n                    slot->is_admin ? "admin" : "site");',
               '    /* MUTATION A2: request not logged with uid/pid */')]),

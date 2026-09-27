@@ -54,7 +54,7 @@ M["Q4"] = lambda: edit("src/protocol/session.c",
 # Q5: the padding region is left as whatever the caller's buffer held.
 M["Q5"] = lambda: edit("src/protocol/session.c",
     "    memset(inner + used, 0, inner_len - used); /* padding: zero by definition */",
-    "    /* MUTATION: padding left unwritten */")
+    "    memset(inner + used, 0xA5, inner_len - used); /* MUTATION Q5: padding not zero */")
 
 # Q6: the minimum record length left at v1's 25.
 M["Q6"] = lambda: edit("src/protocol/session.c",

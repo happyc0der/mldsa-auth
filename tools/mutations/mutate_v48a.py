@@ -30,7 +30,7 @@ M = {
               "    (void)pending; c->out_sent = c->out_len; /* MUTATION D5: partial send treated as complete */")]),
  # numeric bounds are not enforced
  "D6": (CF, [("    if (acc < (uint64_t)lo || acc > (uint64_t)hi) {\n        return AUTHD_CFG_ERR_RANGE;\n    }",
-              "    if (0) {\n        return AUTHD_CFG_ERR_RANGE;\n    } /* MUTATION D6: numeric bounds off */")]),
+              "    if (acc < (uint64_t)lo / 2u || acc > (uint64_t)hi * 2u) {\n        return AUTHD_CFG_ERR_RANGE;\n    } /* MUTATION D6: numeric bounds widened (was `if (0)`, which left lo/hi unused: F79) */")]),
  # a repeated key silently overwrites the earlier one
  "D8": (CF, [("        if ((seen & (1u << bit)) != 0u) {\n            if (err_line != NULL) { *err_line = line_no; }\n            return AUTHD_CFG_ERR_DUPLICATE_KEY;\n        }",
               "        if (0) {\n            return AUTHD_CFG_ERR_DUPLICATE_KEY;\n        } /* MUTATION D8: duplicates allowed */")]),

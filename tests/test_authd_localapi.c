@@ -507,6 +507,42 @@ static void test_log_hygiene(void)
     free(buf);
 }
 
+/* ------------------------- the state binding, with a state (V4-14a, F79) */
+
+/* Every other EXCHANGE check logs in over the RAW listener, whose state is the
+ * empty string by definition (spec 7.1) -- so a daemon that bound SHA-256("")
+ * instead of SHA-256(state) passed them all. v48b's C4 mutates exactly that,
+ * and scored KILLED(compile) for months, so nobody saw that no test could kill
+ * it. Here the login is over the WebSocket with a real state: the empty state
+ * must be refused, and only the page's own state yields a token. */
+static void test_state_binding_ws(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "stbind.sqlite3", 1) == 0, "state: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    h_client_t c;
+    uint8_t code[32];
+    CHECK(h_login_on(&d, &c, HANDLE1, sizeof HANDLE1, &kp, "stbind") == 0, "state: login over the WebSocket");
+    CHECK(h_get_login_code(&d, &c, code) == 0, "state: login code received");
+    int fd = h_dial_unix(d.site_path);
+    char hexcode[80], req[512], resp[16384];
+    hx(hexcode, sizeof hexcode, code, sizeof code);
+
+    snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+    CHECK(fd >= 0 && h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=state-mismatch"),
+          "state: a WebSocket login's code is refused with the EMPTY state");
+    snprintf(req, sizeof req, "EXCHANGE code=%s state=737462696e64", hexcode);      /* "stbind" */
+    CHECK(fd >= 0 && h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK token="),
+          "state: ...and exchanges with the state the page put in the WebSocket URL");
+
+    if (fd >= 0) { (void)close(fd); }
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 /* ---------------------------- logging: the privacy switches (V4-13d, F14) */
 
 /* The daemon's own wiring, as authd_main does it: the store computes the
@@ -987,6 +1023,7 @@ int main(void)
     test_sweep();
     test_log_hygiene();
     test_log_privacy();
+    test_state_binding_ws();
     test_base32();
     test_recovery();
     test_recovery_policy();

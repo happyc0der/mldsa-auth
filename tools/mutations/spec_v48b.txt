@@ -1,7 +1,7 @@
 C1|^test_authd_conn$|decoy: the unknown handle still got a VERIFIABLE ServerHello (canary)
 C2|^test_authd_conn$|login: the code is bound to the right user and handle
 C3|^test_authd_conn$|login: the code expires in at most 60 s (Req 5)
-C4|^test_authd_conn$|login: the code is bound to the right user and handle
+C4|^test_authd_localapi$|state: a WebSocket login's code is refused with the EMPTY state;state: ...and exchanges with the state the page put in the WebSocket URL
 C5|^test_authd_conn$|login: the first record is LOGIN_CODE (0x10)
 C6|^test_authd_conn$|abandon: closing mid-handshake RELEASES the ledger entry immediately
 C7|^test_authd_conn$|notperm: a daemon-only op from the client is refused with ERROR(0x02), not served

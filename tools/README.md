@@ -21,6 +21,15 @@ V2-4**: a mutation that fails to compile is killed automatically; a sanitizer
 build is not trusted until its instrumentation is proven linked; and a suite
 result is not trusted until the build is proven current.
 
+**Since V4-14a the first rule has an exception it did not have:** a compile
+kill counts only when `mutations/compile_kills_allowed.txt` names the mutation
+and says why the compiler IS the check (today one: v24 M8, a `_Static_assert`).
+Every other compile kill is scored `KILLED(compile)-NOT-ALLOWED(BAD)` and fails
+the run. Eleven mutations had been deleting a use rather than changing a value,
+so `-Werror` refused them and no test was ever asked; two of them turned out to
+be caught by no test at all (audit finding F79). Write a mutation so it changes
+a value and keeps every use.
+
 ```sh
 tools/run_mutations_v2.sh <repo> <scratch-dir> <mutate.py> <spec-file> [build-dir]
 tools/check_sanitizer_link.sh <build-dir> asan|ubsan

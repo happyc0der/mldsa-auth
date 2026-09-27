@@ -15,7 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "authd_cli.h"
@@ -23,6 +26,7 @@
 #include "authd_harness.h"
 #include "authd_secret.h"
 #include "keyfile.h"
+#include "localcli.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -583,6 +587,54 @@ static void test_framing_rule(void)
  * per handle -- so that is the only case in which discarding .ek.next is safe.
  * The asymmetry is the point: a stale file costs a confusing directory entry,
  * a wrong delete costs the identity. */
+/* The CLIENT's reader, not the harness's (V4-14a, F79). The framing check
+ * above drains replies with h_local_drain, so localcli_call's own
+ * response_complete -- the code authd_admin actually runs -- was never on the
+ * path of any test; v49b's L2 mutates it and was only ever "killed" by the
+ * compiler. A real daemon writes a list in one go and the first read gets all
+ * of it, so a reader that stops at the header still looks right. This server
+ * sends the header, waits, then the rows and END: only a reader that waits
+ * for END sees the row. */
+static void test_localcli_split_list(void)
+{
+    char path[400];
+    (void)snprintf(path, sizeof path, "%s/split.sock", g_dir);
+    (void)unlink(path);
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    const int sn = snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);   /* checked: F86 */
+    CHECK(sn > 0 && (size_t)sn < sizeof sa.sun_path && lfd >= 0 &&
+          bind(lfd, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(lfd, 1) == 0,
+          "split: a fake daemon listens");
+    const pid_t pid = fork();
+    if (pid == 0) {
+        const int c = accept(lfd, NULL, NULL);
+        char req[256];
+        (void)!read(c, req, sizeof req);
+        static const char head[] = "OK count=1\n";
+        static const char rest[] = "DEVICE handle=6431 label=- via=site\nEND\n";
+        (void)!write(c, head, sizeof head - 1u);
+        usleep(200000);                         /* the rows arrive in a second write */
+        (void)!write(c, rest, sizeof rest - 1u);
+        usleep(100000);
+        (void)close(c);
+        _exit(0);
+    }
+    char out[4096];
+    size_t n = 0;
+    const localcli_status_t st = localcli_call(path, "LIST-DEVICES", "user=75", 5000u, out, sizeof out, &n);
+    int ws = 0;
+    (void)waitpid(pid, &ws, 0);
+    (void)close(lfd);
+    (void)unlink(path);
+    CHECK(st == LOCALCLI_OK && strncmp(out, "OK count=1\n", 11) == 0,
+          "split: localcli_call returns the list's header");
+    CHECK(st == LOCALCLI_OK && strstr(out, "DEVICE handle=6431") != NULL && strstr(out, "\nEND\n") != NULL,
+          "split: a list that arrives in two writes is read to its END, rows included");
+}
+
 static void test_key_plan(void)
 {
     CHECK(client_key_plan(1, 0, 0) == KEY_PLAN_USE_EK,
@@ -618,6 +670,7 @@ int main(void)
     test_client_keygen();
     test_check_config();
     test_framing_rule();
+    test_localcli_split_list();
     test_key_plan();
 
     char cmd[512];

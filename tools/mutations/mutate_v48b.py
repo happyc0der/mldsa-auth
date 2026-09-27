@@ -60,7 +60,7 @@ M = {
  # slot's state, empty on that listener and real on the WebSocket one, so the
  # anchor moved. The DEFECT and the property it guards are unchanged.
  "C4": (CN, [("    crypto_hash_sha256(state_hash, state, state_len);",
-              "    memset(state_hash, 0, sizeof state_hash); /* MUTATION C4: state binding broken */")]),
+              "    crypto_hash_sha256(state_hash, state, state_len * 0u); /* MUTATION C4: state binding broken (was a memset, which left state unused: F79) */")]),
  # the confirmation record is empty, as in the demo -- no login code at all
  "C5": (CN, [("        if (authmsg_encode_login_code(content, sizeof content, &n, &m) == AUTHMSG_OK &&\n            queue_sealed(slot, &c->sess, content, n) == 0) {",
               "        n = 0; /* MUTATION C5: empty confirmation record */\n        if (queue_sealed(slot, &c->sess, content, n) == 0) {")]),

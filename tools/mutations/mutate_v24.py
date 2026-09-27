@@ -36,10 +36,14 @@ M["M3"] = lambda: edit("src/crypto/kex.c",
     "    off += KEX_TRANSCRIPT_HASH_BYTES;",
     "    /* MUTATION: digest omitted */")
 
-# M4: the v2 builder uses the v1 label.
+# M4: the v2 builder uses a different label. It used to substitute the v1
+# label, KEX_KDF_LABEL -- which V2-5 deleted, so for months the mutant failed
+# to compile for a reason unrelated to what it tests (F79). Now: one character
+# of the v2 label changed, at the same length, so the length _Static_assert
+# still passes and only the byte-exact KDF vectors can tell.
 M["M4"] = lambda: edit("src/crypto/kex.c",
     "    static const char kLabel[] = KEX_KDF_V2_LABEL;",
-    "    static const char kLabel[] = KEX_KDF_LABEL;")
+    "    static const char kLabel[] = \"mldsa-auth/v2/kdg\"; /* MUTATION M4 */")
 
 # M5: a transcript label left at v1.
 M["M5"] = lambda: edit("src/protocol/transcript.h",

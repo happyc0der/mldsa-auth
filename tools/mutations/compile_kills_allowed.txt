@@ -1,0 +1,11 @@
+# Mutations whose KILLED(compile) verdict IS the evidence (V4-14a, audit F79).
+#
+# The runner credits a mutation that fails to compile. Almost always that
+# proves only that the compiler works: until V4-14a, eleven mutations deleted
+# a use rather than changing a value, -Werror refused them, and nothing ever
+# checked whether a TEST would have caught the defect -- two of them (v48b C4,
+# v49b L2) turned out to be caught by none. So a compile kill is now BAD unless
+# it is listed here, with the reason the compiler IS the check.
+#
+# campaign ID  reason
+v24 M8 the ClientHello maximum is pinned by a _Static_assert in transcript.h; refusing to compile the v1 formula is exactly the check (V2-4)

@@ -28,6 +28,10 @@
 # build and is caught only by ASan.
 set -u
 REPO="$1"; SCRATCH="$2"; MUTATE="$3"; SPEC="$4"; BUILD="${5:-build}"
+# The campaign's name (mutate_v24.py -> v24) and the list of mutations whose
+# compile kill is allowed to count (F79), beside the mutate script.
+CAMPAIGN=$(basename "$MUTATE" .py); CAMPAIGN=${CAMPAIGN#mutate_}
+ALLOWED="$(cd "$(dirname "$MUTATE")" && pwd)/compile_kills_allowed.txt"
 SNAP="$SCRATCH/snapshot_v2"; LOG="$SCRATCH/mutation_v2-logs"
 rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 cd "$REPO" || exit 2
@@ -143,7 +147,17 @@ while IFS='|' read -r M TESTRE WANT; do
     err=$(grep -m1 -E "error:" "$LOG/$M.build" 2>/dev/null)
     echo "${err:-<no compiler error line found>}" > "$LOG/$M.killreason"
     if echo "$err" | grep -qE "/(src|apps|tests|bench)/[^ ]*:[0-9]+:[0-9]+: error:"; then
-      finish_mutation "$M" "compile-fail" "KILLED(compile)"
+      # ...and only when the compiler IS the check (audit finding F79). A
+      # mutation that deletes a use is refused by -Werror before any test
+      # runs, which proves the compiler works and nothing about the property;
+      # eleven sat that way, two of them catchable by no test at all. So a
+      # compile kill counts only if compile_kills_allowed.txt names it.
+      if grep -qE "^${CAMPAIGN} ${M}( |\$)" "$ALLOWED" 2>/dev/null; then
+        finish_mutation "$M" "compile-fail" "KILLED(compile)"
+      else
+        finish_mutation "$M" "compile-fail" "KILLED(compile)-NOT-ALLOWED(BAD)"
+        overall=1
+      fi
     else
       echo "  $M: build failed with no project-source error: ${err:-<none>}"
       finish_mutation "$M" "compile-fail" "SURVIVED(BAD: unattributable build failure)"

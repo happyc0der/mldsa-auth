@@ -66,7 +66,7 @@ M = {
               "        return 1; /* MUTATION C1: config error indistinguishable from failure */")]),
  # authd_admin --check-config grows its own parser instead of the shared one
  "C2": (CLI, [("    const authd_config_status_t cs = authd_config_load(path, &cfg, &err_line);",
-               "    authd_config_status_t cs = AUTHD_CFG_ERR_SYNTAX; /* MUTATION C2: second parser */\n    { FILE *pf = fopen(path, \"r\"); if (pf != NULL) { (void)fclose(pf); cs = AUTHD_CFG_ERR_VALUE; } }")]),
+               "    authd_config_status_t cs = authd_config_load(path, &cfg, &err_line); /* MUTATION C2: second parser (its status replaced; the first form left cfg unset, which Apple clang refuses: F79) */\n    { FILE *pf = fopen(path, \"r\"); if (pf != NULL) { (void)fclose(pf); if (cs != AUTHD_CFG_OK) { cs = AUTHD_CFG_ERR_VALUE; } } }")]),
  # the keygen paths ALSO leave a plaintext MLDSASK2 copy on disk (Req 10)
  "K1": (CLI, [("    const keyfile_status_t ks = keyfile_seal(ek_path, img, img_len, pass, pass_len, ops, mem);",
                "    const keyfile_status_t ks = keyfile_seal(ek_path, img, img_len, pass, pass_len, ops, mem);\n"
@@ -88,7 +88,7 @@ M = {
               '    return strcmp(cmd, "REVOKE-TOKENS") == 0 || /* MUTATION L1: not a list */\n           strcmp(cmd, "LIST-USERS") == 0 ||')]),
  # a list is truncated at its header line
  "L2": (LC, [("    if (strncmp(buf, \"ERR \", 4) == 0 || !is_list) {\n        return 1;\n    }",
-              "    if (1) {\n        return 1; /* MUTATION L2: a list stops at its first line */\n    }")]),
+              "    if (strncmp(buf, \"ERR \", 4) == 0 || is_list != 2) {\n        return 1; /* MUTATION L2: a list stops at its first line (was `if (1)`, which left is_list unused: F79) */\n    }")]),
  # enroll-operator believes the .pub's embedded id rather than --handle
  "E1": (CLI, [("    const demo_keys_status_t ps = demo_keys_load_public(pubpath, hid, hid_len, pk);",
                "    uint8_t pk_id[64]; size_t pk_id_len = 0; (void)pk_id; (void)pk_id_len;\n    demo_keys_status_t ps = DEMO_KEYS_OK;\n    { FILE *pf = fopen(pubpath, \"rb\"); /* MUTATION E1: trusts the file's own label */\n      if (pf == NULL) { ps = DEMO_KEYS_ERR_IO; }\n      else { uint8_t hdr[9]; (void)fread(hdr, 1u, 9u, pf);\n             uint8_t fid[64]; (void)fread(fid, 1u, hdr[8], pf);\n             (void)fread(pk, 1u, MLDSA_PUBLIC_KEY_BYTES, pf); (void)fclose(pf); } }")]),
