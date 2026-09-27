@@ -819,7 +819,13 @@ Argon2id parameters are the browser's above; the session clock is the page's,
 and a login cannot begin until it has been set; and liboqs draws its randomness
 from libsodium, which draws from the host's `crypto.getRandomValues`. Measured
 at V4-13b: 187,603 bytes (module and glue), Argon2id(3, 64 MiB) 101–128 ms and
-a whole login 106–118 ms under Node 24 on the development machine.
+a whole login 106–118 ms under Node 24 on the development machine. At V4-13d,
+with V4-13c's 9,913-entry common-password list compiled in: 301,278 bytes
+(288,109 module, 13,169 glue), against the same 1.5 MB budget. In headless
+Chromium (Edge 154) on the same machine: a new identity in 89–106 ms, a whole
+login in 85–153 ms. **Phones are not yet measured** (erratum 40):
+`tools/phone_timing.mjs` serves a page that measures one on the operator's own
+network, and the numbers belong here when someone runs it with a phone in hand.
 
 **The login code's way to the site** (erratum 34). The page POSTs the code in a
 request **body** to the site's own endpoint, on the same origin, carrying the
@@ -1229,3 +1235,4 @@ What a public deployment needs that milestone A did not:
 | 37 | 15 | `log_client_ip = full \| prefix \| off`, and `src`'s alphabet corrected to `[0-9a-f.:/]` or `none` | the same, for addresses. The old sentence also said `[0-9a-f.:]` while the renderer has always written `none` for a connection with no address |
 | 38 | 7.3, 17, 18 | an authenticated login's per-address token is refunded; the shared-address lockout recorded as a limitation | behind a carrier-grade NAT thousands of users share one IPv4 address and, at 5 a minute, were spending each other's budget on logins that were never probes. Finding **F81** |
 | 39 | 13 | `authd_client --passphrase-prompt`; `keygen` enforces the passphrase policy on a file too; `pseudonym` added to §13's command list (erratum 36 missed it) | a person's passphrase in a file is a copy of it at rest; the terminal is the other channel no other process can read. The policy was the browser's alone, so the CLI could seal a key under `password` |
+| 40 | 14 | the module's size restated (301,278 bytes; the common-password list was added after the last figure), headless-Chromium times added, phones stated as unmeasured, with the tool that measures them | V4-2 S6 promised re-measurement "in real browsers rather than extrapolating", and the sentence still quoted V4-13b's size. The phone measurement needs a person with a phone; none was run in V4-13d |

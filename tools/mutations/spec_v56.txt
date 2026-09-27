@@ -1,0 +1,20 @@
+MB1|^test_authd_log$|ids: hashed writes idh=<16 hex> of the callback;ids: hashed writes neither the identifier nor an id= field
+MB2|^test_authd_log$|ids: off writes the event with no identifier field
+MB3|^test_authd_log$|ip: prefix writes an IPv4 address as its /24
+MB4|^test_authd_log$|ip: prefix writes an IPv6 address as its /48;ip: nothing past the IPv6 /48 survives
+MB5|^test_authd_log$|ip: off writes the event and its detail with no src field
+MB6|^test_authd_store$|pseudonym: equals BLAKE2b under HKDF(KEK, store_id, log-pseudonym), recomputed;pseudonym: not keyed by the audit key (its own label)
+MB7|^test_authd_store$|pseudonym: equals BLAKE2b under HKDF(KEK, store_id, log-pseudonym), recomputed;pseudonym: another KEK, another pseudonym
+MB8|^test_authd_log$|ids: hashed passes the whole identifier, past the 64-byte field
+MB9|^authd_e2e$|carol's pseudonym is on 0 lines
+MB10|^test_authd_evloop$|cfg: log_identities = hashed and log_client_ip = prefix parse
+MB11|^test_authd_ws$|refund: never above the burst
+MB12|^test_authd_ws$|refund: gives back exactly one token
+MB13|^test_authd_ws$|refund: the global bucket is not refunded (it bounds the daemon's signing work)
+MB14|^test_authd_ws$|refund: ...earned no refund, and emptied the bucket
+MB15|^test_authd_ws$|refund: the bucket is refilled to now before the token is credited
+MB16|^test_client_prompt$|read: nothing typed was echoed to the terminal
+MB17|^test_client_prompt$|flags: keygen with a common passphrase in a FILE fails (1)
+MB18|^test_client_prompt$|new: three mismatched repeats are refused and nothing is returned
+MB19|^test_client_prompt$|read: SIGINT during the prompt still ends the process with SIGINT
+MB20|^test_passphrase$|explain: each verdict in the page's words

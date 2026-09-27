@@ -5796,3 +5796,170 @@ the code's:
 - Anchors OK, spec constants OK, `git diff --check` clean.
 - The CI browser job (a pinned Chrome for Testing) and v55's nightly row come
   with the bring-up.
+
+### After the push (recorded in V4-13d)
+
+- **Chrome for Testing 154.0.8037.57**, pinned by SHA-256 (`ceee2972…0302`).
+  The pin came from one download whose size (196,223,440 bytes) and MD5
+  matched the bucket's own metadata; Google publishes no SHA-256 for it.
+- **Ubuntu 24.04 blocks the kernel feature Chrome's sandbox needs** (unprivileged
+  user namespaces, via AppArmor). The CI job lifts that rule on the throwaway
+  runner rather than running the browser with `--no-sandbox`. It worked on the
+  first run.
+- **Bring-up on `ci-bringup`.** Baseline 13/13 (run 36263175336), with the
+  browser job running 6 of 6 tests (`browser_e2e` 12.7 s). The control, the
+  site's CSP with `'unsafe-inline'` added, turned exactly the browser job red,
+  on exactly the two CSP checks (run 36263733028). The revert, byte-identical
+  to the baseline, went 13/13 (run 36264697135). Landed on `main` as
+  `552513f` by fast-forward; CI 13/13 there (run 36265280103).
+- **Nightly on `main`, dispatched: 40/40** (run 36263185573). v55 killed
+  12 of 12 mutations by name on Linux ASan, matching the local result.
+
+## V4-13d — what a public deployment needs
+
+13c put the client in a browser. 13d is what changes when the people using it
+are the public: their identifiers are personal data, their phones share
+addresses, some of them will type a passphrase into a terminal, and someone
+has to deploy all of it from a document.
+
+### What was decided (user decisions in brackets)
+
+- **The journal's two switches** [full by default; key derived from the KEK].
+  `log_identities = full | hashed | off` and `log_client_ip = full | prefix |
+  off` (spec v1.7 errata 36, 37; finding F14). Both default to `full`, which is
+  what every earlier release logged, so an upgrade changes nothing it was not
+  asked to. `hashed` writes `idh=`: the first 8 bytes of keyed BLAKE2b-128 of
+  the WHOLE identifier, never a fallback to it. The key is
+  `key_log = HKDF(KEK, store_id, "mldsa-authd/v1/log-pseudonym")`, derived in
+  `store_open` beside `key_audit`; the logger gets a callback, not the key.
+  It is stable across restarts and computable only with the server
+  passphrase, so `authd_admin pseudonym --id X` lets an operator find one
+  person's lines and a reader of the journal cannot test guesses. `prefix`
+  writes `/24` or `/48`. The store's audit chain keeps the real identifiers
+  under every setting.
+- **The refund** [refund on success] (erratum 38; finding F81). A connection
+  pays one per-address token at admission, before any signature. When its
+  ClientAuth verifies against an active key and a code is issued, the token
+  comes back: refilled to now, capped at the burst, once per connection, and
+  never to the global bucket, which bounds total signing work. So only
+  handshakes that fail drain an address, and the phones behind one
+  carrier-NAT address no longer spend each other's budget on logins. The
+  refund needs the key's secret, which a prober lacks whether the handle
+  exists or not, so Req 6 is untouched. What it cannot fix is now a §18
+  limitation: one prober behind a shared address still empties it for
+  everyone there.
+- **The terminal prompt** (erratum 39). `authd_client --passphrase-prompt`
+  opens `/dev/tty`, so neither prompt nor passphrase touches stdin or stdout,
+  and reads one line with echo off into locked memory. It restores the
+  terminal on every path: four signals are caught for the read, the terminal
+  put back, and the signal re-raised. keygen holds a new passphrase to the one
+  policy whichever way it arrives, a file included, and explains a refusal in
+  the enrollment page's words (`pp_explain`, which the test checks against
+  `web/pages/enroll.mjs`). rotate does not re-check: it re-seals under the
+  same passphrase, and refusing would strand an identity that predates the
+  policy.
+- **Phone timings** [timing tool you open]. `tools/phone_timing.mjs` serves
+  the test daemon and the reference site on an address the phone reaches and
+  collects what `web/pages/timing.html` measures: a throwaway identity, five
+  real logins, the identity deleted. The invite rides the URL fragment, which
+  no request carries.
+
+**The phones were not measured.** The page was served on the development
+Mac's Tailscale address for an hour, and again for two hours after a session
+restart; no phone reported. The tool itself was run end to end with headless
+Edge standing in for the phone -- a new identity in 106.4 ms, five logins in
+84.7-152.9 ms, the code EXCHANGEd each time -- so what is missing is the
+measurement, not the means. Spec §14 (erratum 40) and the runbook say so, give
+the headless-Chromium figures as the only in-browser numbers, and name the
+tool.
+
+### What writing the runbook found (F88)
+
+The reference site could not be deployed the way its own header described.
+Its command line had no way to set `secure`, so behind the TLS proxy it
+expects -- where a browser sends `Origin: https://...` -- every POST was
+refused as cross-origin while the pages still loaded. Every test drove
+`startSite()` directly over loopback http, where the mismatch cannot happen.
+It also took the sign-up invite on argv. Step 14 of the runbook was written
+by running it. `--secure` and `--invite-file` were added and the command was
+executed both ways: without `--secure`, `403 cross-origin POST refused`; with
+it, `200` and a `Secure` cookie, while an http Origin is still refused. The
+same exercise caught step 14's copy putting the site one directory too
+shallow to find its pages, and ran the invite command on Ubuntu 24.04. It
+also caught the module size the runbook quoted: V4-13b's 187,603 bytes, where
+V4-13c's common-password list has since made it 301,278.
+
+### Two things that were the tests' fault
+
+- The first version of the refund test waited for a login code from a decoy
+  handshake. A decoy's ClientAuth fails *retryably*, so the daemon keeps the
+  connection open and says nothing, and the wait ran out its full read loop:
+  `test_authd_ws` went from 10.6 s to 233.6 s while passing. It now pumps
+  until the daemon has logged `client-auth-retryable` for that probe, by
+  count, which also proves the failure path was reached before "no refund" is
+  asserted (9.6 s).
+- The Caddy test's new leg said the first daemon "did not stop". It had: the
+  container's PID 1 is `sleep 3600`, which reaps nothing, and `kill -0`
+  succeeds on a zombie. The leg now requires the daemon's own `event=stopped`
+  and a process that is gone or in state Z.
+
+### Controls, each restored byte-exactly
+
+- No refund at all fails 4 checks; a refund on the retryable failure fails 2.
+- A prompt that leaves echo on fails 4 checks; keygen skipping the policy for
+  a file fails 3.
+- A spec field list without `idh` fails the names check.
+- The config parser storing an out-of-range mode fires the new fuzz property
+  on its first seed.
+- The Caddy public-journal leg with `log_identities = full` goes red.
+
+### A gate that was blind
+
+`check_spec_vocabularies.py` finds the event-logging functions by matching
+prototypes in `authd_log.h` up to the next `;`. A comment mentioning
+`authd_log_set_privacy()` has no `;`, so the match ran from the comment into
+the next prototype, took `set_privacy` for an event function and hid
+`authd_log_slot_id`: eight events "defined but never emitted". It now strips
+comments first.
+
+### The trees that vanished
+
+Between two sessions macOS emptied `/var/folders/.../T/`, where
+`cmake/Dependencies.cmake` puts libsodium's build and install prefix (libtool
+cannot build under the repo's parent path, which has spaces). All five trees
+lost `sodium.h` at once, and the campaign runner said
+`FATAL: clean tree does not build`. The old trees were left alone; five fresh
+ones were configured with `TMPDIR=~/.cache/mldsa-tmp`, which macOS does not
+clean. The fresh wasm module is byte-identical to the old one.
+
+### Campaign v56 — MB, milestone B's switches
+
+Twenty mutations, every one written to change a value (F79): ten on the log
+switches and the pseudonym, five on the refund, five on the prompt and the
+policy's words. On the fresh ASan tree the first run killed 19 by name and
+scored MB15 `SURVIVED(BAD: unattributable build failure)`: it replaced
+`now_ms` with `0u`, which left `now_ms` unused, and `-Werror` refused the
+mutant before any test could see it. That is F79's trap one more time, in a
+campaign written to avoid it. MB15 now refills to `now_ms / 1000u`, which
+keeps the use and moves the clock, and is `KILLED(2 named)`. **20 of 20 by
+name.** MB9 -- the daemon applying `log_client_ip` but ignoring
+`log_identities` -- is killed only by `authd_e2e`, the one test that runs
+`authd_main`'s wiring. Anchors: 255 across 26 campaigns.
+
+### Verification
+
+- **Each code commit on its own**: normal, ASan and UBSan trees each proven
+  current by the from-scratch gate, with the sanitizers proven linked, in the
+  same invocation as the suite. 42/42 after commits 1 and 2; 43/43 plus the
+  wasm tree's 3/3 after commit 3.
+- **At the end, on the five fresh trees**: normal, ASan and UBSan 43/43 each,
+  wasm 3/3, and the fuzz tree's 36 fuzz-labelled tests.
+- **600 s of fuzzing** each on the targets the step changed:
+  `fuzz_authd_config` 130,109,806 runs, `fuzz_authd_conn` 5,490,229 runs; no
+  crash and no artifact.
+- `tests/caddy_proxy.sh`: 8/8, the public journal behind a real Caddy included.
+- **gcc 16** at `-O3 -Wall -Wextra -Werror` compiled every C file each commit
+  touched. It also refuses `tests/test_authd_cli.c:123`, which this step did
+  not touch and only macOS can show (F86).
+- Anchors 255 across 26 campaigns, spec constants and names OK, `git diff
+  --check` clean.
