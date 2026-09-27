@@ -370,10 +370,10 @@ if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
     grep -q 'recovery-use' "$TMP/authd.log" || fail "the recovery use was not logged at all"
     while IFS= read -r c; do
         [ -n "$c" ] || continue
-        ! grep -q "$c" "$TMP/authd.log" || fail "a recovery code reached the daemon log: $c"
+        ! grep -qF -- "$c" "$TMP/authd.log" || fail "a recovery code reached the daemon log: $c"
         for f in "$TMP/rec.err" "$TMP/login.err" "$TMP/keygen.err"; do
             [ -f "$f" ] || continue
-            ! grep -q "$c" "$f" || fail "a recovery code reached $f"
+            ! grep -qF -- "$c" "$f" || fail "a recovery code reached $f"
         done
     done < "$TMP/codes.txt"
     echo "PASS: E2E: recovery issue and use are logged, and the codes never are (spec 15)"
@@ -711,7 +711,12 @@ done
 # demo_e2e.sh's key files, every key this flow writes is SEALED, so there are no
 # plaintext secret-key bytes on disk to look for. The Req 10 scan above is the
 # check that proves that, and it would fail loudly if one ever appeared.
-if grep -q "$CODE" "$TMP/authd.log"; then fail "the login code appears in the daemon log"; fi
+# -F -- : the code is base64url, and one in 64 begins with '-', which grep
+# read as OPTIONS (audit finding F89). "-V..." printed grep's version and
+# exited 0 -- a false FAIL; most other option strings exited 2, and the check
+# passed without searching anything. -F because a code is a string, not a
+# pattern.
+if grep -qF -- "$CODE" "$TMP/authd.log"; then fail "the login code appears in the daemon log"; fi
 echo "PASS: E2E: no passphrase and no login code appears in any log"
 
 echo "All checks passed"
