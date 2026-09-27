@@ -872,7 +872,15 @@ static void scan_path(scan_t *s, const char *path) {
                 continue;
             }
             char sub[PATH_MAX];
-            snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
+            /* A path that does not fit is a file the scan cannot look at --
+             * a VIOLATION, not a skip: a secret scanner that quietly passes
+             * over what it could not read is one a long name defeats (F86;
+             * checking the length is also what gcc 16 asks for). */
+            const int n = snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
+            if (n < 0 || (size_t)n >= sizeof(sub)) {
+                s->violations++;
+                continue;
+            }
             scan_path(s, sub);
         }
         closedir(d);

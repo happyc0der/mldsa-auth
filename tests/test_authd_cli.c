@@ -120,7 +120,12 @@ static int any_file_starts_with(const char *dir, const char *magic)
     while (!found && (e = readdir(d)) != NULL) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) { continue; }
         char p[512];
-        (void)snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        /* Every caller asserts that NOTHING matches, so a path this scan cannot
+         * hold counts as found: an absence check that skipped what it could
+         * not read would pass vacuously (F86; gcc 16 on macOS, where d_name is
+         * 1,024 bytes, asks for exactly this). */
+        const int pn = snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        if (pn < 0 || (size_t)pn >= sizeof p) { found = 1; continue; }
         struct stat st;
         if (stat(p, &st) != 0) { continue; }
         if (S_ISDIR(st.st_mode)) {
