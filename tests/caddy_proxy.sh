@@ -69,8 +69,16 @@ echo "--- copying the source tree in"
 inc "mkdir -p /src"
 # --no-mac-metadata / --no-xattrs: macOS stamps com.apple.provenance on files,
 # and docker cp refuses an archive carrying an xattr the guest filesystem
-# cannot set. crash-* are gitignored fuzz replay inputs, not source.
-(cd "$REPO" && COPYFILE_DISABLE=1 tar -c --no-mac-metadata --no-xattrs \
+# cannot set. Those are bsdtar's flags, and GNU tar refuses both -- which kept
+# this script from running anywhere but macOS (audit finding F74) -- so they
+# are passed only to bsdtar; GNU tar writes no xattrs unless asked.
+# crash-* are gitignored fuzz replay inputs, not source.
+TAR_MACFLAGS=
+if tar --version 2>/dev/null | grep -q bsdtar; then
+    TAR_MACFLAGS="--no-mac-metadata --no-xattrs"
+fi
+# shellcheck disable=SC2086  # two flags, or none: word splitting is the point
+(cd "$REPO" && COPYFILE_DISABLE=1 tar -c $TAR_MACFLAGS \
      --exclude='./build*' --exclude='./.git' --exclude='./crash-*' .) \
     | docker cp - "$NAME:/src" || fail "could not copy the source tree"
 
