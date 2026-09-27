@@ -104,7 +104,11 @@ forced_build "$LOG/preflight1.build" || { echo "FATAL: clean tree does not build
 CLEAN=$(fp)
 forced_build "$LOG/preflight2.build" || exit 3
 [ "$(fp)" = "$CLEAN" ] || { echo "FATAL: build is not deterministic"; exit 3; }
-ctest --test-dir "$BUILD" > "$LOG/preflight.ctest" 2>&1 || { echo "FATAL: clean suite fails"; exit 3; }
+# --output-on-failure on both whole-suite runs (audit finding F85): without it
+# a failing test leaves only ctest's one-line summary, and the V4-13a nightly
+# kept nothing of the one authd_e2e failure that F84 still cannot explain.
+# It adds nothing when everything passes, and the nightly uploads $LOG.
+ctest --test-dir "$BUILD" --output-on-failure > "$LOG/preflight.ctest" 2>&1 || { echo "FATAL: clean suite fails"; exit 3; }
 echo "preflight: $SNAP_COUNT sources snapshotted; fingerprint covers $(fp_counts); deterministic; clean suite PASS ($(grep -c ' Passed' "$LOG/preflight.ctest") passed) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
 
 overall=0
@@ -118,7 +122,7 @@ finish_mutation() {
   local M="$1" prov="$2" res="$3" rp cs residue
   restore || { echo "$M: FATAL restore"; exit 4; }
   forced_build "$LOG/$M.rebuild" && [ "$(fp)" = "$CLEAN" ] && rp="restored=clean" || { rp="RESTORED-NOT-CLEAN(BAD)"; overall=1; }
-  ctest --test-dir "$BUILD" > "$LOG/$M.ctest" 2>&1 && cs="clean-suite=PASS" || { cs="CLEAN-SUITE=FAIL(BAD)"; overall=1; }
+  ctest --test-dir "$BUILD" --output-on-failure > "$LOG/$M.ctest" 2>&1 && cs="clean-suite=PASS" || { cs="CLEAN-SUITE=FAIL(BAD)"; overall=1; }
   residue=$(grep -rc "MUTATION" $(sources) 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
   printf '%-4s %-19s %-26s | %s | %s | residue=%s\n' "$M" "$prov" "$res" "$rp" "$cs" "$residue"
 }
