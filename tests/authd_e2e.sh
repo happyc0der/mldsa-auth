@@ -140,9 +140,17 @@ fi
 
 # The raw loopback listener is the operator's SSH-tunnel path (spec 7.1), and
 # until V4-10b no test had ever driven it with the shipped client -- every leg
-# here used --unix. A fixed high port derived from the pid keeps concurrent
-# runs apart without needing the daemon to report one back.
-PORT=$(( 40000 + ($$ % 20000) ))
+# here used --unix. A port derived from the pid keeps concurrent runs apart
+# without needing the daemon to report one back.
+#
+# BELOW every ephemeral range (audit finding F84): the kernel hands out
+# outgoing-connection ports from 32768-60999 on Linux and 49152-65535 on
+# macOS, and a listener picked from inside that range can find its port
+# already taken by some unrelated connection -- a start-up failure that looks
+# like a flake. This was 40000 + pid % 20000, squarely inside Linux's range,
+# and the one unexplained authd_e2e failure (nightly 36007850109, 1.24 s in:
+# start-up) fits it. 20000-29999 is outside both.
+PORT=$(( 20000 + ($$ % 10000) ))
 
 cat > "$TMP/authd.conf" <<EOF
 store_path = $TMP/d/store.sqlite3
