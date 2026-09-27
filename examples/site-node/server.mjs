@@ -5,7 +5,16 @@
  *   node server.mjs --authd-site /run/mldsa-authd/site.sock \
  *                   --authd-ws 127.0.0.1:8443   (or --authd-ws-unix /run/.../p.sock)
  *                   --server-id authd --server-pub server.pub \
- *                   --module-dir build-wasm/web --invite <signup secret> [--port 0]
+ *                   --module-dir build-wasm/web --invite-file <0600 file> \
+ *                   [--port 0] [--secure]
+ *
+ * --secure is REQUIRED behind a TLS proxy: it marks the cookie Secure and makes
+ * the Origin check expect https://, which is what a browser sends there --
+ * without it every POST is refused as cross-origin. The invite is read from a
+ * file because argv is readable by every process on the host (spec 12's rule
+ * for passphrases, applied to the site's own secret); --invite remains for
+ * tests. Behind Caddy, /authd/v1 is routed to the daemon before it reaches
+ * this process, so --authd-ws/--authd-ws-unix are used only without a proxy.
  *
  * (opt.host and opt.onTiming exist for tools/phone_timing.mjs only.)
  *
@@ -59,10 +68,13 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; ch
                '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm',
                '.css': 'text/css; charset=utf-8' };
 
+const FLAGS = new Set(['secure']);
 function args(argv) {
   const a = {};
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) { a[argv[i].slice(2)] = argv[i + 1]; i++; }
+    if (!argv[i].startsWith('--')) { continue; }
+    const k = argv[i].slice(2);
+    if (FLAGS.has(k)) { a[k] = true; } else { a[k] = argv[i + 1]; i++; }
   }
   return a;
 }
@@ -241,10 +253,12 @@ export async function startSite(opt) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const a = args(process.argv.slice(2));
   const pubImage = readFileSync(a['server-pub']);
+  const invite = a['invite-file'] ? readFileSync(a['invite-file'], 'utf8').replace(/\r?\n$/, '') : a.invite;
+  if (!invite) { console.error('server.mjs: --invite-file is required'); process.exit(2); }
   const { port } = await startSite({
     authdSite: a['authd-site'], authdWs: a['authd-ws'], authdWsUnix: a['authd-ws-unix'],
-    serverId: a['server-id'], serverPub: pubImage, moduleDir: a['module-dir'], invite: a.invite,
-    port: a.port ? Number(a.port) : 0,
+    serverId: a['server-id'], serverPub: pubImage, moduleDir: a['module-dir'], invite,
+    port: a.port ? Number(a.port) : 0, secure: a.secure === true,
   });
   console.log(JSON.stringify({ port }));
 }

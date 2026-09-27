@@ -131,6 +131,7 @@ rate_per_min = 600
 rate_burst = 600
 EOF"
 inc "/src/b/apps/authd/mldsa-authd --config /etc/authd.conf > /tmp/authd.log 2>&1 &
+     echo \$! > /tmp/authd.pid
      for i in \$(seq 1 100); do grep -q event=started /tmp/authd.log && exit 0; sleep 0.1; done; exit 1" \
     || { inc "cat /tmp/authd.log"; fail "the daemon did not start"; }
 
@@ -190,4 +191,37 @@ echo "PASS: CADDY: with proxy_protocol removed the daemon refuses the connection
 inc "grep -c 'event=closed-protocol' /tmp/authd.log > /dev/null" \
     || fail "the daemon logged no protocol refusal for the preamble-less connection"
 echo "PASS: CADDY: and it says so in the log"
+
+# ---------------------------------------- the public journal (V4-13d, F14)
+#
+# deploy/RUNBOOK.md's public settings, behind the real Caddy: the same store,
+# the daemon restarted with log_identities = hashed and log_client_ip =
+# prefix. The login still works, the journal carries the device's pseudonym
+# and the client's /24, and neither the handle nor the address appears.
+# "Stopped" is the daemon's own event=stopped line, and a process that is gone
+# or a zombie: it was started by a `docker exec` shell that has since exited,
+# the container's PID 1 does not reap it, and kill -0 succeeds on a zombie.
+inc "p=\$(cat /tmp/authd.pid); kill \$p; for i in \$(seq 1 100); do
+       grep -q 'event=stopped' /tmp/authd.log &&
+       { [ ! -e /proc/\$p ] || grep -q '^State:.*Z' /proc/\$p/status; } && exit 0; sleep 0.1; done; exit 1" \
+    || { inc "tail -5 /tmp/authd.log; cat /proc/\$(cat /tmp/authd.pid)/status 2>/dev/null | head -3"; fail "the first daemon did not stop"; }
+inc "cp /etc/authd.conf /etc/authd-public.conf && printf 'log_identities = hashed\nlog_client_ip = prefix\n' >> /etc/authd-public.conf"
+inc "/src/b/apps/authd/mldsa-authd --config /etc/authd-public.conf > /tmp/authd-public.log 2>&1 &
+     for i in \$(seq 1 100); do grep -q event=started /tmp/authd-public.log && exit 0; sleep 0.1; done; exit 1" \
+    || { inc "cat /tmp/authd-public.log"; fail "the public-journal daemon did not start"; }
+CODE2=$(inc "/src/b/apps/authd/authd_client login --handle $HANDLE \
+        --key /run/dev/$HANDLE.ek --passphrase-file /run/dev.pass \
+        --server-id authd --server-pub /run/mldsa-authd/server.pub \
+        --port 8080 --ws --state s2 2>/tmp/login2.err") \
+    || { inc "cat /tmp/login2.err; tail -20 /tmp/authd-public.log"; fail "the login through Caddy failed with the public journal"; }
+[ "${#CODE2}" -eq 43 ] || fail "the public-journal login code is ${#CODE2} characters, expected 43"
+IDH=$(inc "/src/b/apps/authd/authd_admin pseudonym --store /run/mldsa-authd/store.sqlite3 \
+        --key /run/mldsa-authd/server.ek --passphrase-file /run/mldsa-authd/pass \
+        --server-id authd --id $HANDLE") || fail "authd_admin pseudonym failed"
+inc "grep -q -- '$IDH' /tmp/authd-public.log && grep -q 'src=127.0.0.0/24 ' /tmp/authd-public.log" \
+    || { inc "cat /tmp/authd-public.log"; fail "the public journal lacks the pseudonym or the /24"; }
+if inc "grep -q -- '$HANDLE' /tmp/authd-public.log || grep -q '127\\.0\\.0\\.1' /tmp/authd-public.log"; then
+    inc "cat /tmp/authd-public.log"; fail "the public journal names the handle or the full address"
+fi
+echo "PASS: CADDY: the public journal -- a login through Caddy logs $IDH and 127.0.0.0/24, never the handle or the address"
 echo "PASS: CADDY: all checks"
