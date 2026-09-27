@@ -5963,3 +5963,105 @@ name.** MB9 -- the daemon applying `log_client_ip` but ignoring
   not touch and only macOS can show (F86).
 - Anchors 255 across 26 campaigns, spec constants and names OK, `git diff
   --check` clean.
+
+## V4-14a — honest gates before the review packet
+
+V4-14 hands the work to an external reviewer. Before it does, every gate a
+reviewer will read should mean what it says. Five findings were open against
+the gates themselves, all recorded since V4-10b and none scheduled (user
+decision: clear them first as 14a, then build the packet as 14b). Clearing
+them found two properties no test had ever checked, and a secret-scan check
+that had been vacuous one run in 64.
+
+### The compile kills (F79)
+
+The last nightly scored eleven mutations `KILLED(compile)`. One is honest:
+v24 M8 exists to trip a `_Static_assert`. The other ten deleted a *use*
+rather than changing a *value*, so `-Werror` refused the mutant and no test
+was ever asked. v24 M4 had rotted besides: it named `KEX_KDF_LABEL`, which V2-5
+deleted. The sweep had failed to compile for a reason unrelated to what it
+tests.
+
+All ten, plus v49b C2 (which Apple clang refused for an uninitialised
+`cfg`), were rewritten to change a value and keep every use. Each was first
+applied to a scratch copy and compiled under clang and gcc 16. Then their
+seven campaigns were re-run in full on the ASan tree:
+
+- **M4, D6, A1, T5, C2, W1** were killed by name at once.
+- **Q5, T4, W7** were killed, but by checks their specs had not predicted.
+  The specs were written when the compiler killed them, so no one had seen
+  which test fires. The specs now name the real ones.
+- **C4 and L2 survived. No test could see either.**
+  - C4 binds `SHA-256("")` instead of `SHA-256(state)`. Every EXCHANGE check
+    logged in over the raw listener, whose state is the empty string by
+    definition, so the two are the same there. `test_state_binding_ws` now
+    logs in over the WebSocket with a real state, and EXCHANGE must refuse the
+    empty one and accept the page's own.
+  - L2 makes the local-API client stop reading a list at its header. The
+    framing check drained replies with the test harness's own reader, so
+    `localcli_call`'s -- the code `authd_admin` actually runs -- was on the
+    path of no test. `test_localcli_split_list` serves a list in two writes,
+    200 ms apart.
+
+  Both are then killed by name. Those two properties had been untested for
+  months while their mutations scored as killed.
+
+**And a gate instead of a habit.** The runner now scores a compile kill
+`KILLED(compile)-NOT-ALLOWED(BAD)` and fails the run, unless
+`tools/mutations/compile_kills_allowed.txt` names the mutation and says why
+the compiler IS the check. It lists one: v24 M8. Control, on a one-line spec:
+with M8 listed, `KILLED(compile)` and exit 0; without it,
+`KILLED(compile)-NOT-ALLOWED(BAD)` and exit 1.
+
+### The runner's missing evidence (F85), and what it caught at once (F89)
+
+The runner ran its whole-suite checks as plain `ctest`, which keeps one line
+per failing test and none of its output. Both now use `--output-on-failure`
+(control: a deliberate failing check reached the log by its own line).
+
+The first campaign after the change caught `authd_e2e` failing in a
+*restored, clean* tree, and this time kept why. The line before
+`FAIL: the login code appears in the daemon log` was
+`grep (BSD grep, GNU compatible) 2.6.0-FreeBSD`. The check ran
+`grep -q "$CODE" authd.log`, and a base64url code begins with `-` one time in
+64, which grep reads as options:
+
+- `-V...` prints the version and exits 0: a false FAIL.
+- Most other shapes exit 2, or read an empty stdin and exit 1: the check
+  passes without searching anything.
+
+It is now `grep -qF -- "$CODE"`, and the recovery-code scans got the same.
+Both old shapes and the new one were demonstrated by hand.
+
+### The rest
+
+- **F84.** `authd_e2e`'s raw-listener port moved from `40000 + pid % 20000`
+  (inside Linux's ephemeral range) to `20000 + pid % 10000`, below Linux's and
+  macOS's. This follows the leading hypothesis; the failure was never
+  captured, and F85 is now what would capture it.
+- **F86.** A whole gcc 16 Release tree failed in exactly two places, both an
+  unchecked `snprintf` of a directory entry. Both now check their length and
+  fail closed: the secret scanner counts an unholdable path as a violation
+  (control: a 1,346-byte path, 1 violation, where it had been skipped), and
+  the absence check counts it as found. The gcc 16 tree then builds with no
+  error and no warning, and its suite passes. It is the first gcc-built macOS
+  tree this project has run. gcc 16 also refused this step's own new test at
+  first, for the same `snprintf` shape, and it was fixed the same way.
+- **F74.** `caddy_proxy.sh` passes bsdtar's flags only to bsdtar. Under GNU
+  tar 1.35 the step now archives the tree where the old command was refused;
+  on macOS the script still passes 8/8.
+
+### Verification
+
+- **Suites.** Normal, ASan and UBSan trees 43/43 each, every tree proven
+  current and the sanitizers linked in the same invocation as its suite. The
+  gcc 16 Release tree: 40/40.
+- **Campaigns.** The seven affected campaigns were re-run in full on ASan:
+  67 mutations killed by name, and one compile kill, M8, which is allowlisted.
+  v24 and v48a ran once (7 of 7 by name each). v26, v48b, v49a, v49b and
+  v49c ran twice, the second time with the new tests and specs: 53 of 53 by
+  name.
+- **The Linux nightly.** It will run every campaign under the new runner, and
+  the gate, when these commits are pushed.
+- **Documents.** Anchors OK; spec constants and names OK; `git diff --check`
+  clean.
