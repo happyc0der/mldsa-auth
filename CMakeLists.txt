@@ -23,7 +23,14 @@ if(ENABLE_ASAN)
   list(APPEND MLDSA_SANITIZE_FLAGS -fsanitize=address)
 endif()
 if(ENABLE_UBSAN)
-  list(APPEND MLDSA_SANITIZE_FLAGS -fsanitize=undefined)
+  # -fno-sanitize-recover: undefined behaviour ABORTS the process instead of
+  # printing a report and carrying on (audit finding F94). Without it a UB
+  # report was a line of output inside a test that still PASSED -- shown by
+  # planting a signed overflow in test_passphrase: "runtime error: signed
+  # integer overflow", then "Passed". Every "passes under UBSan" before V4-14c
+  # meant "UBSan was linked and nothing crashed". The fuzz replay binaries have
+  # always used -fno-sanitize-recover=all; now the suite does too.
+  list(APPEND MLDSA_SANITIZE_FLAGS -fsanitize=undefined -fno-sanitize-recover=undefined)
 endif()
 
 # --- libFuzzer build (Step 7; separate build directory only) --------------

@@ -696,6 +696,20 @@ sys.exit(0 if n >= 1 else 1)
 PYEOF
 echo "PASS: E2E: the audit chain still records carol's real handle and verifies"
 
+# ------------------------------------------------ sanitizer reports (F94)
+#
+# The daemons this script starts write to their own logs, which ctest never
+# sees. Under a UBSan build UB now aborts the process (V4-14c), which some leg
+# would notice -- but a report in a log nobody reads is how F94 went unseen,
+# so every log this run wrote is searched for one, ASan's included.
+for f in "$TMP"/*.log "$TMP"/*.err; do
+    [ -f "$f" ] || continue
+    if grep -qE 'runtime error:|ERROR: AddressSanitizer|ERROR: LeakSanitizer' "$f"; then
+        fail "a sanitizer report is in $f"
+    fi
+done
+echo "PASS: E2E: no sanitizer report in any daemon or client log"
+
 # --------------------------------------------------------- secret scan
 
 # The passphrase bytes must not appear in any log. Unlike the daemon's logger,
