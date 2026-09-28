@@ -135,6 +135,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FUZZ_ASSERT((cfg.proxy_protocol_v2 == 0 && cfg.n_proxy_uids == 0u) ||
                         cfg.listen_unix[0] != '\0',
                     "OK with proxy settings but no proxy listener");
+        /* V4-14c, F92: an empty allowlist checks no credentials at all, so
+         * neither of these may be accepted without one. */
+        FUZZ_ASSERT(cfg.site_socket[0] == '\0' || cfg.n_site_uids > 0u,
+                    "OK with a site socket but no site_uids");
+        FUZZ_ASSERT(!cfg.proxy_protocol_v2 || cfg.n_proxy_uids > 0u,
+                    "OK believing PROXY v2 preambles from no named proxy uid");
     } else {
         /* a failed parse must leave nothing half-applied */
         authd_config_t def;
@@ -180,6 +186,12 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit_str(emit, ctx, "proxy-protocol-bogus",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
              "listen_unix = /run/p.sock\nproxy_protocol = yes\n");
+    emit_str(emit, ctx, "site-socket-no-uids",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_port = 1\nsite_socket = /run/s.sock\n");
+    emit_str(emit, ctx, "proxy-v2-no-uids",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_unix = /run/p.sock\nproxy_protocol = v2\n");
     emit_str(emit, ctx, "log-privacy",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
              "listen_port = 1\nlog_identities = hashed\nlog_client_ip = prefix\n");

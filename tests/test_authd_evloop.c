@@ -138,6 +138,22 @@ static void test_config(void)
     CHECK(parse_str(BASE "log_client_ip = off\nlog_client_ip = full\n", &cfg, &line) == AUTHD_CFG_ERR_DUPLICATE_KEY,
           "cfg: a repeated log switch is a duplicate key");
 
+    /* V4-14c, F92: an empty allowlist checks no peer credentials at all (Req
+     * 11), so leaving it out is refused rather than silently accepted. */
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
+          "cfg: a site socket without site_uids is refused (Req 11)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK,
+          "cfg: ...and accepted once site_uids names who may use it");
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
+                    "listen_unix = /run/p.sock\nproxy_protocol = v2\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
+          "cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)");
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
+                    "listen_unix = /run/p.sock\nproxy_protocol = v2\nproxy_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK,
+          "cfg: ...and accepted once proxy_uids names the proxy");
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
+                    "listen_unix = /run/p.sock\n", &cfg, &line) == AUTHD_CFG_OK,
+          "cfg: a proxy-facing listener WITHOUT proxy_protocol still needs no proxy_uids (the development shape)");
+
     /* the contract the fuzzer found broken: a failed parse applies nothing */
     {
         authd_config_t def;

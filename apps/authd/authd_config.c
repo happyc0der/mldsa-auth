@@ -412,6 +412,21 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
     if ((cfg.proxy_protocol_v2 || cfg.n_proxy_uids > 0u) && cfg.listen_unix[0] == '\0') {
         return AUTHD_CFG_ERR_MISSING;
     }
+    /* Req 11 has no "unless unconfigured" (audit finding F92). An EMPTY
+     * allowlist means "check no peer credentials at all" to the listener, and
+     * leaving the key out produced exactly that silently: site.sock then relied
+     * on its 0660 mode alone, and a PROXY v2 preamble was believed from ANY
+     * member of the socket's group -- the self-reported address Req 11 exists
+     * to prevent. A site socket must name who may use it, and a proxy-facing
+     * listener that believes preambles must name the proxy. (admin_uids
+     * defaults to root, and an explicitly empty list is already refused.) A
+     * development setup that wants no proxy names its own uid. */
+    if (cfg.site_socket[0] != '\0' && cfg.n_site_uids == 0u) {
+        return AUTHD_CFG_ERR_MISSING;
+    }
+    if (cfg.proxy_protocol_v2 && cfg.n_proxy_uids == 0u) {
+        return AUTHD_CFG_ERR_MISSING;
+    }
     (void)B_COUNT;
     *out = cfg;                 /* the single commit point */
     return AUTHD_CFG_OK;
