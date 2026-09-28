@@ -6,4 +6,4 @@ Y5|^test_net$|migrating onto an existing --out -> EXISTS, and that file is untou
 Y6|^test_net$|truncated, extended, wrong id_len and wrong magic legacy files -> FORMAT, no output
 Y7|^demo_e2e$|migrate-key printed no integrity warning
 Y8|^test_net$|migrate-key leaves no temporary file behind
-Y9|^fuzz_replay_keys$|
+Y9|^fuzz_replay_keys$|migrate: a structurally valid legacy file yields OK, KEY_MISMATCH or CRYPTO

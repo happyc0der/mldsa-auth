@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 94 findings (F1–F96), with severity, evidence and
    disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 42 errata, each
+3. The two specifications. The deployment spec's §20 lists 44 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -58,7 +58,7 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 43 tests with the
+- **Tests** are named checks, not exit codes. The suite is 44 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
 - **Mutations**: 238 committed defects in 27 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
@@ -84,10 +84,14 @@ register says how. Still open:
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F95 | Low | Req 3 names secret hashes as compared in constant time; the store finds them by SQLite equality |
-| F90 | Low | Nine mutations are killed without a named check |
-| F96 | Info | "Bound to `handshake_id`" means "recorded with" |
-| F91 | Info | An advisory affects liboqs 0.16.0 in LMS/HSS, which this build does not compile |
+| F91 | Info | An advisory affects liboqs 0.16.0 in LMS/HSS, which this build does not compile. **Mitigated in V4-14d**: the fix is in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
+
+The other four were closed in V4-14d. **F95** and **F96** were wording:
+Req 3 now states its one exception (secret hashes are found by SQLite
+equality on a 256-bit hash; spec erratum 43), and Req 5 says the
+`handshake_id` is *recorded* with a login code, not bound to it (erratum 44).
+**F90**: ten mutations were credited without a named check. Every kill now
+names one, and the runner and CI refuse a mutation that does not.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.

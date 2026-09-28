@@ -6192,3 +6192,77 @@ and what is still not established.
 - **gcc 16** at `-O3 -Werror` compiled every changed C file.
 - **Documents.** Anchors 260 across 27 campaigns; spec constants and names
   OK; the claim map's 196 citations all resolve.
+
+## V4-14d — the packet's four small findings, and the tag
+
+Housekeeping first: the five superseded build trees and `build-gcc16` were
+deleted (the -v413d trees and `build-wasm-d` are current). Then the four
+findings the packet left open, before the review tag freezes the tree.
+
+- **F95 and F96 were wording** (spec v1.9, errata 43–44). Req 3 listed token,
+  code and ticket hashes among values compared in constant time; the store
+  finds them by SQLite index equality. Req 3 now names that as its one
+  exception and says why it is acceptable: each is the SHA-256 of a 256-bit
+  random secret, so a timing leak reveals how much of a *hash* matches, which
+  brings no one closer to a preimage. Req 5 said a login code is bound to its
+  `handshake_id`; nothing checks that at EXCHANGE, and nothing can, since the
+  site does not know it. It now says the id is *recorded* with the code.
+- **F91: liboqs 0.17.0 does not exist yet.** The advisory says "patched in
+  0.17.0"; GitHub has no such tag (404) and 0.16.0 is the latest release, so
+  the planned bump could not happen. Pinning an unreleased commit is a
+  decision for the user, not this step. What this step could do is turn "the
+  minimal build compiles no LMS or XMSS" from a claim about a CMake variable
+  into a gate: `liboqs_minimal` reads the linked `liboqs.a` with `nm`, fails
+  on any LMS, HSS, LM-OTS, XMSS or XMSS^MT symbol, and must first find ML-DSA
+  and ML-KEM symbols, so an empty archive or a wrong path cannot pass. The
+  first pattern also matched `stfl`, and failed the real archive: liboqs'
+  generic stateful-signature dispatcher is compiled into every build. It is
+  harmless with no algorithm to dispatch to, and the pattern now names
+  algorithms only. Controls: an archive with `OQS_SIG_STFL_lms_verify` added
+  fails; an empty one fails the canary.
+- **F90: every kill is now named.** Each of the nine mutations F90 listed was
+  re-run on the ASan tree and its log read. Every kill was real, and none was
+  by accident, but in seven the check that fired printed something the
+  runner could not see:
+  - the fuzz oracle (`FUZZ ORACLE FAILURE`, v28 X1 X4 X5 and v29 Y9) and the
+    key scanner (`SCANNER ABORT`, X6) printed no `FAIL: `;
+  - `bench_fail` printed `BENCH FAILED:` (U2), and `bench_smoke`'s own checks
+    were CMake `FATAL_ERROR`s, which CMake re-wraps at about 80 columns, so
+    "has no 'cpu' line" (U3) arrived split across three lines.
+
+  Each now prints a `FAIL: ` line (the smoke script through a `smoke_fail`
+  helper whose STATUS line is verbatim), and each spec line names its check.
+  Two die where no check can speak: **M6** reads past an exact-size
+  ClientHello copy, which returns plausible bytes and is visible only to
+  ASan, and **Q2**'s unbounded `content_len` makes the padding check's length
+  wrap, so `sodium_is_zero` runs off the mapping inside the library. For
+  those the runner gained one other expectation form, `ASAN in <function>`,
+  which needs an AddressSanitizer ERROR report with a stack frame in that
+  function.
+
+  **The census had counted the wrong thing.** F90 was found by counting
+  `KILLED(0 named)` rows. Counting empty spec lines finds a tenth: v23 K4b,
+  whose kill prints `FAIL: mlkem768_contracts: free() clears the key and
+  NULLs the pointer` before the double free crashes. It scored `1 named`
+  because the runner counts every `FAIL: ` line, but no spec line recorded
+  which check that was. Its spec line now does.
+
+  The runner now refuses a spec line with no expectation before it builds
+  anything, and `check_mutation_anchors.py`, which CI runs, refuses one
+  statically. Both were shown firing on an emptied M6 line.
+
+### Verification
+
+- **Campaigns**, in full on the ASan tree: v23 6/6, v24 8/8 (M6 by
+  `ASAN in decode_client_hello`, M8 by its allowlisted compile kill), v26
+  9/9 (Q2 by `ASAN in sodium_is_zero`), v28 10/10, v29 9/9, v35 2/2 -- 44 of
+  44, every row restored clean, the clean suite passing after each, no
+  residue.
+- **Suites.** Normal, ASan and UBSan 44/44 each (`liboqs_minimal` is the
+  44th), each tree proven current in the same invocation; UBSan 0
+  `runtime error` lines. The fuzz tree's 36 fuzz-labelled tests pass.
+- **Fuzzing.** `fuzz_keys` 600 s: 1,918,221 runs, no crash.
+- **gcc 16** at `-O3 -Werror` compiled every changed C file.
+- **Documents.** Anchors 260 across 27 campaigns, and no spec line without an
+  expectation; spec constants and names OK; the claim map's 197 citations
+  all resolve; the repository secret scan finds 0 violations.

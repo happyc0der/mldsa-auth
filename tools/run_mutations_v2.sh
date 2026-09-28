@@ -10,8 +10,16 @@
 #
 #   run_mutations_v2.sh <repo> <scratch> <mutate.py> <spec-file> [build-dir]
 #
-# spec file: one line per mutation, ID|ctest-regex|;-separated FAIL texts
-#            (empty FAIL texts = "must fail somehow", e.g. a crash).
+# spec file: one line per mutation, ID|ctest-regex|;-separated expectations.
+#   An expectation is text that must appear on a "FAIL: " line -- a named
+#   check. A kill with none is refused before anything is built (audit
+#   finding F90): "must fail somehow" credited nine mutations whose kills no
+#   one had read, and reading them found two oracles, a scanner and a bench
+#   whose messages the runner could not see.
+#   "ASAN in <function>" is the one other form, for a defect only a
+#   sanitizer can see (a read past a buffer that returns plausible bytes, or
+#   a length that wraps inside the library): it needs an AddressSanitizer
+#   ERROR report with a stack frame in <function>.
 #
 # A mutation that does not COMPILE is KILLED automatically (V2-4 hardening):
 # a static assert or type error catches the defect earlier than any test, so
@@ -35,6 +43,10 @@ ALLOWED="$(cd "$(dirname "$MUTATE")" && pwd)/compile_kills_allowed.txt"
 SNAP="$SCRATCH/snapshot_v2"; LOG="$SCRATCH/mutation_v2-logs"
 rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 cd "$REPO" || exit 2
+
+# ---- every kill must be named (F90) --------------------------------------
+unnamed=$(awk -F'|' '$1 != "" && $1 !~ /^#/ && $3 == "" { print $1 }' "$SPEC" | tr '\n' ' ')
+[ -z "$unnamed" ] || { echo "FATAL: spec $SPEC has mutation(s) with no expected check: $unnamed"; exit 3; }
 
 # ---- discovery (never a hardcoded list) ---------------------------------
 # ---- platform shim (V3-1) ------------------------------------------------
@@ -170,11 +182,21 @@ while IFS='|' read -r M TESTRE WANT; do
   missing=""
   if [ -n "${WANT:-}" ]; then
     IFS=';' read -ra WL <<< "$WANT"
-    for w in "${WL[@]}"; do grep -F "FAIL: " "$LOG/$M.test" | grep -qF "$w" || missing="$missing [$w]"; done
+    for w in "${WL[@]}"; do
+      case "$w" in
+        "ASAN in "*)
+          fn=${w#ASAN in }
+          grep -qF "ERROR: AddressSanitizer: " "$LOG/$M.test" &&
+            grep -qE "#[0-9]+ 0x[0-9a-f]+ in ${fn}[ +]" "$LOG/$M.test" || missing="$missing [$w]"
+          asan=1 ;;
+        *) grep -F "FAIL: " "$LOG/$M.test" | grep -qF "$w" || missing="$missing [$w]" ;;
+      esac
+    done
   fi
   how=""
   grep -qE "SegFault|SEGFAULT" "$LOG/$M.test" && how=" via SegFault"
   grep -qE "Subprocess aborted|SIGABRT" "$LOG/$M.test" && how=" via abort"
+  [ "${asan:-0}" = 1 ] && how=" + ASAN"; asan=0
   n=$(grep -c "FAIL: " "$LOG/$M.test")
   if [ $ex -ne 0 ] && [ -z "$missing" ]; then res="KILLED(${n} named${how})"; else res="SURVIVED(BAD:$missing)"; overall=1; fi
   finish_mutation "$M" "$prov" "$res"

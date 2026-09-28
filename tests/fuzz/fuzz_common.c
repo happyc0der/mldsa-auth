@@ -15,7 +15,9 @@ const uint8_t FUZZ_ID_B[FUZZ_ID_B_LEN] = {'b', 'o', 'b'};
 uint64_t fuzz_clock_now = FUZZ_CLOCK_T0;
 
 _Noreturn void fuzz_fail(const char *file, int line, const char *cond, const char *msg) {
-    fprintf(stderr, "FUZZ ORACLE FAILURE [%s] %s:%d: %s -- %s\n", fuzz_target_name, file, line, msg, cond);
+    /* "FAIL: " before the message, so a mutation campaign can name the oracle
+     * that fired rather than only see the abort (audit finding F90). */
+    fprintf(stderr, "FUZZ ORACLE FAILURE [%s] %s:%d: FAIL: %s -- %s\n", fuzz_target_name, file, line, msg, cond);
     fflush(stderr);
     if (fuzz_failure_hook != NULL) {
         void (*hook)(void) = fuzz_failure_hook;

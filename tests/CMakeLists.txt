@@ -238,6 +238,14 @@ add_test(NAME client_links_no_sqlite_control
                  $<TARGET_FILE:mldsa_authd_bin> $<TARGET_FILE:mldsa_authd_bin>)
 set_tests_properties(client_links_no_sqlite_control PROPERTIES WILL_FAIL TRUE)
 
+# V4-14d (audit finding F91): the liboqs this project links holds ML-DSA and
+# ML-KEM and no stateful-signature algorithm, read from the archive itself --
+# so the advisories in LMS/HSS and XMSS cannot reach this build even while
+# the pinned liboqs is in their range. Its controls (an added LMS symbol, an
+# empty archive) are recorded in docs/decisions.md.
+add_test(NAME liboqs_minimal
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/liboqs_minimal.sh $<TARGET_FILE:oqs>)
+
 add_executable(test_authd_localapi test_authd_localapi.c)
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})

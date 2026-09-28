@@ -914,13 +914,13 @@ static void scan_path(scan_t *s, const char *path) {
 static int derivable_from_public(const mldsa_keypair_t *kp) {
     int ok = 1;
     if (memcmp(kp->secret_key, kp->public_key, SK_RHO_LEN) != 0) {
-        printf("SCANNER ABORT: sk[0..32) != pk[0..32) -- rho is not the shared public prefix this scanner assumes\n");
+        printf("FAIL: SCANNER ABORT: sk[0..32) != pk[0..32) -- rho is not the shared public prefix this scanner assumes\n");
         ok = 0;
     }
     uint8_t tr[SK_TR_LEN];
     OQS_SHA3_shake256(tr, sizeof(tr), kp->public_key, MLDSA_PUBLIC_KEY_BYTES);
     if (sodium_memcmp(tr, kp->secret_key + SK_TR_OFF, sizeof(tr)) != 0) {
-        printf("SCANNER ABORT: sk[64..128) != SHAKE256(pk, 64) -- tr is not derivable as this scanner assumes\n");
+        printf("FAIL: SCANNER ABORT: sk[64..128) != SHAKE256(pk, 64) -- tr is not derivable as this scanner assumes\n");
         ok = 0;
     }
     sodium_memzero(tr, sizeof(tr));

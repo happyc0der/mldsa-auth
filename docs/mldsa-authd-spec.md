@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.8, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c errata)
+# mldsa-authd — deployment specification (v1.9, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -139,14 +139,25 @@ none, and the step that implements a requirement ships its pin.
    error paths, exactly as spec-v2 Req 4.2 requires of the protocol code.
 3. **Constant-time comparison** of every secret-derived value: token hashes,
    code hashes, ticket hashes, MACs, digests. Identity/handle comparison uses
-   `sodium_memcmp` after an explicit length check.
+   `sodium_memcmp` after an explicit length check. **One stated exception**
+   (erratum 43): token, code and ticket hashes are also the store's LOOKUP
+   keys, and SQLite finds the row by equality on an index, which is not
+   constant-time. That is accepted, for a stated reason: each hash is the
+   SHA-256 of a 256-bit uniformly random secret, so what the lookup's timing
+   could reveal is how much of a presented value's HASH matches a stored one
+   -- and a matching hash prefix brings an attacker no closer to a value that
+   hashes to it. Everything compared after the lookup (the state hash, MACs,
+   digests, identities) uses `sodium_memcmp`.
 4. **Tokens, login codes, recovery codes and enrollment tickets are never
    stored in the clear.** Tokens, codes and tickets are stored as SHA-256 of
    the value; recovery codes as `crypto_pwhash_str` (Argon2id). A stolen
    database yields no usable bearer secret.
 5. **A login code is single-use, expires in ≤ 60 s, and is bound** to
-   `{user, handle, handshake_id, SHA-256(state)}`. `EXCHANGE` MUST present the
-   same `state` the code was issued against.
+   `{user, handle, SHA-256(state)}`. `EXCHANGE` MUST present the same `state`
+   the code was issued against. The code is also RECORDED with the
+   `handshake_id` of the session that issued it, for the audit trail; that is
+   not a binding `EXCHANGE` checks, since the site presenting the code cannot
+   know it (erratum 44).
 6. **Uniform responder flow.** An unknown, revoked, superseded or disabled
    identity MUST produce the same observable message sequence as a valid
    identity whose ClientAuth signature fails (§7.3).
@@ -1255,3 +1266,13 @@ Two findings the review packet surfaced, fixed rather than documented:
 |---|---|---|---|
 | 41 | 16 | `site_socket` without `site_uids`, and `proxy_protocol = v2` without `proxy_uids`, are refused | an omitted allowlist silently turned off the peer-credential check Req 11 requires, and `--check-config` called the configuration valid. Finding **F92** |
 | 42 | 10.3 | `revoke=all`'s revocations are part of the recovery's one transaction | they were separate transactions after the consume had committed, so a failure part-way left the code spent and only some devices revoked, against Req 14. Finding **F93** |
+
+### Revision v1.9 (V4-14d)
+
+Two requirements that claimed more than the code does, corrected to say what
+it does and why that is enough:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 43 | 5 (Req 3) | the store's hash lookups named as an accepted exception to constant-time comparison, with the reason | Req 3 listed token, code and ticket hashes among values compared in constant time, and the store finds them by SQLite index equality. The practical risk is small -- the timing concerns the SHA-256 of a 256-bit random secret -- but the requirement claimed otherwise and gave no argument. Finding **F95** |
+| 44 | 5 (Req 5) | "bound to `{user, handle, handshake_id, SHA-256(state)}`" becomes "bound to `{user, handle, SHA-256(state)}`, recorded with the `handshake_id`" | nothing checks the `handshake_id` when a code is spent, and nothing can: the site does not know it. Finding **F96** |

@@ -30,6 +30,15 @@ so `-Werror` refused them and no test was ever asked; two of them turned out to
 be caught by no test at all (audit finding F79). Write a mutation so it changes
 a value and keeps every use.
 
+**Since V4-14d every kill must be named** (audit finding F90). A spec line is
+`ID|ctest-regex|expectations`, where each `;`-separated expectation is text
+that must appear on a `FAIL: ` line. An empty list, which used to mean "must
+fail somehow", is refused before anything is built, and
+`audit/check_mutation_anchors.py` refuses one in CI. The one other form is
+`ASAN in <function>`, for a defect only a sanitizer can see: it needs an
+AddressSanitizer ERROR report with a stack frame in that function (today v24
+M6 and v26 Q2).
+
 ```sh
 tools/run_mutations_v2.sh <repo> <scratch-dir> <mutate.py> <spec-file> [build-dir]
 tools/check_sanitizer_link.sh <build-dir> asan|ubsan

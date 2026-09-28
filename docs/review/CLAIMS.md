@@ -155,7 +155,7 @@ the most important thing on this page.
 - mutation `v26 Q1` — the receiver accepts nonzero padding
 - mutation `v26 Q2` — content_len not bounded against the inner
 - fuzz `session` — in inner mode, an inner under 2 bytes, content_len past the inner, or any nonzero padding byte is MALFORMED and terminal
-**Not established:** the named checks test the first and last padding byte; the bytes between rest on the fuzz model. Q2's kill names no check (audit F90).
+**Not established:** the named checks test the first and last padding byte; the bytes between rest on the fuzz model. Q2 is named only as `ASAN in sodium_is_zero`: its unbounded length wraps inside the padding check, and the process faults before any check can print (audit F90).
 
 ---
 
@@ -169,6 +169,7 @@ the most important thing on this page.
 - mutation `v46 E3` — a failed XChaCha20-Poly1305 decrypt of the envelope is ignored
 - fuzz `envelope` — an independent model of §12's MLDSAEK1 header rules predicts FORMAT/PARAMS/OK, and `keyfile_parse_header` must agree
 - tool `tools/check_backend_symbols.sh` — one optimised liboqs backend linked, none portable
+- check `liboqs_minimal` "no LMS, HSS, LM-OTS or XMSS symbol" — the linked `liboqs.a` holds ML-DSA and ML-KEM and no stateful-signature algorithm, so the advisories in F91 cannot reach it
 **Not established:** nothing scans `src/` or `apps/` for primitives outside the approved wrappers. The envelope tests show the envelope agrees with itself; no test opens an MLDSAEK1 file independently with raw `crypto_pwhash` and `crypto_aead_*`, so "composes without modifying either" rests on review.
 
 ### D2 — Secrets live in `secure_mem` and are wiped on every path
@@ -190,7 +191,7 @@ the most important thing on this page.
 - mutation `v47 S6` — the state-hash `sodium_memcmp` in the code's consumption disabled
 - mutation `v53 F7` — the client's ROTATE_ACK fingerprint comparison bypassed
 - tool `tools/audit/constant_time_inventory.sh` — every comparison site in `src/` and `apps/`, labelled constant-time or plain
-**Not established:** weak. Nothing measures timing, and every mutation REMOVES a comparison; none swaps `sodium_memcmp` for `memcmp`, which no test would notice. **And the requirement's own list is not met as written** (audit **F95**, open): token, login-code and ticket hashes are found by SQLite `WHERE ..._hash = ?` equality on an index, not compared with `sodium_memcmp`. A timing difference there reveals something about a SHA-256 of a 256-bit secret, not the secret -- an arguable acceptance, but the spec does not say it makes one.
+**Not established:** weak. Nothing measures timing, and every mutation REMOVES a comparison; none swaps `sodium_memcmp` for `memcmp`, which no test would notice. Token, login-code and ticket hashes are found by SQLite `WHERE ..._hash = ?` equality on an index, not compared with `sodium_memcmp`; since V4-14d the requirement names that as an accepted exception and argues it (erratum 43, audit F95) -- the timing concerns the SHA-256 of a 256-bit random secret, not the secret. The argument is this document's, not a measurement.
 
 ### D4 — Tokens, login codes, recovery codes and enrollment tickets are never stored in the clear
 - check `test_authd_localapi` "recovery: the plaintext code is NOT in the store (Req 4)"
@@ -211,7 +212,7 @@ the most important thing on this page.
 - mutation `v47 S7` — a consumed code is never marked used, so it replays
 - mutation `v48b C4` — the state hash taken over zero bytes (killed only since V4-14a's WebSocket state test)
 - proverif "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1)) is true"
-**Not established:** expiry is checked against the lifetime LOGIN_CODE advertises; no test presents an EXPIRED code to EXCHANGE, so the store's refusal is untested and unmutated. `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it), so "bound to `handshake_id`" means "recorded with", which the spec should say (audit **F96**). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
+**Not established:** expiry is checked against the lifetime LOGIN_CODE advertises; no test presents an EXPIRED code to EXCHANGE, so the store's refusal is untested and unmutated. `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it); since V4-14d the requirement says "recorded with", not "bound to" (erratum 44, audit F96). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
 
 ### D6 — Uniform responder flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"

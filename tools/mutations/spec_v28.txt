@@ -1,9 +1,9 @@
-X1|^fuzz_no_committed_secrets$|
+X1|^fuzz_no_committed_secrets$|more kept windows than the layout arithmetic allows
 X2|^fuzz_no_committed_secrets$|scanner control C1;scanner control C2
 X3|^fuzz_no_committed_secrets$|scanner control C1;scanner control C6.1
-X4|^fuzz_no_committed_secrets$|
-X5|^fuzz_no_committed_secrets$|
-X6|^fuzz_no_committed_secrets$|
+X4|^fuzz_no_committed_secrets$|fewer kept windows than the layout arithmetic requires
+X5|^fuzz_no_committed_secrets$|fewer kept windows than the layout arithmetic requires
+X6|^fuzz_no_committed_secrets$|SCANNER ABORT: sk[64..128) != SHAKE256(pk, 64)
 X7|^fuzz_no_committed_secrets$|scanner control C3.1
 X8|^fuzz_no_committed_secrets$|scanner control C3.1;scanner control C3.2;scanner control C3.3
 X9|^fuzz_no_committed_secrets$|scanner control C5.2

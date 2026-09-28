@@ -51,9 +51,11 @@ not compile.**
   range. The build sets `OQS_MINIMAL_BUILD="SIG_ml_dsa_65;KEM_ml_kem_768"`,
   and the built `liboqs.a` holds **0** LMS/HSS symbols and **0** XMSS symbols,
   against 8 ML-DSA ones (the control that `nm` found the library at all).
-  Recorded as audit finding **F91**: not exposed, and the pin should still
-  move to 0.17.0 at the next dependency update, so that the claim does not
-  rest on a build flag alone.
+  Recorded as audit finding **F91**. **0.17.0 has not been released** (checked
+  again 2026-09-28: the latest release is 0.16.0), so the pin stays on a
+  release. Instead the claim no longer rests on a build flag: the CTest
+  `liboqs_minimal` reads the built archive and fails if any LMS, HSS, LM-OTS
+  or XMSS symbol appears in it. Move to 0.17.0 when it exists.
 - Every other liboqs advisory is fixed at or before 0.16.0:
   - GHSA-2wxh-55qf-c7wg / CVE-2026-46344 and GHSA-wf7v-fhxj-73m2 /
     CVE-2026-44518: XMSS, fixed in 0.16.0, and not compiled.

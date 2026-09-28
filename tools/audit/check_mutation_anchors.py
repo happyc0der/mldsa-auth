@@ -68,8 +68,14 @@ bad = checked = 0
 specs = sorted((repo/"tools/mutations").glob("spec_v*.txt"))
 for spec in specs:
     ver = spec.name[len("spec_"):-len(".txt")]
-    want = [l.split("|")[0].strip() for l in spec.read_text().splitlines()
-            if l.strip() and not l.strip().startswith("#")]
+    lines = [l for l in spec.read_text().splitlines() if l.strip() and not l.strip().startswith("#")]
+    want = [l.split("|")[0].strip() for l in lines]
+    # Every kill must name its check (audit finding F90) -- the runner
+    # refuses such a spec too, but only when a campaign runs; this is CI's.
+    for l in lines:
+        f = l.split("|")
+        if len(f) != 3 or not f[2].strip():
+            print(f"UNNAMED {ver} {f[0]}: no expected check (ID|ctest-regex|expectations)"); bad += 1
     sc = repo/"tools/mutations"/f"mutate_{ver}.py"
     tree = ast.parse(sc.read_text()); env = {}; entries = []
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}

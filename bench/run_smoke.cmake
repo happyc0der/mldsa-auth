@@ -15,6 +15,15 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND _required_keys "cpu scaling" "virtualization")
 endif()
 
+# CMake re-wraps a FATAL_ERROR message at about 80 columns, which splits the
+# failed requirement across lines where no grep can find it -- so a mutation
+# campaign saw only "bench_smoke FAILED" and could not say which check fired
+# (audit finding F90). The STATUS line is printed verbatim.
+function(smoke_fail text)
+  message(STATUS "FAIL: bench_smoke: ${text}")
+  message(FATAL_ERROR "bench_smoke FAILED: ${text}")
+endfunction()
+
 function(check_environment_block exe out)
   foreach(_key IN LISTS _required_keys)
     # TWO spaces: values are column-aligned, so a key is followed by several
@@ -22,17 +31,17 @@ function(check_environment_block exe out)
     # With a single space, "cpu scaling" satisfied the "cpu" requirement and a
     # deleted cpu line went unnoticed -- V3-2 mutation V1.
     if(NOT out MATCHES "\n  ${_key}  +([^\n]*)")
-      message(FATAL_ERROR "bench_smoke FAILED: ${exe} environment block has no '${_key}' line\n${out}")
+      smoke_fail("${exe} environment block has no '${_key}' line\n${out}")
     endif()
     set(_value "${CMAKE_MATCH_1}")
     string(STRIP "${_value}" _value)
     if(_value STREQUAL "")
-      message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports '${_key}' with an empty value -- an unreadable fact must print unknown (<why>), never nothing")
+      smoke_fail("${exe} reports '${_key}' with an empty value -- an unreadable fact must print unknown (<why>), never nothing")
     endif()
     # A value the binary could not read must SAY so, so a reader can tell a
     # measured fact from a missing one.
     if(_value MATCHES "^(unknown|\\(null\\))$")
-      message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports '${_key}' as a bare '${_value}' with no reason")
+      smoke_fail("${exe} reports '${_key}' as a bare '${_value}' with no reason")
     endif()
     # A negative number in an environment block is a sentinel that escaped,
     # never a measurement: sysctl_long() returns -1 for an absent key, and
@@ -40,7 +49,7 @@ function(check_environment_block exe out)
     # GitHub's macOS runner (V3-3). Anchored to a token boundary so version
     # strings like "clang-2100.1.1.101" and flags like "-O3" do not match.
     if(_value MATCHES "(^| )-[0-9]")
-      message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports '${_key}' as '${_value}' -- a negative sentinel escaped instead of unknown (<why>)")
+      smoke_fail("${exe} reports '${_key}' as '${_value}' -- a negative sentinel escaped instead of unknown (<why>)")
     endif()
   endforeach()
   # On Linux the cpu line must be derived from /proc/cpuinfo, not invented:
@@ -59,7 +68,7 @@ function(check_environment_block exe out)
     endif()
     if(_model STREQUAL "")
       if(NOT _cpu MATCHES "unknown \\(")
-        message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports cpu '${_cpu}' but /proc/cpuinfo has no model name -- it must say unknown (<why>)")
+        smoke_fail("${exe} reports cpu '${_cpu}' but /proc/cpuinfo has no model name -- it must say unknown (<why>)")
       endif()
     else()
       # LITERAL containment, never MATCHES: a real x86_64 model name is
@@ -70,7 +79,7 @@ function(check_environment_block exe out)
       # AMD runner whose model name happens to contain no metacharacters.
       string(FIND "${_cpu}" "${_model}" _idx)
       if(_idx LESS 0)
-        message(FATAL_ERROR "bench_smoke FAILED: ${exe} reports cpu '${_cpu}' which does not contain /proc/cpuinfo's model name '${_model}'")
+        smoke_fail("${exe} reports cpu '${_cpu}' which does not contain /proc/cpuinfo's model name '${_model}'")
       endif()
     endif()
   endif()
@@ -80,7 +89,7 @@ foreach(_exe "${BENCH_PRIMITIVES}" "${BENCH_HANDSHAKE}" "${BENCH_SESSION}" "${BE
   message(STATUS "bench_smoke: ${_exe} --smoke")
   execute_process(COMMAND "${_exe}" --smoke RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
   if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "bench_smoke FAILED: ${_exe} exited ${_rc}\n${_out}\n${_err}")
+    smoke_fail("${_exe} exited ${_rc}\n${_out}\n${_err}")
   endif()
   check_environment_block("${_exe}" "${_out}")
 endforeach()

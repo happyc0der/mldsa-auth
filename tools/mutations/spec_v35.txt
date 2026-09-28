@@ -1,2 +1,2 @@
-U2|^bench_smoke$|
-U3|^bench_smoke$|
+U2|^bench_smoke$|core_count must report an absent sysctl as unknown
+U3|^bench_smoke$|environment block has no 'cpu' line

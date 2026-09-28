@@ -30,7 +30,9 @@ static const char *g_suite = "";
 void bench_fail(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "BENCH FAILED: ");
+    /* "FAIL: " so a mutation campaign can name the requirement that failed
+     * (audit finding F90). */
+    fprintf(stderr, "FAIL: bench: ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
