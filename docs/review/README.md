@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 94 findings (F1–F96), with severity, evidence and
    disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 40 errata, each
+3. The two specifications. The deployment spec's §20 lists 42 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 43 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 233 committed defects in 26 campaigns, each of which must be
+- **Mutations**: 238 committed defects in 27 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -75,13 +75,15 @@ system, which decides who may enroll.
 
 ## What is open, and where to look hardest
 
-Found while building this packet, and **not fixed in it**:
+Building this packet found seven findings. The three medium ones were fixed
+before it was frozen (V4-14c): **F92** (an omitted uid allowlist turned off
+Req 11's check), **F93** (recovery with `revoke=all` spanned several
+transactions, against Req 14) and **F94** (the UBSan build did not stop on
+undefined behaviour). Each fix has a test shown able to fail, and the audit
+register says how. Still open:
 
 | Finding | Severity | In one line |
 |---|---|---|
-| **F92** | Med | Omitting `site_uids` or `proxy_uids` turns off the peer-credential check (Req 11) and the config calls itself valid |
-| **F93** | Med | Recovery with `revoke=all` spans several transactions (against Req 14) |
-| **F94** | Med | The UBSan build does not stop on undefined behaviour, so that gate cannot fail on UB |
 | F95 | Low | Req 3 names secret hashes as compared in constant time; the store finds them by SQLite equality |
 | F90 | Low | Nine mutations are killed without a named check |
 | F96 | Info | "Bound to `handshake_id`" means "recorded with" |
@@ -110,8 +112,8 @@ rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.
 6. **The browser trust chain** (§14): the module is compiled from the C core
    with a pinned Emscripten, checked against a native known-answer golden, and
    served under a strict CSP. What remains trusted that should not be?
-7. **The findings above.** Particularly whether F92 and F93 should block a
-   public deployment.
+7. **The findings above**, and the three fixed in V4-14c: are the fixes
+   whole?
 
 ## Frozen at
 

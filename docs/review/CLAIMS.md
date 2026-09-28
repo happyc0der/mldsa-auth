@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 233 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 238 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -111,7 +111,8 @@ the most important thing on this page.
 - ci `Release + install + hardening (Linux, ${{ matrix.cc }})` — runs `check_hardening.sh --require` on the installed tree
 - ci `${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}` — ASan and UBSan on Linux and macOS, instrumentation proven, then the whole suite
 - ci `mutations · ${{ matrix.campaign }}` — every campaign on a fresh, proven ASan tree
-**Not established:** no binary check confirms `-Wall -Wextra -Werror` or `_FORTIFY_SOURCE` (the canary is the only compiler-flag evidence). **And the UBSan gate cannot fail on undefined behaviour** (audit **F94**, open): the build is plain `-fsanitize=undefined`, with neither `-fno-sanitize-recover` nor `halt_on_error`, so a UB report prints and the test still passes; and the daemon processes the e2e tests start write to their own logs, which nothing searches. No such report appears in the last full local UBSan run or the latest CI sanitizer jobs, but the gate had never been able to say so.
+- check `authd_e2e` "PASS: E2E: no sanitizer report in any daemon or client log"
+**Not established:** no binary check confirms `-Wall -Wextra -Werror` or `_FORTIFY_SOURCE` (the canary is the only compiler-flag evidence). Until V4-14c the UBSan build did not stop on undefined behaviour, so a report printed and the test passed (audit F94, fixed: `-fno-sanitize-recover=undefined`, shown both ways on a planted overflow). No mutation covers that flag -- the campaigns mutate C sources only.
 
 ### P9 — No secret-dependent control flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
@@ -274,7 +275,9 @@ the most important thing on this page.
 - mutation `v50b J4` — protocol listeners lose their uid allowlist
 - mutation `v49a A1` — the ADMIN table is served on site.sock
 - mutation `v49b S1` — every socket is 0660, so admin.sock is reachable by its group
-**Not established:** the only test that refuses a uid outside an allowlist uses a WebSocket listener the test builds itself; nothing tests that `site.sock` or `admin.sock` refuse a uid missing from `site_uids`/`admin_uids`. **And an OMITTED allowlist disables the check** (audit **F92**, open): `listener_accept_ex` skips peer credentials when the list is empty, `site_uids` and `proxy_uids` have no default, and a config naming neither passes `--check-config` as "valid" -- so an unconfigured `site.sock` is protected by its 0660 file mode alone. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
+- check `test_authd_evloop` "cfg: a site socket without site_uids is refused (Req 11)"
+- mutation `v57 HC1` — a site socket without `site_uids` accepted again
+**Not established:** the only test that refuses a uid outside an allowlist uses a WebSocket listener the test builds itself; nothing tests that `site.sock` or `admin.sock` refuse a uid missing from `site_uids`/`admin_uids` at accept time. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
 
 ### D12 — The client address used for rate limiting is obtained from a source the client cannot forge
 - check `test_authd_ws` "proxy-loop: a preamble with no client address is closed, and nothing is said"
@@ -285,7 +288,9 @@ the most important thing on this page.
 - mutation `v50b J1` — only the first byte of the 12-byte PROXY v2 signature is compared
 - mutation `v50b J11` — a refused no-address connection still gets its queued 101
 - fuzz `ws` — a client address never appears before the PROXY preamble completes; a poisoned connection refuses every later push
-**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11), and `proxy_protocol = v2` with no `proxy_uids` is accepted -- then any member of the socket's group can state an address (audit **F92**). `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. The real-Caddy leg (`tests/caddy_proxy.sh`) is hand-run, not a CTest and not in CI.
+- check `test_authd_evloop` "cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)"
+- mutation `v57 HC2` — `proxy_protocol = v2` without `proxy_uids` accepted again
+**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11); `proxy_protocol = v2` now requires `proxy_uids` (audit F92, fixed in V4-14c), but nothing checks that the uid named IS the proxy's. `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. The real-Caddy leg (`tests/caddy_proxy.sh`) is hand-run, not a CTest and not in CI.
 
 ### D13 — Logging never contains
 - check `test_authd_conn` "logscan: the login code never appears in the daemon's log"
@@ -307,4 +312,6 @@ the most important thing on this page.
 - mutation `v49d G15` — user creation commits separately and survives a refused enrollment's rollback
 - fuzz `localapi` — an ERR response never advances the audit chain (except RECOVERY-USE `invalid`, which must)
 - tool `tools/check_store_fault_hook.sh` — the fault-injection hook is absent from the shipped library and binaries, present in the test
-**Not established:** only two fault-injection points exist (the rotation, and the recovery consume); revoke, disable and enroll run in transactions but are never crashed mid-way. **And one lifecycle change is not a single transaction** (audit **F93**, open): RECOVERY-USE with `revoke=all` commits the code's consumption, then revokes each device in its own transaction, and stops at the first store error -- so a failure or a crash between them leaves the code spent and only some devices revoked, which this requirement says is impossible.
+- check `test_authd_store` "revoke-all: after the fault BOTH devices are still active -- not one of two"
+- mutation `v57 HC3` — each revoke=all revocation commits on its own again (the pre-F93 shape)
+**Not established:** three fault-injection points exist (the rotation, the recovery consume, and between revoke=all's revocations); revoke, disable and enroll run in transactions but are never crashed mid-way. RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.

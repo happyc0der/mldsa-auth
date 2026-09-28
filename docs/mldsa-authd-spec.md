@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.7, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d errata)
+# mldsa-authd — deployment specification (v1.8, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -663,7 +663,9 @@ mean nothing.
 **`revoke=`** on `RECOVERY-USE` defaults to `none`. `revoke=all` is the
 stolen-device path: every one of that user's active devices is revoked, their
 tokens deleted and their live connections closed, in addition to issuing the
-ticket.
+ticket. **The code's consumption, the ticket and every revocation are one
+transaction** (erratum 42): the recovery commits whole or not at all, as Req 14
+requires, and the live connections close only once it has committed.
 
 **Recovery of an operator is administrative.** `RECOVERY-ISSUE` and
 `RECOVERY-USE` answer `not-permitted` for a user whose role is `operator`,
@@ -991,6 +993,14 @@ The mode is defence in depth only: every one of them additionally checks the
 connecting peer's uid against its allowlist (Req 11), and a socket whose
 filesystem permissions were wrong would still refuse an unlisted peer.
 
+**An allowlist cannot be left out by accident** (erratum 41). To the listener,
+an empty allowlist means "check no peer credentials at all", so a
+configuration that names `site_socket` without `site_uids`, or sets
+`proxy_protocol = v2` without `proxy_uids`, is refused at `--check-config`. The
+proxy-facing listener WITHOUT PROXY v2 -- a development shape, where a client
+connects directly and no address is believed -- still takes `proxy_uids`
+optionally.
+
 **Socket paths must fit `sun_path`** — 104 bytes on macOS, 108 on Linux — which
 is shorter than the 255 bytes the configuration parser otherwise allows. A path
 that passes every byte-level check and no kernel can bind is refused by
@@ -1236,3 +1246,12 @@ What a public deployment needs that milestone A did not:
 | 38 | 7.3, 17, 18 | an authenticated login's per-address token is refunded; the shared-address lockout recorded as a limitation | behind a carrier-grade NAT thousands of users share one IPv4 address and, at 5 a minute, were spending each other's budget on logins that were never probes. Finding **F81** |
 | 39 | 13 | `authd_client --passphrase-prompt`; `keygen` enforces the passphrase policy on a file too; `pseudonym` added to §13's command list (erratum 36 missed it) | a person's passphrase in a file is a copy of it at rest; the terminal is the other channel no other process can read. The policy was the browser's alone, so the CLI could seal a key under `password` |
 | 40 | 14 | the module's size restated (301,278 bytes; the common-password list was added after the last figure), headless-Chromium times added, phones stated as unmeasured, with the tool that measures them | V4-2 S6 promised re-measurement "in real browsers rather than extrapolating", and the sentence still quoted V4-13b's size. The phone measurement needs a person with a phone; none was run in V4-13d |
+
+### Revision v1.8 (V4-14c)
+
+Two findings the review packet surfaced, fixed rather than documented:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 41 | 16 | `site_socket` without `site_uids`, and `proxy_protocol = v2` without `proxy_uids`, are refused | an omitted allowlist silently turned off the peer-credential check Req 11 requires, and `--check-config` called the configuration valid. Finding **F92** |
+| 42 | 10.3 | `revoke=all`'s revocations are part of the recovery's one transaction | they were separate transactions after the consume had committed, so a failure part-way left the code spent and only some devices revoked, against Req 14. Finding **F93** |

@@ -40,10 +40,9 @@ tools/check_build_current.sh build-ubsan && tools/check_sanitizer_link.sh build-
 Each prints `OK: … is current`, `OK: asan|ubsan instrumentation present in all
 … executable(s)`, and `100% tests passed out of 40` -- or 43, with 41
 executables, when configured as this packet's trees were, with
-`-DMLDSA_WASM_DIR` and a browser found (the browser section below). **Read audit F94 before
-relying on the UBSan result**: that build does not stop on undefined
-behaviour, so a pass there means UBSan was linked and nothing crashed. Check
-for UB reports yourself:
+`-DMLDSA_WASM_DIR` and a browser found (the browser section below). Since
+V4-14c the UBSan build aborts on undefined behaviour (audit F94); before it, a
+UB report printed and the test still passed. To see it either way:
 
 ```bash
 grep -c 'runtime error' build-ubsan/Testing/Temporary/LastTest.log     # printed 0
@@ -89,7 +88,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-233 committed mutations in 26 campaigns, each a defect the tests must catch
+238 committed mutations in 27 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree:
 
 ```bash
@@ -105,7 +104,7 @@ check (audit F90). Before editing sources, check that every campaign still
 applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (255 anchors, 26 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (260 anchors, 27 campaigns)
 ```
 
 ## The formal model

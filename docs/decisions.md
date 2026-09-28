@@ -6140,3 +6140,55 @@ V4-14a nightly showed killed without a named check.
 - The phones remain unmeasured (V4-13d).
 - The tag is created only on instruction, after the CI step that runs the
   checker has been brought up on a branch and shown red.
+
+## V4-14c — the three medium findings, fixed before the packet is frozen
+
+The packet (V4-14b) surfaced three medium findings against requirements it
+describes. The user's decision: fix them first, so a reviewer gets a tree in
+which they are closed. Each was demonstrated before it was fixed, and each fix
+comes with a test that has been shown able to fail.
+
+- **F92: an omitted allowlist** (spec erratum 41). The listener treats an
+  empty uid allowlist as "check nothing", and the configuration could produce
+  one without a word. The parser now refuses `site_socket` without
+  `site_uids`, and `proxy_protocol = v2` without `proxy_uids`. The
+  proxy-facing listener without PROXY v2, the development shape that believes
+  no address, still takes `proxy_uids` optionally. It is pinned by five
+  `test_authd_evloop` checks and by a `fuzz_authd_config` property that
+  neither combination is ever accepted.
+- **F93: `revoke=all`** (spec erratum 42). The revocation became
+  `revoke_device_locked`, which runs inside its caller's transaction;
+  `store_revoke_device` wraps it in one of its own. `store_recovery_consume_ex`
+  runs it for every active device inside the transaction that spends the code
+  and issues the ticket. A new fault point sits between two revocations. The
+  test gives a user two devices and fires the fault after the first
+  revocation: after a reopen, both devices are still active and the code is
+  unspent. The control recreates the old shape by committing after each
+  revocation; it fails with "not one of two". v49d G14's anchor lived in the
+  handler's old loop and was re-anchored into the store, still as a changed
+  value.
+- **F94: UBSan that could not fail.** The UBSan configuration adds
+  `-fno-sanitize-recover=undefined`. The same planted signed overflow in
+  `test_passphrase` was run both ways: under the old flags it printed
+  `runtime error` and **Passed**; under the new ones, `Subprocess aborted`.
+  `authd_e2e` also now fails on any sanitizer report in the logs of the
+  daemons it starts, which ctest never saw. The fix is a CMake flag, which no
+  mutation can reach, so the control stands in for one.
+
+Campaign **v57 (HC)**: five mutations over the new code, each changing a value
+(HC1–HC2 the config refusals, HC3–HC5 the one transaction). The claim map now
+cites the new checks, and its D11, D12, D14 and P8 entries say what was fixed
+and what is still not established.
+
+### Verification
+
+- **Campaigns**, on the fresh ASan tree: v57 5 of 5 by name; v47 7 of 7 (S5's
+  text moved into the helper intact); v49d 15 of 15 (G14 in its new place).
+- **Suites.** Normal, ASan and UBSan 43/43 each, each tree proven current in
+  the same invocation. The UBSan tree was built with the new flag -- its first
+  full run that could fail on UB -- and holds 0 `runtime error` lines. The
+  gcc 16 tree 40/40, and the fuzz tree's 36 fuzz-labelled tests.
+- **Fuzzing.** `fuzz_authd_config` 600 s: 144,445,331 runs, no crash.
+- **gcc 16** at `-O3 -Werror` compiled every changed C file.
+- **Documents.** Anchors 260 across 27 campaigns; spec constants and names
+  OK; the claim map's 196 citations all resolve.

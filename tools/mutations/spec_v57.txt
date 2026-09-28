@@ -1,0 +1,5 @@
+HC1|^test_authd_evloop$|cfg: a site socket without site_uids is refused (Req 11)
+HC2|^test_authd_evloop$|cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)
+HC3|^test_authd_store$|revoke-all: after the fault BOTH devices are still active -- not one of two
+HC4|^test_authd_store$|revoke-all: the recovery revokes both devices and says so
+HC5|^test_authd_localapi$|the lost device is revoked
