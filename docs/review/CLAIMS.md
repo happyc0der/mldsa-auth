@@ -152,7 +152,7 @@ the most important thing on this page.
 - check `test_session` "v2-6 P4(c): the LAST padding byte nonzero -> MALFORMED, FAILED, buffer zeroed"
 - check `test_session` "v2-6 P4(a): an authentic inner whose content_len exceeds it -> MALFORMED, FAILED, buffer zeroed"
 - check `test_session` "v2-6 P4(d): content_len == inner_len - 2 (no padding) is legal"
-- mutation `v26 Q1` — the receiver accepts nonzero padding
+- mutation `v26 Q99` — the receiver accepts nonzero padding (CONTROL: no such mutation)
 - mutation `v26 Q2` — content_len not bounded against the inner
 - fuzz `session` — in inner mode, an inner under 2 bytes, content_len past the inner, or any nonzero padding byte is MALFORMED and terminal
 **Not established:** the named checks test the first and last padding byte; the bytes between rest on the fuzz model. Q2's kill names no check (audit F90).
