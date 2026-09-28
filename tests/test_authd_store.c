@@ -515,6 +515,58 @@ int main(void)
         }
     }
 
+    /* ---- revoke=all is part of the recovery's ONE transaction (V4-14c, F93) ----
+     * RECOVERY-USE with revoke=all used to spend the code in one transaction
+     * and revoke each device in its own, so a failure between them left the
+     * code spent and only some devices revoked. Now all of it commits together:
+     * a fault injected BETWEEN the two revocations must undo everything. */
+    {
+        store_t *s = fresh_store("ra.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open ra\n"); return 1; }
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkC, "site", "admin", NULL, 0) == STORE_OK &&
+              store_enroll_device(s, H2, sizeof H2, U1, sizeof U1, pkD, "site", "admin", NULL, 0) == STORE_OK,
+              "revoke-all: a user with two active devices");
+        const char *g[] = { "hash-x", "hash-y" };
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g, 2, 100, NULL) == STORE_OK, "revoke-all: two codes");
+        int64_t id = 0;
+        { count_ctx_t c = {0, 0};
+          (void)store_list_unused_recovery_codes(s, U1, sizeof U1, first_code_id, &c);
+          id = c.first; }
+
+        /* point 1 is consume's own (after the code is marked used); point 2
+         * comes after the FIRST revocation -- arm(1) fires there */
+        size_t revoked = 99;
+        store_fault_arm(1);
+        CHECK(store_recovery_consume_ex(s, id, U1, sizeof U1, TH2, 300, 900, 1, &revoked) != STORE_OK,
+              "revoke-all: a fault between the two revocations fails the whole recovery");
+        store_fault_arm(-1);
+        CHECK(revoked == 0u, "revoke-all: ...and reports nothing revoked");
+        store_close(s);
+
+        store_t *s2 = NULL;
+        uint8_t got[STORE_PK_BYTES];
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "revoke-all: reopen after the fault");
+        if (s2 != NULL) {
+            CHECK(store_lookup_active(s2, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_OK &&
+                  store_lookup_active(s2, H2, sizeof H2, got, NULL, 0, NULL, NULL) == STORE_OK,
+                  "revoke-all: after the fault BOTH devices are still active -- not one of two");
+            { count_ctx_t c = {0, 0};
+              CHECK(store_list_unused_recovery_codes(s2, U1, sizeof U1, count_code, &c) == STORE_OK && c.n == 2u,
+                    "revoke-all: after the fault the code is still unspent"); }
+            CHECK(store_audit_verify(s2) == STORE_OK, "revoke-all: the audit chain verifies after the rollback");
+
+            /* the happy path: both revoked, in one commit */
+            CHECK(store_recovery_consume_ex(s2, id, U1, sizeof U1, TH2, 300, 900, 1, &revoked) == STORE_OK &&
+                  revoked == 2u, "revoke-all: the recovery revokes both devices and says so");
+            CHECK(store_lookup_active(s2, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND &&
+                  store_lookup_active(s2, H2, sizeof H2, got, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                  "revoke-all: neither device resolves any more");
+            CHECK(store_audit_verify(s2) == STORE_OK, "revoke-all: the audit chain verifies");
+            store_close(s2);
+        }
+    }
+
     /* ---- the log pseudonym (V4-13d, spec §15 log_identities = hashed) ---- */
     {
         store_t *s = fresh_store("lp.sqlite3", dbp, sizeof dbp);

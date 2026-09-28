@@ -175,17 +175,13 @@ M = {
 
  # G14 -- revoke=all issues the ticket but leaves the stolen device working.
  # Two earlier forms died at COMPILE time instead, which says nothing about
- # whether any TEST can see the defect (the v49b I1 lesson): `revoked = 0u;`
- # leaves revoke_all_devices unreferenced (-Wunused-function), and neutering
- # first_active leaves `status` unused (-Wunused-parameter). Dropping the
- # revoke CALL keeps every symbol referenced -- store_revoke_device still has
- # h_revoke_device as a caller -- so what changes is behaviour, not linkage.
- "G14": (LA, [("""        if (store_revoke_device(app->store, c.handle, c.len, "recovery",
-                                (const uint8_t *)"recovery revoke=all", 19u) != STORE_OK) {
-            break;
-        }
-        revoked++;""",
-               """        break; /* MUTATION G14: the stolen device is never revoked */""")]),
+ # whether any TEST can see the defect (the v49b I1 lesson). V4-14c (F93)
+ # moved the revocations into store_recovery_consume_ex's own transaction, so
+ # the anchor moved with them: the in-transaction search for the next active
+ # device asks for a status no device has, the loop finds nothing, and every
+ # use is kept -- what changes is behaviour, not linkage.
+ "G14": (ST, [("""                "SELECT handle FROM devices WHERE user_id=?1 AND status='active' LIMIT 1;",""",
+               """                "SELECT handle FROM devices WHERE user_id=?1 AND status='none' LIMIT 1;", /* MUTATION G14: the stolen device is never revoked */""")]),
 }
 
 if MID not in M:

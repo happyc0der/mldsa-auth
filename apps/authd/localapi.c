@@ -868,45 +868,6 @@ static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *r
 
 /* --- recovery (V4-9d, spec §8 + §10.3) ----------------------------------- */
 
-/* Revokes every still-active device of a user, one at a time. A fixed array
- * would silently stop at its bound for a user with more devices than it holds,
- * so this re-asks the store for "the next active one" until there are none.
- * Bounded by a counter, not by trust in the store. */
-typedef struct { uint8_t handle[STORE_ID_MAX]; size_t len; int found; } first_active_t;
-
-static int first_active(void *vctx, const uint8_t *handle, size_t handle_len,
-                        const uint8_t *label, size_t label_len, const char *status,
-                        int64_t enrolled_at, int64_t last_seen,
-                        const uint8_t *pk_fp, size_t pk_fp_len)
-{
-    (void)label; (void)label_len; (void)enrolled_at; (void)last_seen; (void)pk_fp; (void)pk_fp_len;
-    first_active_t *c = (first_active_t *)vctx;
-    if (status == NULL || strcmp(status, "active") != 0 || handle_len > STORE_ID_MAX) {
-        return 0;
-    }
-    memcpy(c->handle, handle, handle_len);
-    c->len = handle_len;
-    c->found = 1;
-    return 1;
-}
-
-static size_t revoke_all_devices(authd_app_t *app, const uint8_t *user, size_t user_len)
-{
-    size_t revoked = 0;
-    for (size_t guard = 0; guard < 1024u; guard++) {
-        first_active_t c = { {0}, 0u, 0 };
-        if (store_list_devices(app->store, user, user_len, first_active, &c) != STORE_OK || !c.found) {
-            break;
-        }
-        if (store_revoke_device(app->store, c.handle, c.len, "recovery",
-                                (const uint8_t *)"recovery revoke=all", 19u) != STORE_OK) {
-            break;
-        }
-        revoked++;
-    }
-    return revoked;
-}
-
 static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const req_t *req)
 {
     static const char *const allowed[] = { "user", "count" };
@@ -1098,8 +1059,14 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     ev_action_t act;
     resp_t r;
     resp_init(&r);
-    const store_status_t cs = store_recovery_consume(app->store, code_id, user, user_len,
-                                                     thash, app->now_unix, expires);
+    /* revoke=all happens INSIDE the transaction that spends the code and
+     * issues the ticket (§10.3; Req 14; audit finding F93). It used to be a
+     * loop of separate revocations after the consume had committed, so a
+     * failure part-way left the code spent and only some devices revoked. */
+    size_t revoked = 0, closed = 0;
+    const store_status_t cs = store_recovery_consume_ex(app->store, code_id, user, user_len,
+                                                        thash, app->now_unix, expires,
+                                                        revoke_all, &revoked);
     if (cs == STORE_ERR_NOT_FOUND) {
         /* Verification ran outside the transaction, so another connection may
          * have spent this code in between. Indistinguishable from a wrong
@@ -1112,9 +1079,8 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         goto done;
     }
 
-    size_t revoked = 0, closed = 0;
     if (revoke_all) {
-        revoked = revoke_all_devices(app, user, user_len);
+        /* Live sessions close only once the revocations have committed. */
         closed = authd_app_close_user(app, user, user_len);
     }
 

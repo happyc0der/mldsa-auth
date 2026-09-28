@@ -329,6 +329,16 @@ store_status_t store_recovery_consume(store_t *s, int64_t code_id,
                                       const uint8_t ticket_hash[STORE_HASH_BYTES],
                                       int64_t now, int64_t expires_at);
 
+/* The same, and when `revoke_all` is set, every active device of `user_id`
+ * revoked (device row, active key, tokens, audit row each) INSIDE THE SAME
+ * transaction (§10.3 revoke=all; Req 14; audit finding F93). *revoked_out,
+ * when non-NULL, receives how many were revoked -- set only on success. */
+store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
+                                         const uint8_t *user_id, size_t user_id_len,
+                                         const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                         int64_t now, int64_t expires_at,
+                                         int revoke_all, size_t *revoked_out);
+
 /* ONE transaction: increments the failure count and, on reaching `threshold`,
  * sets recovery_locked_until = now + lock_seconds and resets the count, so a
  * user gets a fresh allowance once the lock expires rather than re-locking on

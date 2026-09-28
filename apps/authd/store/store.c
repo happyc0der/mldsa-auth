@@ -1153,20 +1153,23 @@ store_status_t store_rotate_key(store_t *s,
     return r;
 }
 
-store_status_t store_revoke_device(store_t *s,
-                                   const uint8_t *handle, size_t handle_len,
-                                   const char *by, const uint8_t *reason, size_t reason_len)
+/* Revokes one device INSIDE THE CALLER'S TRANSACTION: the device row, its
+ * active key and its tokens, plus the audit row. It never begins, commits or
+ * rolls back -- store_revoke_device wraps it in a transaction of its own, and
+ * store_recovery_consume_ex runs it for every device of the user inside the
+ * transaction that also spends the code and issues the ticket (F93: those used
+ * to be separate transactions, and a failure between them left a partially
+ * applied recovery, which Req 14 says is impossible). */
+static store_status_t revoke_device_locked(store_t *s,
+                                           const uint8_t *handle, size_t handle_len,
+                                           const char *by, const uint8_t *reason, size_t reason_len)
 {
-    if (s == NULL || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
-
-    store_status_t r = tx_begin(s);
-    if (r != STORE_OK) { return r; }
+    store_status_t r = STORE_OK;
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "UPDATE devices SET status='revoked', revoked_at=?2, revoked_by=?3, revoked_reason=?4"
             " WHERE handle=?1;", -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -1180,14 +1183,13 @@ store_status_t store_revoke_device(store_t *s,
         r = STORE_ERR_NOT_FOUND;
     }
     sqlite3_finalize(st);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (r != STORE_OK) { return r; }
 
     /* the active key goes with it */
     st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "UPDATE device_keys SET status='revoked', valid_to=?2 WHERE handle=?1 AND status='active';",
             -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -1196,11 +1198,10 @@ store_status_t store_revoke_device(store_t *s,
         r = STORE_ERR_DB;
     }
     sqlite3_finalize(st);
-    if (r != STORE_OK) { tx_rollback(s); return r; }
+    if (r != STORE_OK) { return r; }
 
     st = NULL;
     if (sqlite3_prepare_v2(s->db, "DELETE FROM tokens WHERE handle=?1;", -1, &st, NULL) != SQLITE_OK) {
-        tx_rollback(s);
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
@@ -1209,6 +1210,19 @@ store_status_t store_revoke_device(store_t *s,
     }
     sqlite3_finalize(st);
     if (r == STORE_OK) { r = audit_append(s, "device-revoke", NULL, 0, handle, handle_len, by); }
+    return r;
+}
+
+
+store_status_t store_revoke_device(store_t *s,
+                                   const uint8_t *handle, size_t handle_len,
+                                   const char *by, const uint8_t *reason, size_t reason_len)
+{
+    if (s == NULL || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
+
+    store_status_t r = tx_begin(s);
+    if (r != STORE_OK) { return r; }
+    r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
 }
@@ -1773,6 +1787,17 @@ store_status_t store_recovery_consume(store_t *s, int64_t code_id,
                                       const uint8_t ticket_hash[STORE_HASH_BYTES],
                                       int64_t now, int64_t expires_at)
 {
+    return store_recovery_consume_ex(s, code_id, user_id, user_id_len, ticket_hash,
+                                     now, expires_at, 0, NULL);
+}
+
+store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
+                                         const uint8_t *user_id, size_t user_id_len,
+                                         const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                         int64_t now, int64_t expires_at,
+                                         int revoke_all, size_t *revoked_out)
+{
+    if (revoked_out != NULL) { *revoked_out = 0u; }
     if (s == NULL || !id_ok(user_id, user_id_len) || ticket_hash == NULL) {
         return STORE_ERR_ARG;
     }
@@ -1843,9 +1868,60 @@ store_status_t store_recovery_consume(store_t *s, int64_t code_id,
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
 
+    /* revoke=all (§10.3): every active device of this user, in THIS
+     * transaction, so the code, the ticket and the revocations commit together
+     * or not at all (F93). One active handle at a time: each revocation takes
+     * its device out of the set, and the guard bounds a loop that a
+     * misbehaving store could otherwise keep feeding. */
+    size_t revoked = 0;
+    for (size_t guard = 0; revoke_all && guard < 1024u; guard++) {
+        uint8_t h[STORE_ID_MAX];
+        size_t hn = 0;
+        int found = 0;
+        st = NULL;
+        if (sqlite3_prepare_v2(s->db,
+                "SELECT handle FROM devices WHERE user_id=?1 AND status='active' LIMIT 1;",
+                -1, &st, NULL) != SQLITE_OK) {
+            tx_rollback(s);
+            return STORE_ERR_DB;
+        }
+        if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+            r = STORE_ERR_DB;
+        } else {
+            const int rc = sqlite3_step(st);
+            if (rc == SQLITE_ROW) {
+                const int n = sqlite3_column_bytes(st, 0);
+                if (n <= 0 || (size_t)n > sizeof h) {
+                    r = STORE_ERR_CORRUPT;
+                } else {
+                    memcpy(h, sqlite3_column_blob(st, 0), (size_t)n);
+                    hn = (size_t)n;
+                    found = 1;
+                }
+            } else if (rc != SQLITE_DONE) {
+                r = STORE_ERR_DB;
+            }
+        }
+        sqlite3_finalize(st);
+        if (r != STORE_OK) { tx_rollback(s); return r; }
+        if (!found) { break; }
+        r = revoke_device_locked(s, h, hn, "recovery",
+                                 (const uint8_t *)"recovery revoke=all", 19u);
+        if (r != STORE_OK) { tx_rollback(s); return r; }
+        revoked++;
+        /* Between two revocations: where the separate-transaction version
+         * left some devices revoked and others live. Armed only in tests. */
+        if (STORE_FAULT_POINT()) {
+            tx_rollback(s);
+            return STORE_ERR_DB;
+        }
+    }
+
     r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "ok");
     if (r != STORE_OK) { tx_rollback(s); return r; }
-    return tx_commit(s);
+    r = tx_commit(s);
+    if (r == STORE_OK && revoked_out != NULL) { *revoked_out = revoked; }
+    return r;
 }
 
 store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, size_t user_id_len,
