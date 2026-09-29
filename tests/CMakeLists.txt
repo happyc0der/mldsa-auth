@@ -137,6 +137,12 @@ target_compile_definitions(test_authd_store PRIVATE ${MLDSA_HARDENING_DEFS} MLDS
 target_compile_options(test_authd_store PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_link_options(test_authd_store PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_store COMMAND test_authd_store)
+# ...and this is that structural check, as a test. tools/check_store_fault_hook.sh
+# existed from V4-7 and the review packet's claim map cited it, but nothing ran
+# it -- no CTest, no workflow -- until V4-15a (audit finding F99). It needs the
+# whole tree built, which is what ctest runs against.
+add_test(NAME store_fault_hook
+         COMMAND /bin/bash ${PROJECT_SOURCE_DIR}/tools/check_store_fault_hook.sh ${CMAKE_BINARY_DIR})
 
 add_executable(test_authd_evloop test_authd_evloop.c)
 target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)

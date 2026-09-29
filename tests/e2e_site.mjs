@@ -8,20 +8,37 @@
  * second implementation written to agree with it.
  *
  *   node e2e_site.mjs <site.sock> <code-base64url>
+ *   node e2e_site.mjs <site.sock> --revoke <handle>
+ *
+ * The second form is the site's REVOKE-DEVICE (spec §8, Req 9): the device
+ * and its key are revoked and its live sessions closed. authd_admin has no
+ * revoke command -- revoking a device is the site's call -- so this is how
+ * the e2e drives it (V4-15a).
  *
  * Prints one JSON line on stdout and exits 0, or a reason on stderr and exits 1.
  */
 import { Authd, exchange, verify, logout } from '../examples/site-node/authd.mjs';
 
-const [sock, code] = process.argv.slice(2);
-if (!sock || !code) {
-  console.error('usage: e2e_site.mjs <site.sock> <code-base64url>');
+const [sock, code, revokeHandle] = process.argv.slice(2);
+if (!sock || !code || (code === '--revoke' && !revokeHandle)) {
+  console.error('usage: e2e_site.mjs <site.sock> <code-base64url>\n' +
+                '       e2e_site.mjs <site.sock> --revoke <handle>');
   process.exit(2);
 }
 
 let authd;
 try {
   authd = await new Authd(sock).connect();
+
+  if (code === '--revoke') {
+    const hex = (s) => Buffer.from(s, 'utf8').toString('hex');
+    const lines = await authd.request('REVOKE-DEVICE', { handle: hex(revokeHandle), reason: hex('e2e') });
+    if (!(lines[0] ?? '').startsWith('OK')) {
+      throw new Error(`REVOKE-DEVICE answered ${lines[0]}`);
+    }
+    console.log(JSON.stringify({ revoked: revokeHandle }));
+    process.exit(0);
+  }
 
   /* Milestone A's raw and Unix protocol listeners bind SHA-256("") as the
    * state, because `state` rides the WebSocket URL and those listeners have no

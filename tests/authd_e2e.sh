@@ -555,6 +555,42 @@ case "$(ls -l "$TMP/backup.sqlite3")" in
     *) fail "the backup is not 0600" ;;
 esac
 
+# ------------------------------------------ revocation, end to end (V4-15a)
+#
+# Req 9 through the shipped binaries. Until V4-15a nothing in this script
+# revoked anything (CLAIMS D9): a user disabled with the operator's own tool,
+# and a device revoked the way a site revokes one, must each refuse the NEXT
+# login -- and re-enabling must restore it, so the refusal is the status and
+# not a broken identity. dave is an identity of his own, placed after the
+# counts above so they are untouched.
+DAVE=$("$CLIENT" keygen --dir "$TMP/dave" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+    || fail "keygen for dave exited nonzero"
+"$ADMIN" enroll-operator --socket "$TMP/a.sock" --user dave --handle "$DAVE" \
+    --pub "$TMP/dave/$DAVE.pub" > /dev/null || fail "enroll-operator dave failed"
+dave_login() {
+    "$CLIENT" login --handle "$DAVE" --key "$TMP/dave/$DAVE.ek" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err"
+}
+dave_login || fail "dave could not log in before any revocation (the canary)"
+"$ADMIN" disable-user --socket "$TMP/a.sock" --user dave --reason "e2e" > /dev/null \
+    || fail "disable-user dave failed"
+grep -q 'event=user-disabled' "$TMP/authd.log" || fail "the daemon did not log the user-disabled event"
+rc=0; dave_login || rc=$?
+[ "$rc" -ne 0 ] || fail "a DISABLED user still obtained a login code (Req 9)"
+"$ADMIN" enable-user --socket "$TMP/a.sock" --user dave > /dev/null || fail "enable-user dave failed"
+dave_login || fail "re-enabled, dave still cannot log in: the refusal was not the user's status"
+echo "PASS: E2E: a disabled user is refused, and the same identity logs in again once re-enabled"
+if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
+    "$NODE" "$SITE" "$TMP/s.sock" --revoke "$DAVE" > /dev/null 2>> "$TMP/site.err" \
+        || fail "REVOKE-DEVICE over site.sock failed"
+    rc=0; dave_login || rc=$?
+    [ "$rc" -ne 0 ] || fail "a REVOKED device still obtained a login code (Req 9)"
+    echo "PASS: E2E: a device revoked over site.sock is refused at its next login"
+else
+    echo "SKIP: E2E: node not found, so the REVOKE-DEVICE leg did not run"
+fi
+
 # ------------------------------------------------------------- shutdown
 
 # Close nothing and the drain loop would wait forever: evloop_stop marks local
@@ -695,6 +731,62 @@ n = c.execute("SELECT COUNT(*) FROM audit WHERE handle = ?", (sys.argv[2].encode
 sys.exit(0 if n >= 1 else 1)
 PYEOF
 echo "PASS: E2E: the audit chain still records carol's real handle and verifies"
+
+# -------------------------------------- peer credentials at accept (V4-15a)
+#
+# Req 11 through authd_main's own wiring, which no in-process test runs: the
+# harness builds its listeners itself. A daemon whose site_uids and admin_uids
+# name a uid that is NOT this process's must refuse it on both sockets at
+# accept -- before a byte of any command is read -- and go on serving the
+# proxy-facing socket, whose list does name it. test_authd_ws proves the
+# listener refuses; only this proves main hands each socket its OWN list
+# (CLAIMS D11). The refusal is counted in the daemon's journal, one
+# listener-peer-rejected per socket: a reply, even an error, would mean served.
+FOREIGN=$(( $(id -u) + 1 ))
+sed -e '/^listen_port/d' -e "s/^site_uids = .*/site_uids = $FOREIGN/" \
+    -e "s/^admin_uids = .*/admin_uids = $FOREIGN/" "$TMP/authd.conf" > "$TMP/foreign.conf"
+grep -q "^site_uids = $FOREIGN\$" "$TMP/foreign.conf" && grep -q "^admin_uids = $FOREIGN\$" "$TMP/foreign.conf" \
+    || fail "the foreign-uid config was not derived"
+"$DAEMON" --config "$TMP/foreign.conf" > "$TMP/foreign.log" 2>&1 &
+DPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/foreign.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$DPID" 2>/dev/null || fail "the foreign-uid daemon exited during start-up"
+    [ "$i" -gt 400 ] && fail "the foreign-uid daemon never logged event=started"
+    sleep 0.05
+done
+# Waits for the journal to count one more refusal than $1; the daemon logs it
+# after closing the socket, so the client can be gone first.
+refused_after() {
+    j=0
+    while [ "$(grep -c 'event=listener-peer-rejected' "$TMP/foreign.log" || true)" -le "$1" ]; do
+        j=$((j + 1)); [ "$j" -gt 100 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
+n0=$(grep -c 'event=listener-peer-rejected' "$TMP/foreign.log" || true)
+"$ADMIN" list-users --socket "$TMP/a.sock" > "$TMP/foreign-admin.txt" 2>&1 \
+    && fail "admin.sock SERVED a uid outside admin_uids (Req 11)"
+refused_after "$n0" || fail "admin.sock did not refuse a uid outside admin_uids at accept (Req 11)"
+n1=$(grep -c 'event=listener-peer-rejected' "$TMP/foreign.log" || true)
+"$ADMIN" list-users --socket "$TMP/s.sock" > "$TMP/foreign-site.txt" 2>&1 || true
+refused_after "$n1" || fail "site.sock did not refuse a uid outside site_uids at accept (Req 11)"
+kill -0 "$DPID" 2>/dev/null || fail "the foreign-uid daemon died refusing a peer"
+"$CLIENT" login --handle "$CAROL" --key "$TMP/carol/$CAROL.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err" \
+    || fail "the foreign-uid daemon did not serve the proxy socket its list allows (the canary)"
+echo "PASS: E2E: site.sock and admin.sock refuse a uid outside their own lists at accept; the proxy socket still serves"
+kill -TERM "$DPID"
+i=0
+while kill -0 "$DPID" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 200 ] && fail "the foreign-uid daemon did not exit on SIGTERM"
+    sleep 0.05
+done
+wait "$DPID" 2>/dev/null || true
+DPID=""
 
 # ------------------------------------------------ sanitizer reports (F94)
 #

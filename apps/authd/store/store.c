@@ -662,6 +662,9 @@ store_status_t store_enroll_device_ex(store_t *s,
         r = add_user_locked(s, user_id, user_id_len, role);
         if (r != STORE_OK) { tx_rollback(s); return r; }
     }
+    /* Fault point (V4-15a, CLAIMS D14): a user created for this request, its
+     * device not yet -- F47's half-state, which must never be committed. */
+    if (STORE_FAULT_POINT()) { tx_rollback(s); return STORE_ERR_DB; }
 
     int idempotent = 0;
     r = enroll_device_locked(s, handle, handle_len, user_id, user_id_len, pk, via, by,
@@ -719,6 +722,10 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
         r = STORE_ERR_NOT_FOUND;
     }
     sqlite3_finalize(st);
+
+    /* Fault point (V4-15a, CLAIMS D14): the status is written, the tokens and
+     * the audit row are not. DISABLE and ENABLE both pass here. */
+    if (r == STORE_OK && STORE_FAULT_POINT()) { r = STORE_ERR_DB; }
 
     if (r == STORE_OK && drop_tokens) {
         sqlite3_stmt *dt = NULL;
@@ -906,6 +913,9 @@ static store_status_t enroll_device_locked(store_t *s,
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { return r; }
+    /* Fault point (V4-15a, CLAIMS D14): a device row, no key row yet. Every
+     * enrollment path passes here; the caller owns the rollback. */
+    if (STORE_FAULT_POINT()) { return STORE_ERR_DB; }
 
     uint8_t fp[crypto_hash_sha256_BYTES];
     pk_fingerprint(pk, fp);
@@ -1227,6 +1237,10 @@ store_status_t store_revoke_device(store_t *s,
     if (r != STORE_OK) { return r; }
     r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+    /* Fault point (V4-15a, CLAIMS D14): all four writes done, none committed.
+     * Here and not inside revoke_device_locked, which revoke=all also runs --
+     * its fault test counts the points it passes. */
+    if (STORE_FAULT_POINT()) { tx_rollback(s); return STORE_ERR_DB; }
     return tx_commit(s);
 }
 
@@ -2088,6 +2102,9 @@ store_status_t store_enroll_via_ticket(store_t *s,
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
+    /* Fault point (V4-15a, CLAIMS D14): the ticket spent, no device yet -- a
+     * commit here would burn the user's one way back in for nothing. */
+    if (STORE_FAULT_POINT()) { tx_rollback(s); return STORE_ERR_DB; }
 
     int idempotent = 0;
     r = enroll_device_locked(s, handle, handle_len, user, user_len, pk,

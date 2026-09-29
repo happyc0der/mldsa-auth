@@ -47,6 +47,67 @@ static void enroll_direct(h_daemon_t *d, const uint8_t *handle, size_t hl, mldsa
           "fixture: enroll");
 }
 
+/* The store's bytes as they are on disk: the database AND its WAL. In WAL mode
+ * a just-written row is in the -wal file, so reading the database alone would
+ * be a vacuous pass -- the recovery scan below failed exactly that way when it
+ * was written, which is why every scan here carries a present canary. */
+static char g_blob[8u * 1024u * 1024u];
+
+static size_t read_store_files(const char *db, char *blob, size_t cap)
+{
+    size_t got = 0;
+    const char *sfx[] = { "", "-wal" };
+    for (size_t k = 0; k < 2u; k++) {
+        char path[512];
+        snprintf(path, sizeof path, "%s/%s%s", g_dir, db, sfx[k]);
+        FILE *f = fopen(path, "rb");
+        if (f == NULL) { continue; }
+        got += fread(blob + got, 1, cap - got - 1u, f);
+        fclose(f);
+    }
+    blob[got] = '\0';
+    return got;
+}
+
+/* Req 4 for a 32-byte secret (a login code, a token, a ticket): the store
+ * keeps only its SHA-256. Absent: every 16-byte window of the raw bytes and
+ * every 32-character window of the lowercase hex, so half a secret parked in
+ * some other column is found too. */
+static int secret_absent(const char *blob, size_t n, const uint8_t secret[32])
+{
+    for (size_t i = 0; i + 16u <= 32u; i++) {
+        if (memmem(blob, n, secret + i, 16u) != NULL) { return 0; }
+    }
+    char hex[65];
+    hx(hex, sizeof hex, secret, 32u);
+    for (size_t i = 0; i + 32u <= 64u; i++) {
+        if (memmem(blob, n, hex + i, 32u) != NULL) { return 0; }
+    }
+    return 1;
+}
+
+/* The present canary for secret_absent: the SHA-256 the store should hold. */
+static int secret_hash_present(const char *blob, size_t n, const uint8_t secret[32])
+{
+    uint8_t h[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(h, secret, 32u);
+    return memmem(blob, n, h, sizeof h) != NULL;
+}
+
+/* Live connections, counted by owner. SERVING only: a closed slot is FREE. */
+static size_t serving_for(const h_daemon_t *d, const uint8_t *user, size_t user_len)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < d->nslots; i++) {
+        const authd_conn_t *c = &d->conns[i];
+        if (c->stage == CONN_STAGE_SERVING && c->user_id_len == user_len &&
+            memcmp(c->user_id, user, user_len) == 0) {
+            n++;
+        }
+    }
+    return n;
+}
+
 /* ------------------------------------------------------------- grammar */
 
 static void test_grammar(void)
@@ -196,6 +257,20 @@ static void test_exchange_verify(void)
     CHECK(strlen(token_hex) == 64u, "exch: the token is 32 bytes of hex");
     CHECK(strstr(resp, "role=user") != NULL, "exch: the reply names the role");
 
+    /* Req 4 (CLAIMS D4): the store holds the login code and the live token
+     * only as SHA-256 -- which the canary checks first, so an empty read
+     * cannot pass for a clean one. */
+    { uint8_t token[32];
+      size_t tl = 0;
+      CHECK(sodium_hex2bin(token, sizeof token, token_hex, strlen(token_hex), NULL, &tl, NULL) == 0 &&
+            tl == 32u, "exch: the token decodes");
+      const size_t n = read_store_files("exch.sqlite3", g_blob, sizeof g_blob);
+      CHECK(secret_hash_present(g_blob, n, code) && secret_hash_present(g_blob, n, token),
+            "exch: the store holds the SHA-256 of the login code and of the token (the present canary)");
+      CHECK(secret_absent(g_blob, n, code), "exch: the plaintext login code is NOT in the store (Req 4)");
+      CHECK(secret_absent(g_blob, n, token), "exch: the plaintext token is NOT in the store (Req 4)");
+      sodium_memzero(token, sizeof token); }
+
     /* single use */
     snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
@@ -247,6 +322,43 @@ static void test_exchange_verify(void)
     h_stop(&d);
 }
 
+/* A login code expires 60 s after it is issued (Req 5), and it is the STORE
+ * that refuses it at EXCHANGE -- before V4-15a the only check was the TTL
+ * LOGIN_CODE advertises on the wire (CLAIMS D5). The harness clock is
+ * app.now_unix, fixed while the code is issued, so both sides of the boundary
+ * can be hit exactly: expires_at = issue + 60, refused when now >= expires_at. */
+static void test_exchange_expiry(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "expiry.sqlite3", 1) == 0, "expiry: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    const int64_t t0 = d.app.now_unix;
+
+    h_client_t c;
+    uint8_t code[32];
+    CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "expiry: login");
+    CHECK(h_get_login_code(&d, &c, code) == 0, "expiry: login code received");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "expiry: connect to site.sock");
+
+    char hexcode[80], req[512], resp[16384];
+    hx(hexcode, sizeof hexcode, code, sizeof code);
+    snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+
+    d.app.now_unix = t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=expired"),
+          "expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)");
+    d.app.now_unix = t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S - 1;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK token="),
+          "expiry: one second earlier the same code exchanges -- the expired attempt did not spend it");
+
+    (void)close(fd);
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 /* ------------------------------------------- revocation reaches live sessions */
 
 static void test_revocation_closes_sessions(void)
@@ -289,6 +401,51 @@ static void test_revocation_closes_sessions(void)
     (void)close(fd);
     h_client_close(&c);
     mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+/* Req 9 for DISABLE-USER: the user's live session is closed, not just the row
+ * updated -- and ONLY that user's, which the second user's session shows.
+ * Until V4-15a only REVOKE-DEVICE had a live-session check (CLAIMS D9). */
+static void test_disable_closes_sessions(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp, kp2;
+    CHECK(h_start(&d, g_dir, "disable.sqlite3", 1) == 0, "disable: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    const uint8_t U3[] = { 'u','3' }, H5[] = { 'd','3','c','c' };
+    CHECK(mldsa_keypair_generate(&kp2) == 0, "disable: a second user's key");
+    CHECK(store_add_user(d.store, U3, sizeof U3, STORE_ROLE_USER) == STORE_OK &&
+          store_enroll_device(d.store, H5, sizeof H5, U3, sizeof U3, kp2.public_key,
+                              "site", "test", NULL, 0) == STORE_OK,
+          "disable: fixture -- a second user with a device");
+
+    h_client_t c1, c2;
+    uint8_t code[32];
+    CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c1, code) == 0,
+          "disable: u1 logs in");
+    CHECK(h_login(&d, &c2, H5, sizeof H5, &kp2) == 0 && h_get_login_code(&d, &c2, code) == 0,
+          "disable: u3 logs in");
+    CHECK(serving_for(&d, U1, sizeof U1) == 1u && serving_for(&d, U3, sizeof U3) == 1u,
+          "disable: both users have a live SERVING session before the disable (canary)");
+
+    int adm = h_dial_unix(d.admin_path);
+    CHECK(adm >= 0, "disable: connect to admin.sock");
+    char uh[160], req[512], resp[16384];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "disable: DISABLE-USER succeeds");
+    CHECK(serving_for(&d, U1, sizeof U1) == 0u,
+          "disable: the disabled user's live session was CLOSED, not just the row updated (Req 9)");
+    CHECK(serving_for(&d, U3, sizeof U3) == 1u,
+          "disable: another user's live session is untouched");
+
+    (void)close(adm);
+    h_client_close(&c1);
+    h_client_close(&c2);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&kp2);
     h_stop(&d);
 }
 
@@ -722,21 +879,10 @@ static void test_recovery(void)
     /* WAL mode: a just-written row is in the -wal file, not the database, so
      * scanning only the database would be a vacuous pass. The canary below is
      * what makes that impossible -- it failed exactly this way when written. */
-    { static char blob[8u * 1024u * 1024u];
-      size_t got = 0;
-      const char *sfx[] = { "", "-wal" };
-      for (size_t k = 0; k < 2u; k++) {
-          char path[512];
-          snprintf(path, sizeof path, "%s/recovery.sqlite3%s", g_dir, sfx[k]);
-          FILE *f = fopen(path, "rb");
-          if (f == NULL) { continue; }
-          got += fread(blob + got, 1, sizeof blob - got - 1u, f);
-          fclose(f);
-      }
-      blob[got] = '\0';
-      CHECK(memmem(blob, got, "$argon2id$", 10) != NULL,
+    { const size_t got = read_store_files("recovery.sqlite3", g_blob, sizeof g_blob);
+      CHECK(memmem(g_blob, got, "$argon2id$", 10) != NULL,
             "recovery: the store holds an Argon2id hash (the present canary)");
-      CHECK(memmem(blob, got, gen1, BASE32_CODE_CHARS) == NULL,
+      CHECK(memmem(g_blob, got, gen1, BASE32_CODE_CHARS) == NULL,
             "recovery: the plaintext code is NOT in the store (Req 4)"); }
 
     /* --- use --- */
@@ -775,6 +921,17 @@ static void test_recovery(void)
       if (e != NULL) { sscanf(e + 8, "%lld", &expires); } }
     CHECK(expires == d.app.now_unix + RECOVERY_TICKET_TTL_S,
           "recovery: the ticket expires ten minutes out (§10.3)");
+
+    /* ...and the ticket it bought: stored only as SHA-256 (Req 4, CLAIMS D4). */
+    { uint8_t ticket[32];
+      size_t tl = 0;
+      CHECK(sodium_hex2bin(ticket, sizeof ticket, ticket_hex, strlen(ticket_hex), NULL, &tl, NULL) == 0 &&
+            tl == 32u, "recovery: the ticket decodes");
+      const size_t n = read_store_files("recovery.sqlite3", g_blob, sizeof g_blob);
+      CHECK(secret_hash_present(g_blob, n, ticket),
+            "recovery: the store holds the ticket's SHA-256 (the present canary)");
+      CHECK(secret_absent(g_blob, n, ticket), "recovery: the plaintext ticket is NOT in the store (Req 4)");
+      sodium_memzero(ticket, sizeof ticket); }
 
     /* §15's never-list, for the one entry the logging API cannot enforce by
      * shape: a ticket hash is 32 bytes, the exact width authd_log_fp takes, so
@@ -981,6 +1138,23 @@ static void test_recovery_revoke_all(void)
       CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, seen, NULL, 0, NULL, NULL) == STORE_OK,
             "revoke-all: the old device is active BEFORE recovery (present canary)"); }
 
+    /* Req 9 reaches live sessions here too (CLAIMS D9): a session is open
+     * through both recoveries, and only revoke=all may close it. */
+    h_client_t c;
+    { uint8_t lc[32];
+      CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c, lc) == 0,
+            "revoke-all: the old device has a live session"); }
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "revoke-all: codes issued for the revoke=none recovery");
+    { char c0[BASE32_CODE_CHARS + 1u];
+      first_code(resp, c0);
+      snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s revoke=none", uh, c0);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+            "revoke-all: a revoke=none recovery succeeds");
+      CHECK(serving_for(&d, U1, sizeof U1) == 1u,
+            "revoke-all: revoke=none leaves the user's live session open"); }
+
     snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
           "revoke-all: codes issued");
@@ -997,8 +1171,11 @@ static void test_recovery_revoke_all(void)
     { uint8_t seen[STORE_PK_BYTES];
       CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, seen, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
             "revoke-all: the lost device is revoked -- its next handshake gets the decoy"); }
+    CHECK(serving_for(&d, U1, sizeof U1) == 0u,
+          "revoke-all: the lost device's live session was CLOSED, not just revoked in the store (Req 9)");
 
     (void)close(fd);
+    h_client_close(&c);
     mldsa_keypair_free(&kp);
     h_stop(&d);
 }
@@ -1194,7 +1371,9 @@ int main(void)
     test_grammar();
     test_two_tables();
     test_exchange_verify();
+    test_exchange_expiry();
     test_revocation_closes_sessions();
+    test_disable_closes_sessions();
     test_enroll();
     test_sweep();
     test_log_hygiene();

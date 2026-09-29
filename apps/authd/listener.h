@@ -13,8 +13,9 @@
  *     SSH tunnel in milestone A, and
  *   - a Unix-socket listener, which is the proxy-facing one. It is created
  *     0660 and the daemon checks the connecting peer's uid with SO_PEERCRED
- *     (Linux) / LOCAL_PEERCRED (macOS), so only the proxy's user can reach it.
- *     Filesystem permissions alone are not relied on.
+ *     (Linux) / getpeereid(), plus a best-effort LOCAL_PEERPID (macOS), so
+ *     only the proxy's user can reach it. Filesystem permissions alone are
+ *     not relied on.
  *
  * Every accepted fd is non-blocking and CLOEXEC. Accept never blocks: the loop
  * must never stall on one peer.

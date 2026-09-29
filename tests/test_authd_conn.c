@@ -739,6 +739,33 @@ static void test_rotate(void)
              AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
              "rotate: a ROTATE whose sig_new is by the OLD key is REJECTED");
 
+    /* sig_old ALONE wrong: the old key signed the rotate-NEW digest, so sig_new
+     * is valid and pk_old is the session's pin, and only the proof of the
+     * OUTGOING key fails. Every other rejection here also breaks sig_new or
+     * trips the store's pin, so until V4-15a nothing isolated this check
+     * (CLAIMS D8). The journal names the check that fired, so the REJECTED
+     * cannot be coming from somewhere else. */
+    { char lpath[512];
+      snprintf(lpath, sizeof lpath, "%s/sigold.log", g_dir);
+      FILE *lf = fopen(lpath, "w+");
+      CHECK(lf != NULL, "rotate: sig_old capture file");
+      if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+      ROT_CASE("rotate: session (sig_old alone)", 0u, 0u, HANDLE1, sizeof HANDLE1, &new_kp,
+               AUTHMSG_LABEL_ROTATE_NEW, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
+               "rotate: a ROTATE whose ONLY defect is sig_old is REJECTED (possession of the outgoing key)");
+      authd_log_init(stderr, AUTHD_LOG_ERROR);
+      char *buf = NULL;
+      long sz = 0;
+      if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+          fseek(lf, 0, SEEK_SET) == 0) {
+          buf = (char *)calloc((size_t)sz + 1u, 1u);
+          if (buf != NULL && fread(buf, 1u, (size_t)sz, lf) != (size_t)sz) { buf[0] = '\0'; }
+      }
+      CHECK(buf != NULL && strstr(buf, "detail=rotate-sig-old") != NULL,
+            "rotate: the journal names sig_old as the check that refused it");
+      free(buf);
+      if (lf != NULL) { (void)fclose(lf); } }
+
     /* Both signatures under the same label: the separation is what stops one
      * key's signature standing in for the other's. */
     ROT_CASE("rotate: session (same label)", 0u, 0u, HANDLE1, sizeof HANDLE1, &new_kp,

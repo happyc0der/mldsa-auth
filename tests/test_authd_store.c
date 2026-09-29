@@ -567,6 +567,105 @@ int main(void)
         }
     }
 
+    /* ---- the device-status filter holds on its own (V4-15a, CLAIMS D9) ----
+     * Revocation marks the device AND its key revoked, so either clause of
+     * store_lookup_active's filter would stop a revoked device by itself, and
+     * no test could tell if the device clause went missing. Here the key row
+     * is left active under a revoked device -- a state no API path can make,
+     * only someone with the file -- and the lookup must still refuse it. */
+    {
+        store_t *s = fresh_store("filter.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open filter\n"); return 1; }
+        uint8_t got[STORE_PK_BYTES];
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK &&
+              store_lookup_active(s, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_OK,
+              "filter: an active device resolves (the canary)");
+        store_close(s);
+        CHECK(raw_sql(dbp, "UPDATE devices SET status='revoked' WHERE handle=X'64316161';") == 0,
+              "filter: the device is marked revoked behind the store's back, its key row left active");
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "filter: reopen");
+        if (s2 != NULL) {
+            CHECK(store_lookup_active(s2, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                  "filter: a revoked device does not resolve even while its key row is active");
+            store_close(s2);
+        }
+    }
+
+    /* ---- revoke, disable and enroll, each crashed mid-way (V4-15a, D14) ----
+     * Each runs in one transaction, and until V4-15a none had ever been
+     * crashed part-way. A fault at the point after its first write must leave
+     * NOTHING applied, and a reopen shows the rollback is durable rather than
+     * cached: the device still resolves, a token issued beforehand still
+     * verifies, the user is still active, no user or device appeared and the
+     * ticket still redeems. */
+    {
+        store_t *s = fresh_store("fx.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open fx\n"); return 1; }
+        const uint8_t FTH[STORE_HASH_BYTES] = { 0xf1, 0xf2, 0xf3 };      /* a token hash */
+        const uint8_t UF[] = { 'u','f' }, HF[] = { 'd','f','f','f' }, HG[] = { 'd','g','g','g' };
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkC, "site", "admin", NULL, 0) == STORE_OK &&
+              store_add_token(s, FTH, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 5000, 5000) == STORE_OK,
+              "fault: a user with a device and a live token");
+        const char *g[] = { "hash-f" };
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g, 1, 100, NULL) == STORE_OK &&
+              store_recovery_consume(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH3, 300, 900) == STORE_OK,
+              "fault: u1 holds an unspent enrollment ticket");
+        uint8_t head[STORE_AUDIT_MAC_BYTES], head2[STORE_AUDIT_MAC_BYTES];
+        CHECK(store_audit_head_mac(s, head) == STORE_OK, "fault: the audit head before the faults");
+
+        /* point 0 for each call below is the new one after its first write,
+         * except enroll-device's: store_enroll_device_ex passes the user
+         * point first, so the device-row point is point 1 there. */
+        store_fault_arm(0);
+        CHECK(store_revoke_device(s, H1, sizeof H1, "admin", (const uint8_t *)"x", 1u) != STORE_OK,
+              "fault(revoke): a fault after the four writes fails the revocation");
+        store_fault_arm(0);
+        CHECK(store_disable_user(s, U1, sizeof U1, "admin", (const uint8_t *)"x", 1u) != STORE_OK,
+              "fault(disable): a fault after the status write fails the disable");
+        store_fault_arm(0);
+        CHECK(store_enroll_device_ex(s, HF, sizeof HF, UF, sizeof UF, STORE_ROLE_USER, pkD,
+                                     "site", "admin", NULL, 0, NULL, NULL) != STORE_OK,
+              "fault(enroll-user): a fault after the user is created fails the enrollment");
+        store_fault_arm(1);
+        CHECK(store_enroll_device_ex(s, HF, sizeof HF, U1, sizeof U1, STORE_ROLE_USER, pkD,
+                                     "site", "admin", NULL, 0, NULL, NULL) != STORE_OK,
+              "fault(enroll-device): a fault after the device row fails the enrollment");
+        store_fault_arm(0);
+        CHECK(store_enroll_via_ticket(s, TH3, U1, sizeof U1, HG, sizeof HG, pkB, NULL, 0, 400) != STORE_OK,
+              "fault(ticket): a fault after the ticket is spent fails the enrollment");
+        store_fault_arm(-1);
+        store_close(s);
+
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "fault: reopen after the five faults");
+        if (s2 != NULL) {
+            uint8_t got[STORE_PK_BYTES];
+            store_token_verdict_t v = STORE_TOKEN_UNKNOWN;
+            store_role_t role;
+            char st[16];
+            CHECK(store_lookup_active(s2, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_OK,
+                  "fault(revoke): after the fault the device still resolves -- the revocation is all or nothing");
+            CHECK(store_verify_token(s2, FTH, 150, 0, &v, NULL) == STORE_OK && v == STORE_TOKEN_OK,
+                  "fault(revoke, disable): the token issued before the faults still verifies");
+            CHECK(store_get_user(s2, U1, sizeof U1, &role, st, sizeof st) == STORE_OK && strcmp(st, "active") == 0,
+                  "fault(disable): after the fault the user is still active -- the disable is all or nothing");
+            CHECK(store_get_user(s2, UF, sizeof UF, &role, st, sizeof st) == STORE_ERR_NOT_FOUND,
+                  "fault(enroll-user): after the fault no user was created (F47's half-state)");
+            CHECK(store_audit_head_mac(s2, head2) == STORE_OK && memcmp(head, head2, sizeof head) == 0,
+                  "fault: the audit chain did not move");
+            CHECK(store_enroll_device_ex(s2, HF, sizeof HF, U1, sizeof U1, STORE_ROLE_USER, pkD,
+                                         "site", "admin", NULL, 0, NULL, NULL) == STORE_OK,
+                  "fault(enroll-device): the handle enrolls cleanly afterwards -- no device row was left behind");
+            CHECK(store_enroll_via_ticket(s2, TH3, U1, sizeof U1, HG, sizeof HG, pkB, NULL, 0, 400) == STORE_OK,
+                  "fault(ticket): the ticket still redeems -- the fault did not spend it");
+            CHECK(store_audit_verify(s2) == STORE_OK, "fault: the audit chain verifies");
+            store_close(s2);
+        }
+    }
+
     /* ---- the log pseudonym (V4-13d, spec §15 log_identities = hashed) ---- */
     {
         store_t *s = fresh_store("lp.sqlite3", dbp, sizeof dbp);
