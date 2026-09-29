@@ -790,7 +790,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
 | `deploy/` | What a deployment needs and nothing else: the systemd unit, a commented example config, `fetch-deps.sh` for an offline dependency cache, and `RUNBOOK.md` — the numbered checklist from an empty VPS to a first login |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 257 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 267 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
 
 ## License
 

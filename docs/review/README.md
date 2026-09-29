@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 97 findings (F1–F99), with severity, evidence and
+   register](../v4/audit.md). 99 findings (F1–F101), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 45 errata, each
    citing the finding that forced it.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 45 tests with the
+- **Tests** are named checks, not exit codes. The suite is 46 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 257 committed defects in 28 campaigns, each of which must be
+- **Mutations**: 267 committed defects in 29 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -103,6 +103,14 @@ findings, all closed: **F97** (three Req 7 refusal paths logged nothing),
 **F98** (four documents said such a refusal is *audited*; erratum 45 says
 *logged*, the journal being Req 7's log) and **F99** (the fault-hook gate the
 map cites ran nowhere; it is a CTest now).
+
+V4-15b then took the protocol's gaps: replay of an older record and a gap
+wider than one, the ledger's two untested CONSUMED checks, every padding byte,
+two fields dropped from what is signed (caught by the hand-built peers), and
+ServerHello lengths across every decoy case. The constant-time inventory
+became a gate (`tests/constant_time_sites.sh`), so the `sodium_memcmp` to
+`memcmp` swap two earlier campaigns declined is now killed by name (campaign
+v59). Two stale references were corrected (**F100**, **F101**).
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.

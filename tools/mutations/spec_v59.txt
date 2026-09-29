@@ -1,0 +1,10 @@
+GB1|^test_session$|S4b: re-delivering an OLDER record (r0 after r0 and r1) -> REPLAY, session FAILED
+GB2|^test_session$|S5b: seq 2 before seq 0 (a gap of two) -> OUT_OF_ORDER, session FAILED
+GB3|^test_handshake$|step4 T34: record_failure on a CONSUMED tombstone -> CONSUMED, nothing counted, still a tombstone
+GB4|^test_handshake$|step4 T34: a second consume_success -> CONSUMED (a handshake commits once)
+GB5|^test_session$|v2-6 P4(g): EVERY middle padding byte (indices 13..62), one at a time, nonzero
+GB6|^test_handshake$|v2-5 H1: the initiator completes against a hand-built responder
+GB7|^test_handshake$|v2-5 H2: the responder verifies the hand-built ClientAuth -> ESTABLISHED
+GB8|^constant_time_sites$|a listed constant-time comparison is gone (swapped for memcmp, or deleted): apps/authd/authd_conn.c: if (sodium_memcmp(id, c->handle, id_len) != 0) {
+GB9|^constant_time_sites$|a listed constant-time comparison is gone (swapped for memcmp, or deleted): apps/authd/store/store.c: sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {
+GB10|^constant_time_sites$|a listed constant-time comparison is gone (swapped for memcmp, or deleted): apps/authd/store/store.c: if (sodium_memcmp(want, stored_mac, STORE_AUDIT_MAC_BYTES) != 0) { r = STORE_ERR_CORRUPT
