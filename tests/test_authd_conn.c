@@ -189,6 +189,9 @@ typedef struct {
     /* Captured BEFORE session_init consumes the handshake context, because
      * ROTATE's digest binds to it and nothing else can hand it back. */
     uint8_t         hsid[STORE_HSID_BYTES];
+    /* The ServerHello's payload length, as received: Req 6 is about what an
+     * observer sees, and size is the first thing one sees (V4-15b). */
+    size_t          sh_len;
 } client_t;
 
 /* Runs the handshake as the real library initiator. `kp` is the device key it
@@ -217,6 +220,7 @@ static int client_handshake(daemon_t *d, client_t *c, const uint8_t *handle, siz
 
     size_t sh_len = 0;
     if (recv_frame(d, c->fd, buf, sizeof buf, &sh_len) != 0) { return -1; }
+    c->sh_len = sh_len;
     if (handshake_initiator_verify_server_hello(&c->hs, buf, sh_len) != HANDSHAKE_OK) { return -2; }
 
     if (handshake_initiator_create_client_auth(&c->hs, buf, sizeof buf, &n) != HANDSHAKE_OK) { return -1; }
@@ -328,6 +332,12 @@ static void test_uniform_responder(void)
     CHECK(mldsa_keypair_generate(&good) == 0 && mldsa_keypair_generate(&other) == 0, "decoy: keys");
     enroll(&d, HANDLE1, sizeof HANDLE1, &good);
 
+    /* Every case's ServerHello is measured against what the wire format fixes:
+     * SH_unsigned for this server id, sig_len, and a 3309-byte ML-DSA-65
+     * signature. Until V4-15b the two lengths compared below were constants
+     * set to 1 (CLAIMS D6). */
+    const size_t want_sh = transcript_server_hello_unsigned_len((uint8_t)sizeof SERVER_ID) + 2u +
+                           MLDSA_SIGNATURE_MAX_BYTES;
     size_t sh_known = 0, sh_unknown = 0;
     int rc_known = 0, rc_unknown = 0;
 
@@ -335,7 +345,7 @@ static void test_uniform_responder(void)
     {
         client_t c;
         rc_known = client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &other);
-        sh_known = 1;   /* the handshake got far enough to verify a ServerHello */
+        sh_known = c.sh_len;
         uint8_t rec[AUTHD_MAX_RECORD]; size_t n = 0;
         CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) != 0,
               "decoy: a wrong-key client receives NO record");
@@ -346,7 +356,7 @@ static void test_uniform_responder(void)
     {
         client_t c;
         rc_unknown = client_handshake(&d, &c, HANDLE_UNK, sizeof HANDLE_UNK, &other);
-        sh_unknown = 1;
+        sh_unknown = c.sh_len;
         uint8_t rec[AUTHD_MAX_RECORD]; size_t n = 0;
         CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) != 0,
               "decoy: an unknown-handle client receives NO record");
@@ -363,6 +373,68 @@ static void test_uniform_responder(void)
      * ServerHello -- otherwise "indistinguishable" would be trivially true
      * because neither side got anything. */
     CHECK(rc_unknown == 0, "decoy: the unknown handle still got a VERIFIABLE ServerHello (canary)");
+
+    /* Req 6's other not-active cases (V4-15b). A DISABLED user's device is
+     * served the decoy, as an unknown handle is. A SUPERSEDED key is not: its
+     * handle is active under the new key, which is what gets pinned, so the
+     * old key's signature fails exactly as (a)'s does -- the same sequence,
+     * by the other route. A REVOKED device gets the decoy (test_revoked).
+     * Last, the known-good case, whose length every other must equal. */
+    size_t sh_disabled = 0, sh_superseded = 0, sh_revoked = 0, sh_good = 0;
+    {
+        static const uint8_t U2[] = { 'u','2' }, H2[] = { 'd','2','b','b' }, H3[] = { 'd','3','c','c' },
+                             H4[] = { 'd','4','d','d' };
+        mldsa_keypair_t k2, k3, k3n, k4;
+        CHECK(mldsa_keypair_generate(&k2) == 0 && mldsa_keypair_generate(&k3) == 0 &&
+                  mldsa_keypair_generate(&k3n) == 0 && mldsa_keypair_generate(&k4) == 0,
+              "decoy: keys for the other cases");
+        int64_t at = 0;
+        CHECK(store_add_user(d.store, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK &&
+                  store_enroll_device(d.store, H2, sizeof H2, U2, sizeof U2, k2.public_key,
+                                      "site", "test", NULL, 0) == STORE_OK &&
+                  store_disable_user(d.store, U2, sizeof U2, "test", NULL, 0) == STORE_OK,
+              "decoy: fixture -- a disabled user's device");
+        enroll(&d, H3, sizeof H3, &k3);
+        CHECK(store_rotate_key(d.store, H3, sizeof H3, k3n.public_key, k3.public_key, NULL, 0, 0,
+                               d.app.now_unix, &at, NULL) == STORE_OK,
+              "decoy: fixture -- a key superseded by a rotation");
+        enroll(&d, H4, sizeof H4, &k4);
+        CHECK(store_revoke_device(d.store, H4, sizeof H4, "test", NULL, 0) == STORE_OK,
+              "decoy: fixture -- a revoked device");
+
+        const uint64_t pins0 = d.app.decoy_pins;
+        client_t c;
+        uint8_t rec[AUTHD_MAX_RECORD]; size_t n = 0;
+        (void)client_handshake(&d, &c, H2, sizeof H2, &k2);
+        sh_disabled = c.sh_len;
+        CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) != 0, "decoy: a disabled user's device gets no login code");
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        CHECK(d.app.decoy_pins == pins0 + 1u, "decoy: a DISABLED user's device is served the decoy (Req 6)");
+
+        (void)client_handshake(&d, &c, H3, sizeof H3, &k3);
+        sh_superseded = c.sh_len;
+        CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) != 0, "decoy: a superseded key gets no login code");
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        CHECK(d.app.decoy_pins == pins0 + 1u,
+              "decoy: a SUPERSEDED key is refused on the known-handle path -- the new key is pinned, not the decoy");
+
+        (void)client_handshake(&d, &c, H4, sizeof H4, &k4);
+        sh_revoked = c.sh_len;
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+
+        CHECK(client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &good) == 0, "decoy: the known-good login (canary)");
+        sh_good = c.sh_len;
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        mldsa_keypair_free(&k2); mldsa_keypair_free(&k3); mldsa_keypair_free(&k3n); mldsa_keypair_free(&k4);
+    }
+    CHECK(sh_good == want_sh && sh_known == want_sh && sh_unknown == want_sh && sh_disabled == want_sh &&
+              sh_superseded == want_sh && sh_revoked == want_sh,
+          "decoy: good, wrong-key, unknown, disabled, superseded and revoked all get a ServerHello of the "
+          "same length (Req 6)");
 
     mldsa_keypair_free(&good); mldsa_keypair_free(&other);
     daemon_stop(&d);

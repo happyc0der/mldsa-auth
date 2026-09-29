@@ -2981,6 +2981,36 @@ static void test_step4_cancel_semantics(void) {
     handshake_pending_store_wipe(&s);
 }
 
+/* ---- T34: a CONSUMED tombstone refuses record_failure and a second consume ----
+ *
+ * Two of the ledger's five CONSUMED checks had no test at all (V4-15b, CLAIMS
+ * P5). No API path reaches either -- the context refuses a replayed ClientAuth
+ * first (T9), and consume_success runs only after a successful get_digest --
+ * so each is defence in depth, and deleting it went unnoticed. Without the
+ * first, failures would count against a spent handshake and could turn its
+ * tombstone AUTH_LIMITED; without the second, a second commit would succeed. */
+
+static void test_step4_consumed_tombstone_refuses(void) {
+    static handshake_pending_store_t s;
+    uint8_t h[16], th[32];
+    pending_slot_state_t slot = PENDING_SLOT_FREE;
+    uint8_t count = 0xFF;
+    clock_reset();
+    store_fresh(&s, 8);
+    memset(h, 0x7A, sizeof(h));
+    memset(th, 0x55, sizeof(th));
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK &&
+              handshake_pending_consume_success(&s, h) == PENDING_OK,
+          "step4 T34: an entry is inserted and consumed (canary)");
+    CHECK(handshake_pending_record_failure(&s, h) == PENDING_ERR_CONSUMED &&
+              handshake_pending_inspect(&s, h, &slot, &count) == PENDING_ERR_CONSUMED &&
+              slot == PENDING_SLOT_CONSUMED && count == 0,
+          "step4 T34: record_failure on a CONSUMED tombstone -> CONSUMED, nothing counted, still a tombstone");
+    CHECK(handshake_pending_consume_success(&s, h) == PENDING_ERR_CONSUMED,
+          "step4 T34: a second consume_success -> CONSUMED (a handshake commits once)");
+    handshake_pending_store_wipe(&s);
+}
+
 /* ---- T33 (store API hygiene): invalid init, overflow-safe deadline ---- */
 
 /* ------------------------------------------------- V4-12: external ledger */
@@ -3394,6 +3424,7 @@ static void run_step4_tests(void) {
     test_step4_responder_low_order(0);          /* T29 */
     test_step4_wipe_cancels();                  /* T30 */
     test_step4_cancel_semantics();              /* T31 */
+    test_step4_consumed_tombstone_refuses();    /* T34 */
     test_step4_responder_low_order(1);          /* T32 */
     test_step4_store_api();
     test_step4_external_ledger();
