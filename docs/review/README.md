@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 94 findings (F1–F96), with severity, evidence and
+   register](../v4/audit.md). 97 findings (F1–F99), with severity, evidence and
    disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 44 errata, each
+3. The two specifications. The deployment spec's §20 lists 45 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 44 tests with the
+- **Tests** are named checks, not exit codes. The suite is 45 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 238 committed defects in 27 campaigns, each of which must be
+- **Mutations**: 257 committed defects in 28 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -93,6 +93,17 @@ equality on a 256-bit hash; spec erratum 43), and Req 5 says the
 **F90**: ten mutations were credited without a named check. Every kill now
 names one, and the runner and CI refuse a mutation that does not.
 
+**Since the tag** (V4-15a, on `main`): eight of the claim map's "not
+established" gaps in the daemon were closed with checks, each shown able to
+fail by campaign v58 -- an expired login code at EXCHANGE, plaintext scans of
+the store, `sig_old` alone, live sessions under DISABLE-USER and
+`revoke=all`, the uid allowlists through `main`'s own wiring, and faults
+injected into revoke, disable and enroll. Building them found three more
+findings, all closed: **F97** (three Req 7 refusal paths logged nothing),
+**F98** (four documents said such a refusal is *audited*; erratum 45 says
+*logged*, the journal being Req 7's log) and **F99** (the fault-hook gate the
+map cites ran nowhere; it is a CTest now).
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.
 
@@ -121,5 +132,7 @@ rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.
 
 ## Frozen at
 
-The annotated tag `v2.1.0-review.1`, on `main`. Everything in this directory
-refers to the tree at that tag.
+The annotated tag `v2.1.0-review.1` froze this packet: read it at that tag to
+review exactly what was frozen. On `main` the packet moves with the tree --
+V4-15a's changes above are there and not in the tag -- until a later tag
+freezes it again.

@@ -6266,3 +6266,121 @@ findings the packet left open, before the review tag freezes the tree.
 - **Documents.** Anchors 260 across 27 campaigns, and no spec line without an
   expectation; spec constants and names OK; the claim map's 197 citations
   all resolve; the repository secret scan finds 0 violations.
+
+## V4-15a — the claim map's daemon gaps, closed with checks that can fail
+
+V4-14 froze the review packet with 27 "not established" gaps in its claim
+map. The user chose to work down the ones engineering can close, starting
+with the deployment spec's daemon and store claims (D4, D5, D7/P7, D8, D9,
+D11, D14); V4-15b takes the protocol and crypto ones. Every new check below
+has a v58 mutation (prefix GA) that it catches; where an older check catches
+the same mutation as well, the entry says so.
+
+### Three findings, found by closing the gaps
+
+- **F97: Req 7's "logged" half was missing on three paths.** The daemon logs
+  a known handle's different key (`enroll-key-mismatch`, both fingerprints)
+  from a pre-check that sees only ACTIVE key, device and user. `via=recovery`,
+  a site request naming a handle whose owner is disabled (naming the owner
+  itself is refused earlier, as `user-disabled`) and one naming a revoked
+  device's handle all fell through to the store, which refused them and
+  rolled back, and the daemon answered `pk-in-use` in silence. The tests were
+  written first and printed six FAIL lines against the unfixed daemon, a
+  wrong reply and a missing log per path. The fix is `refuse_conflict`: on a
+  store CONFLICT the daemon asks `store_handle_last_key` for the key the
+  handle holds or last held and, when it differs, logs Req 7's three lines
+  and answers `exists-different-key`. It explains a refusal the store has
+  already made; it does not second-guess it.
+- **A deviation from the approved plan.** The plan named `store_active_key_of`,
+  over the ACTIVE key. That leaves the revoked-handle refusal unlogged, and
+  handles are never reused, so a revoked handle can only ever hold the key it
+  had. The helper reads the handle's last key instead.
+- **F98: four documents said a Req 7 refusal is audited.** Spec §10.1, F9's
+  closure, a store.c comment and store.h's contract. Since F47 a refused
+  enrollment writes nothing: the row `enroll_device_locked` appends is rolled
+  back on both daemon paths, and `fuzz_localapi` asserts a refusal never moves
+  the audit chain. The user's decision: the journal is the log. Erratum 45
+  (spec v1.10) says "rejected and logged" on every path, and the comments now
+  say what the code does. Each Req 7 test asserts the audit head is unchanged.
+- **F99: the fault-hook gate ran nowhere.** `tools/check_store_fault_hook.sh`
+  is D14's cited evidence, but no CTest and no workflow ran it. It is the
+  CTest `store_fault_hook` now (the suite is 45). Its control was run by hand:
+  the hook compiled into `mldsa_authd` turned it red with 12 FAIL lines (the
+  library, the daemon, `authd_admin` and nine test binaries), and the CMake
+  file was restored byte-exact.
+
+### The gaps
+
+- **D5, expiry at EXCHANGE.** At exactly 60 s a login code is refused as
+  expired, and at 59 s the same code still exchanges: the refusal did not
+  spend it, and the boundary is `now >= expires_at`. GA1 moves the boundary,
+  and only the new check sees it. GA2 stores an expiry an hour late while the
+  wire still says 60 s: the new check catches it, and so -- the campaign's
+  log showed, not the plan -- does the older sweep check, which reads the
+  same column. The claim map's "untested" was true of the refusal at
+  EXCHANGE, not of the stored value.
+- **D4, plaintext in the store.** The database and its WAL hold no 16-byte
+  window of the login code, the live token or the ticket, and no 32-character
+  window of their hex, while each one's SHA-256 is there. GA3 and GA4 park
+  half the code or token in the non-secret `handshake_id` column, which
+  nothing reads back (erratum 44), so every round trip still works and only
+  the scan sees them.
+- **D8, sig_old alone.** The old key signing the rotate-NEW digest makes a
+  ROTATE whose only defect is sig_old; it is REJECTED and the journal says
+  `detail=rotate-sig-old`. GA5 ignores sig_old's verdict.
+- **D9, revocation.** DISABLE-USER and RECOVERY-USE `revoke=all` close the
+  user's live sessions (another user's and a `revoke=none` session stay
+  open); a device marked revoked with its key row still active does not
+  resolve, which is the lookup's device clause holding on its own -- GA6
+  removes that clause and nothing else notices, because revocation also
+  revokes the key. `authd_e2e` now revokes: `disable-user` refuses dave's next
+  login and `enable-user` restores it, and a REVOKE-DEVICE over site.sock
+  (`e2e_site.mjs --revoke`; `authd_admin` has no revoke command, by design)
+  refuses it for good.
+- **D11, peer credentials through `main`.** No in-process path runs
+  `authd_main.c`, so the check is an e2e leg: a third daemon whose site and
+  admin allowlists name another uid refuses this process on both sockets --
+  one `listener-peer-rejected` each, counted in its journal, since even an
+  error reply would mean served -- and still serves carol on the proxy
+  socket. GA13 and GA14 register either socket with an empty list.
+- **D14, crashes mid-way.** Five new fault points: revoke before its commit,
+  disable after the status write, and enrollment after the user, after the
+  device row and after the ticket's spend. After each fault a reopen shows
+  nothing applied. The revoke point sits in `store_revoke_device`, not in the
+  helper revoke=all shares, so HC3's `store_fault_arm(1)` still fires where
+  it did. GA15-GA19 commit what comes before each point. GA15, GA16 and
+  GA18 only the new fault tests see. GA19 is also caught by an older check (a
+  refused recovery enrollment must not spend the ticket, and its rollback
+  crosses the same line), and GA17 is v49d G15's defect again -- the user
+  committed apart from its device -- which G15's census also catches.
+
+### What stays open
+
+Written into the claim map entry by entry: the journal is only as durable as
+its sink; base64, upper-case hex, backups and memory are not scanned; the
+foreign uid is this process's plus one, not a second real user; revoke=all is
+in-process only; and each operation is faulted at one point, not every write.
+
+### Verification
+
+- **Campaigns**, on ASan trees, in two lanes -- this checkout, and a detached
+  worktree at `adbb110` with its own tree configured like the first, removed
+  afterwards. v58 19 of 19 by name. Every campaign whose kills run through a
+  test this step changed, or whose anchors sit in a file it changed, re-run in
+  full: v47 7/7, v48b 7/7, v49a 11/11, v49b 13/13, v49c 13/13 (HC3's fault
+  arm still fires where it did), v49d 15/15, v50a 9/9, v50b 13/13, v50c 4/4,
+  v52 11/11, v56 20/20, v57 5/5. 147 of 147, every row restored clean, the
+  clean suite passing after each, no residue. The plan listed eleven
+  campaigns; v50c joined because four of its kills run through
+  `test_authd_localapi`.
+- **Suites.** Normal, ASan and UBSan 45/45 each, each tree proven current in
+  the same invocation; UBSan 0 `runtime error` lines. The fuzz tree's 36
+  fuzz-labelled tests pass.
+- **Fuzzing.** `fuzz_localapi` 600 s: 10,181,495 runs, no crash -- its oracle
+  that a refusal never moves the audit chain held throughout. Whether its
+  corpus reaches the new `refuse_conflict` branch was not measured.
+- **gcc 16** at `-O3 -Werror` compiled every changed C file, and `store.c`
+  both ways: in the library and with the fault hook.
+- **Documents.** Anchors 279 across 28 campaigns, and the nightly matrix
+  names all 28; spec constants and names OK; the claim map's 244 citations
+  all resolve; the repository secret scan finds 0 violations.

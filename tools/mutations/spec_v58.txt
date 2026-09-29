@@ -1,0 +1,19 @@
+GA1|^test_authd_localapi$|expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)
+GA2|^test_authd_localapi$|expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)
+GA3|^test_authd_localapi$|exch: the plaintext login code is NOT in the store (Req 4)
+GA4|^test_authd_localapi$|exch: the plaintext token is NOT in the store (Req 4)
+GA5|^test_authd_conn$|rotate: a ROTATE whose ONLY defect is sig_old is REJECTED (possession of the outgoing key)
+GA6|^test_authd_store$|filter: a revoked device does not resolve even while its key row is active
+GA7|^test_authd_localapi$|disable: the disabled user's live session was CLOSED, not just the row updated (Req 9);revoke-all: the lost device's live session was CLOSED, not just revoked in the store (Req 9)
+GA8|^test_authd_localapi$|disable: the disabled user's live session was CLOSED, not just the row updated (Req 9)
+GA9|^test_authd_localapi$|revoke-all: the lost device's live session was CLOSED, not just revoked in the store (Req 9)
+GA10|^test_authd_localapi$|req7(site): the refusal is logged with both key fingerprints
+GA11|^test_authd_localapi$|req7(site): a known handle with a different key is refused
+GA12|^test_authd_localapi$|req7(disabled owner): the handle's different key is refused as exists-different-key;req7(revoked handle): a new key under a revoked handle is refused as exists-different-key;req7(recovery): a known handle with a different key is refused as exists-different-key
+GA13|^authd_e2e$|site.sock did not refuse a uid outside site_uids at accept (Req 11)
+GA14|^authd_e2e$|admin.sock SERVED a uid outside admin_uids (Req 11)
+GA15|^test_authd_store$|fault(revoke): after the fault the device still resolves -- the revocation is all or nothing
+GA16|^test_authd_store$|fault(disable): after the fault the user is still active -- the disable is all or nothing
+GA17|^test_authd_store$|fault(enroll-user): after the fault no user was created (F47's half-state)
+GA18|^test_authd_store$|fault(enroll-device): the handle enrolls cleanly afterwards -- no device row was left behind
+GA19|^test_authd_store$|fault(ticket): the ticket still redeems -- the fault did not spend it

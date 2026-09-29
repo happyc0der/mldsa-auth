@@ -103,7 +103,11 @@ the most important thing on this page.
 - check `test_handshake` "step4 T16: the pinned key was NOT replaced by the mismatching add"
 - mutation `v49c W4` — the store no longer pins which key is being replaced
 - tool `tools/audit/check_spec_vocabularies.py` — the `enroll-key-mismatch` events are emitted from literal call sites, checked against the spec both ways
-**Not established:** nothing tests the "logged" half at run time -- no test asserts the `enroll-key-mismatch` journal lines or audit row -- and no mutation removes the conflict check itself.
+- check `test_authd_localapi` "req7(site): the refusal is logged with both key fingerprints"
+- check `test_authd_localapi` "req7(recovery): the refusal is logged with both key fingerprints"
+- mutation `v58 GA11` — the daemon's pre-check comparison inverted: a different key passes as idempotent
+- mutation `v58 GA10` — the logged `fp_old` is the presented key's fingerprint
+**Not established:** "logged" means the §15 journal, not the audit chain -- a refused enrollment writes nothing to the store (erratum 45, a user decision), so the record of a Req 7 refusal is only as durable as the journal's sink. Until V4-15a three refusal paths logged nothing (audit F97, fixed).
 
 ### P8 — Build hardening
 - tool `tools/audit/check_hardening.sh` — PIE, RELRO, BIND_NOW, a non-executable stack and a stack canary read from every binary; `--require` fails on any gap
@@ -201,7 +205,13 @@ the most important thing on this page.
 - mutation `v48b C2` — the login code stored raw instead of as SHA-256
 - mutation `v49a T1` — the token stored raw instead of as SHA-256
 - tool `tools/audit/check_spec_constants.sh` — pins the recovery code's Argon2id parameters to §10.3
-**Not established:** only recovery codes are checked by scanning the database (and its WAL) for the plaintext. C2 and T1 show that the daemon and the store agree on SHA-256; no scan looks for a plaintext token or code in the file, and nothing covers the enrollment ticket's hash.
+- check `test_authd_localapi` "exch: the plaintext login code is NOT in the store (Req 4)"
+- check `test_authd_localapi` "exch: the plaintext token is NOT in the store (Req 4)"
+- check `test_authd_localapi` "recovery: the plaintext ticket is NOT in the store (Req 4)"
+- check `test_authd_localapi` "exch: the store holds the SHA-256 of the login code and of the token (the present canary)"
+- mutation `v58 GA3` — half the login code parked in its row's `handshake_id` column, every round trip intact
+- mutation `v58 GA4` — half the token parked the same way
+**Not established:** the scans read the database and its WAL at two moments, for 16-byte windows of the raw secret and 32-character windows of its lowercase hex; base64, upper-case hex, backups (`VACUUM INTO` copies the same rows) and memory are not scanned. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
 
 ### D5 — A login code is single-use, expires in ≤ 60 s, and is bound
 - check `test_authd_conn` "login: the code expires in at most 60 s (Req 5)"
@@ -212,7 +222,11 @@ the most important thing on this page.
 - mutation `v47 S7` — a consumed code is never marked used, so it replays
 - mutation `v48b C4` — the state hash taken over zero bytes (killed only since V4-14a's WebSocket state test)
 - proverif "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1)) is true"
-**Not established:** expiry is checked against the lifetime LOGIN_CODE advertises; no test presents an EXPIRED code to EXCHANGE, so the store's refusal is untested and unmutated. `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it); since V4-14d the requirement says "recorded with", not "bound to" (erratum 44, audit F96). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
+- check `test_authd_localapi` "expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)"
+- check `test_authd_localapi` "expiry: one second earlier the same code exchanges -- the expired attempt did not spend it"
+- mutation `v58 GA1` — the store's boundary moves from `now >= expires_at` to `now >`
+- mutation `v58 GA2` — the STORED expiry an hour late while the wire still says 60 s
+**Not established:** expiry is tested on the harness clock (`app.now_unix`), set rather than elapsed; the sweep that deletes expired rows reads the same column and is tested separately (it catches GA2 too). `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it); since V4-14d the requirement says "recorded with", not "bound to" (erratum 44, audit F96). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
 
 ### D6 — Uniform responder flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
@@ -232,7 +246,13 @@ the most important thing on this page.
 - check `test_authd_localapi` "enroll: a fresh user with an already-enrolled handle is refused (Req 7)"
 - mutation `v49c W4` — the store no longer pins which key is being replaced
 - tool `tools/audit/check_spec_vocabularies.py` — the three `enroll-key-mismatch` events are emitted from literal call sites
-**Not established:** the logging half -- this spec's own addition -- has no run-time pin: no test asserts the `enroll-key-mismatch` journal lines or the audit row, and no mutation removes the rejection or the log. The vocabulary check proves an emitting call site exists, not that the rejection reaches it.
+- check `test_authd_localapi` "req7(disabled owner): the refusal is logged with both key fingerprints"
+- check `test_authd_localapi` "req7(revoked handle): the refusal is logged with both key fingerprints"
+- check `test_authd_localapi` "req7(recovery): the refusal did not spend the ticket -- it still enrolls a new device"
+- check `test_authd_localapi` "req7(site): the refusal wrote nothing to the audit chain (erratum 45)"
+- mutation `v58 GA12` — a store CONFLICT on a known handle answered `pk-in-use` in silence again (the pre-F97 shape)
+- mutation `v58 GA10` — the logged `fp_old` is the presented key's fingerprint
+**Not established:** the log is the journal (erratum 45): the tamper-evident audit chain records no Req 7 refusal, by design. The four refusal paths are tested; a path added later would need its own check, since the daemon only explains a refusal the store has already made.
 
 ### D8 — Rotation requires proof of possession of both keys
 - check `test_authd_conn` "rotate: a ROTATE whose sig_new is by the OLD key is REJECTED"
@@ -243,7 +263,10 @@ the most important thing on this page.
 - mutation `v49c W5` — handshake_id dropped from the rotate digest: a captured ROTATE replays on another session
 - mutation `v49c W2` — the domain label replaced by "x": the two signatures stop being separated
 - fuzz `authmsg` — a decoded ROTATE re-encodes to exactly its input; reserved flag bits refused; a failed decode leaves no fields behind
-**Not established:** no C test or mutation isolates the daemon's `sig_old` verification: every rejected case also breaks `sig_new` or trips the store's `pk_old` pin, so possession of the OUTGOING key rests on the session's own handshake and on the ProVerif `ctl_rot_sigold` control, which runs only nightly. W2 and W5 are killed only because the test builds the vector by hand and replays a ROTATE.
+- check `test_authd_conn` "rotate: a ROTATE whose ONLY defect is sig_old is REJECTED (possession of the outgoing key)"
+- check `test_authd_conn` "rotate: the journal names sig_old as the check that refused it"
+- mutation `v58 GA5` — sig_old's verdict ignored
+**Not established:** sig_old is isolated by one vector (the old key signing the rotate-new digest), not by a key other than the old one; W2 and W5 are killed only because the test builds the vector by hand and replays a ROTATE.
 
 ### D9 — Revocation is immediate
 - check `test_authd_localapi` "revoke: the live session was CLOSED, not just the row updated (Req 9)"
@@ -254,7 +277,18 @@ the most important thing on this page.
 - mutation `v47 S5` — a revoked device's tokens survive (`DELETE ... AND 0`)
 - mutation `v49c W7` — revoked or disabled devices can still rotate
 - fuzz `authd_conn` — a connection served the decoy (what a revoked device gets) must never be issued a login code
-**Not established:** the "next handshake fails" half has checks but no mutation that removes the device-status filter. Closing live sessions is tested only for REVOKE-DEVICE; RECOVERY-USE `revoke=all` and DISABLE-USER have no live-session check, and `authd_e2e` never revokes anything.
+- check `test_authd_store` "filter: a revoked device does not resolve even while its key row is active"
+- check `test_authd_localapi` "disable: the disabled user's live session was CLOSED, not just the row updated (Req 9)"
+- check `test_authd_localapi` "disable: another user's live session is untouched"
+- check `test_authd_localapi` "revoke-all: the lost device's live session was CLOSED, not just revoked in the store (Req 9)"
+- check `test_authd_localapi` "revoke-all: revoke=none leaves the user's live session open"
+- check `authd_e2e` "PASS: E2E: a disabled user is refused, and the same identity logs in again once re-enabled"
+- check `authd_e2e` "PASS: E2E: a device revoked over site.sock is refused at its next login"
+- mutation `v58 GA6` — the lookup's device clause becomes `d.status=d.status`
+- mutation `v58 GA7` — live sessions no longer matched by user
+- mutation `v58 GA8` — DISABLE-USER closes no live session
+- mutation `v58 GA9` — RECOVERY-USE `revoke=all` closes no live session
+**Not established:** the device clause is shown to hold on its own only for a state an attacker with the database file creates; the key clause alone is not isolated the same way. `revoke=all` is exercised in-process, not by `authd_e2e`.
 
 ### D10 — Identity keys are encrypted at rest
 - check `test_authd_cli` "keygen-server: no plaintext MLDSASK file was written anywhere (Req 10)"
@@ -278,7 +312,10 @@ the most important thing on this page.
 - mutation `v49b S1` — every socket is 0660, so admin.sock is reachable by its group
 - check `test_authd_evloop` "cfg: a site socket without site_uids is refused (Req 11)"
 - mutation `v57 HC1` — a site socket without `site_uids` accepted again
-**Not established:** the only test that refuses a uid outside an allowlist uses a WebSocket listener the test builds itself; nothing tests that `site.sock` or `admin.sock` refuse a uid missing from `site_uids`/`admin_uids` at accept time. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
+- check `authd_e2e` "PASS: E2E: site.sock and admin.sock refuse a uid outside their own lists at accept; the proxy socket still serves"
+- mutation `v58 GA13` — `site.sock` registered with an empty allowlist in `authd_main.c`
+- mutation `v58 GA14` — `admin.sock` registered with an empty allowlist in `authd_main.c`
+**Not established:** the foreign uid is this process's uid plus one, refused by a daemon configured for it; no second real user connects. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
 
 ### D12 — The client address used for rate limiting is obtained from a source the client cannot forge
 - check `test_authd_ws` "proxy-loop: a preamble with no client address is closed, and nothing is said"
@@ -315,4 +352,14 @@ the most important thing on this page.
 - tool `tools/check_store_fault_hook.sh` — the fault-injection hook is absent from the shipped library and binaries, present in the test
 - check `test_authd_store` "revoke-all: after the fault BOTH devices are still active -- not one of two"
 - mutation `v57 HC3` — each revoke=all revocation commits on its own again (the pre-F93 shape)
-**Not established:** three fault-injection points exist (the rotation, the recovery consume, and between revoke=all's revocations); revoke, disable and enroll run in transactions but are never crashed mid-way. RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.
+- check `test_authd_store` "fault(revoke): after the fault the device still resolves -- the revocation is all or nothing"
+- check `test_authd_store` "fault(disable): after the fault the user is still active -- the disable is all or nothing"
+- check `test_authd_store` "fault(enroll-user): after the fault no user was created (F47's half-state)"
+- check `test_authd_store` "fault(enroll-device): the handle enrolls cleanly afterwards -- no device row was left behind"
+- check `test_authd_store` "fault(ticket): the ticket still redeems -- the fault did not spend it"
+- mutation `v58 GA15` — revocation commits before its last step
+- mutation `v58 GA16` — the disable commits after the status write
+- mutation `v58 GA17` — the enrollment commits the user before the device
+- mutation `v58 GA18` — the enrollment commits the device row before its key
+- mutation `v58 GA19` — the ticket's spend commits before the enrollment
+**Not established:** eight fault points exist -- the rotation, the recovery consume, between revoke=all's revocations, revoke, disable, and three in enrollment (after the user, after the device row, after the ticket's spend) -- each after one write, not after every write; the rest rests on the transaction boundary. The fault hook's confinement to the test build is a CTest (`store_fault_hook`) since V4-15a -- before that the tool cited here ran nowhere (audit F99, fixed). RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.
