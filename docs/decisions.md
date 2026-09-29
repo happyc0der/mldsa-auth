@@ -6384,3 +6384,91 @@ in-process only; and each operation is faulted at one point, not every write.
 - **Documents.** Anchors 279 across 28 campaigns, and the nightly matrix
   names all 28; spec constants and names OK; the claim map's 244 citations
   all resolve; the repository secret scan finds 0 violations.
+
+## V4-15b — the protocol's gaps, and the constant-time gate
+
+V4-15a closed the claim map's daemon gaps; this step takes the protocol's.
+The pattern the research found is the same one each time: a test existed, but
+it exercised only the case its author had in mind, so a defect one step to
+the side passed every named check.
+
+### Tests that could not fail, and what they now cover
+
+- **Replay (P5).** S4 replays the record just accepted and S5 opens seq 1
+  first. A REPLAY check narrowed to "the previous record", or an OUT_OF_ORDER
+  check narrowed to "a gap of one", passed both -- and the record it let
+  through then decrypts, because it was sealed genuinely at its own seq. S4b
+  replays an OLDER record and S5b opens seq 2 first (GB1, GB2).
+- **The ledger (P5).** Two of its five CONSUMED checks, in `record_failure`
+  and `consume_success`, had no test: no protocol path reaches either (T9's
+  context refuses a replay first), so each is defence in depth that could
+  have been deleted unseen. Step4 T34 calls the store API directly (GB3, GB4).
+  The plan called it T33; that number was taken.
+- **Padding (P13).** P4(b) and (c) set the first and the last padding byte;
+  a check of only those two passed. P4(g) sets each of the fifty middle bytes
+  of a 64-byte inner, one fresh pair each (GB5).
+- **What is signed (P4).** No mutation had ever dropped a field. GB6 and GB7
+  drop the client's nonce from TH_server_auth and sig_B from TH_client_auth,
+  in BOTH roles, so the library stays self-consistent -- the case a round-trip
+  test can never see. The hand-built peers H1 and H2 bring their own bytes and
+  catch them; so does the client-core KAT golden.
+- **The decoy (D6).** `test_uniform_responder` compared two lengths that were
+  constants set to 1. It now measures the ServerHello in six cases -- good,
+  wrong key, unknown, disabled, superseded, revoked -- and all equal
+  SH_unsigned + 2 + 3309 bytes. The plan said the superseded case gets the
+  decoy; it does not, and the test now says so: the handle is active under
+  the new key, which is what gets pinned, so the old key fails exactly as a
+  wrong key does. The same sequence, by the other route. The lengths are equal
+  by construction, so no mutation isolates that check.
+
+### The constant-time gate (P3, D3)
+
+`tools/audit/constant_time_inventory.sh` reported every comparison and nothing
+ran it; v49c and v52 declined the one mutation in this area that changes no
+function's result -- `sodium_memcmp` swapped for `memcmp` -- because "the
+inventory is a report, not a gate". `tests/constant_time_sites.sh` is the
+gate: every `sodium_memcmp`/`sodium_is_zero` call in `src/` and `apps/` is
+checked against `tests/constant_time_sites.txt` both ways, comment lines
+skipped -- a missing site is a swap or a deletion, an unlisted one an
+incomplete list. Sites carry no line numbers, so an edit elsewhere cannot rot
+them. Controls by hand: a listed call swapped for `memcmp`, and an unlisted
+call added, each turned it red, and both files were restored byte-exact.
+GB8-GB10 are the swap, at three sites. It still pins which function
+compares, not how long it takes.
+
+**F100** and **F101** were stale references: audit row 4.3 carried V4-1's
+inventory figures (48 sites; the tree has 172 lines, and the script counts two
+comments as constant-time sites), and F18 cited `demo_keys.c` lines that had
+moved.
+
+### Verification
+
+- **Campaigns**, on ASan trees in two lanes (this checkout, and a detached
+  worktree at the test commit with its own tree, removed afterwards): v59 10
+  of 10 by name. Re-run in full because their kills run through a test this
+  step changed: v24 8/8 (M6 still by `ASAN in decode_client_hello`), v25 7/7,
+  v26 9/9 (Q2 by `ASAN in sodium_is_zero`), v27 6/6, v48b 7/7, v49c 13/13,
+  v52 11/11, v58 19/19. 90 of 90, every row restored clean, the clean suite
+  passing after each, no residue.
+- **Who else catches GB6 and GB7.** GB6 is killed by H1 and by every check that
+  builds its own ServerHello (H2's sig_B, H3, T14); GB7 by H2 and every check
+  that builds its own ClientAuth (H1, T10, T29, T32). The client-core KAT
+  golden catches both, at the artefact each first changes: `server-hello` for
+  GB6, `client-auth` for GB7. That run needed care: a hand loop that applied
+  GB7 in the same second GB6's object was compiled tested GB6's binary --
+  macOS make's one-second timestamps -- which the identical hashes gave away;
+  GB7 alone, rebuilt, is the result above, and `check_build_current` proved
+  the tree clean afterwards.
+- **Suites.** Normal, ASan and UBSan 46/46 each, each tree proven current in
+  the same invocation -- a macOS update had left objects from the previous
+  compiler in all three, which the check rebuilt and reported VOID before it
+  passed; UBSan 0 `runtime error` lines.
+- **Fuzzing.** The update also left Homebrew clang with a sysroot that does
+  not exist (`CommandLineTools/SDKs/MacOSX27.sdk`), so the old fuzz tree
+  could not build. A new one, `build-fuzz-v415`, is configured with Xcode's
+  SDK; its 36 fuzz-labelled tests pass. `fuzz_session` 600 s: 151,927,764
+  runs, no crash; `fuzz_handshake` 600 s: 1,313,537 runs, no crash.
+- **gcc 16** at `-O3 -Werror` compiled all three changed test files.
+- **Documents.** Anchors 291 across 29 campaigns, and the nightly matrix
+  names all 29; spec constants and names OK; the claim map's 267 citations
+  resolve; the repository secret scan finds 0 violations.

@@ -62,7 +62,10 @@ the most important thing on this page.
 - mutation `v47 S6` — the login-code state-hash comparison disabled
 - check `test_authd_conn` "conn: the pin lookup refuses an id that is not this connection's handle"
 - check `test_client_core` "fake: a ROTATE_ACK naming a DIFFERENT key is refused"
-**Not established:** the mutations show a comparison's RESULT matters, not that it runs in constant time; nothing measures timing, and `mutate_v52.py` records declining a `memcmp`-for-`sodium_memcmp` mutation because no test could observe it. The inventory is a report, not a CI gate; whether its plain `memcmp` sites are acceptable is a judgement recorded in audit F18.
+- check `constant_time_sites` "every listed constant-time comparison is still a sodium_memcmp or sodium_is_zero call"
+- mutation `v59 GB8` — the pin lookup's `sodium_memcmp` becomes `memcmp` (the mutation v49c and v52 declined, having no gate)
+- mutation `v59 GB10` — the audit chain's MAC comparison becomes `memcmp`
+**Not established:** the gate pins WHICH function compares, at 24 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
 
 ### P4 — Transcript-bound signatures
 - check `test_handshake` "v2-5 H4: another handshake's mlkem_ct spliced into a signed ServerHello -> SIGNATURE, FAILED"
@@ -72,7 +75,11 @@ the most important thing on this page.
 - mutation `v24 M3` — the transcript digest left out of the KDF info
 - fuzz `wire` — each transcript helper equals a digest built independently with raw SHA-256 and literal labels
 - ci `ProVerif model + controls` — injective agreement on (A, B, session_id, nonce_B, key); the `ctl_sigb` control makes it unprovable
-**Not established:** no mutation drops a single field (for example the X25519 share) from what is signed; the per-field checks exercise the transcript helpers, and ProVerif works on an abstract model. Separation from v1 rests on the `/v2/` labels.
+- check `test_handshake` "v2-5 H1: the initiator completes against a hand-built responder"
+- check `test_handshake` "v2-5 H2: the responder verifies the hand-built ClientAuth -> ESTABLISHED"
+- mutation `v59 GB6` — TH_server_auth hashes the ClientHello without its nonce, in BOTH roles, so the library stays self-consistent
+- mutation `v59 GB7` — TH_client_auth hashes the ServerHello without sig_B, in both roles
+**Not established:** a self-consistent change to what is signed is caught only by checks that bring their own bytes -- the hand-built peers (H1, H2) and the client-core KAT golden, whose golden this same code produced; two fields are mutated, not every field. ProVerif works on an abstract model. Separation from v1 rests on the `/v2/` labels.
 
 ### P5 — Replay protection
 - check `test_session` "S4: re-delivering an accepted record -> REPLAY, session FAILED"
@@ -82,7 +89,15 @@ the most important thing on this page.
 - check `test_session` "S12: a second session from the consumed initiator handshake -> UNEXPECTED_STATE"
 - fuzz `session` — a reference model predicts every status (REPLAY below recv_seq, OUT_OF_ORDER above), the resulting state and recv_seq
 - fuzz `handshake` — after every ClientAuth the ledger's slot state and failure count match the model, CONSUMED included
-**Not established:** no committed mutation targets the sequence comparison in `session_open` or the ledger's CONSUMED check (the related v25 N7 is a documented equivalent mutant). Single use is per `handshake_id` within the pending entry's TTL; there is no session-id or nonce cache beyond it.
+- check `test_session` "S4b: re-delivering an OLDER record (r0 after r0 and r1) -> REPLAY, session FAILED"
+- check `test_session` "S5b: seq 2 before seq 0 (a gap of two) -> OUT_OF_ORDER, session FAILED"
+- check `test_handshake` "step4 T34: record_failure on a CONSUMED tombstone -> CONSUMED, nothing counted, still a tombstone"
+- check `test_handshake` "step4 T34: a second consume_success -> CONSUMED (a handshake commits once)"
+- mutation `v59 GB1` — the REPLAY check narrowed to the previous record
+- mutation `v59 GB2` — the OUT_OF_ORDER check narrowed to a gap of one
+- mutation `v59 GB3` — failures counted against a CONSUMED tombstone
+- mutation `v59 GB4` — a handshake commits twice
+**Not established:** two of the ledger's five CONSUMED checks are reachable only through the store's API, not the protocol -- defence in depth -- and the CONSUMED-to-`HANDSHAKE_ERR_REPLAY` mapping is unreachable through the API: a replayed ClientAuth meets UNEXPECTED_STATE first (T9). v25 N7 remains a documented equivalent mutant. Single use is per `handshake_id` within the pending entry's TTL; there is no session-id or nonce cache beyond it.
 
 ### P6 — Strict input validation
 - check `test_handshake` "v2-4 W1: CH/SH_unsigned/SH/CA maxima are 1330/1234/4545/3328 and the ML-KEM fields 1184/1088"
@@ -159,7 +174,9 @@ the most important thing on this page.
 - mutation `v26 Q1` — the receiver accepts nonzero padding
 - mutation `v26 Q2` — content_len not bounded against the inner
 - fuzz `session` — in inner mode, an inner under 2 bytes, content_len past the inner, or any nonzero padding byte is MALFORMED and terminal
-**Not established:** the named checks test the first and last padding byte; the bytes between rest on the fuzz model. Q2 is named only as `ASAN in sodium_is_zero`: its unbounded length wraps inside the padding check, and the process faults before any check can print (audit F90).
+- check `test_session` "v2-6 P4(g): EVERY middle padding byte (indices 13..62), one at a time, nonzero"
+- mutation `v59 GB5` — only the first and the last padding byte checked
+**Not established:** every byte of one 64-byte inner is tested, one at a time; other inner lengths and buckets rest on the fuzz model. Q2 is named only as `ASAN in sodium_is_zero`: its unbounded length wraps inside the padding check, and the process faults before any check can print (audit F90).
 
 ---
 
@@ -195,7 +212,10 @@ the most important thing on this page.
 - mutation `v47 S6` — the state-hash `sodium_memcmp` in the code's consumption disabled
 - mutation `v53 F7` — the client's ROTATE_ACK fingerprint comparison bypassed
 - tool `tools/audit/constant_time_inventory.sh` — every comparison site in `src/` and `apps/`, labelled constant-time or plain
-**Not established:** weak. Nothing measures timing, and every mutation REMOVES a comparison; none swaps `sodium_memcmp` for `memcmp`, which no test would notice. Token, login-code and ticket hashes are found by SQLite `WHERE ..._hash = ?` equality on an index, not compared with `sodium_memcmp`; since V4-14d the requirement names that as an accepted exception and argues it (erratum 43, audit F95) -- the timing concerns the SHA-256 of a 256-bit random secret, not the secret. The argument is this document's, not a measurement.
+- check `constant_time_sites` "every sodium_memcmp and sodium_is_zero call in src/ and apps/ is on the list"
+- mutation `v59 GB8` — the pin lookup's `sodium_memcmp` becomes `memcmp`
+- mutation `v59 GB9` — the login code's state comparison becomes `memcmp`
+**Not established:** weaker than a measurement. Since V4-15b a swap to `memcmp` fails a named gate (GB8-GB10), but the gate pins which function compares, not how long it takes, and nothing measures timing. Token, login-code and ticket hashes are found by SQLite `WHERE ..._hash = ?` equality on an index, not compared with `sodium_memcmp`; since V4-14d the requirement names that as an accepted exception and argues it (erratum 43, audit F95) -- the timing concerns the SHA-256 of a 256-bit random secret, not the secret. The argument is this document's, not a measurement.
 
 ### D4 — Tokens, login codes, recovery codes and enrollment tickets are never stored in the clear
 - check `test_authd_localapi` "recovery: the plaintext code is NOT in the store (Req 4)"
@@ -237,7 +257,10 @@ the most important thing on this page.
 - mutation `v52 P5` — the pin lookup refuses decoy connections, so an unknown identity fails earlier and differently
 - mutation `v47 S3` — the active-key lookup drops the user-status join
 - fuzz `authd_conn` — no input brings a decoy connection to SERVING
-**Not established:** "the same" is judged by the client's handshake outcome and the absence of a record; no test compares ServerHello bytes or lengths, the close, or timing. The disabled and superseded cases are shown refused, not shown served the decoy on the wire, and ProVerif does not model the decoy.
+- check `test_authd_conn` "decoy: good, wrong-key, unknown, disabled, superseded and revoked all get a ServerHello of the"
+- check `test_authd_conn` "decoy: a DISABLED user's device is served the decoy (Req 6)"
+- check `test_authd_conn` "decoy: a SUPERSEDED key is refused on the known-handle path -- the new key is pinned, not the decoy"
+**Not established:** the lengths are equal by construction -- one code path builds every ServerHello from fixed-size fields -- so no mutation isolates the length check; it pins the invariant. No test compares the bytes (fresh per handshake), the close, or timing, and ProVerif does not model the decoy.
 
 ### D7 — No silent key rotation
 - check `test_authd_store` "a known handle presenting a different key is rejected (Req 7)"

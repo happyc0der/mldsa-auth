@@ -88,7 +88,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-257 committed mutations in 28 campaigns, each a defect the tests must catch
+267 committed mutations in 29 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree:
 
 ```bash
@@ -104,7 +104,7 @@ check (audit F90). Before editing sources, check that every campaign still
 applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (279 anchors, 28 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (291 anchors, 29 campaigns)
 ```
 
 ## The formal model
