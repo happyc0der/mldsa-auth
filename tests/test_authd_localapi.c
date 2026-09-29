@@ -1003,6 +1003,182 @@ static void test_recovery_revoke_all(void)
     h_stop(&d);
 }
 
+/* ------------------------------------------- Req 7: rejected AND logged */
+
+/* Runs one request with the journal captured at INFO and returns what was
+ * logged (the caller frees it), so each path's lines are checked against that
+ * request alone rather than found anywhere in a shared log. */
+static char *logged_cmd(h_daemon_t *d, int fd, const char *req, char *resp, size_t cap)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/req7.log", g_dir);
+    FILE *lf = fopen(path, "w+");
+    if (lf == NULL) { resp[0] = '\0'; return NULL; }
+    authd_log_init(lf, AUTHD_LOG_INFO);
+    if (h_local_cmd(d, fd, req, resp, cap) != 0) { resp[0] = '\0'; }
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    fflush(lf);
+    long n = ftell(lf);
+    if (n < 0) { n = 0; }
+    rewind(lf);
+    char *buf = (char *)calloc((size_t)n + 1u, 1u);
+    if (buf != NULL && fread(buf, 1, (size_t)n, lf) != (size_t)n) { buf[0] = '\0'; }
+    fclose(lf);
+    return buf;
+}
+
+/* The three lines §15 requires for every Req 7 rejection: the event with the
+ * handle, then the fingerprint of the key the handle holds and of the key that
+ * was presented -- each compared with a SHA-256 computed here. */
+static int req7_logged(const char *log, const char *id, const uint8_t *old_pk, const uint8_t *new_pk)
+{
+    if (log == NULL || strstr(log, "event=enroll-key-mismatch slot=") == NULL) { return 0; }
+    char want[256], hex[crypto_hash_sha256_BYTES * 2u + 1u];
+    uint8_t fp[crypto_hash_sha256_BYTES];
+    snprintf(want, sizeof want, "id=%s", id);
+    if (strstr(log, want) == NULL) { return 0; }
+    crypto_hash_sha256(fp, old_pk, STORE_PK_BYTES);
+    hx(hex, sizeof hex, fp, sizeof fp);
+    snprintf(want, sizeof want, "event=enroll-key-mismatch-old fp=%s", hex);
+    if (strstr(log, want) == NULL) { return 0; }
+    crypto_hash_sha256(fp, new_pk, STORE_PK_BYTES);
+    hx(hex, sizeof hex, fp, sizeof fp);
+    snprintf(want, sizeof want, "event=enroll-key-mismatch-new fp=%s", hex);
+    return strstr(log, want) != NULL;
+}
+
+static int head_is(const h_daemon_t *d, const uint8_t want[STORE_AUDIT_MAC_BYTES])
+{
+    uint8_t now[STORE_AUDIT_MAC_BYTES];
+    return store_audit_head_mac(d->store, now) == STORE_OK && memcmp(now, want, sizeof now) == 0;
+}
+
+/* Req 7 (spec §5): re-registering an existing handle with a different key is
+ * rejected AND logged -- the logging half is this daemon's own obligation, and
+ * §15 lists every Req 7 rejection, with both fingerprints, as always logged.
+ * Erratum 45: the journal is that log; a refused enrollment writes nothing to
+ * the store, the audit chain included (F47).
+ *
+ * Four paths refuse a known handle's different key. Until V4-15a only the
+ * first logged anything (F97): the other three answered `pk-in-use` in
+ * silence, because the daemon's pre-check (a three-join over ACTIVE key,
+ * device and user) cannot see them and the store's CONFLICT did not say why. */
+static void test_req7_logged(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "req7.sqlite3", 1) == 0, "req7: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "req7: connect to site.sock");
+
+    mldsa_keypair_t kp, other;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    CHECK(mldsa_keypair_generate(&other) == 0, "req7: the key presented against known handles");
+
+    char uh[160], hh[160], pkh[4000], req[8192], resp[16384];
+    uint8_t head[STORE_AUDIT_MAC_BYTES];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+    hx(pkh, sizeof pkh, other.public_key, sizeof other.public_key);
+
+    /* (a) via=site against an active device: the daemon's own pre-check. */
+    CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "req7: audit head read");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", uh, hh, pkh);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=exists-different-key"),
+            "req7(site): a known handle with a different key is refused");
+      CHECK(req7_logged(log, "d1aa", kp.public_key, other.public_key),
+            "req7(site): the refusal is logged with both key fingerprints");
+      CHECK(head_is(&d, head), "req7(site): the refusal wrote nothing to the audit chain (erratum 45)");
+      free(log); }
+
+    /* (b) via=site naming a handle whose OWNER is disabled. The request names
+     *     another user -- naming the disabled owner is refused earlier, as
+     *     user-disabled -- so the three-join misses the handle and the store
+     *     refuses it. */
+    { const uint8_t U2[] = { 'u','2' }, H2[] = { 'd','2','b','b' }, NEWU[] = { 'n','u' };
+      mldsa_keypair_t kp2;
+      char h2h[160], nuh[160];
+      CHECK(mldsa_keypair_generate(&kp2) == 0, "req7: the disabled owner's key");
+      CHECK(store_add_user(d.store, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK &&
+            store_enroll_device(d.store, H2, sizeof H2, U2, sizeof U2, kp2.public_key,
+                                "site", "test", NULL, 0) == STORE_OK &&
+            store_disable_user(d.store, U2, sizeof U2, "test", (const uint8_t *)"x", 1u) == STORE_OK,
+            "req7: fixture -- u2's device is enrolled, then u2 is disabled");
+      hx(h2h, sizeof h2h, H2, sizeof H2);
+      hx(nuh, sizeof nuh, NEWU, sizeof NEWU);
+      CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "req7: audit head read");
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", nuh, h2h, pkh);
+      char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=exists-different-key"),
+            "req7(disabled owner): the handle's different key is refused as exists-different-key");
+      CHECK(req7_logged(log, "d2bb", kp2.public_key, other.public_key),
+            "req7(disabled owner): the refusal is logged with both key fingerprints");
+      CHECK(head_is(&d, head), "req7(disabled owner): the refusal wrote nothing to the audit chain");
+      { store_role_t r; char st[16];
+        CHECK(store_get_user(d.store, NEWU, sizeof NEWU, &r, st, sizeof st) == STORE_ERR_NOT_FOUND,
+              "req7(disabled owner): the refused request created no user (F47)"); }
+      free(log);
+      mldsa_keypair_free(&kp2); }
+
+    /* (c) via=site naming a REVOKED device's handle. Handles are never reused,
+     *     so no key but the one it had can ever be registered under it. */
+    { const uint8_t H3[] = { 'd','1','r','v' };
+      mldsa_keypair_t kp3;
+      char h3h[160];
+      CHECK(mldsa_keypair_generate(&kp3) == 0, "req7: the revoked device's key");
+      CHECK(store_enroll_device(d.store, H3, sizeof H3, U1, sizeof U1, kp3.public_key,
+                                "site", "test", NULL, 0) == STORE_OK &&
+            store_revoke_device(d.store, H3, sizeof H3, "test", (const uint8_t *)"x", 1u) == STORE_OK,
+            "req7: fixture -- d1rv is enrolled, then revoked");
+      hx(h3h, sizeof h3h, H3, sizeof H3);
+      CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "req7: audit head read");
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", uh, h3h, pkh);
+      char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=exists-different-key"),
+            "req7(revoked handle): a new key under a revoked handle is refused as exists-different-key");
+      CHECK(req7_logged(log, "d1rv", kp3.public_key, other.public_key),
+            "req7(revoked handle): the refusal is logged with both key fingerprints");
+      CHECK(head_is(&d, head), "req7(revoked handle): the refusal wrote nothing to the audit chain");
+      free(log);
+      mldsa_keypair_free(&kp3); }
+
+    /* (d) via=recovery: a ticket authorises a NEW device, never a new key for
+     *     a known handle -- and the refusal must not spend it. */
+    { snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+            "req7: recovery codes issued");
+      char code[BASE32_CODE_CHARS + 1u];
+      first_code(resp, code);
+      snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, code);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+            "req7: a ticket is issued");
+      char ticket_hex[80] = {0};
+      { const char *t = strstr(resp, "ticket=");
+        if (t != NULL) { sscanf(t + 7, "%79[0-9a-f]", ticket_hex); } }
+      CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "req7: audit head read");
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s",
+               uh, hh, pkh, ticket_hex);
+      char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=exists-different-key"),
+            "req7(recovery): a known handle with a different key is refused as exists-different-key");
+      CHECK(req7_logged(log, "d1aa", kp.public_key, other.public_key),
+            "req7(recovery): the refusal is logged with both key fingerprints");
+      CHECK(head_is(&d, head), "req7(recovery): the refusal wrote nothing to the audit chain");
+      free(log);
+      const uint8_t H4[] = { 'd','1','n','w' };
+      char h4h[160];
+      hx(h4h, sizeof h4h, H4, sizeof H4);
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s",
+               uh, h4h, pkh, ticket_hex);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+            "req7(recovery): the refusal did not spend the ticket -- it still enrolls a new device"); }
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&other);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1028,6 +1204,7 @@ int main(void)
     test_recovery();
     test_recovery_policy();
     test_recovery_revoke_all();
+    test_req7_logged();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

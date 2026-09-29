@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.9, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d errata)
+# mldsa-authd — deployment specification (v1.10, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -472,7 +472,10 @@ because a caller who believes it is redeeming a ticket and is not has been
 told something false.
 
 `ENROLL` creates the user on first use, with role `user`. A handle whose user
-already exists with the other role is `role-mismatch`. `ENROLL-OPERATOR` is
+already exists with the other role is `role-mismatch`. On either `via`,
+`exists-different-key` means the handle already exists with a different key
+(Req 7, logged -- including a handle whose device is revoked or whose user is
+disabled), and `pk-in-use` means the key is enrolled under another handle. `ENROLL-OPERATOR` is
 the same request with the same keys, on the administrative socket, creating
 the user with role `operator`; it also takes `via=site` and is audited as
 such, because the administrator running it *is* the enroller.
@@ -585,7 +588,12 @@ provided: it would require an anonymous identity mode the protocol does not
 have, and would expose an unauthenticated write path to the internet.
 
 Re-enrollment of a known handle with a different key is **rejected and
-audited** (Req 7). With an identical key it is idempotent.
+logged** (Req 7): §15's `enroll-key-mismatch` lines, with the fingerprints of
+the key the handle holds and of the key presented. That holds on either
+`via` and whatever the status of the handle's device or user -- handles are
+never reused, so a handle can only ever be enrolled with the key it holds or
+last held. A refused enrollment writes nothing to the store, the audit chain
+included (erratum 45). With an identical key it is idempotent.
 
 ### 10.2 Rotation
 
@@ -1276,3 +1284,12 @@ it does and why that is enough:
 |---|---|---|---|
 | 43 | 5 (Req 3) | the store's hash lookups named as an accepted exception to constant-time comparison, with the reason | Req 3 listed token, code and ticket hashes among values compared in constant time, and the store finds them by SQLite index equality. The practical risk is small -- the timing concerns the SHA-256 of a 256-bit random secret -- but the requirement claimed otherwise and gave no argument. Finding **F95** |
 | 44 | 5 (Req 5) | "bound to `{user, handle, handshake_id, SHA-256(state)}`" becomes "bound to `{user, handle, SHA-256(state)}`, recorded with the `handshake_id`" | nothing checks the `handshake_id` when a code is spent, and nothing can: the site does not know it. Finding **F96** |
+
+### Revision v1.10 (V4-15a)
+
+A requirement's wording that had outlived the design it described, corrected
+to the design, and the paths it had never reached:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 45 | 8, 10.1 | Req 7's refusal is "rejected **and logged**" (the journal, both fingerprints), not "rejected and audited", on every path; `exists-different-key` defined for both `via` values | since F47 a refused enrollment writes nothing to the store, so the audit row §10.1 promised was always rolled back -- the journal was Req 7's log, and four documents said otherwise (finding **F98**). Three refusals had no log at all: via=recovery, a handle whose owner is disabled and a revoked device's handle each answered `pk-in-use` in silence (finding **F97**, fixed) |

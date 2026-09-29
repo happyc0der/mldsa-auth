@@ -247,6 +247,49 @@ static ev_action_t h_ping(authd_app_t *app, authd_slot_t *slot, const req_t *req
 }
 
 /* ENROLL / ENROLL-OPERATOR share everything but the role they create. */
+/* Req 7's three journal lines. §15 lists every Req 7 rejection, with both
+ * fingerprints, as always logged -- and since erratum 45 the journal is the
+ * whole of "rejected AND logged": a refused enrollment writes nothing to the
+ * store, the audit chain included (F47). */
+static void log_req7(const authd_slot_t *slot, const uint8_t *handle, size_t handle_len,
+                     const uint8_t fp_old[crypto_hash_sha256_BYTES],
+                     const uint8_t fp_new[crypto_hash_sha256_BYTES])
+{
+    authd_log_slot_id(AUTHD_LOG_WARN, "enroll-key-mismatch", slot->index, handle, handle_len);
+    authd_log_fp(AUTHD_LOG_WARN, "enroll-key-mismatch-old", fp_old);
+    authd_log_fp(AUTHD_LOG_WARN, "enroll-key-mismatch-new", fp_new);
+}
+
+/* The store refused an enrollment (CONFLICT) and rolled it back; this says
+ * WHY, on both paths. Either the handle already exists with a different key --
+ * Req 7: `exists-different-key`, logged -- or the key is enrolled elsewhere:
+ * `pk-in-use`. It is not a second validator: the store has already decided.
+ * Until V4-15a every CONFLICT answered `pk-in-use` in silence, so three Req 7
+ * refusals went unlogged: via=recovery, a handle whose owner is disabled, and
+ * a revoked device's handle -- the last two invisible to the pre-check in
+ * enroll_common, which sees only ACTIVE key, device and user (F97). */
+static ev_action_t refuse_conflict(authd_app_t *app, authd_slot_t *slot,
+                                   const uint8_t *handle, size_t handle_len,
+                                   const uint8_t pk[STORE_PK_BYTES])
+{
+    uint8_t last[STORE_PK_BYTES];
+    const store_status_t ls = store_handle_last_key(app->store, handle, handle_len, last);
+    if (ls == STORE_ERR_NOT_FOUND) {
+        return send_err(slot, "pk-in-use");
+    }
+    if (ls != STORE_OK) {
+        return send_err(slot, "internal");
+    }
+    if (sodium_memcmp(last, pk, STORE_PK_BYTES) != 0) {
+        uint8_t fp_old[crypto_hash_sha256_BYTES], fp_new[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(fp_old, last, STORE_PK_BYTES);
+        crypto_hash_sha256(fp_new, pk, STORE_PK_BYTES);
+        log_req7(slot, handle, handle_len, fp_old, fp_new);
+        return send_err(slot, "exists-different-key");
+    }
+    return send_err(slot, "pk-in-use");
+}
+
 static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req_t *req,
                                  store_role_t role)
 {
@@ -332,7 +375,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             /* Req 7 or a re-used public key. The ticket is NOT spent (the whole
              * transaction rolled back), so a typo does not cost the user their
              * one way back in. */
-            return send_err(slot, "pk-in-use");
+            return refuse_conflict(app, slot, handle, handle_len, pk);
         }
         if (es != STORE_OK) { return send_err(slot, "internal"); }
 
@@ -391,9 +434,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             uint8_t fp_old[crypto_hash_sha256_BYTES], fp_new[crypto_hash_sha256_BYTES];
             crypto_hash_sha256(fp_old, cur, STORE_PK_BYTES);
             crypto_hash_sha256(fp_new, pk, STORE_PK_BYTES);
-            authd_log_slot_id(AUTHD_LOG_WARN, "enroll-key-mismatch", slot->index, handle, handle_len);
-            authd_log_fp(AUTHD_LOG_WARN, "enroll-key-mismatch-old", fp_old);
-            authd_log_fp(AUTHD_LOG_WARN, "enroll-key-mismatch-new", fp_new);
+            log_req7(slot, handle, handle_len, fp_old, fp_new);
             return send_err(slot, "exists-different-key");
         }
     }
@@ -414,7 +455,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
                                                          (label_len > 0u) ? label : NULL, label_len,
                                                          &created, &store_idem);
         if (es == STORE_ERR_CONFLICT) {
-            return send_err(slot, "pk-in-use");
+            return refuse_conflict(app, slot, handle, handle_len, pk);
         }
         if (es != STORE_OK) {
             return send_err(slot, "internal");

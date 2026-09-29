@@ -126,6 +126,15 @@ store_status_t store_rotate_key(store_t *s,
 store_status_t store_active_key_age(const store_t *s, const uint8_t *handle, size_t handle_len,
                                     int64_t *valid_from_out);
 
+/* The key a handle holds or last held, whatever its status or its device's
+ * and user's. Handles are never reused, so this is the key any re-enrollment
+ * of the handle is measured against: the daemon uses it to say WHY the store
+ * refused one (Req 7's `exists-different-key` versus `pk-in-use`) on every
+ * path, including those its active-only pre-check cannot see (F97). Read-only;
+ * NOT_FOUND when the handle has never been enrolled. */
+store_status_t store_handle_last_key(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                     uint8_t pk_out[STORE_PK_BYTES]);
+
 /* Enroll a device, CREATING the user first if it does not exist, in ONE
  * transaction: either both happen or neither does. Use this rather than
  * store_add_user + store_enroll_device, which could not be made safe by
@@ -351,7 +360,9 @@ store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, s
  * enrolled_via='recovery'. Two separate calls would burn the ticket on a
  * pk-in-use typo, in the one moment the user is already locked out of
  * everything else. Req 7 still governs: a known handle presenting a different
- * key is CONFLICT and audited, exactly as store_enroll_device does.
+ * key is CONFLICT and nothing is written -- the audit row enroll_device_locked
+ * appends rolls back with the rest, unlike store_enroll_device's. The daemon
+ * logs the refusal to its journal, which is Req 7's log (erratum 45, F98).
  * The ticket must belong to `expect_user`, and that is checked INSIDE the
  * transaction rather than by the caller afterwards -- by then it would already
  * be spent.

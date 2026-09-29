@@ -847,8 +847,10 @@ static store_status_t active_key_of(store_t *s, const uint8_t *handle, size_t ha
  * `*idempotent_out` is set when the handle already holds exactly this key: the
  * caller decides what that means (store_enroll_device rolls back, since
  * nothing changed and no audit row is wanted). Req 7's different-key case
- * still writes its audit row here, so the caller must COMMIT on CONFLICT to
- * keep it -- which is what makes "rejected AND logged" survive. */
+ * still writes its audit row here, and only store_enroll_device COMMITS on
+ * CONFLICT and keeps it. The daemon's two paths, store_enroll_device_ex and
+ * store_enroll_via_ticket, roll back: a refused enrollment writes nothing, and
+ * Req 7's log there is the daemon's journal (spec erratum 45, finding F98). */
 static store_status_t enroll_device_locked(store_t *s,
                                            const uint8_t *handle, size_t handle_len,
                                            const uint8_t *user_id, size_t user_id_len,
@@ -860,7 +862,8 @@ static store_status_t enroll_device_locked(store_t *s,
     store_status_t r = STORE_OK;
     *idempotent_out = 0;
 
-    /* Req 7: a known handle presenting a DIFFERENT key is rejected and audited.
+    /* Req 7: a known handle presenting a DIFFERENT key is rejected; the audit row
+     * below survives only where the caller commits on CONFLICT (see above).
      * With the identical key the call is idempotent. */
     uint8_t cur[STORE_PK_BYTES];
     int have_active = 0;
@@ -2090,9 +2093,10 @@ store_status_t store_enroll_via_ticket(store_t *s,
     r = enroll_device_locked(s, handle, handle_len, user, user_len, pk,
                              "recovery", "recovery", label, label_len, now, &idempotent);
     if (r == STORE_ERR_CONFLICT) {
-        /* Req 7's audit row (if any) is kept, but the TICKET IS NOT SPENT:
-         * the whole transaction rolls back, so a pk-in-use typo does not cost
-         * the user their one way back in. */
+        /* Nothing is kept -- not Req 7's audit row either, which rolls back
+         * with the rest (the daemon logs the refusal to its journal, erratum
+         * 45) -- and above all the TICKET IS NOT SPENT, so a pk-in-use typo
+         * does not cost the user their one way back in. */
         tx_rollback(s);
         return STORE_ERR_CONFLICT;
     }
@@ -2307,6 +2311,35 @@ store_status_t store_active_key_age(const store_t *s, const uint8_t *handle, siz
     } else if (sqlite3_step(st) == SQLITE_ROW) {
         *valid_from_out = sqlite3_column_int64(st, 0);
         r = STORE_OK;
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
+store_status_t store_handle_last_key(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                     uint8_t pk_out[STORE_PK_BYTES])
+{
+    if (s == NULL || !id_ok(handle, handle_len) || pk_out == NULL) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT pk FROM device_keys WHERE handle=?1 ORDER BY key_id DESC LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_ERR_NOT_FOUND;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            size_t n = 0;
+            r = copy_blob_col(st, 0, pk_out, STORE_PK_BYTES, &n);
+            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_CORRUPT; }
+        } else if (rc != SQLITE_DONE) {
+            r = STORE_ERR_DB;
+        }
     }
     sqlite3_finalize(st);
     return r;
