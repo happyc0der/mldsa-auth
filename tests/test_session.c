@@ -507,6 +507,46 @@ static void test_s5_out_of_order(void) {
     sp_close(&p);
 }
 
+/* S4 replays the record just accepted and S5 opens seq 1 first: the only two
+ * cases the named checks used. A REPLAY check narrowed to "the previous
+ * record" (seq + 1 == recv_seq), or an OUT_OF_ORDER check narrowed to "a gap
+ * of one", passed both -- and an older replay or a wider gap then decrypts,
+ * since each record was sealed genuinely at its own seq. V4-15b, CLAIMS P5. */
+static void test_s4b_replay_older(void) {
+    sp_t p;
+    sp_open(&p, NULL, NULL);
+    size_t l0 = 0;
+    size_t l1 = 0;
+    size_t got = 0;
+    seal_into(&p.a, 40, g_rec, &l0);
+    seal_into(&p.a, 40, g_rec2, &l1);
+    const int both = open_from(&p.b, g_rec, l0, &got) == SESSION_OK &&
+                     open_from(&p.b, g_rec2, l1, &got) == SESSION_OK;
+    CHECK(both && open_from(&p.b, g_rec, l0, &got) == SESSION_ERR_REPLAY &&
+              session_get_state(&p.b) == SESSION_STATE_FAILED,
+          "S4b: re-delivering an OLDER record (r0 after r0 and r1) -> REPLAY, session FAILED");
+    check_dead(&p.b, SESSION_STATE_FAILED, "older replay");
+    sp_close(&p);
+}
+
+static void test_s5b_gap_of_two(void) {
+    static uint8_t r2[SESSION_MAX_RECORD_BYTES + 1];
+    sp_t p;
+    sp_open(&p, NULL, NULL);
+    size_t l0 = 0;
+    size_t l1 = 0;
+    size_t l2 = 0;
+    size_t got = 0;
+    seal_into(&p.a, 40, g_rec, &l0);
+    seal_into(&p.a, 40, g_rec2, &l1);
+    seal_into(&p.a, 40, r2, &l2);
+    CHECK(open_from(&p.b, r2, l2, &got) == SESSION_ERR_OUT_OF_ORDER &&
+              session_get_state(&p.b) == SESSION_STATE_FAILED,
+          "S5b: seq 2 before seq 0 (a gap of two) -> OUT_OF_ORDER, session FAILED");
+    check_dead(&p.b, SESSION_STATE_FAILED, "gap of two");
+    sp_close(&p);
+}
+
 static void test_s6_tamper(void) {
     /* 40-byte payload: ciphertext is rec[9..49), tag is rec[49..65). */
     static const struct {
@@ -1381,6 +1421,30 @@ static void test_p4_malformed_inner(void) {
         sp_close(&p);
     }
 
+    /* (g) EVERY middle padding byte, one at a time. (b) and (c) set the first
+     *     and the last, so a check of only those two passed every named check
+     *     and only the fuzz model looked in between (V4-15b, CLAIMS P13). */
+    {
+        int all = 1;
+        for (size_t idx = 13; idx < 63u; idx++) {
+            sp_t p;
+            size_t l = 0;
+            size_t got = 0;
+            p_open_pair(&p, SESSION_PAD_BUCKET_DEFAULT, SESSION_PAD_BUCKET_DEFAULT);
+            memset(inner, 0, 64);
+            inner[1] = 10; /* content_len 10, padding is [12, 64) */
+            memcpy(inner + 2, g_pt_in, 10);
+            inner[idx] = 0x01;
+            p_seal_inner(&p, inner, 64, g_rec, &l);
+            memset(g_pt_out, 0xAA, 64);
+            all &= open_from(&p.b, g_rec, l, &got) == SESSION_ERR_MALFORMED &&
+                   session_get_state(&p.b) == SESSION_STATE_FAILED && sodium_is_zero(g_pt_out, 64);
+            sp_close(&p);
+        }
+        CHECK(all, "v2-6 P4(g): EVERY middle padding byte (indices 13..62), one at a time, nonzero -> "
+                   "MALFORMED, FAILED, buffer zeroed");
+    }
+
     /* (d) no padding at all, and (e) the smallest legal inner. */
     {
         sp_t p;
@@ -1551,7 +1615,9 @@ int main(void) {
     test_s1_round_trip();
     test_s2_s3_exact_layout();
     test_s4_replay();
+    test_s4b_replay_older();
     test_s5_out_of_order();
+    test_s5b_gap_of_two();
     test_s6_tamper();
     test_s7_reflection();
     test_s8_cross_session();

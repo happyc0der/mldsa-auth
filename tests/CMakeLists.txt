@@ -143,6 +143,11 @@ add_test(NAME test_authd_store COMMAND test_authd_store)
 # whole tree built, which is what ctest runs against.
 add_test(NAME store_fault_hook
          COMMAND /bin/bash ${PROJECT_SOURCE_DIR}/tools/check_store_fault_hook.sh ${CMAKE_BINARY_DIR})
+# V4-15b (CLAIMS P3/D3): the constant-time comparison sites, checked both ways
+# against constant_time_sites.txt. tools/audit/constant_time_inventory.sh is
+# the report; this is the gate that sees a sodium_memcmp swapped for memcmp.
+add_test(NAME constant_time_sites
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 
 add_executable(test_authd_evloop test_authd_evloop.c)
 target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)

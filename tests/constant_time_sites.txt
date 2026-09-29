@@ -1,0 +1,34 @@
+# Every constant-time comparison call in src/ and apps/, checked BOTH ways by
+# constant_time_sites.sh (V4-15b, CLAIMS P3/D3). One site per line:
+#
+#   path|the call's source line, whitespace-collapsed
+#
+# No line numbers, so an edit elsewhere in a file does not rot the list. A
+# site that disappears is a sodium_memcmp swapped for memcmp, or a comparison
+# deleted; a new call must be added here, in the same commit. Plain
+# memcmp/strcmp sites are dispositioned in docs/v4/audit.md (F18) and reported
+# by tools/audit/constant_time_inventory.sh.
+apps/authd/authd_conn.c|if (have_len != id_len || sodium_memcmp(have, id, id_len) != 0) {
+apps/authd/authd_conn.c|if (sodium_memcmp(id, c->handle, id_len) != 0) {
+apps/authd/authd_conn.c|sodium_memcmp(m.handle, c->handle, c->handle_len) != 0) {
+apps/authd/cli_prompt.c|const int same = (st == CLI_PROMPT_OK && n1 == n2 && sodium_memcmp(p1, p2, n1) == 0);
+apps/authd/client_core.c|if (ack.handle_len == cc->hid_len && sodium_memcmp(ack.handle, cc->hid, cc->hid_len) == 0 &&
+apps/authd/client_core.c|sodium_memcmp(ack.fp_new, cc->want_fp, sizeof cc->want_fp) == 0) {
+apps/authd/localapi.c|if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
+apps/authd/localapi.c|if (sodium_memcmp(last, pk, STORE_PK_BYTES) != 0) {
+apps/authd/store/store.c|if (expect_old_pk != NULL && sodium_memcmp(cur, expect_old_pk, STORE_PK_BYTES) != 0) {
+apps/authd/store/store.c|if (sodium_memcmp(cur, new_pk, STORE_PK_BYTES) == 0) {
+apps/authd/store/store.c|if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
+apps/authd/store/store.c|if (sodium_memcmp(stored_prev, running, STORE_AUDIT_MAC_BYTES) != 0) { r = STORE_ERR_CORRUPT; break; }
+apps/authd/store/store.c|if (sodium_memcmp(want, stored_mac, STORE_AUDIT_MAC_BYTES) != 0) { r = STORE_ERR_CORRUPT; break; }
+apps/authd/store/store.c|if (user_len != expect_user_len || sodium_memcmp(user, expect_user, user_len) != 0) {
+apps/authd/store/store.c|sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {
+apps/demo_keys.c|const int intact = (sodium_memcmp(computed, stored, DEMO_KEY_DIGEST_BYTES) == 0);
+src/protocol/handshake.c|const bool equal = (sodium_memcmp(e->handshake_id, handshake_id, WIRE_HANDSHAKE_ID_LEN) == 0);
+src/protocol/handshake.c|if (full_len <= unsigned_len || sodium_memcmp(sh_full, sh_unsigned, unsigned_len) != 0) {
+src/protocol/handshake.c|if (sodium_memcmp(msg.handshake_id, ctx->handshake_id, WIRE_HANDSHAKE_ID_LEN) != 0) {
+src/protocol/handshake.c|if (sodium_memcmp(msg.session_id_echo, ctx->session_id, WIRE_SESSION_ID_LEN) != 0) {
+src/protocol/handshake.c|sodium_memcmp(msg.id, ctx->peer_id, ctx->peer_id_len) != 0) {
+src/protocol/keystore.c|if (sodium_memcmp(existing->public_key, public_key, MLDSA_PUBLIC_KEY_BYTES) == 0) {
+src/protocol/keystore.c|return sodium_memcmp(e->id, id, id_len) == 0;
+src/protocol/session.c|sodium_is_zero(pt_out + SESSION_CONTENT_LEN_BYTES + content_len, pad_len) != 1) {
