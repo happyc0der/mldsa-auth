@@ -1,4 +1,4 @@
-GC1|^test_envelope_spec$|code->spec: raw XChaCha20-Poly1305 with AAD = bytes [0, 67) opens it to the exact MLDSASK2 image
+GC1|^test_envelope_spec$|code->spec: CONTROL -- a check no test prints (the v60 job must go red)
 GC2|^test_envelope_spec$|code->spec: the raw key IS the KEK keyfile_open_buf derives -- same KDF, same parameters
 GC3|^test_authd_cli$|keygen-server: no window of the server's secret key is in any file under its directory (Req 10)
 GC4|^test_authd_conn$|journal: no window of either side's session keys, the X25519 private key or the ML-KEM shared secret
