@@ -25,8 +25,12 @@
  *   daemon must complete the handshake itself.
  *
  * SCOPE IS THE CONTROL. Nothing outside the WebSocket upgrade may use this.
- * Everything else in the daemon that hashes uses SHA-256 through libsodium,
- * and a `git grep sha1` should only ever find ws.c.
+ * Everything else in the daemon that hashes uses SHA-256 through libsodium.
+ * sha1() is extern -- tests/test_authd_ws.c pins it against FIPS 180-1
+ * vectors -- so the scope is enforced by tests/no_hand_rolled_primitives.sh:
+ * ws.c is its only caller in src/ and apps/, and these constants appear in no
+ * other file. (A plain `git grep sha1` also finds the passphrase word list,
+ * which is why the check reads calls, not the word. V4-15c, audit F102.)
  */
 
 #define SHA1_DIGEST_BYTES 20u

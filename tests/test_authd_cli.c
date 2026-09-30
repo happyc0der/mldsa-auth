@@ -147,6 +147,60 @@ static int any_file_starts_with(const char *dir, const char *magic)
     return found;
 }
 
+/* 1 if sk[w..w+len) is made wholly of SECRET bytes of an ML-DSA-65 secret key:
+ * inside K = [32,64), or in s1|s2|t0 = [128,4032). rho = [0,32) IS pk[0..32)
+ * and tr = [64,128) is SHAKE256(pk, 64), so a window touching either is partly
+ * public -- and a mostly public one is no evidence: rho[17..32) || K[0] is in
+ * every file holding the public key whenever K[0] happens to equal pk[32], one
+ * key in 256. Keeping the windows that straddle (the fuzz_keys scanner's rule,
+ * F105) failed this test at that rate. Every secret byte is still inside some
+ * window that is looked for. */
+static int sk_window_is_secret(size_t w, size_t len)
+{
+    return (w >= 32u && w + len <= 64u) || w >= 128u;
+}
+
+/* Recursively: does any regular file under `dir`, other than `exempt` (may be
+ * NULL), hold a 16-byte window of the ML-DSA-65 secret key `sk` made wholly of
+ * secret bytes? The header scan above finds only files that BEGIN with
+ * MLDSASK; this finds key bytes anywhere, headed or not (V4-15c, CLAIMS D10).
+ * As there, a path the scan cannot hold counts as found (F86). A hit says
+ * which file and which window, so a failure explains itself. */
+static int any_file_has_key_window(const char *dir, const uint8_t *sk, const char *exempt)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) { return 0; }
+    struct dirent *e;
+    int found = 0;
+    while (!found && (e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) { continue; }
+        char p[512];
+        const int pn = snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        if (pn < 0 || (size_t)pn >= sizeof p) { found = 1; continue; }
+        struct stat st;
+        if (stat(p, &st) != 0) { continue; }
+        if (S_ISDIR(st.st_mode)) { found = any_file_has_key_window(p, sk, exempt); continue; }
+        if (exempt != NULL && strcmp(p, exempt) == 0) { continue; }
+        if (st.st_size <= 0 || st.st_size > (off_t)(1 << 20)) { continue; }
+        FILE *f = fopen(p, "rb");
+        if (f == NULL) { found = 1; continue; }
+        uint8_t *buf = (uint8_t *)malloc((size_t)st.st_size);
+        const size_t got = (buf != NULL) ? fread(buf, 1u, (size_t)st.st_size, f) : 0u;
+        (void)fclose(f);
+        if (buf == NULL || got != (size_t)st.st_size) { free(buf); found = 1; continue; }
+        for (size_t w = 0; !found && w + 16u <= MLDSA_SECRET_KEY_BYTES; w++) {
+            if (!sk_window_is_secret(w, 16u)) { continue; }
+            if (memmem(buf, got, sk + w, 16u) != NULL) {
+                printf("  (scan: %s holds sk[%zu..%zu))\n", p, w, w + 16u);
+                found = 1;
+            }
+        }
+        free(buf);
+    }
+    (void)closedir(d);
+    return found;
+}
+
 /* ---------------------------------------------------------------- init */
 
 static void test_init(void)
@@ -318,6 +372,17 @@ static void test_keys(void)
      * if they did. */
     CHECK(!any_file_starts_with(dir, "MLDSASK2") && !any_file_starts_with(dir, "MLDSASK1"),
           "keygen-server: no plaintext MLDSASK file was written anywhere (Req 10)");
+    /* ...and by content, not just by header: no 16-byte window of the secret
+     * key in any file under the directory (V4-15c, CLAIMS D10). */
+    {
+        mldsa_keypair_t k;
+        memset(&k, 0, sizeof k);
+        CHECK(keyfile_open(ek, (const uint8_t *)"srv", 3u, "passphrase-one", 14u, &k, NULL) == KEYFILE_OK,
+              "keygen-server: the sealed key opens (the scan needs to know what to look for)");
+        CHECK(k.secret_key != NULL && !any_file_has_key_window(dir, k.secret_key, NULL),
+              "keygen-server: no window of the server's secret key is in any file under its directory (Req 10)");
+        mldsa_keypair_free(&k);
+    }
 
     CHECK(RUN_ADMIN("keygen-server", "--key", ek, "--pub", pub, "--server-id", "srv",
                     "--passphrase-file", pass) == 1,
@@ -345,6 +410,8 @@ static void test_keys(void)
               "rewrap: the rewrapped file opens under the new one");
         CHECK(memcmp(a.public_key, b.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
               "rewrap: it is the SAME identity, re-sealed");
+        CHECK(a.secret_key != NULL && !any_file_has_key_window(dir, a.secret_key, NULL),
+              "rewrap: no window of the secret key in either sealed file or anywhere else (Req 10)");
         mldsa_keypair_free(&a);
         mldsa_keypair_free(&b);
     }
@@ -391,6 +458,15 @@ static void test_client_keygen(void)
     char ek[512];
     (void)snprintf(ek, sizeof ek, "%s/%s.ek", dir, handle);
     CHECK(mode_of(ek) == 0600, "client keygen: the device key is 0600");
+    {
+        mldsa_keypair_t k;
+        memset(&k, 0, sizeof k);
+        CHECK(keyfile_open(ek, (const uint8_t *)handle, strlen(handle), "device passphrase", 17u, &k, NULL)
+                  == KEYFILE_OK, "client keygen: the sealed device key opens");
+        CHECK(k.secret_key != NULL && !any_file_has_key_window(dir, k.secret_key, NULL),
+              "client keygen: no window of the device's secret key is in any file under its directory (Req 10)");
+        mldsa_keypair_free(&k);
+    }
 
     /* Spec 12: operator parameters are ops=3, distinct from the server's 4. */
     FILE *f = fopen(ek, "rb");
@@ -418,6 +494,41 @@ static void test_client_keygen(void)
     const int rc = run_admin_capture(argv, err, sizeof err);
     CHECK(rc == 1 && strstr(err, "id-mismatch") != NULL,
           "enroll-operator: a .pub whose embedded id differs from --handle is id-mismatch");
+}
+
+/* --------------------------------------------------------- migrate-key */
+
+/* The first test ever to run migrate-key (V4-15c, CLAIMS D10). Its input is a
+ * plaintext MLDSASK2 file BY DESIGN -- the legacy form it exists to replace --
+ * and the command leaves it in place, printing a warning, because it cannot
+ * know what else references it. So the scan exempts that one file by name, and
+ * the canary is that the exempt file really does hold the key. */
+static void test_migrate_key(void)
+{
+    char dir[256], legacy[256], out[256], pass[256];
+    (void)snprintf(dir, sizeof dir, "%s/m1", g_dir);
+    (void)snprintf(legacy, sizeof legacy, "%s/m1/mig.sk", g_dir);
+    (void)snprintf(out, sizeof out, "%s/m1/mig.ek", g_dir);
+    (void)snprintf(pass, sizeof pass, "%s/m1pass", g_dir);
+    CHECK(write_file(pass, "migrate passphrase\n", 0600) == 0, "migrate: fixture passphrase");
+    CHECK(demo_keys_generate_files(dir, (const uint8_t *)"mig", 3u) == DEMO_KEYS_OK,
+          "migrate: a legacy plaintext identity (mig.sk, mig.pub)");
+    CHECK(RUN_ADMIN("migrate-key", "--id", "mig", "--in", legacy, "--out", out,
+                    "--passphrase-file", pass) == 0,
+          "migrate-key: seals the legacy identity into an envelope");
+    mldsa_keypair_t old_k, new_k;
+    memset(&old_k, 0, sizeof old_k);
+    memset(&new_k, 0, sizeof new_k);
+    CHECK(demo_keys_load_identity(legacy, (const uint8_t *)"mig", 3u, &old_k) == DEMO_KEYS_OK &&
+              keyfile_open(out, (const uint8_t *)"mig", 3u, "migrate passphrase", 18u, &new_k, NULL) == KEYFILE_OK &&
+              memcmp(old_k.public_key, new_k.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
+          "migrate-key: the envelope holds the SAME identity as the legacy file");
+    CHECK(new_k.secret_key != NULL && any_file_has_key_window(dir, new_k.secret_key, NULL),
+          "migrate-key: the plaintext input itself holds the key -- the scan's canary");
+    CHECK(new_k.secret_key != NULL && !any_file_has_key_window(dir, new_k.secret_key, legacy),
+          "migrate-key: no window of the secret key outside its plaintext input (Req 10)");
+    mldsa_keypair_free(&old_k);
+    mldsa_keypair_free(&new_k);
 }
 
 /* --------------------------------------------------- one config validator */
@@ -668,6 +779,7 @@ int main(void)
     test_init();
     test_keys();
     test_client_keygen();
+    test_migrate_key();
     test_check_config();
     test_framing_rule();
     test_localcli_split_list();

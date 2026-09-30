@@ -125,6 +125,16 @@ target_compile_definitions(test_authd_keyfile PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_authd_keyfile PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_keyfile COMMAND test_authd_keyfile)
 
+# V4-15c (CLAIMS D1): the MLDSAEK1 envelope read by deployment spec §12 alone
+# -- raw crypto_pwhash and XChaCha20-Poly1305, both directions -- so a change
+# made the same way in keyfile.c's seal and open cannot round-trip unseen.
+add_executable(test_envelope_spec test_envelope_spec.c)
+target_link_libraries(test_envelope_spec PRIVATE mldsa_authd)
+target_compile_options(test_envelope_spec PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(test_envelope_spec PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(test_envelope_spec PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+add_test(NAME test_envelope_spec COMMAND test_envelope_spec)
+
 # V4-7: the store. This target compiles store.c ITSELF with the fault hook so
 # the atomicity of a rotation can be proven by injecting a failure mid-way; the
 # shipped mldsa_authd carries the same source WITHOUT the hook, and a
@@ -148,6 +158,26 @@ add_test(NAME store_fault_hook
 # the report; this is the gate that sees a sodium_memcmp swapped for memcmp.
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
+# V4-15c (CLAIMS P1/D1): no primitive's defining constant outside the one
+# sanctioned file, apps/authd/sha1.c, and sha1() called by ws.c alone.
+add_test(NAME no_hand_rolled_primitives
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/no_hand_rolled_primitives.sh ${PROJECT_SOURCE_DIR})
+# V4-15c (CLAIMS P8): the build flags as evidence -- what compile_commands.json
+# says every project translation unit was told, and a stack canary in the
+# project's OWN archives, which vendored code cannot satisfy (audit F104).
+if(ENABLE_ASAN OR ENABLE_UBSAN OR MLDSA_FUZZ)
+  set(_mldsa_expect_fortify OFF)
+else()
+  set(_mldsa_expect_fortify ON)
+endif()
+add_test(NAME build_flags
+         COMMAND ${CMAKE_COMMAND}
+                 -DCOMPILE_COMMANDS=${CMAKE_BINARY_DIR}/compile_commands.json
+                 -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+                 -DEXPECT_FORTIFY=${_mldsa_expect_fortify}
+                 "-DARCHIVES=$<TARGET_FILE:mldsa_core>|$<TARGET_FILE:mldsa_authd>"
+                 -DNM=${CMAKE_NM}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/check_build_flags.cmake)
 
 add_executable(test_authd_evloop test_authd_evloop.c)
 target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)

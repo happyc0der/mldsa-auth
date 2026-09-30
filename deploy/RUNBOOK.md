@@ -65,7 +65,7 @@ anything is unpacked.
 
 ```bash
 tools/audit/check_hardening.sh build-release --require
-tools/audit/check_backend_symbols.sh build-release
+tools/check_backend_symbols.sh build-release
 ```
 
 The first must end `OK: every discovered executable carries the full hardening
