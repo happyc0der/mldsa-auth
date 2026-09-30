@@ -6472,3 +6472,142 @@ moved.
 - **Documents.** Anchors 291 across 29 campaigns, and the nightly matrix
   names all 29; spec constants and names OK; the claim map's 267 citations
   resolve; the repository secret scan finds 0 violations.
+
+## V4-15c — the artifact-side gaps: primitives, the envelope, build flags, keys at rest, the journal
+
+The last of the claim map's gaps that engineering can close were all claims
+about how something was BUILT -- which primitives the code contains, how the
+key envelope is formed, which flags the compiler was given, what reaches the
+disk and the journal -- each resting on a description rather than a check.
+
+### What each now rests on
+
+- **No hand-rolled primitive (P1, D1).** `no_hand_rolled_primitives` scans
+  `src/`, `apps/` and `web/client/` for the constants a primitive cannot do
+  without (SHA and Keccak round constants and IVs, the ChaCha sigma, the
+  Poly1305 clamp, the X25519 a24, the AES S-box, the lattice moduli and
+  roots). They may appear only in `sha1.c`, which is also the canary, and
+  only `ws.c` may call `sha1()`. The last rule replaces F53's description,
+  which said the SHA-1 was `static`-scoped and that `git grep sha1` finds only
+  `ws.c`; neither was true (F102). Shown red by hand in C and in JS.
+- **The envelope by §12 alone (D1).** `test_envelope_spec` reads MLDSAEK1
+  with nothing but §12's table and raw libsodium, both ways, and the raw key
+  is exactly `keyfile_open_buf`'s KEK. Its negative controls show what §12
+  makes load-bearing: the associated data, all of it, the Argon2 variant, and
+  the memlimit the header states. The first draft asked Argon2i for a key at
+  opslimit 1 and got an error, not a different key -- Argon2i's floor is 3 --
+  so the variants are compared there. That also changed GC2: "the KDF becomes
+  Argon2i" would have broken every ordinary round trip at opslimit 1, which
+  is not the self-consistent defect the test exists for; "the KDF uses half
+  the stated memlimit" is -- a key that claims a cost it never paid.
+- **Build flags (P8).** `check_hardening.sh` reads the linked binary, and its
+  canary line cannot fail for this project's code: vendored liboqs and sqlite
+  import `__stack_chk_fail` themselves (F104, the F75 class). `build_flags`
+  checks what is attributable: `compile_commands.json` for every project
+  translation unit, and the project's own archives. A probe on the msi
+  laptop's WSL (gcc 11.4, glibc 2.35) settled the FORTIFY question the plan
+  left open: at `-O0` the define compiles under `-Werror` and is inert (no
+  `__strcpy_chk`); at `-O2` it is active. CI's Linux debug jobs therefore
+  carry the define and none of its checks; the claim map says so.
+- **Keys at rest, by content (D10).** `test_authd_cli` opens each sealed key
+  and scans its directory for every 16-byte window made wholly of the key's
+  secret bytes (inside `K`, or in `s1`/`s2`/`t0`) after keygen-server, rewrap
+  and client keygen, and in a migrate-key leg -- the first test ever to run
+  migrate-key, whose plaintext input is exempt by name and is the scan's
+  canary. `authd_e2e` repeats its header scan at the very end. The first
+  rule was not this one; see below.
+- **The journal (D13).** `test_authd_conn` captures the journal across a
+  login, a ROTATE and a BYE and searches it, in hex of either case and in
+  base64 at every alignment, for every secret the connection touched,
+  including the X25519 private key and the ML-KEM shared secret, snapshotted
+  by a stepwise handshake before the library wipes them, and for both
+  signatures' `c~ || z` -- not their hint, which is mostly zero padding.
+
+F103 corrected a runbook step that cited a script path that does not exist.
+F106 corrected three statements of the nightly's total -- in `README.md`,
+the claim map's legend and `tools/README.md` -- that V4-15a and V4-15b had
+left at 238 while raising the count beside them. The total is stated in
+seven places, and nothing reads a count written in prose.
+
+### The first window rule failed on one fresh key in 256
+
+The first draft of the two scans kept every window holding at least one
+secret byte -- the rule `fuzz_keys`'s scanner has used since V2-8, and the
+one the draft's comment cited. Two of this step's own campaign rows came back
+`CLEAN-SUITE=FAIL(BAD)` for it: v56 MB13 and v49c W3, each with its mutation
+killed by name and its sources restored clean, and each whole-suite run
+failing one check -- `test_authd_cli`'s "client keygen: no window of the
+device's secret key is in any file under its directory (Req 10)".
+
+- **The mechanism.** The window at offset 17 is `rho[17..32) || K[0]`.
+  `rho` is the public key's first 32 bytes, and a `.pub` file holds it
+  followed by `t1[0]`, so that window is in every file holding the public
+  key whenever `K[0] == t1[0]`: one fresh key in 256. `test_authd_cli`
+  scans three independent keys, each beside its own `.pub` (the server's,
+  the device's and migrate-key's -- checked by running the commands), which
+  predicts about one run in 85. V2-8 weighed exactly this window and kept
+  it: for its one fixed fixture the coincidence is a fixed fact, and false.
+  For fresh keys it is a die with 256 faces.
+- **Measured, not argued.** Over 300,000 fresh keys the old rule found a
+  window of the key in its own public key for 1,129 (1 in 266; one in 256
+  predicts 1,172 ± 34), always first at `sk[17..33)`, and for exactly the
+  keys with `K[0] == pk[32]`. The rule now in place: none.
+- **Reproduced in the real binary.** A diagnostic now prints the file and
+  window of any hit. With it, and with the old rule put back by hand,
+  `test_authd_cli` failed 3 of 480 runs (the model predicts 5.6), each
+  naming a `.pub` and `sk[17..33)`: the device's twice and `mig.pub` once.
+  With the campaigns' two, that is five failures in about 590 runs, on two
+  of the three keys; the server's is as exposed, its `a.pub` holding the
+  raw key too, and simply was not hit. Restored byte-exact and rebuilt --
+  the first rebuild relinked nothing, macOS make's one-second timestamps
+  again, which the binary's hash gave away -- it passed 800 of 800, and
+  every run printed exactly one hit: the canary's, `mig.sk` at `sk[32..48)`.
+- **The rule now.** A window counts only if it is made wholly of secret
+  bytes: inside `K`, or in `s1`, `s2` and `t0` -- 3906 of the 4017, V2-8's
+  "alternative reading". Every secret byte is still inside a window that is
+  looked for. The journal scan applies it per window length (16 bytes for
+  hex, 12 for base64), and no longer looks at a signature's hint: 61 bytes,
+  mostly zero padding, whose windows would match any run of zeros.
+- **The scanner is unchanged**, and recorded as F105: it fails closed, and
+  its controls and V2-8's X campaign are derived from its 3951 windows.
+- **What was re-run.** The fix changes which windows two checks look for and
+  nothing else, and only v60 names those checks. So v60 was re-run for its
+  kills, and v56 and v49c in full for their clean suites: 37 of 37 by
+  name, every clean suite passing. GC3 dies by the same eight checks as
+  before, each hit now naming a sealed file that holds the key in the clear;
+  GC4 by the journal scan, which names `keys_c[32..48)` in hex. The
+  other six campaigns' results stand as run: their kills name other checks,
+  and their clean suites passed.
+
+### Verification
+
+- **Campaigns**, on ASan trees in two lanes: this checkout, and a detached
+  worktree at the test commit with its own tree, removed afterwards. v60, 4
+  of 4 by name: GC1 and GC2 by `test_envelope_spec`; GC3 by the four
+  key-window scans and by four pseudonym and rewrap checks that a plaintext
+  envelope also breaks; GC4 by the journal scan alone. Re-run in full
+  because their kills run through a test this step changed: v56 20/20, v58
+  19/19, v52 11/11, v48b 7/7, v49b 13/13, v49c 13/13, v50b 13/13, v50c 4/4.
+  104 of 104 by name, every row restored clean, no residue; two clean suites
+  failed, on the rule above. With the rule fixed, v60, v56 and v49c again:
+  37 of 37, every clean suite passing.
+- **Suites.** Normal, ASan and UBSan 49/49 each (`fuzz_libfuzzer` is skipped
+  outside the fuzz tree), each tree proven current in the same invocation,
+  ASan and UBSan linked into all 42 executables; 0 ASan reports, 0 UBSan
+  runtime errors. The currency check found two trees stale -- the UBSan
+  tree's `test_envelope_spec`, and in the fuzz tree the two scan tests,
+  `test_envelope_spec` and a CMake compiler-identification object -- because
+  the targeted builds here rebuild only what they name. Both were rebuilt,
+  and every result above is from after the rebuild.
+- **Fuzzing.** `build-fuzz-v415`'s 36 fuzz-labelled tests pass, and the
+  three new tests pass there too, `build_flags` expecting no FORTIFY.
+  `fuzz_envelope` 600 s: 123,078,132 runs, no crash.
+- **gcc 16** at `-O3 -Werror` compiled the three changed test files.
+- **Controls by hand**, each restored byte-exact: `no_hand_rolled_primitives`
+  red for a SHA-256 IV planted in C, the ChaCha sigma in JS and a stray
+  `sha1()` call; `build_flags` red on all 111 translation units with
+  `-Werror` removed; the key-window scans' old rule, put back, red 3 times in
+  480 runs.
+- **Documents.** Anchors 297 across 30 campaigns, and the nightly matrix
+  names all 30; spec constants and names OK; the claim map's 284 citations
+  resolve; the repository secret scan finds 0 violations in 28 files.

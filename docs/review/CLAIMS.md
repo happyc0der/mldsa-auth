@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 238 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 271 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -43,7 +43,9 @@ the most important thing on this page.
 - mutation `v24 M1` — the hybrid combiner's IKM uses ss_x twice and drops ss_k
 - mutation `v53 F12` — liboqs no longer routed to libsodium's generator (only the client-core KAT golden sees it)
 - tool `tests/web_no_crypto.mjs` — no JavaScript under `web/client` reaches WebCrypto, Node crypto, `getRandomValues` or `Math.random` (CTest `web_no_crypto`)
-**Not established:** the KATs show the wrappers reproduce liboqs and libsodium; nothing scans the C sources for hand-rolled primitives, and the tree holds one: a hand-written SHA-1 (`apps/authd/sha1.c`) used only for RFC 6455's accept value, documented as not a security primitive, pinned by the FIPS 180-1 vectors in `test_authd_ws`.
+- check `no_hand_rolled_primitives` "no primitive's defining constant appears anywhere else in src/, apps/ or web/client/"
+- check `no_hand_rolled_primitives` "sha1() is called by apps/authd/ws.c and by nothing else in src/ or apps/"
+**Not established:** the gate looks for primitives by their defining constants; one written without any (a construction from generic operations, or constants computed at run time) would pass it. The tree holds one sanctioned primitive, a hand-written SHA-1 (`apps/authd/sha1.c`), used only for RFC 6455's accept value and pinned by FIPS 180-1 vectors; its scope is now checked, not asserted (audit F102). The gate was shown red by hand (a planted SHA-256 IV, the ChaCha sigma in JS, a stray `sha1()` call), not by a campaign.
 
 ### P2 — Secret memory handling
 - check `test_session_alloc` "S23: session_wipe frees exactly one secure allocation and clears the key pointer"
@@ -131,7 +133,8 @@ the most important thing on this page.
 - ci `${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}` — ASan and UBSan on Linux and macOS, instrumentation proven, then the whole suite
 - ci `mutations · ${{ matrix.campaign }}` — every campaign on a fresh, proven ASan tree
 - check `authd_e2e` "PASS: E2E: no sanitizer report in any daemon or client log"
-**Not established:** no binary check confirms `-Wall -Wextra -Werror` or `_FORTIFY_SOURCE` (the canary is the only compiler-flag evidence). Until V4-14c the UBSan build did not stop on undefined behaviour, so a report printed and the test passed (audit F94, fixed: `-fno-sanitize-recover=undefined`, shown both ways on a planted overflow). No mutation covers that flag -- the campaigns mutate C sources only.
+- tool `tests/check_build_flags.cmake` — the CTest `build_flags`: every project translation unit in `compile_commands.json` is told `-Wall -Wextra -Werror -fstack-protector-strong`, and `-D_FORTIFY_SOURCE=2` exactly outside the sanitizer and fuzz trees; the project's own archives import `__stack_chk_fail`
+**Not established:** the flag gate reads what each translation unit was TOLD, not what the compiler did with it; `check_hardening.sh`'s binary canary cannot fail for this project's code, because vendored archives satisfy it (audit F104). FORTIFY is inert without optimisation: on glibc a `-O0` build with `-D_FORTIFY_SOURCE=2` compiles under `-Werror` and imports no `__*_chk` (measured on Ubuntu 22.04, gcc 11.4, glibc 2.35), so CI's Linux debug jobs carry the define and none of its checks; only optimised builds (the Release job) get them. Until V4-14c the UBSan build did not stop on undefined behaviour, so a report printed and the test passed (audit F94, fixed: `-fno-sanitize-recover=undefined`, shown both ways on a planted overflow). No mutation covers that flag -- the campaigns mutate C sources only.
 
 ### P9 — No secret-dependent control flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
@@ -191,7 +194,12 @@ the most important thing on this page.
 - fuzz `envelope` — an independent model of §12's MLDSAEK1 header rules predicts FORMAT/PARAMS/OK, and `keyfile_parse_header` must agree
 - tool `tools/check_backend_symbols.sh` — one optimised liboqs backend linked, none portable
 - check `liboqs_minimal` "no LMS, HSS, LM-OTS or XMSS symbol" — the linked `liboqs.a` holds ML-DSA and ML-KEM and no stateful-signature algorithm, so the advisories in F91 cannot reach it
-**Not established:** nothing scans `src/` or `apps/` for primitives outside the approved wrappers. The envelope tests show the envelope agrees with itself; no test opens an MLDSAEK1 file independently with raw `crypto_pwhash` and `crypto_aead_*`, so "composes without modifying either" rests on review.
+- check `test_envelope_spec` "code->spec: raw XChaCha20-Poly1305 with AAD = bytes [0, 67) opens it to the exact MLDSASK2 image"
+- check `test_envelope_spec` "spec->code: keyfile_open_buf opens the hand-built envelope, to the same identity"
+- mutation `v60 GC1` — the envelope's associated data shortened to [0, 63), in seal AND open
+- mutation `v60 GC2` — the KDF uses half the memlimit the header states, in both
+- check `no_hand_rolled_primitives` "no primitive's defining constant appears anywhere else in src/, apps/ or web/client/"
+**Not established:** the independent reader is this project's own test, written from §12 by the same author as `keyfile.c`; it shows the two readings agree with each other and with libsodium, not that §12 is the right design. The primitive gate finds primitives by their constants only (see P1).
 
 ### D2 — Secrets live in `secure_mem` and are wiped on every path
 - check `test_authd_conn` "wipe: closing a connection clears its session, handle and identity"
@@ -322,7 +330,12 @@ the most important thing on this page.
 - mutation `v53 F10` — `keyfile_write_sealed` publishes a non-envelope
 - mutation `v46 E3` — an AEAD decrypt failure is no longer refused
 - fuzz `envelope` — `keyfile_parse_header` agrees with an independent model; a rejected open returns no secret key
-**Not established:** the scans match only files that BEGIN with `MLDSASK1`/`MLDSASK2`: a secret key without that header, a deleted temp file, swap or a core dump would not be seen. The e2e scan runs once, after `init` and before keygen, rotate or recovery; the CLI test scans keygen-server and client keygen only (not rewrap, rotate or migrate).
+- check `test_authd_cli` "keygen-server: no window of the server's secret key is in any file under its directory (Req 10)"
+- check `test_authd_cli` "rewrap: no window of the secret key in either sealed file or anywhere else (Req 10)"
+- check `test_authd_cli` "migrate-key: no window of the secret key outside its plaintext input (Req 10)"
+- check `authd_e2e` "PASS: E2E: after every key operation, still no plaintext secret-key file anywhere under the work directory"
+- mutation `v60 GC3` — the envelope stops encrypting; every round trip still works
+**Not established:** the window scans read files under the directories the CLI writes to, in raw bytes, for 16 contiguous SECRET bytes -- a window touching `rho` or `tr`, which the public key determines, is not looked for (F105) -- so fewer than 16 contiguous secret bytes would not be seen, nor would a deleted temp file, swap, a core dump or another encoding of the key. Rotation and recovery keys are covered by the e2e's header scan only, since the shell legs hold no plaintext key to look for.
 
 ### D11 — Every Unix-socket peer is authenticated by peer credentials
 - check `test_authd_ws` "proxy-uid: a peer outside the allowlist is refused at accept, occupying no slot"
@@ -362,7 +375,11 @@ the most important thing on this page.
 - mutation `v49c W12` — the login code is logged through the 32-byte `authd_log_fp` sink
 - mutation `v49d G12` — the recovery ticket is logged through `authd_log_fp`
 - tool `tools/audit/check_spec_vocabularies.py` — the field names the logger can emit equal §15's list, both ways, so a new field such as `sig=` fails
-**Not established:** only login codes, tokens, recovery codes, tickets and the passphrase are ever searched for in a log; nothing scans for key material, shared secrets, session keys, signatures, nonces, raw frames or decrypted payloads. "No option to enable any of them" rests on the logger's API shape, and W12/G12 show `authd_log_fp` accepts any 32-byte secret (audit F41).
+- check `test_authd_conn` "journal: no window of the server's, the device's or the rotated-to secret key"
+- check `test_authd_conn` "journal: no window of either side's session keys, the X25519 private key or the ML-KEM shared secret"
+- check `test_authd_conn` "journal: no window of either signature or of the ClientHello's nonce"
+- mutation `v60 GC4` — the rotation's `fp_new` line prints the session send key
+**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing); the local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase), and raw frames and decrypted payloads are not searched for. "No option to enable any of them" rests on the logger's API shape, and W12/G12 show `authd_log_fp` accepts any 32-byte secret (audit F41).
 
 ### D14 — Every store mutation is a single transaction
 - check `test_authd_store` "a half-rotation is impossible: after reopen the old key is still active"

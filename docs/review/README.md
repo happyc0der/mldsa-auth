@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 99 findings (F1–F101), with severity, evidence and
+   register](../v4/audit.md). 104 findings (F1–F106), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 45 errata, each
    citing the finding that forced it.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 46 tests with the
+- **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 267 committed defects in 29 campaigns, each of which must be
+- **Mutations**: 271 committed defects in 30 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -111,6 +111,21 @@ ServerHello lengths across every decoy case. The constant-time inventory
 became a gate (`tests/constant_time_sites.sh`), so the `sodium_memcmp` to
 `memcmp` swap two earlier campaigns declined is now killed by name (campaign
 v59). Two stale references were corrected (**F100**, **F101**).
+
+V4-15c took the artifact side: a gate that no hand-rolled primitive's
+constants appear outside the one sanctioned SHA-1, and that only the WebSocket
+upgrade calls it; the MLDSAEK1 envelope opened by §12 and raw libsodium alone,
+in both directions; the build flags checked where they are attributable (the
+compile commands, and the project's own archives); keys at rest scanned by
+content after every key operation, migrate-key included; and the journal
+scanned for key material, session keys, shared secrets, signatures and nonces
+(campaign v60). Four descriptions were corrected: F53's account of the SHA-1
+(**F102**), a runbook path (**F103**), a hardening gate's canary that cannot
+fail for this project's code (**F104**), and three statements of the nightly's
+total left at 238 by the two steps before (**F106**). **F105** is
+open, and Info: the repository's secret scanner counts a window that is mostly
+public key as a secret one. It fails closed; the new scans, which first copied
+its rule and so failed on one fresh key in 256, no longer do.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.
