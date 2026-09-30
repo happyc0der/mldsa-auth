@@ -12,6 +12,13 @@
 # The claim is about the BINARY, so it is read from the binary, never from the
 # build files. Executables are discovered, never enumerated (the rule that
 # check_backend_symbols.sh and check_sanitizer_link.sh follow).
+#
+# The CANARY column is informational for this project's own code: it reads the
+# LINKED binary, and vendored liboqs and sqlite import __stack_chk_fail
+# themselves, so it would say yes with the project's -fstack-protector-strong
+# gone (audit F104, the class of F75 for BIND_NOW). The attributable check is
+# tests/check_build_flags.cmake, which reads the project's own archives and
+# what compile_commands.json says each translation unit was told.
 set -u
 BUILD="${1:?usage: check_hardening.sh <build-dir> [--require]}"
 REQUIRE=0; [ "${2:-}" = "--require" ] && REQUIRE=1

@@ -992,6 +992,181 @@ static void test_rotate(void)
     daemon_stop(&d);
 }
 
+/* ---------------------------------------------- the journal holds no key */
+
+/* 1 if sk[w..w+len) is made wholly of SECRET bytes of an ML-DSA-65 secret key:
+ * inside K = [32,64), or in s1|s2|t0 = [128,4032). rho = [0,32) and
+ * tr = [64,128) are derivable from the public key, and a window that touches
+ * them is partly public -- no evidence (test_authd_cli.c says why, F105). */
+static int sk_window_is_secret(size_t w, size_t len)
+{
+    return (w >= 32u && w + len <= 64u) || w >= 128u;
+}
+
+static int scan_hit(const char *what, size_t w, size_t len, const char *how)
+{
+    printf("  (scan: the journal holds %s[%zu..%zu) in %s)\n", what, w, w + len, how);
+    return 1;
+}
+
+/* 1 if any 16-byte window of s[0..n) appears in `log` in lowercase or
+ * uppercase hex, or any 12-byte window in base64 (standard or url-safe). A
+ * logger that base64-encodes a buffer holding the secret at ANY offset writes
+ * the encoding of some 3-aligned 12-byte chunk of it verbatim, so the second
+ * search covers every alignment. With `is_sk`, s is an ML-DSA secret key and
+ * only its wholly secret windows are looked for. A hit names `what` and the
+ * window, so a failure explains itself. */
+static int log_holds_window(const char *log, const char *what, const uint8_t *s, size_t n, int is_sk)
+{
+    char hex[33], b64[32];
+    for (size_t w = 0; w + 12u <= n; w++) {
+        if (w + 16u <= n && (!is_sk || sk_window_is_secret(w, 16u))) {
+            (void)sodium_bin2hex(hex, sizeof hex, s + w, 16u);
+            if (strstr(log, hex) != NULL) { return scan_hit(what, w, 16u, "hex"); }
+            for (size_t i = 0; hex[i] != '\0'; i++) {
+                if (hex[i] >= 'a' && hex[i] <= 'f') { hex[i] = (char)(hex[i] - 'a' + 'A'); }
+            }
+            if (strstr(log, hex) != NULL) { return scan_hit(what, w, 16u, "upper-case hex"); }
+        }
+        if (!is_sk || sk_window_is_secret(w, 12u)) {
+            (void)sodium_bin2base64(b64, sizeof b64, s + w, 12u, sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
+            if (strstr(log, b64) != NULL) { return scan_hit(what, w, 12u, "base64"); }
+            (void)sodium_bin2base64(b64, sizeof b64, s + w, 12u, sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+            if (strstr(log, b64) != NULL) { return scan_hit(what, w, 12u, "url-safe base64"); }
+        }
+    }
+    return 0;
+}
+
+/* An ML-DSA-65 signature is c~ (48) || z (5 x 640) || h (55 + 6). h is mostly
+ * zero padding, and a window of zeros is evidence of nothing, so only c~ || z
+ * is looked for: every byte of it is high-entropy. */
+#define SIG_SCANNED (48u + 5u * 640u)
+_Static_assert(SIG_SCANNED + 55u + 6u == MLDSA_SIGNATURE_MAX_BYTES, "ML-DSA-65: c~ || z || h");
+
+/* Spec 15's never-list names key material, shared secrets, session keys,
+ * signatures and nonces; only codes, tokens, tickets and the passphrase had
+ * ever been searched for (V4-15c, CLAIMS D13). Here the journal is captured
+ * across a login, a ROTATE and a BYE, and every secret the connection touched
+ * is looked for in it -- the short-lived ones snapshotted by a stepwise
+ * handshake before the library wipes them. */
+static void test_journal_holds_no_key_material(void)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/journal.log", g_dir);
+    FILE *lf = fopen(path, "w+");
+    CHECK(lf != NULL, "journal: capture file");
+    if (lf == NULL) { return; }
+
+    daemon_t d;
+    mldsa_keypair_t kp, new_kp;
+    CHECK(daemon_start(&d, 4, "journal.sqlite3") == 0, "journal: daemon starts");
+    CHECK(mldsa_keypair_generate(&kp) == 0 && mldsa_keypair_generate(&new_kp) == 0, "journal: keys");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &kp);
+    authd_log_init(lf, AUTHD_LOG_INFO);
+
+    static uint8_t ch[AUTHD_FRAME_MAX], sh[AUTHD_FRAME_MAX], ca[AUTHD_FRAME_MAX];
+    size_t chl = 0, shl = 0, cal = 0;
+    uint8_t x_priv[KEX_PRIVATE_KEY_BYTES], ss_kem[MLKEM_SHARED_SECRET_BYTES];
+    uint8_t keys_c[64], keys_s[64];
+    int snap_x = 0, snap_ss = 0, snap_keys = 0;
+
+    client_t c;
+    memset(&c, 0, sizeof c);
+    keystore_init(&c.pins);
+    CHECK(keystore_add(&c.pins, SERVER_ID, sizeof SERVER_ID, d.server_kp.public_key) == KEYSTORE_OK,
+          "journal: pin the server");
+    c.fd = dial(d.port);
+    CHECK(c.fd >= 0 && PUMP_UNTIL(&d, evloop_active(&d.ev) >= 1u), "journal: connected");
+    CHECK(handshake_initiator_init(&c.hs, HANDLE1, sizeof HANDLE1, &kp, &c.pins, SERVER_ID, sizeof SERVER_ID)
+              == HANDSHAKE_OK &&
+              handshake_initiator_create_client_hello(&c.hs, ch, sizeof ch, &chl) == HANDSHAKE_OK &&
+              send_frame(c.fd, ch, chl) == 0,
+          "journal: ClientHello sent");
+    if (c.hs.eph.private_key != NULL) { memcpy(x_priv, c.hs.eph.private_key, sizeof x_priv); snap_x = 1; }
+    CHECK(recv_frame(&d, c.fd, sh, sizeof sh, &shl) == 0, "journal: ServerHello received");
+    for (size_t i = 0; i < d.nslots; i++) {   /* the responder's ss_kem lives until ClientAuth verifies */
+        if (d.conns[i].stage == CONN_STAGE_AWAIT_CA && d.conns[i].hs.ss_kem != NULL) {
+            memcpy(ss_kem, d.conns[i].hs.ss_kem, sizeof ss_kem);
+            snap_ss = 1;
+        }
+    }
+    CHECK(handshake_initiator_verify_server_hello(&c.hs, sh, shl) == HANDSHAKE_OK &&
+              handshake_initiator_create_client_auth(&c.hs, ca, sizeof ca, &cal) == HANDSHAKE_OK &&
+              send_frame(c.fd, ca, cal) == 0 && handshake_initiator_finish(&c.hs) == HANDSHAKE_OK &&
+              handshake_get_handshake_id(&c.hs, c.hsid) == HANDSHAKE_OK,
+          "journal: ClientAuth sent, handshake finished");
+    session_limits_t lim;
+    session_default_limits(&lim);
+    lim.pad_bucket = 256u;
+    CHECK(session_init_from_handshake(&c.sess, &c.hs, &lim, NULL, NULL) == SESSION_OK, "journal: session");
+    {
+        uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
+        size_t n = 0, pl = 0;
+        CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) == 0 &&
+                  session_open(&c.sess, rec, n, pt, sizeof pt, &pl) == SESSION_OK,
+              "journal: the login code arrives");
+        sodium_memzero(pt, sizeof pt);
+    }
+    memcpy(keys_c, c.sess.keys, sizeof keys_c);
+    for (size_t i = 0; i < d.nslots; i++) {
+        if (d.conns[i].stage == CONN_STAGE_SERVING) { memcpy(keys_s, d.conns[i].sess.keys, sizeof keys_s); snap_keys = 1; }
+    }
+    CHECK(snap_x && snap_ss && snap_keys,
+          "journal: the X25519 private key, the ML-KEM shared secret and both session keys were snapshotted");
+
+    /* the ROTATE, then the BYE */
+    {
+        uint8_t rot[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
+        const size_t rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                                       &kp, &new_kp, &new_kp, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        const size_t pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+        CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == 0xfeu, "journal: the ROTATE is acknowledged");
+        uint8_t bye[AUTHMSG_BYE_CONTENT_LEN], rec[AUTHD_MAX_RECORD];
+        size_t bl = 0, out_len = 0;
+        CHECK(authmsg_encode_bye(bye, sizeof bye, &bl) == AUTHMSG_OK &&
+                  session_seal(&c.sess, bye, bl, rec, sizeof rec, &out_len) == SESSION_OK &&
+                  send_frame(c.fd, rec, out_len) == 0 && PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u),
+              "journal: BYE closes the connection");
+    }
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+
+    char *log = NULL;
+    long sz = 0;
+    if (fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 && fseek(lf, 0, SEEK_SET) == 0) {
+        log = (char *)calloc((size_t)sz + 1u, 1u);
+        if (log != NULL && fread(log, 1u, (size_t)sz, lf) != (size_t)sz) { log[0] = '\0'; }
+    }
+    CHECK(log != NULL && strstr(log, "event=login-code-issued") != NULL && strstr(log, "event=rotate ") != NULL,
+          "journal: it records the login and the rotation (the canary: not an empty log)");
+    const size_t sig_len = MLDSA_SIGNATURE_MAX_BYTES;
+    CHECK(log != NULL && shl > sig_len && cal > sig_len && chl > WIRE_NONCE_LEN &&
+              !log_holds_window(log, "server sk", d.server_kp.secret_key, MLDSA_SECRET_KEY_BYTES, 1) &&
+              !log_holds_window(log, "device sk", kp.secret_key, MLDSA_SECRET_KEY_BYTES, 1) &&
+              !log_holds_window(log, "rotated-to sk", new_kp.secret_key, MLDSA_SECRET_KEY_BYTES, 1),
+          "journal: no window of the server's, the device's or the rotated-to secret key");
+    CHECK(log != NULL && !log_holds_window(log, "keys_c", keys_c, sizeof keys_c, 0) &&
+              !log_holds_window(log, "keys_s", keys_s, sizeof keys_s, 0) &&
+              !log_holds_window(log, "x_priv", x_priv, sizeof x_priv, 0) &&
+              !log_holds_window(log, "ss_kem", ss_kem, sizeof ss_kem, 0),
+          "journal: no window of either side's session keys, the X25519 private key or the ML-KEM shared secret");
+    CHECK(log != NULL && !log_holds_window(log, "sig_B", sh + shl - sig_len, SIG_SCANNED, 0) &&
+              !log_holds_window(log, "sig_A", ca + cal - sig_len, SIG_SCANNED, 0) &&
+              !log_holds_window(log, "CH nonce", ch + chl - WIRE_NONCE_LEN, WIRE_NONCE_LEN, 0),
+          "journal: no window of either signature or of the ClientHello's nonce");
+
+    free(log);
+    sodium_memzero(x_priv, sizeof x_priv);
+    sodium_memzero(ss_kem, sizeof ss_kem);
+    sodium_memzero(keys_c, sizeof keys_c);
+    sodium_memzero(keys_s, sizeof keys_s);
+    client_close(&c);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&new_kp);
+    daemon_stop(&d);
+    (void)fclose(lf);
+}
+
 /* The login code must not reach the journal.
  *
  * This used to be argued rather than tested: authd_log.h had no function
@@ -1067,6 +1242,7 @@ int main(void)
     test_revoked();
     test_not_permitted();
     test_rotate();
+    test_journal_holds_no_key_material();
     test_log_has_no_code();
     test_pin_lookup();
     test_wipe_on_close();

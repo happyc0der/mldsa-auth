@@ -813,10 +813,11 @@ for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
     if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
 done
 
-# There is no secret-key-byte scan here, and the reason is the point: unlike
-# demo_e2e.sh's key files, every key this flow writes is SEALED, so there are no
-# plaintext secret-key bytes on disk to look for. The Req 10 scan above is the
-# check that proves that, and it would fail loudly if one ever appeared.
+# No secret-key BYTES are scanned for here: every key this flow writes is
+# sealed, and this script holds no plaintext key to look for. The header scan
+# (after init, and again at the very end) finds a file that BEGINS with
+# MLDSASK; key bytes anywhere else are looked for by test_authd_cli, which
+# opens each sealed key in-process and scans for windows of it (V4-15c).
 # -F -- : the code is base64url, and one in 64 begins with '-', which grep
 # read as OPTIONS (audit finding F89). "-V..." printed grep's version and
 # exited 0 -- a false FAIL; most other option strings exited 2, and the check
@@ -824,5 +825,19 @@ done
 # pattern.
 if grep -qF -- "$CODE" "$TMP/authd.log"; then fail "the login code appears in the daemon log"; fi
 echo "PASS: E2E: no passphrase and no login code appears in any log"
+
+# ------------------------------------------ Req 10, after every key operation
+#
+# The header scan at the top runs once, right after init -- before keygen,
+# rotation, recovery and the carol and dave legs had written anything, so it
+# covered none of them (CLAIMS D10). The same scan, now that all of them have.
+found=""
+for f in $(find "$TMP" -type f); do
+    case "$(head -c 8 "$f" 2>/dev/null || true)" in
+        MLDSASK1|MLDSASK2) found="$f" ;;
+    esac
+done
+[ -z "$found" ] || fail "a plaintext MLDSASK file was written: $found (Req 10)"
+echo "PASS: E2E: after every key operation, still no plaintext secret-key file anywhere under the work directory"
 
 echo "All checks passed"
