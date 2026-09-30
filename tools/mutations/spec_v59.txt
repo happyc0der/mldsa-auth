@@ -1,4 +1,4 @@
-GB1|^test_session$|S4b: re-delivering an OLDER record (r0 after r0 and r1) -> REPLAY, session FAILED
+GB1|^test_session$|S4b: CONTROL -- a check no test prints (the v59 job must go red)
 GB2|^test_session$|S5b: seq 2 before seq 0 (a gap of two) -> OUT_OF_ORDER, session FAILED
 GB3|^test_handshake$|step4 T34: record_failure on a CONSUMED tombstone -> CONSUMED, nothing counted, still a tombstone
 GB4|^test_handshake$|step4 T34: a second consume_success -> CONSUMED (a handshake commits once)
