@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""V2-8 mutations X1-X7. Usage: mutate_v28.py <repo> <ID>
+"""V2-8 mutations X1-X10. Usage: mutate_v28.py <repo> <ID>
 
 One exact string replacement each, every edit carrying a /* MUTATION */
 marker so the runner's residue grep can prove the tree was restored.
+
+Re-anchored in V4-16 (F105), when the scanner went from keeping every window
+holding a secret byte to keeping only windows made wholly of secret bytes.
+Each mutation makes the same defect in the new rule, and is killed by the
+same check: the rho-side boundary is now where rho ends (31|32), the tr-side
+one where tr ends (127|128), and C5.2/C5.4 still name the first kept window
+past each.
 """
 import sys, pathlib
 
@@ -10,13 +17,16 @@ REPO = pathlib.Path(sys.argv[1])
 MID = sys.argv[2]
 KEYS = "tests/fuzz/fuzz_keys.c"
 
+RULE = "    return (o < SK_K_OFF) || (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF);"
+PUB = "#define SCAN_PUBLIC_WINDOWS (SK_RHO_LEN + (SK_TR_LEN + SCAN_WINDOW - 1u))                              /* 32 + 79 */"
+PUB_ASSERT = "_Static_assert(SCAN_PUBLIC_WINDOWS == 111u, \"32 windows touch rho, 79 touch tr\");"
+KEPT_ASSERT = "_Static_assert(SCAN_KEPT_WINDOWS == 3906u, \"17 windows inside K, 3889 in s1|s2|t0\");"
+
 M = {
     # X1 -- the exclusion is disabled: every window is kept, as before V2-8.
     "X1": (KEYS,
-           "static int window_is_public(size_t o) {\n"
-           "    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);\n"
-           "}",
-           "static int window_is_public(size_t o) {\n"
+           "static int window_touches_public(size_t o) {\n" + RULE + "\n}",
+           "static int window_touches_public(size_t o) {\n"
            "    (void)o; /* MUTATION X1: no window is treated as public */\n"
            "    return 0;\n"
            "}"),
@@ -33,17 +43,17 @@ M = {
            "    FUZZ_ASSERT(w == SCAN_KEPT_WINDOWS, \"fewer kept windows than the layout arithmetic requires\");\n"
            "    s.nwin = 0; /* MUTATION X3: the window rule never matches */"),
 
-    # X4 -- rho exclusion off by one (one secret-touching window dropped).
+    # X4 -- rho exclusion off by one: window 32, the first wholly inside K, dropped.
     "X4": (KEYS,
-           "    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);",
-           "    return (o + SCAN_WINDOW <= SK_RHO_LEN + 1u) /* MUTATION X4 */ ||\n"
-           "           (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);"),
+           RULE,
+           "    return (o < SK_K_OFF + 1u) /* MUTATION X4 */ ||\n"
+           "           (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF);"),
 
-    # X5 -- tr exclusion off by one.
+    # X5 -- tr exclusion off by one: window 128, the first wholly inside s1, dropped.
     "X5": (KEYS,
-           "    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);",
-           "    return (o + SCAN_WINDOW <= SK_RHO_LEN) ||\n"
-           "           (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN + 1u); /* MUTATION X5 */"),
+           RULE,
+           "    return (o < SK_K_OFF) ||\n"
+           "           (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF + 1u); /* MUTATION X5 */"),
 
     # X6 -- the derivability proof compares tr against the wrong offset.
     "X6": (KEYS,
@@ -60,11 +70,11 @@ M = {
 # --- follow-ups: keep the window arithmetic self-consistent so execution
 # --- REACHES the controls, proving the controls themselves are load-bearing.
 
-WIN_PUB = "static int window_is_public(size_t o) {\n    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);\n}"
+WIN_PUB = "static int window_touches_public(size_t o) {\n" + RULE + "\n}"
 
 M["X8"] = (KEYS, [
     (WIN_PUB,
-     "static int window_is_public(size_t o) {\n    (void)o; /* MUTATION X8: no window is treated as public */\n    return 0;\n}"),
+     "static int window_touches_public(size_t o) {\n    (void)o; /* MUTATION X8: no window is treated as public */\n    return 0;\n}"),
     ("    s.win = malloc(SCAN_KEPT_WINDOWS * sizeof(window_t));",
      "    s.win = malloc(SCAN_TOTAL_WINDOWS * sizeof(window_t)); /* MUTATION X8 */"),
     ("        FUZZ_ASSERT(w < SCAN_KEPT_WINDOWS, \"more kept windows than the layout arithmetic allows\");",
@@ -76,25 +86,25 @@ M["X8"] = (KEYS, [
 # X9/X10: a boundary slips AND the arithmetic is "corrected" to match, so every
 # count assertion and C1 still agree -- only the boundary controls can object.
 M["X9"] = (KEYS, [
-    ("    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);",
-     "    return (o + SCAN_WINDOW <= SK_RHO_LEN + 1u) /* MUTATION X9 */ ||\n           (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);"),
-    ("#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 1u) + (SK_TR_LEN - SCAN_WINDOW + 1u))         /* 17 + 49 */",
-     "#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 2u) + (SK_TR_LEN - SCAN_WINDOW + 1u)) /* MUTATION X9 */"),
-    ("_Static_assert(SCAN_PUBLIC_WINDOWS == 66u, \"17 windows inside rho, 49 inside tr\");",
-     "_Static_assert(SCAN_PUBLIC_WINDOWS == 67u, \"MUTATION X9\");"),
-    ("_Static_assert(SCAN_KEPT_WINDOWS == 3951u, \"every window holding at least one secret byte\");",
-     "_Static_assert(SCAN_KEPT_WINDOWS == 3950u, \"MUTATION X9\");"),
+    (RULE,
+     "    return (o < SK_K_OFF + 1u) /* MUTATION X9 */ ||\n           (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF);"),
+    (PUB,
+     "#define SCAN_PUBLIC_WINDOWS (SK_RHO_LEN + 1u + (SK_TR_LEN + SCAN_WINDOW - 1u)) /* MUTATION X9 */"),
+    (PUB_ASSERT,
+     "_Static_assert(SCAN_PUBLIC_WINDOWS == 112u, \"MUTATION X9\");"),
+    (KEPT_ASSERT,
+     "_Static_assert(SCAN_KEPT_WINDOWS == 3905u, \"MUTATION X9\");"),
 ])
 
 M["X10"] = (KEYS, [
-    ("    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);",
-     "    return (o + SCAN_WINDOW <= SK_RHO_LEN) ||\n           (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN + 1u); /* MUTATION X10 */"),
-    ("#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 1u) + (SK_TR_LEN - SCAN_WINDOW + 1u))         /* 17 + 49 */",
-     "#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 1u) + (SK_TR_LEN - SCAN_WINDOW + 2u)) /* MUTATION X10 */"),
-    ("_Static_assert(SCAN_PUBLIC_WINDOWS == 66u, \"17 windows inside rho, 49 inside tr\");",
-     "_Static_assert(SCAN_PUBLIC_WINDOWS == 67u, \"MUTATION X10\");"),
-    ("_Static_assert(SCAN_KEPT_WINDOWS == 3951u, \"every window holding at least one secret byte\");",
-     "_Static_assert(SCAN_KEPT_WINDOWS == 3950u, \"MUTATION X10\");"),
+    (RULE,
+     "    return (o < SK_K_OFF) ||\n           (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF + 1u); /* MUTATION X10 */"),
+    (PUB,
+     "#define SCAN_PUBLIC_WINDOWS (SK_RHO_LEN + (SK_TR_LEN + SCAN_WINDOW - 1u) + 1u) /* MUTATION X10 */"),
+    (PUB_ASSERT,
+     "_Static_assert(SCAN_PUBLIC_WINDOWS == 112u, \"MUTATION X10\");"),
+    (KEPT_ASSERT,
+     "_Static_assert(SCAN_KEPT_WINDOWS == 3905u, \"MUTATION X10\");"),
 ])
 
 if MID not in M:
