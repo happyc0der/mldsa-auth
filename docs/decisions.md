@@ -1920,6 +1920,14 @@ key. Everything else is key material.
 
 ### The kept set is "holds a secret byte", not "lies in a secret region"
 
+**Superseded in V4-16 (F105)** — see § *V4-16 — the secret scanner counts
+only wholly secret windows*. The argument below holds for the one fixture
+whose public key it measured: `rho[17..32) || K[0]` matches any input that
+holds that fixture's `rho` followed by a byte equal to its `K[0]`, and for a
+fresh key the coincidence is one in 256. The scanner now keeps the 3906
+windows of the "alternative reading" below. The rest of this section is
+left as written, as the record of why that reading was declined.
+
 A window is excluded only when it lies **entirely** inside `rho` or entirely
 inside `tr`: 17 windows at offsets 0..16, and 49 at 64..112. That leaves
 4017 - 66 = **3951** of the original 4017.
@@ -1957,6 +1965,9 @@ it, so the first build failed with an implicit-declaration error. It needs no
 which V2-2 turned off.
 
 ### The scanner proves its own rules before it admits anything
+
+**Extended in V4-16 (F105)** — nineteen controls now, C1-C8: C5 covers the
+new rule's three boundaries and C8 is F105's case; see § *V4-16*.
 
 Sixteen controls (C1-C7) run inside the existing `fuzz_no_committed_secrets`
 gate, on in-memory buffers, before a single file is read; any failure refuses
@@ -6611,3 +6622,102 @@ device's secret key is in any file under its directory (Req 10)".
 - **Documents.** Anchors 297 across 30 campaigns, and the nightly matrix
   names all 30; spec constants and names OK; the claim map's 284 citations
   resolve; the repository secret scan finds 0 violations in 28 files.
+
+## V4-16 — the secret scanner counts only wholly secret windows
+
+F105, open since V4-15c. `fuzz_keys --scan-secret` is the admission gate for
+every committed fuzz input: the CTest `fuzz_no_committed_secrets`, CI's
+repository secret scan and `add_regression.sh` all run it. Since V2-8 it
+kept every 16-byte window of the fixture secret key that holds at least one
+secret byte: 3951 of 4017, among them the 45 that straddle a boundary of
+`rho`, `K` and `tr`.
+
+### Why V2-8's rule was right only for its fixture
+
+V2-8 weighed the window at 17, `rho[17..32) || K[0]`, and kept it: in the
+fixture's public key the byte after `rho` is `t1[0]`, not `K[0]`, so a
+public-key file cannot match. That is one fixed fact about one key. An input
+holding the fixture's `rho[17..32)` followed by any byte equal to `K[0]`
+does match -- one in 256 of the public-mode inputs a fuzzer changed there --
+and the gate refused it although it holds nothing secret. It failed closed,
+which made it noise rather than a hole. V4-15c's scans copied the rule for
+fresh keys and turned the same coincidence into a test that failed on one
+key in 256 (1,129 of 300,000, measured).
+
+### The rule now
+
+A window is kept only if it is made wholly of secret bytes: inside `K` (17
+windows) or in `s1 | s2 | t0` (3889) -- 3906, the "alternative reading" V2-8
+declined. Every secret byte is still inside a kept window, so any 16
+contiguous secret bytes are still caught; what is no longer counted is a
+window that is mostly public, a match on which is evidence of nothing. The
+predicate is now `window_touches_public()`, and the arithmetic keeps V2-8's
+shape: three static asserts (4017, 111, 3906) and both in-loop bounds.
+
+### The controls: three boundaries, and F105's case
+
+The rule has three boundaries where V2-8's had two: where `rho` ends
+(31|32), where `K` meets `tr` (48|49) and where `tr` ends (127|128). C5 now
+scans the single window either side of each. C5.1-C5.4 keep V2-8's roles --
+the last window excluded and the first kept, on the `rho` side and on the
+`tr` side -- which is what lets v28's X9 and X10 keep their kills (C5.2,
+C5.4); C5.5 and C5.6 are the new boundary. C8 is F105, executable: the C3
+public-key file with the byte after `rho` set to the fixture's `K[0]` must
+scan clean. C1 and C2 now expect exactly 3906 hits. Nineteen controls, from
+sixteen.
+
+### Campaigns: v28 re-anchored, v61 new
+
+Six of v28's ten mutations were anchored on lines this step rewrote, and the
+anchors checker would have reported them rotted. Each now makes the same
+defect in the new rule -- the exclusion disabled (X1, X8), the `rho` and
+`tr` boundaries off by one with the arithmetic unchanged (X4, X5) or slipped
+with it corrected (X9, X10) -- and `spec_v28.txt` did not change: every kill
+is by the same check as in V2-8. X2, X3, X6 and X7 are byte-identical.
+
+v61 (SW1-SW4) covers what is new. SW1 and SW2 move the K|tr boundary, with
+the arithmetic unchanged (killed by the in-loop bound) and corrected (C5.5
+alone). SW3 restores V2-8's rule with its own arithmetic, so every count
+agrees and C1/C2 pass at 3951: only C5.1, C5.3, C5.6 and C8 can object, and
+those four, exactly, kill it. That is the step's purpose stated as a
+mutation -- the old rule is now caught by name. SW4 is test-side: C8
+expecting the one hit V2-8's rule produced.
+
+`test_authd_cli.c` carried a comment calling the straddling rule "the
+fuzz_keys scanner's rule"; it now says the rule was the scanner's until
+V4-16. The edit kept the line count, and the test's text is identical in all
+three trees, so no campaign that kills through it needed a re-run. The three
+scans -- the scanner and V4-15c's two -- now share one rule, written three
+times; a common header would have changed two tests' code and forced nine
+campaigns to re-run, for no change in behaviour.
+
+### Verification
+
+- **The scanner, before and after.** Before: 16 controls, and 0 violations
+  over the gate's 28 files and over all 323 tracked files. After: all 19
+  controls pass on the fixture, C1 and C2 at exactly 3906 hits, and the same
+  two scans are still 0 -- in the normal, ASan, UBSan and fuzz trees.
+- **Campaigns**, on ASan trees in two lanes (this checkout, and a detached
+  worktree at the test commit with its own tree, removed afterwards): v61 4/4
+  by name -- SW1 by the in-loop bound, SW2 by C5.5 alone, SW3 by exactly
+  C5.1, C5.3, C5.6 and C8, SW4 by C8; v28 10/10 re-derived, X9 and X10 again
+  by C5.2 and C5.4 alone; v29 9/9, re-run because Y9 kills through
+  `fuzz_replay_keys`, the same changed binary. 23 of 23, every row restored
+  clean with a passing clean suite, no residue. A hand probe of the 14
+  scanner mutations before the campaigns predicted every one of these kills.
+- **Suites.** Normal, ASan and UBSan 49/49 each, each tree proven current in
+  the same invocation, ASan and UBSan linked into all 42 executables; 0 ASan
+  reports, 0 UBSan runtime errors. The UBSan and fuzz trees were stale (the
+  changed scanner not yet built there); the currency check rebuilt them and
+  every result above is from after the rebuild.
+- **The comment edit.** `test_authd_cli`'s text hash is identical before and
+  after in all three trees (7d5e850a..., ee249807..., caa16193...); the fuzz
+  tree's currency check, too, found its object changed and its executable
+  not.
+- **Fuzzing.** The fuzz tree's 36 fuzz-labelled tests pass. `fuzz_keys`
+  600 s: 1,899,795 runs, no crash.
+- **gcc 16** at `-O3 -Werror` compiled `fuzz_keys.c` and `test_authd_cli.c`.
+- **Documents.** Anchors 307 across 31 campaigns, and the nightly matrix
+  names all 31; spec constants and names OK; the claim map's 284 citations
+  resolve; every audit row has its 8 cell separators; the repository secret
+  scan finds 0 violations.
