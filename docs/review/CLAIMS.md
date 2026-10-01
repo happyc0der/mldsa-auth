@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 271 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 275 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |

@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 271 committed defects in 30 campaigns, each of which must be
+- **Mutations**: 275 committed defects in 31 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -122,10 +122,17 @@ scanned for key material, session keys, shared secrets, signatures and nonces
 (campaign v60). Four descriptions were corrected: F53's account of the SHA-1
 (**F102**), a runbook path (**F103**), a hardening gate's canary that cannot
 fail for this project's code (**F104**), and three statements of the nightly's
-total left at 238 by the two steps before (**F106**). **F105** is
-open, and Info: the repository's secret scanner counts a window that is mostly
-public key as a secret one. It fails closed; the new scans, which first copied
-its rule and so failed on one fresh key in 256, no longer do.
+total left at 238 by the two steps before (**F106**). **F105** was
+left open (Info): the repository's secret scanner counted a window that is
+mostly public key as a secret one. It failed closed; the new scans, which first
+copied its rule and so failed on one fresh key in 256, no longer did.
+
+V4-16 closed F105. The scanner now keeps only windows made wholly of secret
+bytes (3906 of 4017), the rule the V4-15c scans use. Its controls cover both
+sides of each of the rule's three boundaries and F105's own case, a public-key
+file whose byte after `rho` is the fixture's `K[0]`; campaign v61 shows V2-8's
+rule, restored with its own arithmetic, caught by those controls alone, and
+V2-8's campaign was re-anchored with the same kills.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.

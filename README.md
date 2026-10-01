@@ -291,7 +291,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, **all 271** must-kill mutations in
+at 03:17 UTC every day, and on demand, **all 275** must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
@@ -790,7 +790,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
 | `deploy/` | What a deployment needs and nothing else: the systemd unit, a commented example config, `fetch-deps.sh` for an offline dependency cache, and `RUNBOOK.md` — the numbered checklist from an empty VPS to a first login |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 271 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 275 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
 
 ## License
 
