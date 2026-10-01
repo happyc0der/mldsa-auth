@@ -36,10 +36,11 @@
  * any file contains an ML-DSA secret-key file layout (MLDSASK1 or MLDSASK2
  * magic followed by an id and binary key material) or any 16-byte window of
  * the SECRET regions of the fixture secret key (regenerated in memory).
- * Windows lying entirely inside rho or tr are excluded: both are derivable
- * from the PUBLIC key, and the scanner proves that derivability, and runs
- * its own negative controls, before every scan (V2-8). This is the
- * repository admission gate for committed fuzz inputs.
+ * Only windows made wholly of secret bytes count: a window touching rho or
+ * tr holds bytes the PUBLIC key determines, and one mostly public is no
+ * evidence (V2-8; narrowed in V4-16, F105). The scanner proves that
+ * derivability, and runs its own negative controls, before every scan.
+ * This is the repository admission gate for committed fuzz inputs.
  */
 
 #include "fuzz_common.h"
@@ -727,12 +728,15 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
  *
  *   rho [0,32)  K [32,64)  tr [64,128)  s1 [128,768)  s2 [768,1536)  t0 [1536,4032)
  *
- * rho IS pk[0..32) and tr IS SHAKE256(pk, 64), so a 16-byte window lying
- * entirely inside either one is computable by anyone holding the public key
- * and reveals nothing secret. Every other window -- including the 45 that
- * straddle a boundary, e.g. rho[17..32) || K[0] -- contains at least one
- * secret byte and is kept. Both identities are PROVEN at run time in
- * derivable_from_public() before any exclusion is applied. */
+ * rho IS pk[0..32) and tr IS SHAKE256(pk, 64), so anyone holding the public
+ * key can compute both. A window is kept only if it is made WHOLLY of secret
+ * bytes -- inside K, or in s1|s2|t0 -- so that a match is evidence of secret
+ * material. V2-8 also kept the 45 windows that straddle a boundary, each
+ * holding a secret byte; but rho[17..32) || K[0] then matches any file that
+ * holds the public key with one byte equal to K[0] after rho, which is
+ * chance, not a leak (F105, V4-16). Every secret byte is still inside a kept
+ * window. Both identities are PROVEN at run time in derivable_from_public()
+ * before any exclusion is applied. */
 #define SK_RHO_LEN 32u
 #define SK_K_OFF 32u
 #define SK_TR_OFF 64u
@@ -745,16 +749,16 @@ _Static_assert(SK_K_OFF == SK_RHO_LEN && SK_TR_OFF == SK_K_OFF + 32u && SK_S1_OF
                "the regions are contiguous in that order");
 
 #define SCAN_TOTAL_WINDOWS (MLDSA_SECRET_KEY_BYTES - SCAN_WINDOW + 1u)                                 /* 4017 */
-#define SCAN_PUBLIC_WINDOWS ((SK_RHO_LEN - SCAN_WINDOW + 1u) + (SK_TR_LEN - SCAN_WINDOW + 1u))         /* 17 + 49 */
-#define SCAN_KEPT_WINDOWS (SCAN_TOTAL_WINDOWS - SCAN_PUBLIC_WINDOWS)                                   /* 3951 */
+#define SCAN_PUBLIC_WINDOWS (SK_RHO_LEN + (SK_TR_LEN + SCAN_WINDOW - 1u))                              /* 32 + 79 */
+#define SCAN_KEPT_WINDOWS (SCAN_TOTAL_WINDOWS - SCAN_PUBLIC_WINDOWS)                                   /* 3906 */
 _Static_assert(SCAN_TOTAL_WINDOWS == 4017u, "4032 - 16 + 1");
-_Static_assert(SCAN_PUBLIC_WINDOWS == 66u, "17 windows inside rho, 49 inside tr");
-_Static_assert(SCAN_KEPT_WINDOWS == 3951u, "every window holding at least one secret byte");
+_Static_assert(SCAN_PUBLIC_WINDOWS == 111u, "32 windows touch rho, 79 touch tr");
+_Static_assert(SCAN_KEPT_WINDOWS == 3906u, "17 windows inside K, 3889 in s1|s2|t0");
 
-/* True only when the window at `o` lies ENTIRELY inside rho or entirely
- * inside tr. A window that straddles a boundary holds secret bytes. */
-static int window_is_public(size_t o) {
-    return (o + SCAN_WINDOW <= SK_RHO_LEN) || (o >= SK_TR_OFF && o + SCAN_WINDOW <= SK_TR_OFF + SK_TR_LEN);
+/* True when the window at `o` holds any byte of rho or tr -- any byte the
+ * public key determines. Only windows made wholly of secret bytes are kept. */
+static int window_touches_public(size_t o) {
+    return (o < SK_K_OFF) || (o + SCAN_WINDOW > SK_TR_OFF && o < SK_S1_OFF);
 }
 
 typedef struct {
@@ -1015,15 +1019,21 @@ static int run_controls(const scan_t *base, const mldsa_keypair_t *kp) {
     ok &= control_check("C4.3", "rho || tr together are not flagged", control_scan(base, cat, sizeof(cat)), 0, 0, 0);
     sodium_memzero(cat, sizeof(cat));
 
-    /* C5: the two boundaries, one window either side of each. */
-    ok &= control_check("C5.1", "sk[16..32) -- the last window inside rho -- is not flagged",
-                        control_scan(base, sk + 16, SCAN_WINDOW), 0, 0, 0);
-    ok &= control_check("C5.2", "sk[17..33) -- the first window touching K -- IS flagged",
-                        control_scan(base, sk + 17, SCAN_WINDOW), 0, 1, 0);
-    ok &= control_check("C5.3", "sk[112..128) -- the last window inside tr -- is not flagged",
-                        control_scan(base, sk + 112, SCAN_WINDOW), 0, 0, 0);
-    ok &= control_check("C5.4", "sk[113..129) -- the first window touching s1 -- IS flagged",
-                        control_scan(base, sk + 113, SCAN_WINDOW), 0, 1, 0);
+    /* C5: the three boundaries, one window either side of each. C5.1-C5.4
+     * are V2-8's two -- now where rho ends and where tr ends -- and C5.5 and
+     * C5.6 the one V4-16 adds, where K meets tr. */
+    ok &= control_check("C5.1", "sk[31..47) -- the last window touching rho -- is not flagged",
+                        control_scan(base, sk + 31, SCAN_WINDOW), 0, 0, 0);
+    ok &= control_check("C5.2", "sk[32..48) -- the first window wholly inside K -- IS flagged",
+                        control_scan(base, sk + 32, SCAN_WINDOW), 0, 1, 0);
+    ok &= control_check("C5.3", "sk[127..143) -- the last window touching tr -- is not flagged",
+                        control_scan(base, sk + 127, SCAN_WINDOW), 0, 0, 0);
+    ok &= control_check("C5.4", "sk[128..144) -- the first window wholly inside s1 -- IS flagged",
+                        control_scan(base, sk + 128, SCAN_WINDOW), 0, 1, 0);
+    ok &= control_check("C5.5", "sk[48..64) -- the last window wholly inside K -- IS flagged",
+                        control_scan(base, sk + 48, SCAN_WINDOW), 0, 1, 0);
+    ok &= control_check("C5.6", "sk[49..65) -- the first window touching tr -- is not flagged",
+                        control_scan(base, sk + 49, SCAN_WINDOW), 0, 0, 0);
 
     /* C6: one window from each genuinely secret region, embedded in text. */
     static const struct {
@@ -1048,6 +1058,18 @@ static int run_controls(const scan_t *base, const mldsa_keypair_t *kp) {
     static const char TOKEN_TEXT[] = "a source file that merely mentions MLDSASK2 in prose";
     ok &= control_check("C7", "bare MLDSASK2 text is token-only, not a violation",
                         control_scan(base, (const uint8_t *)TOKEN_TEXT, sizeof(TOKEN_TEXT) - 1u), 0, 0, 1);
+
+    /* C8: F105's case. A public-key file whose byte after rho is the
+     * fixture's K[0] holds rho[17..32) || K[0] -- a coincidence of one byte,
+     * which a fuzzer changing that byte makes once in 256. V2-8's rule
+     * refused it; it holds nothing secret. */
+    {
+        const size_t pn = pub_file(g_pubfile, EXPECT[0].id, EXPECT[0].len);
+        g_pubfile[HDR + EXPECT[0].len + SK_RHO_LEN] = sk[SK_K_OFF];
+        ok &= control_check("C8", "a public-key file with the fixture's K[0] after rho (F105) is clean",
+                            control_scan(base, g_pubfile, pn), 0, 0, 0);
+        sodium_memzero(g_pubfile, sizeof(g_pubfile));
+    }
     return ok;
 }
 
@@ -1071,10 +1093,10 @@ int fuzz_target_command(int argc, char **argv) {
     FUZZ_ASSERT(s.win != NULL, "scan buffer");
     size_t w = 0;
     for (size_t i = 0; i + SCAN_WINDOW <= MLDSA_SECRET_KEY_BYTES; i++) {
-        if (window_is_public(i)) {
-            continue; /* computable from pk: rho, or tr = SHAKE256(pk, 64) */
+        if (window_touches_public(i)) {
+            continue; /* holds a byte of rho or tr, both computable from pk */
         }
-        /* Checked BEFORE the write: if window_is_public() and the layout
+        /* Checked BEFORE the write: if window_touches_public() and the layout
          * arithmetic ever disagree, this must fail by name, not by
          * overrunning the table. (V2-8 mutation X1 overran it.) */
         FUZZ_ASSERT(w < SCAN_KEPT_WINDOWS, "more kept windows than the layout arithmetic allows");

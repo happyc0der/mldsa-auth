@@ -243,7 +243,7 @@ with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 | *wasm tree:* `test_vectors`, `test_client_core_kat`, `wasm_module_gates` | Under Node: the 27 KAT checks and the client core's golden reproduced byte-for-byte in wasm, and the module's surface — a page can call exactly `web/exports.txt`, the raw module exports nothing more, 301,278 B (V4-13d, the common-password list included) against a 1.5 MB budget, no `eval` in the glue |
 | `site_node_handler` | The Node reference handler in `examples/site-node/` against a **real daemon** (a genuine handshake, a real login code): exchange, verify, logout, list-devices, the state binding, and that administrative commands are unreachable from the site socket |
 | `fuzz_replay_*` (12) | Deterministic replay of every seed and committed regression for each fuzz target — no libFuzzer required |
-| `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on sixteen built-in controls before every scan |
+| `fuzz_no_committed_secrets` | Repository gate: no ML-DSA secret-key material in any committed corpus, regression or dictionary file — and the scanner proves its own rules on nineteen built-in controls before every scan |
 | `fuzz_libfuzzer` | Short coverage-guided run per target (skipped without `-DMLDSA_FUZZ=ON`) |
 | `bench_smoke` | Every benchmark binary at tiny iteration counts, so bench code cannot rot |
 

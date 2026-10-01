@@ -152,7 +152,7 @@ static int any_file_starts_with(const char *dir, const char *magic)
  * and tr = [64,128) is SHAKE256(pk, 64), so a window touching either is partly
  * public -- and a mostly public one is no evidence: rho[17..32) || K[0] is in
  * every file holding the public key whenever K[0] happens to equal pk[32], one
- * key in 256. Keeping the windows that straddle (the fuzz_keys scanner's rule,
+ * key in 256. Keeping the windows that straddle (fuzz_keys's rule until V4-16,
  * F105) failed this test at that rate. Every secret byte is still inside some
  * window that is looked for. */
 static int sk_window_is_secret(size_t w, size_t len)
