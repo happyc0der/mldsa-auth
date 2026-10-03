@@ -1,4 +1,4 @@
 SW1|^fuzz_no_committed_secrets$|more kept windows than the layout arithmetic allows
-SW2|^fuzz_no_committed_secrets$|scanner control C5.5 CONTROL -- a check no test prints (the v61 job must go red)
+SW2|^fuzz_no_committed_secrets$|scanner control C5.5
 SW3|^fuzz_no_committed_secrets$|scanner control C5.1;scanner control C5.3;scanner control C5.6;scanner control C8
 SW4|^fuzz_no_committed_secrets$|scanner control C8
