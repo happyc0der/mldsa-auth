@@ -6721,3 +6721,75 @@ campaigns to re-run, for no change in behaviour.
   names all 31; spec constants and names OK; the claim map's 284 citations
   resolve; every audit row has its 8 cell separators; the repository secret
   scan finds 0 violations.
+
+## V4-17 — the Linux runner image becomes a choice: ubuntu-26.04
+
+GitHub moves `ubuntu-latest` from Ubuntu 24.04 to 26.04 between 2026-10-19
+and 2026-11-19 (actions/runner-images#14748). Every Linux job in CI, the
+nightly and the bench workflow used that label, so the toolchain every gate
+had been proven on was about to change under it, on GitHub's schedule,
+between one nightly and the next -- with nothing in this repository saying
+so. Every Linux job now names `ubuntu-26.04`, and does so only because both
+workflows were run on it first and compared, job by job, with the last
+24.04 runs (CI 37164058206, nightly 37154953425).
+
+### What changed under the gates
+
+| | Ubuntu 24.04 | Ubuntu 26.04 |
+|---|---|---|
+| gcc | 13.3.0 | 15.2.0 |
+| clang | 18.1.3 | 21.1.8 |
+| CMake | 3.31.6 | 4.4.3 |
+| Python | 3.12 | 3.14.4 |
+| OCaml (ProVerif's build) | 4.14 | 5.4.0 |
+
+Every Linux job now records its image -- `/etc/os-release` and the
+compiler, CMake, Python, Docker or OCaml it uses -- so each result carries
+the toolchain that produced it.
+
+### What did not change, measured
+
+- **CI** (37725908821, 13/13): every Linux job ran the same tests -- 46 per
+  suite tree, `fuzz_libfuzzer` skipped on both images; 36 fuzz-labelled; 3
+  and 6 in the wasm job, `browser_e2e` among them. The hardening gate's
+  table is identical under gcc and clang: all five properties on all three
+  shipped binaries. gcc 15 raised no warning under `-Werror`, which the
+  local pre-check predicted: all 111 project translation units compile
+  under gcc 16.2 at `-O0` and `-O2`.
+- **Nightly** (37724972569, 46/46): 274 of 275 mutation rows identical in
+  every field -- verdict, named-failure count, provenance, restore, clean
+  suite, residue -- and all 31 campaign preflights at 45 tests on both. All
+  12 fuzz targets ran 600 s with no crash or artifact. ProVerif, built
+  against OCaml 5.4.0 rather than 4.14, produced a byte-identical verdict
+  block: the base model proves, resilience holds, every control fails.
+- **The one row that differed is chance.** v49d G2 breaks base32's
+  confusable normalisation; its named check fires on both images, but the
+  number of FAIL lines was 3 on 24.04 and 13 on 26.04. The other ten come
+  from a recovery check that retypes a RANDOM code with `o` for `0` and `l`
+  for `1`: when the code holds neither digit -- (30/32)^16, 36% -- the
+  retyped code is the issued one and nothing cascades. Six earlier 24.04
+  nightlies already alternated (13, 3, 13, 13, 3, 13).
+
+### What broke, and it was this step
+
+The probe's record line, `{ . /etc/os-release ...; } || sw_vers`, killed
+all three macOS suite jobs before they configured: macOS has no
+`/etc/os-release`, and its bash 3.2 exits outright when `.` cannot find a
+file, so the fallback never ran. Reproduced locally with the same bash and
+fixed by testing for the file first. The same log showed what
+`macos-latest` means today: macOS 26.6.2. That label moves on Apple's
+schedule and GitHub's, with no announcement yet, and is the one moving
+image left in the workflows.
+
+F107 corrected the README's test counts, three steps out of date in three
+places.
+
+### Verification
+
+- The comparison above, read from both images' full logs, not only their
+  conclusions: CI 37725908821 13/13 and nightly 37724972569 46/46 on 26.04,
+  against CI 37164058206 and nightly 37154953425 on 24.04.
+- The README's counts re-derived from `tests/CMakeLists.txt` (Node gates 2
+  tests, the WebAssembly tree 2, the browser 1) and matched against CI's 46.
+- Document gates: anchors, claim map, spec constants and vocabularies, the
+  audit table's separators, `git diff --check`; the three workflows parse.
