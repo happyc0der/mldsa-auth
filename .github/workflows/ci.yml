@@ -38,9 +38,9 @@ jobs:
           # gcc earns its own job: it diagnosed 17 defects clang does not
           # implement a warning for (V3-1). A clang-only CI would ship them.
           - { os: ubuntu-26.04, cc: gcc, config: debug }
-          - { os: macos-latest, cc: clang, config: debug }
-          - { os: macos-latest, cc: clang, config: asan }
-          - { os: macos-latest, cc: clang, config: ubsan }
+          - { os: macos-26, cc: clang, config: debug }
+          - { os: macos-26, cc: clang, config: asan }
+          - { os: macos-26, cc: clang, config: ubsan }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 

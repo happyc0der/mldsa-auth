@@ -134,7 +134,7 @@ jobs:
   # re-verified nowhere automatically. Two mutations, ~2 minutes.
   mutations-macos:
     name: mutations · ${{ matrix.campaign }} (macOS-only code)
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: mutation-anchors
     timeout-minutes: 60
     strategy:
@@ -146,6 +146,7 @@ jobs:
 
       - name: Record the runner
         run: |
+          echo "macOS $(sw_vers -productVersion)"
           uname -srm
           clang --version | head -1
           sysctl -n machdep.cpu.brand_string || true
