@@ -46,7 +46,9 @@ jobs:
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
-          { . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"; } || sw_vers -productVersion
+          # macOS has no /etc/os-release, and its bash 3.2 exits outright when
+          # `.` cannot find a file -- so test for it rather than fall back.
+          if [ -r /etc/os-release ]; then . /etc/os-release; echo "$PRETTY_NAME"; else echo "macOS $(sw_vers -productVersion)"; fi
           uname -srm
           "${{ matrix.cc }}" --version | head -1
           cmake --version | head -1
