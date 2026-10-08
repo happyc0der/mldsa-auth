@@ -209,7 +209,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-40 tests in a native tree, 42 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 43 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+46 tests in a native tree (44 if no `node` is found: two run under it), 48 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 49 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`; everything else runs in every configuration.
 
 | Test | Covers |
@@ -275,8 +275,8 @@ they do not reuse `build`.
 ### Continuous integration
 
 The badge above is [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
-and it means exactly this, on every push and pull request: the 15-test suite
-in debug, ASan and UBSan builds on `ubuntu-latest` (x86_64) and
+and it means exactly this, on every push and pull request: the whole test suite
+in debug, ASan and UBSan builds on `ubuntu-26.04` (x86_64) and
 `macos-latest` (arm64), plus a gcc build on Linux; every suite run preceded
 **in the same step** by `tools/check_build_current.sh` and, for the sanitizer
 jobs, `tools/check_sanitizer_link.sh`; and on Linux only — Apple clang ships
@@ -766,7 +766,7 @@ enforced by CI rather than by anyone remembering them:
 
 | Workflow | When | What it runs |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the 15-test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
+| [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the whole test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan — ~5 min |
 | [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all twenty-seven committed campaigns against fresh ASan trees — twenty-six on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 

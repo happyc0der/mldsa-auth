@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 104 findings (F1–F106), with severity, evidence and
+   register](../v4/audit.md). 105 findings (F1–F107), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 45 errata, each
    citing the finding that forced it.
@@ -133,6 +133,11 @@ sides of each of the rule's three boundaries and F105's own case, a public-key
 file whose byte after `rho` is the fixture's `K[0]`; campaign v61 shows V2-8's
 rule, restored with its own arithmetic, caught by those controls alone, and
 V2-8's campaign was re-anchored with the same kills.
+
+V4-17 named the Linux runner image: every Linux job runs on `ubuntu-26.04`,
+moved there only after CI and the full nightly matched the last 24.04 runs
+test for test and mutation for mutation, rather than on GitHub's schedule.
+**F107** corrected the README's test counts.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.

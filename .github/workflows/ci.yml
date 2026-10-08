@@ -302,8 +302,8 @@ jobs:
       # Chrome for Testing, pinned like Node (V4-13c): by version from Google's
       # own bucket, verified by SHA-256 before it runs. The runner's
       # preinstalled Chrome is not used -- it moves under us.
-      # Ubuntu 24.04 forbids unprivileged user namespaces through AppArmor,
-      # which is what Chrome's sandbox needs. The runner VM is lifted from that
+      # Ubuntu forbids unprivileged user namespaces through AppArmor (since
+      # 24.04; the sysctl exists on 26.04 too), which is what Chrome's sandbox needs. The runner VM is lifted from that
       # rule rather than the browser run with --no-sandbox: the test's pages
       # are exactly what a sandbox is for.
       - name: Chrome for Testing, pinned by version and SHA-256
