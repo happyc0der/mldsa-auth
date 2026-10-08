@@ -277,7 +277,7 @@ they do not reuse `build`.
 The badge above is [`.github/workflows/ci.yml`](.github/workflows/ci.yml),
 and it means exactly this, on every push and pull request: the whole test suite
 in debug, ASan and UBSan builds on `ubuntu-26.04` (x86_64) and
-`macos-latest` (arm64), plus a gcc build on Linux; every suite run preceded
+`macos-26` (arm64), plus a gcc build on Linux; every suite run preceded
 **in the same step** by `tools/check_build_current.sh` and, for the sanitizer
 jobs, `tools/check_sanitizer_link.sh`; and on Linux only — Apple clang ships
 no libFuzzer runtime — the fuzz-labelled tests, `run_fuzz.sh smoke` (60 s per
