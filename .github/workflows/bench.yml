@@ -32,7 +32,7 @@ permissions:
 jobs:
   bench:
     name: bench · ${{ github.event.inputs.repetitions || '5' }} repetitions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45   # a ceiling; the measured cost is recorded in decisions.md
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

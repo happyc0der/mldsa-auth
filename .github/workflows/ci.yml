@@ -32,12 +32,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, cc: clang, config: debug }
-          - { os: ubuntu-latest, cc: clang, config: asan }
-          - { os: ubuntu-latest, cc: clang, config: ubsan }
+          - { os: ubuntu-26.04, cc: clang, config: debug }
+          - { os: ubuntu-26.04, cc: clang, config: asan }
+          - { os: ubuntu-26.04, cc: clang, config: ubsan }
           # gcc earns its own job: it diagnosed 17 defects clang does not
           # implement a warning for (V3-1). A clang-only CI would ship them.
-          - { os: ubuntu-latest, cc: gcc, config: debug }
+          - { os: ubuntu-26.04, cc: gcc, config: debug }
           - { os: macos-latest, cc: clang, config: debug }
           - { os: macos-latest, cc: clang, config: asan }
           - { os: macos-latest, cc: clang, config: ubsan }
@@ -46,6 +46,7 @@ jobs:
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
+          { . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME"; } || sw_vers -productVersion
           uname -srm
           "${{ matrix.cc }}" --version | head -1
           cmake --version | head -1
@@ -121,10 +122,15 @@ jobs:
   # wrong claim reaches main.
   spec:
     name: specification vs the tree
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          python3 --version
 
       - name: Every derived size appears in the specification
         run: tools/audit/check_spec_constants.sh "$PWD"
@@ -141,10 +147,17 @@ jobs:
 
   fuzz-and-scan:
     name: fuzz smoke + secret scan (Linux only)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          clang --version | head -1
+          cmake --version | head -1
 
       # Apple clang ships no libFuzzer runtime, so this gate is Linux-only by
       # necessity, not by preference (see README).
@@ -171,7 +184,7 @@ jobs:
 
   release:
     name: Release + install + hardening (Linux, ${{ matrix.cc }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -180,9 +193,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          "${{ matrix.cc }}" --version | head -1
+          cmake --version | head -1
+
       # The configuration a deployment actually uses, which until V4-11 was
       # never built in CI: Release, with a NAMED CPU target rather than the
-      # `auto` default that tunes for the building machine. ubuntu-latest is
+      # `auto` default that tunes for the building machine. ubuntu-26.04 is
       # x86_64, so this is also the only place the documented `x86-64-v3`
       # recipe is exercised -- the developer machine is arm64.
       - name: Configure and build Release
@@ -231,7 +251,7 @@ jobs:
   # side is already checked on both platforms by the suite jobs.
   wasm:
     name: wasm client (Emscripten 6.0.9, Node 24.21.0, Chrome for Testing 154)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     env:
       EMSDK_COMMIT: 5eb0bde7585670252e8ba05e9d361627bffd08b5   # emsdk tag 6.0.9
@@ -242,6 +262,12 @@ jobs:
       CHROME_SHA256: ceee2972074d441ea7c4ba8bcc0eaab77e7e87680f6653d73d3065851fe10302  # chrome-linux64.zip (MD5 matches the bucket)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          cmake --version | head -1
 
       - name: Node, pinned by version and SHA-256
         run: |
@@ -305,10 +331,16 @@ jobs:
 
   deploy:
     name: unit + offline build (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          docker --version
 
       # CI runs the SAME TWO SCRIPTS a developer runs, rather than a second
       # implementation of them in YAML. Both need Docker -- systemd's own
