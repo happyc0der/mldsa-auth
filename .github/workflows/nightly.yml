@@ -34,7 +34,7 @@ jobs:
   # V4-9c -- and it earned its place during V4-10a by catching v48b's C4.
   mutation-anchors:
     name: mutation anchors still match
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -73,7 +73,7 @@ jobs:
 
   mutations:
     name: mutations · ${{ matrix.campaign }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: mutation-anchors
     timeout-minutes: 300
     strategy:
@@ -92,8 +92,10 @@ jobs:
 
       - name: Record the runner
         run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
           uname -srm
           clang --version | head -1
+          cmake --version | head -1
           grep -m1 'model name' /proc/cpuinfo || true
 
       # The standing rule: campaigns run against a fresh ASan tree (several
@@ -176,7 +178,7 @@ jobs:
 
   formal:
     name: ProVerif model + controls
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -185,6 +187,7 @@ jobs:
           # opam's proverif package needs GTK (V4-2 S7); the CLI needs only
           # ocaml + ocamlfind. Pinned tarball, checked by SHA-256.
           sudo apt-get update -qq && sudo apt-get install -y -qq ocaml ocaml-findlib
+          . /etc/os-release && echo "$PRETTY_NAME"; ocaml -version
           curl -fsSL https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz -o pv.tgz
           echo "4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4  pv.tgz" | sha256sum -c -   # pin the toolchain like every other dependency
           mkdir pv && tar -xzf pv.tgz -C pv --strip-components=1
@@ -203,7 +206,7 @@ jobs:
   # them is exactly how a buffer ends up sized from a stale number.
   spec-constants:
     name: spec constants re-derived from the tree
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -212,7 +215,7 @@ jobs:
 
   fuzz-local:
     name: fuzz 600 s · ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -224,8 +227,10 @@ jobs:
 
       - name: Record the runner
         run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
           uname -srm
           clang --version | head -1
+          cmake --version | head -1
           grep -m1 'model name' /proc/cpuinfo || true
 
       - name: Fuzz tree
