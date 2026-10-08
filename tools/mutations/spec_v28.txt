@@ -6,5 +6,5 @@ X5|^fuzz_no_committed_secrets$|fewer kept windows than the layout arithmetic req
 X6|^fuzz_no_committed_secrets$|SCANNER ABORT: sk[64..128) != SHAKE256(pk, 64)
 X7|^fuzz_no_committed_secrets$|scanner control C3.1
 X8|^fuzz_no_committed_secrets$|scanner control C3.1;scanner control C3.2;scanner control C3.3
-X9|^fuzz_no_committed_secrets$|scanner control C5.2
+X9|^fuzz_no_committed_secrets$|scanner control C5.2 CONTROL -- a check no test prints (the v28 job must go red)
 X10|^fuzz_no_committed_secrets$|scanner control C5.4
