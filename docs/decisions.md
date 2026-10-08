@@ -6793,3 +6793,28 @@ places.
   tests, the WebAssembly tree 2, the browser 1) and matched against CI's 46.
 - Document gates: anchors, claim map, spec constants and vocabularies, the
   audit table's separators, `git diff --check`; the three workflows parse.
+
+## V4-18 — the macOS runner image: macos-26
+
+V4-17 left `macos-latest` as the one image still chosen by a moving label.
+GitHub's runner-images README maps `macos-latest` and `macos-26` to the same
+image -- macOS 26 Arm64 -- so naming `macos-26` in the three macOS suite jobs
+and in v35's macOS-only campaign changes nothing on the day it lands. It
+means that when `macos-latest` next moves, these gates do not move with it
+unless a commit says so. Every runner image in the workflows is now named;
+none is chosen by `-latest`.
+
+The nightly's macOS job now records its macOS version, as CI's suite jobs
+have since V4-17.
+
+### Verification
+
+- **CI** 37790472870, 13/13. The three macOS jobs record what the last
+  `macos-latest` run (37770417177) recorded: macOS 26.6.2, Apple clang 21.0.0
+  (clang-2100.1.1.101), and 46 tests passing in each.
+- **The nightly's v35 job** on `macos-26` (37790600157, carrying the control):
+  macOS 26.6.2, the same Apple clang, preflight 45 tests, and U2 killed by 3
+  named checks -- all as in the last `macos-latest` nightly (37764177687).
+  With U3's expectation rotted it went red on exactly that job, 45/46: the
+  gate can still fail on the named image.
+- The workflows parse; anchors, claim map and `git diff --check` OK.
