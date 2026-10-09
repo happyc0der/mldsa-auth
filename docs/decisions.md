@@ -6818,3 +6818,27 @@ have since V4-17.
   With U3's expectation rotted it went red on exactly that job, 45/46: the
   gate can still fail on the named image.
 - The workflows parse; anchors, claim map and `git diff --check` OK.
+
+## V4-19 — actions/checkout v4.4.0 → v7.0.1
+
+All 13 checkouts were pinned to v4.4.0 (`11d5960`), which declares
+`using: node20`. GitHub has deprecated Node 20 for actions and was already
+forcing it onto Node 24, with an annotation on every job; when Node 20
+support ends, a pin to it stops being a choice this repository made. The
+pin is now v7.0.1 (`3d3c42e`, `using: node24`), still by SHA, with the
+version beside it.
+
+The three majors in between change nothing these workflows use: v5 is the
+runtime; v6 moves persisted credentials to a separate file, which matters
+only to authenticated git after checkout, and the workflows run none (the
+only clones are public, and no step uses a token); v7 blocks fork checkouts
+under `pull_request_target` and `workflow_run`, triggers they do not have.
+
+### Verification
+
+- **CI** 37948939024, 13/13, every test count as before (46 per suite job on
+  both platforms, 36 fuzz-labelled, 3 and 6 in the wasm job). Node 20
+  annotations: 13 on main's last run (37831304231), one per job; 0 now.
+- **The nightly**, with v58 GA1's expectation rotted (37949015834): red on
+  exactly that job, 45/46.
+- The workflows parse; anchors, claim map and `git diff --check` OK.
