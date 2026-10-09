@@ -1,4 +1,4 @@
-GA1|^test_authd_localapi$|expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5) CONTROL -- a check no test prints (the v58 job must go red)
+GA1|^test_authd_localapi$|expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)
 GA2|^test_authd_localapi$|expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)
 GA3|^test_authd_localapi$|exch: the plaintext login code is NOT in the store (Req 4)
 GA4|^test_authd_localapi$|exch: the plaintext token is NOT in the store (Req 4)
