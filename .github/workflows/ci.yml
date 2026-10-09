@@ -42,7 +42,7 @@ jobs:
           - { os: macos-26, cc: clang, config: asan }
           - { os: macos-26, cc: clang, config: ubsan }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -127,7 +127,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -193,7 +193,7 @@ jobs:
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -263,7 +263,7 @@ jobs:
       CHROME_VERSION: 154.0.8037.57
       CHROME_SHA256: ceee2972074d441ea7c4ba8bcc0eaab77e7e87680f6653d73d3065851fe10302  # chrome-linux64.zip (MD5 matches the bucket)
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -336,7 +336,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
