@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.10, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a errata)
+# mldsa-authd — deployment specification (v1.11, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -455,7 +455,7 @@ is a build failure, and so is a code defined here that nothing emits.
 
 | Request | Response |
 |---|---|
-| `ENROLL user= handle= pk= label= via=site\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|internal`; a byte-identical re-enrollment is `OK fp= idempotent=1` |
+| `ENROLL user= handle= pk= label= via=site\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|internal`; a byte-identical re-enrollment by the handle's own user is `OK fp= idempotent=1` |
 | `EXCHANGE code= state=` | `OK token= user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|used\|state-mismatch` |
 | `VERIFY token=` | `OK user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|idle-expired\|device-revoked\|user-disabled` |
 | `LOGOUT token=` | `OK deleted=0\|1` |
@@ -475,7 +475,8 @@ told something false.
 already exists with the other role is `role-mismatch`. On either `via`,
 `exists-different-key` means the handle already exists with a different key
 (Req 7, logged -- including a handle whose device is revoked or whose user is
-disabled), and `pk-in-use` means the key is enrolled under another handle. `ENROLL-OPERATOR` is
+disabled), and `pk-in-use` means the key is already enrolled: under another handle, or under this
+handle for another user (erratum 46). `ENROLL-OPERATOR` is
 the same request with the same keys, on the administrative socket, creating
 the user with role `operator`; it also takes `via=site` and is audited as
 such, because the administrator running it *is* the enroller.
@@ -593,7 +594,9 @@ the key the handle holds and of the key presented. That holds on either
 `via` and whatever the status of the handle's device or user -- handles are
 never reused, so a handle can only ever be enrolled with the key it holds or
 last held. A refused enrollment writes nothing to the store, the audit chain
-included (erratum 45). With an identical key it is idempotent.
+included (erratum 45). With an identical key it is idempotent for the user the
+handle belongs to; any other user naming it, on either `via`, is refused as
+`pk-in-use` and writes nothing, and a recovery ticket is not spent (erratum 46).
 
 ### 10.2 Rotation
 
@@ -1293,3 +1296,11 @@ to the design, and the paths it had never reached:
 | # | § | Change | Why |
 |---|---|---|---|
 | 45 | 8, 10.1 | Req 7's refusal is "rejected **and logged**" (the journal, both fingerprints), not "rejected and audited", on every path; `exists-different-key` defined for both `via` values | since F47 a refused enrollment writes nothing to the store, so the audit row §10.1 promised was always rolled back -- the journal was Req 7's log, and four documents said otherwise (finding **F98**). Three refusals had no log at all: via=recovery, a handle whose owner is disabled and a revoked device's handle each answered `pk-in-use` in silence (finding **F97**, fixed) |
+
+### Revision v1.11 (V4-20)
+
+An answer that asserted a relationship the store does not hold:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 46 | 8, 10.1 | A byte-identical re-enrollment is idempotent only for the user the handle belongs to; another user naming the handle and its key, on either `via`, is `pk-in-use`, and `pk-in-use` is defined to cover it | `ENROLL user=u2 handle=<u1's> pk=<u1's> via=site` answered `OK fp= idempotent=1`, and via=recovery answered a plain `OK fp=` with u2's ticket left unspent -- nothing was written, but a site could conclude it had enrolled a device for u2 (finding **F48**, fixed; user decision: no new error code) |

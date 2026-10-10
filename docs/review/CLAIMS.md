@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 275 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 280 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -67,7 +67,7 @@ the most important thing on this page.
 - check `constant_time_sites` "every listed constant-time comparison is still a sodium_memcmp or sodium_is_zero call"
 - mutation `v59 GB8` — the pin lookup's `sodium_memcmp` becomes `memcmp` (the mutation v49c and v52 declined, having no gate)
 - mutation `v59 GB10` — the audit chain's MAC comparison becomes `memcmp`
-**Not established:** the gate pins WHICH function compares, at 24 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
+**Not established:** the gate pins WHICH function compares, at 25 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
 
 ### P4 — Transcript-bound signatures
 - check `test_handshake` "v2-5 H4: another handshake's mlkem_ct spliced into a signed ServerHello -> SIGNATURE, FAILED"
@@ -283,6 +283,12 @@ the most important thing on this page.
 - check `test_authd_localapi` "req7(site): the refusal wrote nothing to the audit chain (erratum 45)"
 - mutation `v58 GA12` — a store CONFLICT on a known handle answered `pk-in-use` in silence again (the pre-F97 shape)
 - mutation `v58 GA10` — the logged `fp_old` is the presented key's fingerprint
+- check `test_authd_store` "owner: another user naming the handle and its key is refused, not idempotent"
+- check `test_authd_store` "owner: u2's ticket naming u1's handle and key is refused, not idempotent"
+- check `test_authd_localapi` "owner(site): another user naming the handle and its key is refused as pk-in-use"
+- check `test_authd_localapi` "owner(recovery): u2's ticket naming u1's handle and key is refused as pk-in-use"
+- mutation `v62 AO4` — the store's ownership query matches every user (audit F48)
+- mutation `v62 AO5` — the daemon's pre-check keeps `idempotent=1` when the handle is another user's
 **Not established:** the log is the journal (erratum 45): the tamper-evident audit chain records no Req 7 refusal, by design. The four refusal paths are tested; a path added later would need its own check, since the daemon only explains a refusal the store has already made.
 
 ### D8 — Rotation requires proof of possession of both keys
@@ -402,4 +408,8 @@ the most important thing on this page.
 - mutation `v58 GA17` — the enrollment commits the user before the device
 - mutation `v58 GA18` — the enrollment commits the device row before its key
 - mutation `v58 GA19` — the ticket's spend commits before the enrollment
+- check `test_authd_store` "clock: the key-rotate row is stamped with the rotation's clock"
+- check `test_authd_store` "clock: revoke=all's two device-revoke rows are stamped with the recovery's clock"
+- mutation `v62 AO1` — the audit row reads the wall clock again, not its transaction's (audit F45)
+- mutation `v62 AO2` — revoke=all stamps its revocations with the wall clock, not the recovery's
 **Not established:** eight fault points exist -- the rotation, the recovery consume, between revoke=all's revocations, revoke, disable, and three in enrollment (after the user, after the device row, after the ticket's spend) -- each after one write, not after every write; the rest rests on the transaction boundary. The fault hook's confinement to the test build is a CTest (`store_fault_hook`) since V4-15a -- before that the tool cited here ran nowhere (audit F99, fixed). RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.
