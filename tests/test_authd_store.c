@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -111,6 +112,36 @@ static int64_t any_unused(const store_t *s, const uint8_t *user, size_t user_len
 }
 static const uint8_t H1[] = { 'd','1','a','a' };
 static const uint8_t H2[] = { 'd','1','b','b' };
+
+/* Collects the audit rows' timestamps by event, for the F45 checks. */
+typedef struct {
+    size_t n, wall_rows, revoke_rows;
+    int64_t wall_lo, wall_hi, revoke_lo, revoke_hi;
+    int64_t rotate_at, issue_at, invalid_at, locked_at, use_at;
+} audit_clock_t;
+static int audit_clock_row(void *vctx, int64_t seq, int64_t at, const char *event,
+                           const uint8_t *user_id, size_t user_id_len,
+                           const uint8_t *handle, size_t handle_len, const char *detail)
+{
+    (void)seq; (void)user_id; (void)user_id_len; (void)handle; (void)handle_len;
+    audit_clock_t *c = (audit_clock_t *)vctx;
+    c->n++;
+    if (strcmp(event, "user-add") == 0 || strcmp(event, "device-enroll") == 0) {
+        if (c->wall_rows == 0u || at < c->wall_lo) { c->wall_lo = at; }
+        if (c->wall_rows == 0u || at > c->wall_hi) { c->wall_hi = at; }
+        c->wall_rows++;
+    } else if (strcmp(event, "device-revoke") == 0) {
+        if (c->revoke_rows == 0u || at < c->revoke_lo) { c->revoke_lo = at; }
+        if (c->revoke_rows == 0u || at > c->revoke_hi) { c->revoke_hi = at; }
+        c->revoke_rows++;
+    } else if (strcmp(event, "key-rotate") == 0)      { c->rotate_at = at; }
+    else if (strcmp(event, "recovery-issue") == 0)    { c->issue_at = at; }
+    else if (strcmp(event, "recovery-locked") == 0)   { c->locked_at = at; }
+    else if (strcmp(event, "recovery-use") == 0) {
+        if (strcmp(detail, "invalid") == 0) { c->invalid_at = at; } else { c->use_at = at; }
+    }
+    return 0;
+}
 
 /* Distinct, well-formed public keys (content is opaque to the store). */
 static void make_pk(uint8_t pk[STORE_PK_BYTES], uint8_t seed)
@@ -565,6 +596,54 @@ int main(void)
             CHECK(store_audit_verify(s2) == STORE_OK, "revoke-all: the audit chain verifies");
             store_close(s2);
         }
+    }
+
+    /* ---- an audit row is stamped with the clock its transaction used (V4-20, F45) ----
+     * audit_append read the wall clock for itself, so a primitive driven by
+     * the caller's clock wrote its own columns at that time and its audit row
+     * at another: a rotation's valid_from said 1000 while the row recording
+     * it said today. Each clock-driven primitive below runs at a time no wall
+     * clock will ever read, and its row must say exactly that time. The rows
+     * written by primitives that take no clock are the canary: they DO carry
+     * the wall time, which shows the reader sees `at` at all. */
+    {
+        store_t *s = fresh_store("clock.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open clock\n"); return 1; }
+        const int64_t wall = (int64_t)time(NULL);
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK &&
+              store_enroll_device(s, H2, sizeof H2, U1, sizeof U1, pkB, "site", "admin", NULL, 0) == STORE_OK,
+              "clock: a user with two devices");
+        int64_t rot_at = 0;
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkC, pkA, NULL, 0, 0, 1000, &rot_at, NULL) == STORE_OK &&
+              rot_at == 1000, "clock: rotate at 1000");
+        const char *g[] = { "hash-c1", "hash-c2" };
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g, 2, 1100, NULL) == STORE_OK, "clock: issue at 1100");
+        CHECK(store_recovery_note_failure(s, U1, sizeof U1, 1200, 5, 3600, NULL, NULL) == STORE_OK,
+              "clock: one wrong code at 1200");
+        int locked = 0;
+        CHECK(store_recovery_note_failure(s, U1, sizeof U1, 1250, 2, 3600, &locked, NULL) == STORE_OK &&
+              locked == 1, "clock: the second wrong code at 1250 locks");
+        size_t revoked = 0;
+        CHECK(store_recovery_consume_ex(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH1, 1300, 1900,
+                                        1, &revoked) == STORE_OK && revoked == 2u,
+              "clock: recovery with revoke=all at 1300");
+
+        audit_clock_t ac;
+        memset(&ac, 0, sizeof ac);
+        CHECK(store_audit_tail(s, 64, audit_clock_row, &ac) == STORE_OK && ac.n == 10u,
+              "clock: the ten rows read back");
+        CHECK(ac.wall_rows == 3u && ac.wall_lo >= wall - 60 && ac.wall_hi <= (int64_t)time(NULL) + 60,
+              "clock(canary): user-add and both enrollments carry the wall time");
+        CHECK(ac.rotate_at == 1000, "clock: the key-rotate row is stamped with the rotation's clock");
+        CHECK(ac.issue_at == 1100, "clock: the recovery-issue row is stamped with the caller's clock");
+        CHECK(ac.invalid_at == 1200, "clock: a failed recovery's row is stamped with the caller's clock");
+        CHECK(ac.locked_at == 1250, "clock: the recovery-locked row is stamped with the caller's clock");
+        CHECK(ac.use_at == 1300, "clock: the recovery-use row is stamped with the caller's clock");
+        CHECK(ac.revoke_rows == 2u && ac.revoke_lo == 1300 && ac.revoke_hi == 1300,
+              "clock: revoke=all's two device-revoke rows are stamped with the recovery's clock");
+        CHECK(store_audit_verify(s) == STORE_OK, "clock: the audit chain verifies");
+        store_close(s);
     }
 
     /* ---- the device-status filter holds on its own (V4-15a, CLAIMS D9) ----
