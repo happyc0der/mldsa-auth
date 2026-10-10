@@ -252,8 +252,7 @@ static ev_action_t h_ping(authd_app_t *app, authd_slot_t *slot, const req_t *req
  * whole of "rejected AND logged": a refused enrollment writes nothing to the
  * store, the audit chain included (F47). */
 static void log_req7(const authd_slot_t *slot, const uint8_t *handle, size_t handle_len,
-                     const uint8_t fp_old[crypto_hash_sha256_BYTES],
-                     const uint8_t fp_new[crypto_hash_sha256_BYTES])
+                     const authd_fp_t *fp_old, const authd_fp_t *fp_new)
 {
     authd_log_slot_id(AUTHD_LOG_WARN, "enroll-key-mismatch", slot->index, handle, handle_len);
     authd_log_fp(AUTHD_LOG_WARN, "enroll-key-mismatch-old", fp_old);
@@ -281,10 +280,10 @@ static ev_action_t refuse_conflict(authd_app_t *app, authd_slot_t *slot,
         return send_err(slot, "internal");
     }
     if (sodium_memcmp(last, pk, STORE_PK_BYTES) != 0) {
-        uint8_t fp_old[crypto_hash_sha256_BYTES], fp_new[crypto_hash_sha256_BYTES];
-        crypto_hash_sha256(fp_old, last, STORE_PK_BYTES);
-        crypto_hash_sha256(fp_new, pk, STORE_PK_BYTES);
-        log_req7(slot, handle, handle_len, fp_old, fp_new);
+        authd_fp_t fp_old, fp_new;
+        authd_fp_of_pk(&fp_old, last);
+        authd_fp_of_pk(&fp_new, pk);
+        log_req7(slot, handle, handle_len, &fp_old, &fp_new);
         return send_err(slot, "exists-different-key");
     }
     return send_err(slot, "pk-in-use");
@@ -379,15 +378,15 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
         }
         if (es != STORE_OK) { return send_err(slot, "internal"); }
 
-        uint8_t rfp[crypto_hash_sha256_BYTES];
-        crypto_hash_sha256(rfp, pk, sizeof pk);
+        authd_fp_t rfp;
+        authd_fp_of_pk(&rfp, pk);
         authd_log_slot_id(AUTHD_LOG_WARN, "enroll-recovery", slot->index, handle, handle_len);
-        authd_log_fp(AUTHD_LOG_WARN, "enroll-recovery-fp", rfp);
+        authd_log_fp(AUTHD_LOG_WARN, "enroll-recovery-fp", &rfp);
 
         resp_t rr;
         resp_init(&rr);
         resp_add(&rr, "OK fp=");
-        resp_hex(&rr, rfp, sizeof rfp);
+        resp_hex(&rr, rfp.b, sizeof rfp.b);
         resp_add(&rr, "\n");
         sodium_memzero(pk, sizeof pk);
         return send_resp(slot, &rr);
@@ -441,10 +440,10 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             }
         } else {
             /* Req 7: rejected AND logged, with both fingerprints. */
-            uint8_t fp_old[crypto_hash_sha256_BYTES], fp_new[crypto_hash_sha256_BYTES];
-            crypto_hash_sha256(fp_old, cur, STORE_PK_BYTES);
-            crypto_hash_sha256(fp_new, pk, STORE_PK_BYTES);
-            log_req7(slot, handle, handle_len, fp_old, fp_new);
+            authd_fp_t fp_old, fp_new;
+            authd_fp_of_pk(&fp_old, cur);
+            authd_fp_of_pk(&fp_new, pk);
+            log_req7(slot, handle, handle_len, &fp_old, &fp_new);
             return send_err(slot, "exists-different-key");
         }
     }
@@ -473,16 +472,16 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
         idempotent = store_idem;
     }
 
-    uint8_t fp[crypto_hash_sha256_BYTES];
-    crypto_hash_sha256(fp, pk, sizeof pk);
+    authd_fp_t fp;
+    authd_fp_of_pk(&fp, pk);
     authd_log_slot_id(AUTHD_LOG_INFO, idempotent ? "enroll-idempotent" : "enroll", slot->index,
                       handle, handle_len);
-    authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", fp);
+    authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", &fp);
 
     resp_t r;
     resp_init(&r);
     resp_add(&r, "OK fp=");
-    resp_hex(&r, fp, sizeof fp);
+    resp_hex(&r, fp.b, sizeof fp.b);
     if (idempotent) {
         resp_add(&r, " idempotent=1");
     }
@@ -1150,10 +1149,11 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
 
 done:
     /* The ticket is a bearer credential exactly like a token: it exists in
-     * plaintext only here and in the reply. Its HASH is 32 bytes, the same
-     * width authd_log_fp takes -- which would type-check and leak it. That is
-     * the one never-list entry the logging API cannot enforce by shape, so it
-     * is enforced by a mutation instead (v49d G12). */
+     * plaintext only here and in the reply. It and its HASH are 32 bytes, the
+     * width of a fingerprint; until V4-21 authd_log_fp took a bare 32-byte
+     * pointer, so either would have type-checked and leaked. It takes an
+     * authd_fp_t now (F41), so only an explicit cast could log them -- the
+     * shape mutation v49d G12 keeps, and the log scan kills. */
     sodium_memzero(ticket, sizeof ticket);
     sodium_memzero(thash, sizeof thash);
     sodium_memzero(&r, sizeof r);

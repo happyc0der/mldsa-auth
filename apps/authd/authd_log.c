@@ -4,7 +4,13 @@
 
 #include <sodium.h>
 
+#include "mldsa_wrap.h"
 #include "proxy_v2.h"
+
+_Static_assert(AUTHD_FP_PK_BYTES == MLDSA_PUBLIC_KEY_BYTES,
+               "a fingerprint is of an ML-DSA-65 public key, all of it");
+_Static_assert(sizeof(authd_fp_t) == crypto_hash_sha256_BYTES,
+               "a fingerprint is a SHA-256 and nothing wider");
 
 static FILE *g_dest = NULL;
 static authd_log_level_t g_min = AUTHD_LOG_INFO;
@@ -247,16 +253,21 @@ void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
     fflush(out());
 }
 
-void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32])
+void authd_fp_of_pk(authd_fp_t *out, const uint8_t pk[AUTHD_FP_PK_BYTES])
+{
+    crypto_hash_sha256(out->b, pk, AUTHD_FP_PK_BYTES);
+}
+
+void authd_log_fp(authd_log_level_t lvl, const char *event, const authd_fp_t *fp)
 {
     if (!enabled(lvl) || fp == NULL) {
         return;
     }
     static const char hexd[] = "0123456789abcdef";
     char hex[65];
-    for (size_t i = 0; i < 32u; i++) {
-        hex[i * 2u] = hexd[(fp[i] >> 4) & 0x0fu];
-        hex[i * 2u + 1u] = hexd[fp[i] & 0x0fu];
+    for (size_t i = 0; i < sizeof fp->b; i++) {
+        hex[i * 2u] = hexd[(fp->b[i] >> 4) & 0x0fu];
+        hex[i * 2u + 1u] = hexd[fp->b[i] & 0x0fu];
     }
     hex[64] = '\0';
     fprintf(out(), "%s event=%s fp=%s\n", level_name(lvl), event ? event : "?", hex);

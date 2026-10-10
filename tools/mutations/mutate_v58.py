@@ -61,8 +61,10 @@ M = {
                "    if (disable > 1) { /* MUTATION GA8 */")]),
  "GA9": (LA, [("    if (revoke_all) {\n        /* Live sessions close only once the revocations have committed. */",
                "    if (revoke_all > 1) { /* MUTATION GA9 */\n        /* Live sessions close only once the revocations have committed. */")]),
- "GA10": (LA, [("            crypto_hash_sha256(fp_old, cur, STORE_PK_BYTES);",
-                "            crypto_hash_sha256(fp_old, pk, STORE_PK_BYTES); (void)cur; /* MUTATION GA10 */")]),
+ # GA10 re-anchored in V4-21 (F41): the fingerprint is an authd_fp_t now; the
+ # defect -- fp_old computed from the presented key -- is unchanged.
+ "GA10": (LA, [("            authd_fp_of_pk(&fp_old, cur);",
+                "            authd_fp_of_pk(&fp_old, pk); (void)cur; /* MUTATION GA10 */")]),
  "GA11": (LA, [("        if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {",
                 "        if (sodium_memcmp(cur, pk, STORE_PK_BYTES) != 0) { /* MUTATION GA11 */")]),
  "GA12": (LA, [("    if (sodium_memcmp(last, pk, STORE_PK_BYTES) != 0) {",

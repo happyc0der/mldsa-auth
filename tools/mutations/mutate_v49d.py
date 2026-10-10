@@ -145,12 +145,13 @@ M = {
 
  # G12 -- the TICKET is RECOVERY_TICKET_BYTES == 32, exactly what authd_log_fp
  # takes, so this compiles and puts a live bearer credential in the journal.
- # The never-list's one entry the logging API cannot enforce by shape (F41).
+ # The never-list's one entry the logging API could not enforce by shape (F41).
+ # Since V4-21 it can: the sink takes an authd_fp_t, so this needs a cast.
  # NOTE: the first draft logged `thash` instead and SURVIVED -- correctly, since
  # a ticket's SHA-256 cannot be redeemed and so is not the property. The
  # survivor was an authoring error, and this is the mutation that was meant.
  "G12": (LA, [('    app->recoveries_used++;',
-                '    authd_log_fp(AUTHD_LOG_INFO, "recovery-ticket", ticket); /* MUTATION G12 */\n    app->recoveries_used++;')]),
+                '    authd_log_fp(AUTHD_LOG_INFO, "recovery-ticket", (const authd_fp_t *)ticket); /* MUTATION G12 */\n    app->recoveries_used++;')]),
 
  # G13 -- `via=site ticket=...` is accepted and the ticket silently ignored:
  # the defect this step fixed, restored.
