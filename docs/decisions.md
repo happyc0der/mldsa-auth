@@ -7042,3 +7042,114 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   did not re-run locally (v47, v49b, v49c, v49d, v56, v59). The twelve fuzz
   targets ran 600 s each with 0 crashes.
 - **Not run anywhere:** gcc 16, which is the Mac's.
+
+## V4-21 — a fingerprint is a type, so a secret cannot be logged as one
+
+F41, open since V4-9a. `authd_log_fp` is the logging API's one byte sink:
+spec §15 requires a public-key fingerprint on every enrollment, every Req 7
+refusal and every rotation. Its parameter was `const uint8_t fp[32]`, which C
+reads as a bare pointer, so any 32-byte buffer type-checked: a login code, a
+recovery ticket or its hash, half the session keys. The guarantee lived in a
+comment, and three mutations (v49c W12, v49d G12, v60 GC4) made the leak a
+campaign failure rather than a convention. The register's proposal was a
+wrapper type that "would make it structural".
+
+### What was decided (user decisions in brackets)
+
+- A fingerprint is `authd_fp_t`, a struct of 32 bytes, and `authd_fp_of_pk`
+  is the one way to make one: SHA-256 over exactly `AUTHD_FP_PK_BYTES`,
+  asserted equal to `MLDSA_PUBLIC_KEY_BYTES` so it cannot drift.
+  `authd_log_fp` takes `const authd_fp_t *`. `authd_log.h` stays
+  self-contained; the store keeps its own `pk_fingerprint` for its column.
+- **[The three leak mutations are re-authored, not allowlisted.]** Each now
+  casts its secret to `authd_fp_t` -- the one shape left in which the leak can
+  be written -- and keeps its expectation, so the journal scans still have
+  mutation evidence. Allowlisting them as compile kills would have left the
+  scans untested, the F79 lesson in reverse.
+- No byte of output changed (`event=... fp=<64 hex>`), so there is no spec
+  erratum.
+
+### Before and after
+
+A probe of the old shape -- `const uint8_t h[32]` passed to `authd_log_fp` --
+compiled clean at `-Werror` under clang 18 and gcc 13 on the V4-20 tree.
+
+The new CTest `log_fp_type` compiles two probes with the build's own compiler
+at `-std=c11 -Wall -Wextra -Werror -fsyntax-only`, identical but for the
+argument: an `authd_fp_t` made by `authd_fp_of_pk` must compile (the canary)
+and a bare 32-byte buffer must not. On the V4-20 header the gate is red, and
+it is the canary that says so: the bare-buffer probe failed there only because
+`authd_fp_t` did not exist yet, which is exactly the false pass the canary is
+for. After the change both lines pass, under clang and under gcc. In
+`test_authd_log`, `authd_fp_of_pk` is checked against an independent SHA-256
+of the whole key, and the logged line against that hex.
+
+Every call site builds its fingerprint with `authd_fp_of_pk`: enrollment,
+recovery, Req 7's two lines, and the rotation, which now keeps `fp_old` and
+`fp_new` apart instead of reusing one buffer; the ROTATE_ACK still carries
+`fp_new`. Two anchors moved with their call sites and were re-anchored with
+their defects unchanged: v60 GC4, and v58 GA10 (the logged `fp_old` computed
+from the presented key).
+
+### Campaign v63 — FT, the fingerprint type
+
+Two mutations, each changing a value and keeping every use, each named:
+
+| ID | Defect | Killed by |
+|---|---|---|
+| FT1 | `authd_log_fp`'s parameter widened to `const void *`, header and definition, the body casting back -- the "make it generic" regression | `log_fp_type` alone: "a 32-byte buffer passed to authd_log_fp does not compile -- it COMPILED" |
+| FT2 | `authd_fp_of_pk` hashes one byte short of the key | `test_authd_log`: both fingerprint checks |
+
+FT1 is the one no test binary can see: every caller still compiles and every
+byte logged is the same. Only a gate that compiles something can object, and
+that is why the gate exists. A hand probe on a scratch copy of the sources
+showed the same before the campaign ran.
+
+The re-authored mutations are killed by the same checks as before: W12 by
+"logscan: the login code never appears in the daemon's log", G12 by
+"recovery: the enrollment TICKET never appears in the log (§15)", GC4 by the
+journal's session-key scan, and the re-anchored GA10 by "req7(site): the
+refusal is logged with both key fingerprints".
+
+### Environment
+
+As for V4-20: a Linux container, every local result on SQLite 3.45.1 from the
+system's static archive (sqlite.org is denied by the session's network
+policy), clang 18 with its sanitizer and libFuzzer runtimes, gcc 13. Deleting
+the V4-20 scratch branch from this session was refused by its git proxy
+(HTTP 403); it is left for the owner to delete.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** The old shape compiled at `-Werror` under clang 18 and gcc 13,
+  and `log_fp_type` was red on the V4-20 header (its canary).
+- **Suites**, each tree proven current in the same invocation: Debug (clang)
+  47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into all 42
+  executables, 0 ASan reports, 0 UBSan runtime errors; Release with gcc 13 at
+  `-O2 -D_FORTIFY_SOURCE=2` and `x86-64-v3` 47/47; the fuzz tree 82/82. Each
+  suite is one more than V4-20's, the new `log_fp_type`. `test_authd_log` has
+  33 checks.
+- **Campaigns**, on the ASan tree, in three runs each sized under the
+  session's two-hour job limit: v63 2/2; the three campaigns whose mutations
+  were re-authored, v60 4/4, v49c 13/13 and v49d 15/15; and the re-anchored
+  v58 GA10 1/1 from a scratch spec. 35 of 35 killed by name, every row
+  restored clean with a passing clean suite and no residue. Campaigns that
+  mutate the touched files elsewhere are left to the nightly; their anchors
+  all match (315 across 33 campaigns).
+- **Control.** FT1 with its expectation replaced by text no check prints:
+  `SURVIVED(BAD: [CONTROL: ...])`, runner exit 1, restored clean; the
+  committed spec was never edited.
+- **Fuzzing**, 600 s each: `fuzz_localapi` 12,004,652 runs, `fuzz_authd_conn`
+  2,163,928, `fuzz_authd_config` 51,118,917; 0 crashes, 0 artifacts.
+- **gcc 13 at `-O3 -Werror`** compiled all six changed C files clean, as a
+  stand-in for the Mac's gcc 16.
+- **Documents.** Anchors 315, 282 mutations, 33 campaigns, and the nightly
+  matrix names v63; the claim map's 298 citations resolve, `log_fp_type`
+  cited as a tool, the form `check_build_flags.cmake` already uses; spec
+  constants and names OK; `constant_time_sites` passes; every findings row
+  has its 8 separators; the secret scan finds 0 violations in CI's 28 files
+  and in 278 across `tools tests docs apps src`; `git diff --check` OK.
+- **Not run here:** the pinned SQLite, macOS, gcc 16, the wasm and browser
+  tests, CI and the nightly -- the branch has not been pushed.
