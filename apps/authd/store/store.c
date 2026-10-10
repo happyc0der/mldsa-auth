@@ -851,6 +851,31 @@ static store_status_t active_key_of(store_t *s, const uint8_t *handle, size_t ha
     return r;
 }
 
+/* Whether the handle's device belongs to `user_id`: SQL equality, so no
+ * comparison of identifiers happens in C. */
+static store_status_t device_owned_by(store_t *s, const uint8_t *handle, size_t handle_len,
+                                      const uint8_t *user_id, size_t user_id_len, int *owned)
+{
+    *owned = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT 1 FROM devices WHERE handle=?1 AND user_id=?2 LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { *owned = 1; }
+        else if (rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* The body of an enrollment, assuming a transaction is ALREADY OPEN and
  * leaving it open. Factored out in V4-9d so store_enroll_via_ticket can put
  * the ticket consumption and the enrollment in one transaction; the caller
@@ -876,13 +901,19 @@ static store_status_t enroll_device_locked(store_t *s,
 
     /* Req 7: a known handle presenting a DIFFERENT key is rejected; the audit row
      * below survives only where the caller commits on CONFLICT (see above).
-     * With the identical key the call is idempotent. */
+     * With the identical key the call is idempotent -- for the user the handle
+     * belongs to. Anyone else naming it is presenting a key already on record,
+     * and is refused like any other key reuse, with no audit row (F48). */
     uint8_t cur[STORE_PK_BYTES];
     int have_active = 0;
     r = active_key_of(s, handle, handle_len, cur, NULL, &have_active);
     if (r != STORE_OK) { return r; }
     if (have_active) {
         if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
+            int owned = 0;
+            r = device_owned_by(s, handle, handle_len, user_id, user_id_len, &owned);
+            if (r != STORE_OK) { return r; }
+            if (!owned) { return STORE_ERR_CONFLICT; }
             *idempotent_out = 1;
             return STORE_OK;
         }

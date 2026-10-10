@@ -1356,6 +1356,87 @@ static void test_req7_logged(void)
     h_stop(&d);
 }
 
+/* V4-20, audit finding F48: a byte-identical re-enrollment is idempotent only
+ * for the user the handle belongs to. The pre-check compared the key and never
+ * the owner, so `ENROLL user=u2 handle=<u1's> pk=<u1's>` answered
+ * `OK fp= idempotent=1` -- a site could conclude it had enrolled a device for
+ * u2 -- and via=recovery answered a plain `OK fp=` without spending the
+ * ticket. Each is the key-reuse refusal now: `pk-in-use`. */
+static void test_enroll_other_users_handle(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "owner.sqlite3", 1) == 0, "owner: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "owner: connect to site.sock");
+
+    mldsa_keypair_t kp, fresh;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    CHECK(mldsa_keypair_generate(&fresh) == 0, "owner: a fresh key for u2's own device");
+    const uint8_t U2[] = { 'u','2' }, NEWU[] = { 'n','u' }, H2[] = { 'd','2','o','w' };
+    CHECK(store_add_user(d.store, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK, "owner: u2 exists");
+
+    char uh[160], u2h[160], nuh[160], hh[160], h2h[160], pkh[4000], freshh[4000];
+    char req[9000], resp[16384];
+    uint8_t head[STORE_AUDIT_MAC_BYTES];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    hx(u2h, sizeof u2h, U2, sizeof U2);
+    hx(nuh, sizeof nuh, NEWU, sizeof NEWU);
+    hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+    hx(h2h, sizeof h2h, H2, sizeof H2);
+    hx(pkh, sizeof pkh, kp.public_key, sizeof kp.public_key);
+    hx(freshh, sizeof freshh, fresh.public_key, sizeof fresh.public_key);
+
+    /* the canary: the owner's own re-enrollment is still idempotent */
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", uh, hh, pkh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && strstr(resp, "idempotent=1") != NULL,
+          "owner(canary): u1 re-enrolling its own handle and key is idempotent");
+
+    CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "owner: audit head read");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", u2h, hh, pkh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=pk-in-use"),
+          "owner(site): another user naming the handle and its key is refused as pk-in-use");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", nuh, hh, pkh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=pk-in-use"),
+          "owner(site, new user): a request naming a fresh user is refused as pk-in-use");
+    { store_role_t r; char st[16];
+      CHECK(store_get_user(d.store, NEWU, sizeof NEWU, &r, st, sizeof st) == STORE_ERR_NOT_FOUND,
+            "owner(site, new user): the refused request created no user (F47)"); }
+    CHECK(head_is(&d, head), "owner(site): the refusals wrote nothing to the audit chain");
+
+    /* via=recovery, with a ticket of u2's own */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", u2h);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "owner: recovery codes issued to u2");
+    char code[BASE32_CODE_CHARS + 1u];
+    first_code(resp, code);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", u2h, code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "owner: u2 is issued a ticket");
+    char ticket_hex[80] = {0};
+    { const char *t = strstr(resp, "ticket=");
+      if (t != NULL) { sscanf(t + 7, "%79[0-9a-f]", ticket_hex); } }
+    CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "owner: audit head read");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s",
+             u2h, hh, pkh, ticket_hex);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=pk-in-use"),
+          "owner(recovery): u2's ticket naming u1's handle and key is refused as pk-in-use");
+    CHECK(head_is(&d, head), "owner(recovery): the refusal wrote nothing to the audit chain");
+    { uint8_t got[STORE_PK_BYTES], uid[STORE_ID_MAX];
+      size_t uid_len = 0;
+      CHECK(store_lookup_active(d.store, HANDLE1, sizeof HANDLE1, got, uid, sizeof uid, &uid_len, NULL)
+                == STORE_OK && uid_len == sizeof U1 && memcmp(uid, U1, sizeof U1) == 0,
+            "owner: the handle still belongs to u1"); }
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s",
+             u2h, h2h, freshh, ticket_hex);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+          "owner(recovery): the refusal did not spend the ticket -- it still enrolls u2's new device");
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&fresh);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1384,6 +1465,7 @@ int main(void)
     test_recovery_policy();
     test_recovery_revoke_all();
     test_req7_logged();
+    test_enroll_other_users_handle();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

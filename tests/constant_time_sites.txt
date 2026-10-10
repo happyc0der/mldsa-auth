@@ -16,6 +16,7 @@ apps/authd/client_core.c|if (ack.handle_len == cc->hid_len && sodium_memcmp(ack.
 apps/authd/client_core.c|sodium_memcmp(ack.fp_new, cc->want_fp, sizeof cc->want_fp) == 0) {
 apps/authd/localapi.c|if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
 apps/authd/localapi.c|if (sodium_memcmp(last, pk, STORE_PK_BYTES) != 0) {
+apps/authd/localapi.c|if (owner_len != user_len || sodium_memcmp(owner, user, user_len) != 0) {
 apps/authd/store/store.c|if (expect_old_pk != NULL && sodium_memcmp(cur, expect_old_pk, STORE_PK_BYTES) != 0) {
 apps/authd/store/store.c|if (sodium_memcmp(cur, new_pk, STORE_PK_BYTES) == 0) {
 apps/authd/store/store.c|if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {

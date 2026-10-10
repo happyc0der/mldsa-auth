@@ -425,10 +425,20 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
      * case (a known handle presenting a DIFFERENT key) before touching the
      * store, because store_enroll_device reports both as a conflict. */
     int idempotent = 0;
-    uint8_t cur[STORE_PK_BYTES];
-    if (store_lookup_active(app->store, handle, handle_len, cur, NULL, 0, NULL, NULL) == STORE_OK) {
+    uint8_t cur[STORE_PK_BYTES], owner[STORE_ID_MAX];
+    size_t owner_len = 0;
+    if (store_lookup_active(app->store, handle, handle_len, cur, owner, sizeof owner, &owner_len,
+                            NULL) == STORE_OK) {
         if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
             idempotent = 1;
+            /* ...but only for the user the handle belongs to. Anyone else is
+             * presenting a key already on record: the store refuses that, and
+             * refuse_conflict answers pk-in-use (F48, erratum 46). Until V4-20
+             * this answered `OK fp= idempotent=1` to a request naming another
+             * user's handle and key. */
+            if (owner_len != user_len || sodium_memcmp(owner, user, user_len) != 0) {
+                idempotent = 0;
+            }
         } else {
             /* Req 7: rejected AND logged, with both fingerprints. */
             uint8_t fp_old[crypto_hash_sha256_BYTES], fp_new[crypto_hash_sha256_BYTES];

@@ -646,6 +646,50 @@ int main(void)
         store_close(s);
     }
 
+    /* ---- only the handle's own user re-enrolls it (V4-20, F48) ----
+     * A byte-identical re-enrollment is idempotent -- for the user the handle
+     * belongs to. The idempotent branch never asked whose handle it was, so
+     * u2 naming u1's handle and key got OK, and a recovery ticket of u2's
+     * "enrolled" u1's device without spending itself. Nothing was written
+     * either way; what was wrong is the answer, which asserted that u2 holds
+     * a device it does not. It is the key-reuse refusal now: CONFLICT. */
+    {
+        store_t *s = fresh_store("owner.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open owner\n"); return 1; }
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_add_user(s, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK,
+              "owner: u1 holds d1aa, u2 exists");
+        CHECK(store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK,
+              "owner(canary): u1 re-enrolling its own handle with the same key is idempotent");
+        uint8_t head[STORE_AUDIT_MAC_BYTES], head2[STORE_AUDIT_MAC_BYTES];
+        CHECK(store_audit_head_mac(s, head) == STORE_OK, "owner: audit head read");
+        CHECK(store_enroll_device(s, H1, sizeof H1, U2, sizeof U2, pkA, "site", "admin", NULL, 0)
+                  == STORE_ERR_CONFLICT,
+              "owner: another user naming the handle and its key is refused, not idempotent");
+
+        /* the same through a recovery ticket of u2's */
+        const char *g[] = { "hash-o" };
+        CHECK(store_recovery_replace(s, U2, sizeof U2, g, 1, 100, NULL) == STORE_OK &&
+              store_recovery_consume(s, any_unused(s, U2, sizeof U2), U2, sizeof U2, TH1, 300, 900) == STORE_OK,
+              "owner: u2 holds a recovery ticket");
+        CHECK(store_audit_head_mac(s, head) == STORE_OK, "owner: audit head read");
+        CHECK(store_enroll_via_ticket(s, TH1, U2, sizeof U2, H1, sizeof H1, pkA, NULL, 0, 400)
+                  == STORE_ERR_CONFLICT,
+              "owner: u2's ticket naming u1's handle and key is refused, not idempotent");
+        CHECK(store_audit_head_mac(s, head2) == STORE_OK && memcmp(head, head2, sizeof head) == 0,
+              "owner: the refusals wrote nothing to the audit chain");
+        uint8_t got[STORE_PK_BYTES], uid[STORE_ID_MAX];
+        size_t uid_len = 0;
+        CHECK(store_lookup_active(s, H1, sizeof H1, got, uid, sizeof uid, &uid_len, NULL) == STORE_OK &&
+              uid_len == sizeof U1 && memcmp(uid, U1, sizeof U1) == 0,
+              "owner: d1aa still belongs to u1");
+        CHECK(store_enroll_via_ticket(s, TH1, U2, sizeof U2, H2, sizeof H2, pkB, NULL, 0, 400) == STORE_OK,
+              "owner: the refusal did not spend u2's ticket -- it still enrolls a new device");
+        CHECK(store_audit_verify(s) == STORE_OK, "owner: the audit chain verifies");
+        store_close(s);
+    }
+
     /* ---- the device-status filter holds on its own (V4-15a, CLAIMS D9) ----
      * Revocation marks the device AND its key revoked, so either clause of
      * store_lookup_active's filter would stop a revoked device by itself, and
