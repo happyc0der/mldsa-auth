@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 280 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 282 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -378,13 +378,17 @@ the most important thing on this page.
 - check `test_authd_localapi` "log: the issued token never appears in the log"
 - check `test_authd_localapi` "recovery: the recovery CODE never appears in the log (§15)"
 - check `authd_e2e` "PASS: E2E: no passphrase and no login code appears in any log"
-- mutation `v49c W12` — the login code is logged through the 32-byte `authd_log_fp` sink
-- mutation `v49d G12` — the recovery ticket is logged through `authd_log_fp`
+- mutation `v49c W12` — the login code is logged through the `authd_log_fp` sink, by an explicit cast to `authd_fp_t` since V4-21
+- mutation `v49d G12` — the recovery ticket is logged through `authd_log_fp`, by an explicit cast since V4-21
 - tool `tools/audit/check_spec_vocabularies.py` — the field names the logger can emit equal §15's list, both ways, so a new field such as `sig=` fails
 - check `test_authd_conn` "journal: no window of the server's, the device's or the rotated-to secret key"
 - check `test_authd_conn` "journal: no window of either side's session keys, the X25519 private key or the ML-KEM shared secret"
 - check `test_authd_conn` "journal: no window of either signature or of the ClientHello's nonce"
-- mutation `v60 GC4` — the rotation's `fp_new` line prints the session send key
+- mutation `v60 GC4` — the rotation's `fp_new` line prints the session send key, through an explicit cast since V4-21
+- tool `tests/check_log_fp_type.cmake` — the CTest `log_fp_type`: with the build's own compiler at `-Werror`, an `authd_fp_t` passed to `authd_log_fp` compiles (the canary) and a bare 32-byte buffer does not (audit F41)
+- check `test_authd_log` "fp: authd_fp_of_pk is the SHA-256 of the whole public key"
+- mutation `v63 FT1` — `authd_log_fp`'s parameter widened to `const void *`, so a bare secret compiles again (audit F41)
+- mutation `v63 FT2` — `authd_fp_of_pk` hashes one byte short of the public key
 **Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing); the local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase), and raw frames and decrypted payloads are not searched for. "No option to enable any of them" rests on the logger's API shape, and W12/G12 show `authd_log_fp` accepts any 32-byte secret (audit F41).
 
 ### D14 — Every store mutation is a single transaction

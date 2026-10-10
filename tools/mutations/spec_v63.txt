@@ -1,0 +1,2 @@
+FT1|^log_fp_type$|fp-type: a 32-byte buffer passed to authd_log_fp does not compile
+FT2|^test_authd_log$|fp: authd_fp_of_pk is the SHA-256 of the whole public key

@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 280 committed defects in 32 campaigns, each of which must be
+- **Mutations**: 282 committed defects in 33 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -146,8 +146,16 @@ user; anyone else gets `pk-in-use` (erratum 46). F48 was wider than recorded,
 since the store's own check reached via=recovery as well. Campaign v62 kills
 both halves of each fix. **F108** corrected the README's campaign count.
 
+V4-21 closed **F41**. A fingerprint is now a type that only a public key
+produces, so the logging API's one byte sink no longer accepts a bare 32-byte
+secret: that call is a compile error, pinned by the CTest `log_fp_type`. The
+three mutations that leak a secret through it now need an explicit cast, and
+the journal scans still kill them; campaign v63 shows the new gate can fail.
+
 The register also carries older items that were accepted with a stated
-rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.
+rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
+until V4-21: it takes a type of its own now, so a bare secret no longer compiles
+into the journal.
 
 **Questions I would most like an outside answer to:**
 
