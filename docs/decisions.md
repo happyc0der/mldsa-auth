@@ -7027,6 +7027,18 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   `git diff --check` OK. Every statement of the mutation and campaign counts
   was re-grepped and updated (`README.md` twice, `tools/README.md`,
   `docs/review/README.md`, `REPRODUCE.md`, `CLAIMS.md`), plus F108's.
-- **Not run, and open until it is:** the pinned SQLite 3.53.4, macOS, gcc
-  16, the wasm and browser tests, CI and the nightly. All of that needs the
-  branch on GitHub.
+- **CI** 38026028830, dispatched on the pushed branch at `9481e6d`: 13/13,
+  every test count as V4-19's run -- 46 per suite job on Linux (clang debug,
+  ASan, UBSan; gcc debug; Release with gcc and with clang) and on macOS
+  (clang debug, ASan, UBSan), 36 fuzz-labelled, 3 and 6 in the wasm job,
+  each suite proven current in its own step; the 12-target fuzz smoke 0
+  crashes and the secret scan 0 violations. This is where the pinned SQLite
+  3.53.4, macOS and the wasm and browser tests ran.
+- **The nightly**, with v62 AO3's expectation rotted (38027637759): red on
+  exactly that job, 46/47. AO3 `SURVIVED(BAD:)`; AO1, AO2, AO4 and AO5
+  killed by the same named-check counts as locally (7, 2, 3, 3). Every
+  other campaign's verdicts match its spec -- 278 killed in the binaries,
+  v24 M8 by its allowlisted compile kill -- which includes the six this step
+  did not re-run locally (v47, v49b, v49c, v49d, v56, v59). The twelve fuzz
+  targets ran 600 s each with 0 crashes.
+- **Not run anywhere:** gcc 16, which is the Mac's.
