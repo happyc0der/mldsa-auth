@@ -1208,8 +1208,8 @@ store_status_t store_rotate_key(store_t *s,
  * store_recovery_consume_ex runs it for every device of the user inside the
  * transaction that also spends the code and issues the ticket (F93: those used
  * to be separate transactions, and a failure between them left a partially
- * applied recovery, which Req 14 says is impossible). `now` stamps all three
- * writes and the audit row: the recovery's clock under revoke=all (F45). */
+ * applied recovery, which Req 14 says is impossible). `now` stamps revoked_at,
+ * the key's valid_to and the audit row: the recovery's clock under revoke=all (F45). */
 static store_status_t revoke_device_locked(store_t *s,
                                            const uint8_t *handle, size_t handle_len,
                                            const char *by, const uint8_t *reason, size_t reason_len,

@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 275 committed defects in 31 campaigns, each of which must be
+- **Mutations**: 280 committed defects in 32 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -138,6 +138,13 @@ V4-17 named the Linux runner image: every Linux job runs on `ubuntu-26.04`,
 moved there only after CI and the full nightly matched the last 24.04 runs
 test for test and mutation for mutation, rather than on GitHub's schedule.
 **F107** corrected the README's test counts.
+
+V4-20 closed two older daemon findings. **F45**: an audit row is stamped with
+the clock of the transaction it records, not a second read of the wall clock.
+**F48**: a byte-identical re-enrollment is idempotent only for the handle's own
+user; anyone else gets `pk-in-use` (erratum 46). F48 was wider than recorded,
+since the store's own check reached via=recovery as well. Campaign v62 kills
+both halves of each fix. **F108** corrected the README's campaign count.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites and F41's fingerprint sink.

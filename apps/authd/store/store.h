@@ -97,8 +97,8 @@ store_status_t store_get_user(const store_t *s, const uint8_t *user_id, size_t u
 /* --- devices / keys ---------------------------------------------------- */
 /* Enroll a fresh handle with its first active key. Rejects a pk already present
  * anywhere (CONFLICT, invariant 2). A KNOWN handle with a DIFFERENT active key
- * is rejected and audited (CONFLICT, Req 7); with the SAME key it is idempotent
- * (OK, no new audit row). `via` is "site"|"recovery"|"operator". */
+ * is rejected and audited (CONFLICT, Req 7); with the SAME key it is idempotent for
+ * the handle's own user (OK, no new audit row), CONFLICT for any other (F48). `via` is "site"|"recovery"|"operator". */
 store_status_t store_enroll_device(store_t *s,
                                    const uint8_t *handle, size_t handle_len,
                                    const uint8_t *user_id, size_t user_id_len,

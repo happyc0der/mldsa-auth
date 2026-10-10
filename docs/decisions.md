@@ -6842,3 +6842,191 @@ under `pull_request_target` and `workflow_run`, triggers they do not have.
 - **The nightly**, with v58 GA1's expectation rotted (37949015834): red on
   exactly that job, 45/46.
 - The workflows parse; anchors, claim map and `git diff --check` OK.
+
+## V4-20 — an audit row's clock, whose handle it is, and five rows that said less than the tree
+
+The first step taken in a Linux cloud session rather than on the developer's
+Mac, from the owner's request to fix the open register items smallest first.
+Three small items, in that order: register rows that had fallen behind the
+tree, F45 and F48. F41 was the next by size and is deliberately not here
+(below).
+
+### What was decided (user decisions in brackets)
+
+- **[F48's refusal is `pk-in-use`, with no new error code.]** It is the code
+  the store's own conflict path already gives a key on record, and it is
+  accurate: the key IS enrolled, under a handle the requester does not own.
+  Erratum 46 widens its definition rather than adding a name every site must
+  learn.
+- **[F41 is the next step, V4-21, not this one.]** A distinct fingerprint type
+  changes a header every daemon file includes and turns v49d G12 into a
+  compile kill that has to be allowlisted, which is a step's worth of design
+  on its own.
+- **[The README's stale campaign count is recorded as F108 and fixed here]**,
+  since this step changes the count and has to touch every statement of it.
+- The step was begun before the owner's handoff document arrived and two
+  commits were made without a plan; the rest was planned and approved, and
+  those two are reported here as what they are.
+
+### The register's stale rows
+
+Five rows said less than the tree. F0 (Release + gcc does not build) still
+read as open: both `symlink()` calls have checked their return since
+`176d786`, and CI's `release` job (V4-11) builds, tests and installs Release
+with gcc and clang on every push. F19's disposition described F0's fix
+instead of its own (the checked `snprintf` in both `path()` helpers). F29
+carried V4-9b's "Open" beside its V4-10c closure, though `authd_admin
+audit-verify` has existed since V4-10c. F17 now records 4.8 closed and 4.9
+partly pinned (which function compares, not how long). F5 stays open and now
+says why: coverage was measured once, before the daemon existed.
+
+### F45 — an audit row is stamped with its transaction's clock
+
+`audit_append` read the wall clock for itself, so a primitive driven by the
+caller's clock wrote its own columns at that time and its audit row at
+another: a rotation at 1000 had `valid_from` 1000 and a `key-rotate` row
+dated today. The register called it harmless because only a test could see
+it. It was not only a test's: the daemon's clock is taken once per pass of
+the event loop, so a row could already disagree with its own transaction by
+however long the pass ran -- up to ~0.8 s through RECOVERY-USE's Argon2id
+loop (F39).
+
+`audit_append` takes `now`. Every primitive that has a caller's clock passes
+it -- rotation, enrollment, recovery issue, use and failure, and revoke=all,
+whose `revoke_device_locked` now stamps `revoked_at`, the key's `valid_to`
+and its audit row with the recovery's clock. The primitives with no clock
+read the wall clock once and use it for every column they write.
+`add_user_locked` keeps its signature because v49d G15 anchors on its call.
+
+The new block in `test_authd_store` runs each clock-driven primitive at a
+time no wall clock will read (1000..1300) and printed six FAIL lines before
+the fix -- rotation, issue, a failed attempt, the lock, the use, revoke=all's
+two revocations -- while its canary passed: the rows written without a clock
+carry the wall time, so the reader does see `at`.
+
+### F48 — only the handle's own user re-enrolls it
+
+`ENROLL user=u2 handle=<u1's> pk=<u1's> via=site` answered
+`OK fp= idempotent=1`. Reproducing it found the register's row too narrow:
+the store's own idempotent branch never asked whose handle it was either, so
+**via=recovery** had it -- u2's ticket naming u1's handle and key answered a
+plain `OK fp=` and stayed unspent. Nothing was written on either path; the
+reply asserted a device u2 does not hold.
+
+Both layers are fixed. The store answers CONFLICT unless the handle's device
+belongs to the user (`device_owned_by`, SQL equality, so no identifier is
+compared in C), with no audit row, like any other key reuse; both daemon
+paths already roll back on CONFLICT, so no user is created (F47) and no
+ticket spent. The pre-check reads the owner from `store_lookup_active` and,
+on a mismatch, leaves the decision to the store, whose refusal
+`refuse_conflict` answers as `pk-in-use`. That comparison is a new
+`sodium_memcmp` site, listed in `tests/constant_time_sites.txt` in the same
+commit. The text v49a V2 and v58 GA11 anchor on is byte-identical.
+
+Five named FAIL lines before the fix, two in `test_authd_store` and three in
+`test_authd_localapi`, with canaries at both layers: the owner's own
+re-enrollment is still idempotent, the refused request created no user, and
+the ticket still enrolls u2's own new device afterwards.
+
+### Campaign v62 — AO, the audit clock and ownership
+
+Five mutations, each changing a value and keeping every use, each named:
+
+| ID | Defect | Killed by |
+|---|---|---|
+| AO1 | `audit_append` reads the wall clock whatever `now` it is given | all six clock checks |
+| AO2 | revoke=all revokes on the wall clock | the revoke=all check alone |
+| AO3 | the rotation's audit row alone on the wall clock | the key-rotate check alone |
+| AO4 | the store's ownership query matches every user | the two store owner checks |
+| AO5 | the pre-check keeps `idempotent=1` on an owner mismatch | the two site-path checks alone |
+
+AO4 and AO5 are the point of the campaign: each layer's half of F48 is
+caught without the other's help. AO5 cannot be seen through the store,
+because the pre-check answers before the store is asked; via=recovery never
+reaches the pre-check, so only the store's half covers it.
+
+### A campaign killed mid-mutation
+
+The four campaigns ran in one lane, one background job -- and the session
+kills a background job at two hours. It died during v58, between applying
+GA5 and restoring it, and left `authd_conn.c` carrying
+`... != 0 && m.sig_old_len == 0u) { /* MUTATION GA5 */` in the working tree.
+It was found by looking (`git status`, then a grep for `MUTATION` across
+`src apps tests bench`), restored from `HEAD`, which this step never changed
+for that file, and compared with the runner's own snapshot: all 133
+snapshotted sources equal the tree. v58 was then finished from GA5 in two
+runs of seven and eight, each well under the limit, with the spec split in
+scratch so the committed one did not change; each run's preflight rebuilt
+the ASan tree from scratch, which is what clears a mutant's objects. GA1-GA4
+had already been killed and restored before the cut. The lesson for this
+environment: a job that can mutate the tree is sized to finish inside the
+limit, never trusted to be stopped cleanly by it.
+
+### Where this ran, and what it could not
+
+A Linux container (gcc 13.3, clang 18.1), not the Mac: no gcc 16, no macOS,
+no wasm or browser trees, and none of the project memory. **sqlite.org is
+denied by the session's network policy**, so the pinned amalgamation could
+not be fetched. Every local tree took SQLite 3.45.1 from the system's static
+archive through a scratch-only `FETCHCONTENT_SOURCE_DIR_SQLITE3_AMALG`
+override -- the repository is unchanged -- linked as a standard library so
+that only binaries referencing sqlite pull it in. A first attempt linked the
+system's dynamic library instead, and `client_links_no_sqlite` failed on its
+canary (the daemon showed 0 `sqlite3_` symbols): the gate doing its job on a
+build it was not written for. The clang sanitizer and libFuzzer runtimes were
+installed from the Ubuntu archive for the same reason. So every local result
+below is on SQLite 3.45.1, not 3.53.4; the pinned build is CI's to prove.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before the fixes.** F45: six named FAIL lines in `test_authd_store`,
+  canary passing. F48: five, two in `test_authd_store` and three in
+  `test_authd_localapi`, canaries passing. After: both pass (230 and 282
+  checks).
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 46/46; ASan 46/46 and UBSan 46/46, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; the fuzz tree
+  81/81 (36 fuzz-labelled, `fuzz_libfuzzer` run rather than skipped); Release
+  with gcc 13 at `-O2 -D_FORTIFY_SOURCE=2` and `x86-64-v3`, CI's release
+  shape, 46/46. 46 is CI's native count; the 3 that need a wasm tree or a
+  browser were not built here.
+- **A currency check that went stale on a comment.** Two comments were
+  corrected after the campaigns (`revoke_device_locked`'s, which said `now`
+  stamps "all three writes" -- the token delete has no timestamp -- and
+  `store.h`'s enrollment contract, which did not mention the owner), with
+  line counts kept. The Release tree stayed current, but the four `-g` trees
+  went STALE: in the Debug tree 18 objects changed and no executable's text did. clang 18
+  writes DWARF 5, whose line table carries each source file's MD5, so a
+  comment changes every object that includes the file. Per the rule, every
+  `-g` suite above is from AFTER that rebuild; the campaigns ran on code the
+  Release tree shows to be identical.
+- **Campaigns**, on the ASan tree, one lane: v62 5/5, each killed by
+  exactly the checks predicted; and, re-run because they mutate the two files
+  this step changed in the functions it changed, v49a 11/11 (V2 runs through
+  the pre-check's untouched anchor), v57 5/5 (HC3 through revoke=all) and v58
+  19/19 (GA11 inverts the pre-check's key comparison, killed by 8 named
+  checks). 40 of 40, every row restored clean with a passing clean suite and
+  no residue. Not re-run here: the other six campaigns that mutate those
+  files -- v47, v49b, v49c, v49d, v56 and v59, 78 mutations -- whose anchors
+  all still match; the nightly runs them.
+- **Control.** v62's AO3 with its expectation replaced by text no check
+  prints: `AO3 SURVIVED(BAD: [CONTROL: ...])`, runner exit 1, restored clean.
+  The committed spec was never edited; the control spec lived in scratch.
+- **Fuzzing**, 600 s each: `fuzz_localapi` 10,544,792 runs, `fuzz_authd_conn`
+  1,696,537, 0 crashes, 0 artifacts. `fuzz_localapi`'s standing invariant --
+  a refusal never advances the audit chain -- covers F48's refusals.
+- **gcc 13 at `-O3 -Werror`** compiled the four changed C files clean, as a
+  stand-in for the Mac's gcc 16, which is not here.
+- **Documents.** Anchors 312 across 32 campaigns, 280 mutations, and the
+  nightly matrix names v62; the claim map's 294 citations resolve; spec
+  constants and names OK; `constant_time_sites` passes at 25 calls; every
+  findings row has its 8 separators; the secret scan finds 0 violations in
+  CI's 28 files and in 275 files across `tools tests docs apps src`;
+  `git diff --check` OK. Every statement of the mutation and campaign counts
+  was re-grepped and updated (`README.md` twice, `tools/README.md`,
+  `docs/review/README.md`, `REPRODUCE.md`, `CLAIMS.md`), plus F108's.
+- **Not run, and open until it is:** the pinned SQLite 3.53.4, macOS, gcc
+  16, the wasm and browser tests, CI and the nightly. All of that needs the
+  branch on GitHub.
