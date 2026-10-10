@@ -213,15 +213,45 @@ static void test_ids(void)
     /* the other fields are untouched by the switch: a fingerprint is a hash of
      * a PUBLIC key, required on every enrollment (§15), and stays */
     {
-        uint8_t fp[32];
-        memset(fp, 0xab, sizeof fp);
+        authd_fp_t fp;
+        memset(fp.b, 0xab, sizeof fp.b);
         cap_begin(&c);
-        authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", fp);
+        authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", &fp);
         out = cap_end(&c);
         CHECK(strstr(out, "fp=abababab") != NULL, "ids: off leaves fp= alone");
         free(c.buf);
     }
     (void)authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL);
+}
+
+/* V4-21 (F41): a fingerprint is made by authd_fp_of_pk and nothing else, so
+ * it has to be the fingerprint §15 means -- SHA-256 over the whole public
+ * key -- recomputed here independently. log_fp_type checks the other half:
+ * that nothing else converts to one. */
+static void test_fp(void)
+{
+    uint8_t pk[AUTHD_FP_PK_BYTES];
+    for (size_t i = 0; i < sizeof pk; i++) {
+        pk[i] = (uint8_t)(i * 7u + 3u);
+    }
+    uint8_t want[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(want, pk, sizeof pk);
+    authd_fp_t got;
+    memset(&got, 0, sizeof got);
+    authd_fp_of_pk(&got, pk);
+    CHECK(sizeof got.b == sizeof want && memcmp(got.b, want, sizeof want) == 0,
+          "fp: authd_fp_of_pk is the SHA-256 of the whole public key");
+
+    cap_t c;
+    cap_begin(&c);
+    authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", &got);
+    const char *out = cap_end(&c);
+    char hex[2u * crypto_hash_sha256_BYTES + 1u];
+    sodium_bin2hex(hex, sizeof hex, want, sizeof want);
+    char line[128];
+    snprintf(line, sizeof line, "info event=enroll-fp fp=%s\n", hex);
+    CHECK(strcmp(out, line) == 0, "fp: authd_log_fp writes exactly event= and the 64-hex fingerprint");
+    free(c.buf);
 }
 
 static void test_ip(void)
@@ -299,6 +329,7 @@ int main(void)
     test_words();
     test_set_privacy();
     test_ids();
+    test_fp();
     test_ip();
     printf("%d checks\n", g_checks);
     if (g_fail) {

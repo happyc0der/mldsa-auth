@@ -178,6 +178,14 @@ add_test(NAME build_flags
                  "-DARCHIVES=$<TARGET_FILE:mldsa_core>|$<TARGET_FILE:mldsa_authd>"
                  -DNM=${CMAKE_NM}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_build_flags.cmake)
+# V4-21 (audit F41, CLAIMS D13): the fingerprint sink takes an authd_fp_t and
+# nothing else -- a bare 32-byte secret passed to it must not compile.
+add_test(NAME log_fp_type
+         COMMAND ${CMAKE_COMMAND}
+                 -DCC=${CMAKE_C_COMPILER}
+                 -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/log_fp_type
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/check_log_fp_type.cmake)
 
 add_executable(test_authd_evloop test_authd_evloop.c)
 target_link_libraries(test_authd_evloop PRIVATE mldsa_authd)

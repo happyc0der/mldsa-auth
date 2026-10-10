@@ -98,9 +98,11 @@ M = {
  # "that key is already enrolled" gets its own code, and becomes an oracle
  "W11": (CN, [("            why = (rs == STORE_ERR_DB) ? \"rotate-store-error\" : \"rotate-store-refused\";\n            if (rs == STORE_ERR_DB) { code = AUTHMSG_ERR_INTERNAL; }",
                "            why = \"rotate-store-refused\";\n            code = (rs == STORE_ERR_CONFLICT) ? AUTHMSG_ERR_RATE_LIMITED : AUTHMSG_ERR_REJECTED; /* MUTATION W11 */")]),
- # the login code reaches the journal through the fingerprint sink
+ # the login code reaches the journal through the fingerprint sink. Since
+ # V4-21 (F41) the sink takes an authd_fp_t, so the leak needs an explicit
+ # cast -- the only shape left to write it, and the log scan still kills it.
  "W12": (CN, [("    randombytes_buf(m.code, sizeof m.code);",
-               "    randombytes_buf(m.code, sizeof m.code);\n    authd_log_fp(AUTHD_LOG_INFO, \"login-code\", m.code); /* MUTATION W12 */")]),
+               "    randombytes_buf(m.code, sizeof m.code);\n    authd_log_fp(AUTHD_LOG_INFO, \"login-code\", (const authd_fp_t *)m.code); /* MUTATION W12 */")]),
  # the decoder stops requiring full consumption
  "W13": (AM, [("    if (o != len) {\n        return AUTHMSG_ERR_BAD_LENGTH;\n    }",
                "    if (o > len) {\n        return AUTHMSG_ERR_BAD_LENGTH;\n    } /* MUTATION W13: trailing bytes tolerated */")]),

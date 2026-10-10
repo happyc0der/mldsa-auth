@@ -41,8 +41,10 @@ M = {
                "                                                       buf, KEYFILE_HEADER_LEN, buf + OFF_NONCE, key) != 0) {",
                "        if ((memcpy(img, buf + KEYFILE_HEADER_LEN, ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES), /* MUTATION GC3 */\n"
                "             mlen = ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES, 0) != 0) {")]),
- "GC4": (CN, [('    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", fp);',
-               '    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", c->sess.keys); /* MUTATION GC4 */')]),
+ # Re-anchored in V4-21: the call takes &fp_new (an authd_fp_t), so printing
+ # the session send key through it now needs an explicit cast (F41).
+ "GC4": (CN, [('    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", &fp_new);',
+               '    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", (const authd_fp_t *)c->sess.keys); /* MUTATION GC4 */')]),
 }
 
 path, edits = M[MID]

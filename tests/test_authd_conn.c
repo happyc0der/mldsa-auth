@@ -1173,8 +1173,10 @@ static void test_journal_holds_no_key_material(void)
  * taking a byte buffer, so the leak was said to be unrepresentable. V4-9a
  * added authd_log_fp(lvl, event, const uint8_t fp[32]) -- and in C that
  * parameter is a POINTER, while a login code is exactly 32 bytes, so
- * authd_log_fp(..., m.code) compiles and dumps it. The argument stopped being
- * true and nothing noticed, because it lived in prose. Now it is a check. */
+ * authd_log_fp(..., m.code) compiled and dumped it. The argument stopped being
+ * true and nothing noticed, because it lived in prose. Now it is a check --
+ * and since V4-21 (F41) the sink takes an authd_fp_t, so the leak needs an
+ * explicit cast, which is the shape v49c W12 keeps for this check to kill. */
 static void test_log_has_no_code(void)
 {
     char path[512];

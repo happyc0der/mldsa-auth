@@ -484,7 +484,7 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
 
     ev_action_t act;
     uint8_t digest[crypto_hash_sha256_BYTES];
-    uint8_t fp[crypto_hash_sha256_BYTES];
+    authd_fp_t fp_old, fp_new;
     int64_t rotated_at = 0;
     size_t dropped = 0;
 
@@ -538,10 +538,10 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
      * fingerprints. The handshake_id 15 also asks for has no carrier in
      * authd_log.h -- recorded as errata rather than widened here, because the
      * never-list is a property of that API's shape. */
-    crypto_hash_sha256(fp, pk_old, MLDSA_PUBLIC_KEY_BYTES);
-    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-old", fp);
-    crypto_hash_sha256(fp, m.pk_new, MLDSA_PUBLIC_KEY_BYTES);
-    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", fp);
+    authd_fp_of_pk(&fp_old, pk_old);
+    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-old", &fp_old);
+    authd_fp_of_pk(&fp_new, m.pk_new);
+    authd_log_fp(AUTHD_LOG_INFO, "rotate-fp-new", &fp_new);
     authd_log_slot_id(AUTHD_LOG_INFO, "rotate", slot->index, c->handle, c->handle_len);
     if (dropped > 0u) {
         authd_log_num(AUTHD_LOG_INFO, "rotate-tokens-dropped", "count", (uint64_t)dropped);
@@ -550,7 +550,7 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
     {
         uint8_t ack[AUTHMSG_ROTATE_ACK_CONTENT_LEN(STORE_ID_MAX)];
         size_t n = 0;
-        if (authmsg_encode_rotate_ack(ack, sizeof ack, &n, c->handle, c->handle_len, fp,
+        if (authmsg_encode_rotate_ack(ack, sizeof ack, &n, c->handle, c->handle_len, fp_new.b,
                                       (uint64_t)rotated_at) != AUTHMSG_OK ||
             queue_sealed(slot, &c->sess, ack, n) != 0) {
             sodium_memzero(ack, sizeof ack);

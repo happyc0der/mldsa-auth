@@ -933,10 +933,11 @@ static void test_recovery(void)
       CHECK(secret_absent(g_blob, n, ticket), "recovery: the plaintext ticket is NOT in the store (Req 4)");
       sodium_memzero(ticket, sizeof ticket); }
 
-    /* §15's never-list, for the one entry the logging API cannot enforce by
-     * shape: a ticket hash is 32 bytes, the exact width authd_log_fp takes, so
-     * `authd_log_fp(..., thash)` would compile and leak it. The present canary
-     * is that identities DO appear. */
+    /* §15's never-list, for the ticket: it and its hash are 32 bytes, the
+     * width of a fingerprint. Until V4-21 `authd_log_fp(..., thash)` compiled;
+     * since F41's fix only a cast to authd_fp_t can, and this scan is what
+     * catches that (v49d G12). The present canary is that identities DO
+     * appear. */
     { char logp[512]; snprintf(logp, sizeof logp, "%s/reclog.txt", g_dir);
       FILE *lf = fopen(logp, "w+");
       CHECK(lf != NULL, "recovery: log capture opens");

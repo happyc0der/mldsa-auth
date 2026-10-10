@@ -105,23 +105,32 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
 void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
                      unsigned long uid, long pid, const char *detail);
 
-/* A 32-byte PUBLIC-KEY FINGERPRINT, hex-encoded.
+/* A PUBLIC-KEY FINGERPRINT: the SHA-256 of an ML-DSA-65 public key.
  *
- * This is the one function here that takes a byte buffer, and it is
- * deliberately shaped so it cannot become a leak: the length is fixed at 32 by
- * the prototype, so it can encode a SHA-256 fingerprint and nothing else --
- * not a key, not a token, not a record. It exists because spec 15 REQUIRES
- * fingerprints on every enrollment and every Req 7 rejection; without it the
- * daemon could not log what the spec says it must. */
-void authd_log_fp(authd_log_level_t lvl, const char *event, const uint8_t fp[32]);
+ * A STRUCT, which is the whole point. Until V4-21 the sink below took
+ * `const uint8_t fp[32]`, which C reads as a bare pointer, so a login code, a
+ * recovery ticket or half the session keys -- each 32 bytes -- type-checked
+ * and went to the journal in hex, and the guarantee was prose (audit finding
+ * F41). A secret is not an authd_fp_t, and authd_fp_of_pk is the one way to
+ * make one, so that call is now a compile error; only an explicit cast can
+ * still write it, and the log scans catch that (v49c W12, v49d G12, v60 GC4).
+ * The CTest log_fp_type keeps the compile error a compile error. */
+typedef struct { uint8_t b[32]; } authd_fp_t;
+
+#define AUTHD_FP_PK_BYTES 1952u   /* == MLDSA_PUBLIC_KEY_BYTES; authd_log.c asserts it */
+
+void authd_fp_of_pk(authd_fp_t *out, const uint8_t pk[AUTHD_FP_PK_BYTES]);
+
+/* The fingerprint, hex-encoded: the one byte field this API writes. It exists
+ * because spec 15 REQUIRES fingerprints on every enrollment and every Req 7
+ * rejection; without it the daemon could not log what the spec says it must. */
+void authd_log_fp(authd_log_level_t lvl, const char *event, const authd_fp_t *fp);
 
 /* A client address, from the PROXY v2 preamble (spec §7.2), rendered as `src=`.
  *
- * `authd_addr_t` is a STRUCT, which is the whole point: `authd_log_fp` above
- * takes a bare pointer and its 32-byte width happens to match an enrollment
- * ticket's hash, so its guarantee is prose (audit finding F41). This one
- * cannot be handed a secret by a caller who miscounted, because a secret is
- * not an authd_addr_t -- and the renderer emits nothing outside [0-9a-f.:],
+ * `authd_addr_t` is a STRUCT for the same reason authd_fp_t is: it cannot be
+ * handed a secret by a caller who miscounted, because a secret is not an
+ * authd_addr_t -- and the renderer emits nothing outside [0-9a-f.:],
  * so it can neither inject a field separator nor a newline.
  *
  * Addresses are not secret, but for public users they ARE personal data
