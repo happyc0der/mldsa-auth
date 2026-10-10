@@ -1,5 +1,5 @@
 AO1|^test_authd_store$|clock: the key-rotate row is stamped with the rotation's clock;clock: the recovery-issue row is stamped with the caller's clock;clock: the recovery-use row is stamped with the caller's clock
 AO2|^test_authd_store$|clock: revoke=all's two device-revoke rows are stamped with the recovery's clock
-AO3|^test_authd_store$|clock: the key-rotate row is stamped with the rotation's clock CONTROL -- a check no test prints (the v62 job must go red)
+AO3|^test_authd_store$|clock: the key-rotate row is stamped with the rotation's clock
 AO4|^test_authd_store$|owner: another user naming the handle and its key is refused, not idempotent;owner: u2's ticket naming u1's handle and key is refused, not idempotent
 AO5|^test_authd_localapi$|owner(site): another user naming the handle and its key is refused as pk-in-use;owner(site, new user): a request naming a fresh user is refused as pk-in-use
