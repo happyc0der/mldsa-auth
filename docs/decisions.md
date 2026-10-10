@@ -7151,5 +7151,17 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   constants and names OK; `constant_time_sites` passes; every findings row
   has its 8 separators; the secret scan finds 0 violations in CI's 28 files
   and in 278 across `tools tests docs apps src`; `git diff --check` OK.
-- **Not run here:** the pinned SQLite, macOS, gcc 16, the wasm and browser
-  tests, CI and the nightly -- the branch has not been pushed.
+- **CI** 38085627662, dispatched on the pushed branch at `f8d3433`: 13/13;
+  47 per suite job on Linux (clang debug, ASan, UBSan; gcc debug; Release
+  with gcc and with clang) and on macOS (clang debug, ASan, UBSan) -- one more
+  than V4-20's, the new `log_fp_type`, which so also passed under Apple clang;
+  36 fuzz-labelled, 3 and 6 in the wasm job; the fuzz smoke 0 crashes on 12
+  targets and the secret scan 0 violations. This is where the pinned SQLite
+  3.53.4, macOS and the wasm and browser tests ran.
+- **The nightly**, with v63 FT1's expectation rotted (38085646710): red on
+  exactly that job, 47/48. FT1 `SURVIVED(BAD:)`; FT2 killed. Every other
+  campaign's verdicts match its spec -- 281 killed in all, v24 M8 by its
+  allowlisted compile kill among them -- including the re-authored W12, G12
+  and GC4 and the re-anchored GA10, each by its usual check. The twelve fuzz
+  targets ran 600 s each with 0 crashes.
+- **Not run anywhere:** gcc 16, which is the Mac's.
