@@ -217,11 +217,14 @@ static store_status_t audit_head(const store_t *s, int64_t *seq_out, uint8_t mac
     return r;
 }
 
-/* Appends one audit row. MUST be called inside the caller's transaction. */
+/* Appends one audit row. MUST be called inside the caller's transaction.
+ * `now` is the clock that transaction's other columns were written with, so a
+ * primitive driven by the caller's clock records its audit row at the same
+ * time as everything else it wrote (audit finding F45). */
 static store_status_t audit_append(store_t *s, const char *event,
                                    const uint8_t *user_id, size_t user_id_len,
                                    const uint8_t *handle, size_t handle_len,
-                                   const char *detail)
+                                   const char *detail, int64_t now)
 {
     int64_t prev_seq = 0;
     uint8_t prev_mac[STORE_AUDIT_MAC_BYTES];
@@ -230,7 +233,7 @@ static store_status_t audit_append(store_t *s, const char *event,
         return r;
     }
     int64_t seq = prev_seq + 1;
-    int64_t at = now_unix();
+    int64_t at = now;
 
     uint8_t inbuf[1024];
     size_t in_len = audit_mac_input(inbuf, sizeof inbuf, prev_mac, seq, at, event,
@@ -579,6 +582,7 @@ static store_status_t add_user_locked(store_t *s, const uint8_t *user_id, size_t
                                       store_role_t role)
 {
     store_status_t r = STORE_OK;
+    const int64_t now = now_unix();
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "INSERT INTO users(user_id, role, status, created_at) VALUES(?1,?2,'active',?3);",
@@ -587,7 +591,7 @@ static store_status_t add_user_locked(store_t *s, const uint8_t *user_id, size_t
     }
     if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
         sqlite3_bind_text(st, 2, role_text(role), -1, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 3, now_unix()) != SQLITE_OK) {
+        sqlite3_bind_int64(st, 3, now) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else {
         int rc = sqlite3_step(st);
@@ -595,7 +599,7 @@ static store_status_t add_user_locked(store_t *s, const uint8_t *user_id, size_t
         else if (rc != SQLITE_DONE)  { r = STORE_ERR_DB; }
     }
     sqlite3_finalize(st);
-    if (r == STORE_OK) { r = audit_append(s, "user-add", user_id, user_id_len, NULL, 0, role_text(role)); }
+    if (r == STORE_OK) { r = audit_append(s, "user-add", user_id, user_id_len, NULL, 0, role_text(role), now); }
     return r;
 }
 
@@ -697,6 +701,7 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
                                       int drop_tokens, const char *event)
 {
     if (s == NULL || !id_ok(user_id, user_id_len)) { return STORE_ERR_ARG; }
+    const int64_t now = now_unix();
 
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
@@ -711,7 +716,7 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
     int is_disable = (strcmp(status, "disabled") == 0);
     if (sqlite3_bind_blob(st, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
         sqlite3_bind_text(st, 2, status, -1, SQLITE_TRANSIENT) != SQLITE_OK ||
-        (is_disable ? sqlite3_bind_int64(st, 3, now_unix()) : sqlite3_bind_null(st, 3)) != SQLITE_OK ||
+        (is_disable ? sqlite3_bind_int64(st, 3, now) : sqlite3_bind_null(st, 3)) != SQLITE_OK ||
         (is_disable && reason != NULL
             ? sqlite3_bind_blob(st, 4, reason, (int)reason_len, SQLITE_TRANSIENT)
             : sqlite3_bind_null(st, 4)) != SQLITE_OK) {
@@ -739,7 +744,7 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
             sqlite3_finalize(dt);
         }
     }
-    if (r == STORE_OK) { r = audit_append(s, event, user_id, user_id_len, NULL, 0, by); }
+    if (r == STORE_OK) { r = audit_append(s, event, user_id, user_id_len, NULL, 0, by, now); }
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
 }
@@ -882,7 +887,7 @@ static store_status_t enroll_device_locked(store_t *s,
             return STORE_OK;
         }
         r = audit_append(s, "enroll-key-mismatch", user_id, user_id_len, handle, handle_len,
-                         "known handle presented a different key (Req 7)");
+                         "known handle presented a different key (Req 7)", now);
         return (r == STORE_OK) ? STORE_ERR_CONFLICT : r;
     }
 
@@ -936,7 +941,7 @@ static store_status_t enroll_device_locked(store_t *s,
         else if (rc != SQLITE_DONE)  { r = STORE_ERR_DB; }
     }
     sqlite3_finalize(st);
-    if (r == STORE_OK) { r = audit_append(s, "device-enroll", user_id, user_id_len, handle, handle_len, via); }
+    if (r == STORE_OK) { r = audit_append(s, "device-enroll", user_id, user_id_len, handle, handle_len, via, now); }
     return r;
 }
 
@@ -1159,7 +1164,7 @@ store_status_t store_rotate_key(store_t *s,
         uid_len = 0;
     }
     r = audit_append(s, "key-rotate", (uid_len > 0u) ? uid : NULL, uid_len,
-                     handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept");
+                     handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept", now);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     r = tx_commit(s);
     if (r == STORE_OK && rotated_at_out != NULL) { *rotated_at_out = now; }
@@ -1172,10 +1177,12 @@ store_status_t store_rotate_key(store_t *s,
  * store_recovery_consume_ex runs it for every device of the user inside the
  * transaction that also spends the code and issues the ticket (F93: those used
  * to be separate transactions, and a failure between them left a partially
- * applied recovery, which Req 14 says is impossible). */
+ * applied recovery, which Req 14 says is impossible). `now` stamps all three
+ * writes and the audit row: the recovery's clock under revoke=all (F45). */
 static store_status_t revoke_device_locked(store_t *s,
                                            const uint8_t *handle, size_t handle_len,
-                                           const char *by, const uint8_t *reason, size_t reason_len)
+                                           const char *by, const uint8_t *reason, size_t reason_len,
+                                           int64_t now)
 {
     store_status_t r = STORE_OK;
 
@@ -1186,7 +1193,7 @@ static store_status_t revoke_device_locked(store_t *s,
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, now_unix()) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, now) != SQLITE_OK ||
         sqlite3_bind_text(st, 3, by ? by : "", -1, SQLITE_TRANSIENT) != SQLITE_OK ||
         (reason != NULL ? sqlite3_bind_blob(st, 4, reason, (int)reason_len, SQLITE_TRANSIENT)
                         : sqlite3_bind_null(st, 4)) != SQLITE_OK ||
@@ -1206,7 +1213,7 @@ static store_status_t revoke_device_locked(store_t *s,
         return STORE_ERR_DB;
     }
     if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
-        sqlite3_bind_int64(st, 2, now_unix()) != SQLITE_OK ||
+        sqlite3_bind_int64(st, 2, now) != SQLITE_OK ||
         sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
     }
@@ -1222,7 +1229,7 @@ static store_status_t revoke_device_locked(store_t *s,
         r = STORE_ERR_DB;
     }
     sqlite3_finalize(st);
-    if (r == STORE_OK) { r = audit_append(s, "device-revoke", NULL, 0, handle, handle_len, by); }
+    if (r == STORE_OK) { r = audit_append(s, "device-revoke", NULL, 0, handle, handle_len, by, now); }
     return r;
 }
 
@@ -1235,7 +1242,7 @@ store_status_t store_revoke_device(store_t *s,
 
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
-    r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len);
+    r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len, now_unix());
     if (r != STORE_OK) { tx_rollback(s); return r; }
     /* Fault point (V4-15a, CLAIMS D14): all four writes done, none committed.
      * Here and not inside revoke_device_locked, which revoke=all also runs --
@@ -1794,7 +1801,7 @@ store_status_t store_recovery_replace(store_t *s, const uint8_t *user_id, size_t
 
     char detail[32];
     (void)snprintf(detail, sizeof detail, "issued %zu", n);
-    r = audit_append(s, "recovery-issue", user_id, user_id_len, NULL, 0u, detail);
+    r = audit_append(s, "recovery-issue", user_id, user_id_len, NULL, 0u, detail, now);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
 }
@@ -1923,7 +1930,7 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
         if (r != STORE_OK) { tx_rollback(s); return r; }
         if (!found) { break; }
         r = revoke_device_locked(s, h, hn, "recovery",
-                                 (const uint8_t *)"recovery revoke=all", 19u);
+                                 (const uint8_t *)"recovery revoke=all", 19u, now);
         if (r != STORE_OK) { tx_rollback(s); return r; }
         revoked++;
         /* Between two revocations: where the separate-transaction version
@@ -1934,7 +1941,7 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
         }
     }
 
-    r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "ok");
+    r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "ok", now);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     r = tx_commit(s);
     if (r == STORE_OK && revoked_out != NULL) { *revoked_out = revoked; }
@@ -2009,9 +2016,9 @@ store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, s
 
         if (locked_out != NULL)       { *locked_out = 1; }
         if (locked_until_out != NULL) { *locked_until_out = until; }
-        r = audit_append(s, "recovery-locked", user_id, user_id_len, NULL, 0u, "five failures (§10.3)");
+        r = audit_append(s, "recovery-locked", user_id, user_id_len, NULL, 0u, "five failures (§10.3)", now);
     } else {
-        r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "invalid");
+        r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "invalid", now);
     }
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
