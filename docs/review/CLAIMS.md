@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 282 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 287 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -179,7 +179,10 @@ the most important thing on this page.
 - fuzz `session` — in inner mode, an inner under 2 bytes, content_len past the inner, or any nonzero padding byte is MALFORMED and terminal
 - check `test_session` "v2-6 P4(g): EVERY middle padding byte (indices 13..62), one at a time, nonzero"
 - mutation `v59 GB5` — only the first and the last padding byte checked
-**Not established:** every byte of one 64-byte inner is tested, one at a time; other inner lengths and buckets rest on the fuzz model. Q2 is named only as `ASAN in sodium_is_zero`: its unbounded length wraps inside the padding check, and the process faults before any check can print (audit F90).
+- check `test_session` "v2-6 P4(h): EVERY padding byte of every bucket's inners, one at a time, nonzero"
+- check `test_session` "v2-6 P4(h): each bucket's inner opens while its padding is clean (the canary)"
+- mutation `v64 TG5` — the padding check stops after the first 64 padding bytes, so only larger buckets' inners reach past it
+**Not established:** since V4-22a every padding byte is set, one at a time, in 20 inners -- for each bucket from 16 to 4096, empty content, content one byte under and one byte over a bucket boundary, and the last one bucket on: 10,907 cases. They open on a white-box clone of a real receiver (`fuzz_session`'s technique), and the clean inner opening through each clone is the canary. Inner lengths no bucket produces and two bytes set at once rest on the fuzz model. Q2 is named only as `ASAN in sodium_is_zero`: its unbounded length wraps inside the padding check, and the process faults before any check can print (audit F90).
 
 ---
 
@@ -239,7 +242,12 @@ the most important thing on this page.
 - check `test_authd_localapi` "exch: the store holds the SHA-256 of the login code and of the token (the present canary)"
 - mutation `v58 GA3` — half the login code parked in its row's `handshake_id` column, every round trip intact
 - mutation `v58 GA4` — half the token parked the same way
-**Not established:** the scans read the database and its WAL at two moments, for 16-byte windows of the raw secret and 32-character windows of its lowercase hex; base64, upper-case hex, backups (`VACUUM INTO` copies the same rows) and memory are not scanned. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
+- check `test_authd_localapi` "exch: neither plaintext is in a backup of the store (Req 4)"
+- check `test_authd_localapi` "exch: a backup holds the same two SHA-256s (the present canary)"
+- check `test_authd_localapi` "recovery: neither the ticket nor the code is in a backup of the store (Req 4)"
+- check `test_authd_localapi` "recovery: a backup holds the ticket's SHA-256 and the code's Argon2id hash (the present canary)"
+- mutation `v64 TG4` — the token's base64 parked in its row's `handshake_id` column, where the raw and lower-case hex scans cannot see it
+**Not established:** the scans read the database and its WAL at two moments, and a backup (`VACUUM INTO`) taken at each, for 16-byte windows of the raw secret, 32-character windows of its hex in either case, and 12-byte windows in standard and URL-safe base64 (since V4-22a, the journal scans' encodings). Other encodings, a secret split into pieces shorter than a window, and memory are not scanned, and the recovery code is looked for only in its canonical base32 form. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
 
 ### D5 — A login code is single-use, expires in ≤ 60 s, and is bound
 - check `test_authd_conn` "login: the code expires in at most 60 s (Req 5)"
@@ -303,7 +311,11 @@ the most important thing on this page.
 - check `test_authd_conn` "rotate: a ROTATE whose ONLY defect is sig_old is REJECTED (possession of the outgoing key)"
 - check `test_authd_conn` "rotate: the journal names sig_old as the check that refused it"
 - mutation `v58 GA5` — sig_old's verdict ignored
-**Not established:** sig_old is isolated by one vector (the old key signing the rotate-new digest), not by a key other than the old one; W2 and W5 are killed only because the test builds the vector by hand and replays a ROTATE.
+- check `test_authd_conn` "rotate: a ROTATE whose sig_old is by the INCOMING key, over the right digest, is REJECTED"
+- check `test_authd_conn` "rotate: a ROTATE whose sig_old is by a key enrolled nowhere, over the right digest, is REJECTED"
+- check `test_authd_conn` "rotate: the journal names sig_old as refusing the INCOMING key"
+- mutation `v64 TG3` — sig_old accepted under `pk_old` OR `pk_new`: an attacker holding only the incoming key could rotate to it
+**Not established:** since V4-22a sig_old is isolated by three vectors -- the old key over the wrong digest, and the incoming key and a key enrolled nowhere over the right one -- not by every key; the journal is what says each refusal came from sig_old. W2 and W5 are killed only because the test builds the vector by hand and replays a ROTATE.
 
 ### D9 — Revocation is immediate
 - check `test_authd_localapi` "revoke: the live session was CLOSED, not just the row updated (Req 9)"
@@ -325,7 +337,12 @@ the most important thing on this page.
 - mutation `v58 GA7` — live sessions no longer matched by user
 - mutation `v58 GA8` — DISABLE-USER closes no live session
 - mutation `v58 GA9` — RECOVERY-USE `revoke=all` closes no live session
-**Not established:** the device clause is shown to hold on its own only for a state an attacker with the database file creates; the key clause alone is not isolated the same way. `revoke=all` is exercised in-process, not by `authd_e2e`.
+- check `test_authd_store` "keyfilter: a revoked key does not resolve even while its device and user are active"
+- check `test_authd_store` "keyfilter: an active key resolves (the canary)"
+- mutation `v64 TG1` — the lookup's key clause excludes only superseded keys
+- check `authd_e2e` "PASS: E2E: RECOVERY-USE with revoke=all over site.sock refuses every device of the user at its next login"
+- mutation `v64 TG2` — revoke=all's in-transaction device search matches nothing (v49d G14's shape, named against `authd_e2e`)
+**Not established:** the device clause and, since V4-22a, the key clause are each shown to hold on their own only for a state an attacker with the database file creates (no API path revokes one without the other). `authd_e2e` drives `revoke=all` through the site's own library and checks that both of the user's devices are refused at their next login; that it closes their live sessions is checked in-process only.
 
 ### D10 — Identity keys are encrypted at rest
 - check `test_authd_cli` "keygen-server: no plaintext MLDSASK file was written anywhere (Req 10)"
@@ -389,7 +406,7 @@ the most important thing on this page.
 - check `test_authd_log` "fp: authd_fp_of_pk is the SHA-256 of the whole public key"
 - mutation `v63 FT1` — `authd_log_fp`'s parameter widened to `const void *`, so a bare secret compiles again (audit F41)
 - mutation `v63 FT2` — `authd_fp_of_pk` hashes one byte short of the public key
-**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing); the local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase), and raw frames and decrypted payloads are not searched for. "No option to enable any of them" rests on the logger's API shape, and W12/G12 show `authd_log_fp` accepts any 32-byte secret (audit F41).
+**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing); the local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase), and raw frames and decrypted payloads are not searched for. "No option to enable any of them" rests on the logger's API shape. Since V4-21 that shape refuses a bare 32-byte buffer at compile time (`log_fp_type`), but a secret deliberately cast to `authd_fp_t` compiles, and only the journal scans catch it, as they catch W12, G12 and GC4. Until V4-22a this sentence still said the sink accepts any 32-byte secret (audit F109).
 
 ### D14 — Every store mutation is a single transaction
 - check `test_authd_store` "a half-rotation is impossible: after reopen the old key is still active"
