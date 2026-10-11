@@ -70,20 +70,45 @@ static size_t read_store_files(const char *db, char *blob, size_t cap)
 }
 
 /* Req 4 for a 32-byte secret (a login code, a token, a ticket): the store
- * keeps only its SHA-256. Absent: every 16-byte window of the raw bytes and
- * every 32-character window of the lowercase hex, so half a secret parked in
- * some other column is found too. */
+ * keeps only its SHA-256. Absent: every 16-byte window of the raw bytes, every
+ * 32-character window of the hex in lower AND upper case, and every 12-byte
+ * window in standard and URL-safe base64 -- the journal scans' encodings
+ * (test_authd_conn's log_holds_window), added here in V4-22a (CLAIMS D4) --
+ * so half a secret parked in some other column is found too, in the text
+ * forms a careless write would use. */
 static int secret_absent(const char *blob, size_t n, const uint8_t secret[32])
 {
     for (size_t i = 0; i + 16u <= 32u; i++) {
         if (memmem(blob, n, secret + i, 16u) != NULL) { return 0; }
     }
-    char hex[65];
+    char hex[65], up[65];
     hx(hex, sizeof hex, secret, 32u);
+    for (size_t i = 0; i < sizeof up; i++) {
+        up[i] = (hex[i] >= 'a' && hex[i] <= 'f') ? (char)(hex[i] - 'a' + 'A') : hex[i];
+    }
     for (size_t i = 0; i + 32u <= 64u; i++) {
-        if (memmem(blob, n, hex + i, 32u) != NULL) { return 0; }
+        if (memmem(blob, n, hex + i, 32u) != NULL || memmem(blob, n, up + i, 32u) != NULL) { return 0; }
+    }
+    char b64[32];
+    for (size_t w = 0; w + 12u <= 32u; w++) {
+        (void)sodium_bin2base64(b64, sizeof b64, secret + w, 12u, sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
+        if (memmem(blob, n, b64, 16u) != NULL) { return 0; }
+        (void)sodium_bin2base64(b64, sizeof b64, secret + w, 12u, sodium_base64_VARIANT_URLSAFE_NO_PADDING);
+        if (memmem(blob, n, b64, 16u) != NULL) { return 0; }
     }
     return 1;
+}
+
+/* A backup is the credential database again (VACUUM INTO copies every row),
+ * so Req 4 holds for it too (V4-22a, CLAIMS D4). Writes one next to the store
+ * and reads it back the way read_store_files reads the store; a fresh name
+ * each time, since store_backup refuses to overwrite. */
+static size_t backup_and_read(h_daemon_t *d, const char *name, char *blob, size_t cap)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", g_dir, name);
+    if (store_backup(d->store, path) != STORE_OK) { blob[0] = '\0'; return 0; }
+    return read_store_files(name, blob, cap);
 }
 
 /* The present canary for secret_absent: the SHA-256 the store should hold. */
@@ -269,6 +294,11 @@ static void test_exchange_verify(void)
             "exch: the store holds the SHA-256 of the login code and of the token (the present canary)");
       CHECK(secret_absent(g_blob, n, code), "exch: the plaintext login code is NOT in the store (Req 4)");
       CHECK(secret_absent(g_blob, n, token), "exch: the plaintext token is NOT in the store (Req 4)");
+      const size_t nb = backup_and_read(&d, "exch-backup.sqlite3", g_blob, sizeof g_blob);
+      CHECK(secret_hash_present(g_blob, nb, code) && secret_hash_present(g_blob, nb, token),
+            "exch: a backup holds the same two SHA-256s (the present canary)");
+      CHECK(secret_absent(g_blob, nb, code) && secret_absent(g_blob, nb, token),
+            "exch: neither plaintext is in a backup of the store (Req 4)");
       sodium_memzero(token, sizeof token); }
 
     /* single use */
@@ -931,6 +961,11 @@ static void test_recovery(void)
       CHECK(secret_hash_present(g_blob, n, ticket),
             "recovery: the store holds the ticket's SHA-256 (the present canary)");
       CHECK(secret_absent(g_blob, n, ticket), "recovery: the plaintext ticket is NOT in the store (Req 4)");
+      const size_t nb = backup_and_read(&d, "recovery-backup.sqlite3", g_blob, sizeof g_blob);
+      CHECK(secret_hash_present(g_blob, nb, ticket) && memmem(g_blob, nb, "$argon2id$", 10) != NULL,
+            "recovery: a backup holds the ticket's SHA-256 and the code's Argon2id hash (the present canary)");
+      CHECK(secret_absent(g_blob, nb, ticket) && memmem(g_blob, nb, gen1, BASE32_CODE_CHARS) == NULL,
+            "recovery: neither the ticket nor the code is in a backup of the store (Req 4)");
       sodium_memzero(ticket, sizeof ticket); }
 
     /* §15's never-list, for the ticket: it and its hash are 32 bytes, the

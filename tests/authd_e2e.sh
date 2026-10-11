@@ -591,6 +591,32 @@ else
     echo "SKIP: E2E: node not found, so the REVOKE-DEVICE leg did not run"
 fi
 
+# RECOVERY-USE with revoke=all (V4-22a, CLAIMS D9): the stolen-device recovery,
+# spent the way a site spends it. Until V4-22a it ran in-process only. bob has
+# two devices -- the first, which the revoke=none recovery above left active,
+# and the one it enrolled -- and an unspent second code. Both devices log in
+# first, so the refusals after cannot be a key or a passphrase gone wrong.
+if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
+    bob_login() {   # <handle> <key directory>
+        "$CLIENT" login --handle "$1" --key "$TMP/$2/$1.ek" \
+            --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+            --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err"
+    }
+    bob_login "$BOB1" bob || fail "bob's first device could not log in before revoke=all (the canary: revoke=none left it active)"
+    bob_login "$BOB2" bob2 || fail "bob's recovered device could not log in before revoke=all (the canary)"
+    "$NODE" "$SITE" "$TMP/s.sock" --recover-all bob "$(sed -n 2p "$TMP/codes.txt")" \
+        > "$TMP/recall.txt" 2>> "$TMP/site.err" || fail "RECOVERY-USE revoke=all over site.sock failed"
+    grep -q '"recovered_all":"bob"' "$TMP/recall.txt" || fail "RECOVERY-USE revoke=all did not report its user"
+    rc=0; bob_login "$BOB1" bob || rc=$?
+    [ "$rc" -ne 0 ] || fail "after RECOVERY-USE revoke=all, bob's first device still obtained a login code (Req 9)"
+    rc=0; bob_login "$BOB2" bob2 || rc=$?
+    [ "$rc" -ne 0 ] || fail "after RECOVERY-USE revoke=all, bob's recovered device still obtained a login code (Req 9)"
+    ! grep -qF -- "$(sed -n 2p "$TMP/codes.txt")" "$TMP/authd.log" || fail "the second recovery code reached the daemon log"
+    echo "PASS: E2E: RECOVERY-USE with revoke=all over site.sock refuses every device of the user at its next login"
+else
+    echo "SKIP: E2E: node not found, so the revoke=all leg did not run"
+fi
+
 # ------------------------------------------------------------- shutdown
 
 # Close nothing and the drain loop would wait forever: evloop_stop marks local

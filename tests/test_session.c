@@ -1376,7 +1376,7 @@ static void p_seal_inner(sp_t *p, const uint8_t *inner, size_t inner_len, uint8_
 }
 
 static void test_p4_malformed_inner(void) {
-    static uint8_t inner[512];
+    static uint8_t inner[8192];
 
     /* (a) content_len one past what the inner can hold. */
     {
@@ -1443,6 +1443,80 @@ static void test_p4_malformed_inner(void) {
         }
         CHECK(all, "v2-6 P4(g): EVERY middle padding byte (indices 13..62), one at a time, nonzero -> "
                    "MALFORMED, FAILED, buffer zeroed");
+    }
+
+    /* (h) EVERY padding byte of every bucket's inners (V4-22a, CLAIMS P13).
+     *     (b), (c) and (g) use one 64-byte inner with 52 padding bytes, and the
+     *     receiver checks padding without knowing the sender's bucket, so a
+     *     check that stopped at some fixed length would pass all three. Per
+     *     bucket: the inner a sender makes for empty content, for content one
+     *     byte under a bucket boundary (one padding byte) and one byte over it
+     *     (a bucket less one), and the last again one bucket on. Bucket 1 pads
+     *     nothing, so has no byte to set.
+     *
+     *     That is ~11k terminal opens. A handshake each took 35 s at -O0, so
+     *     each case opens on a CLONE of the bucket's freshly initialized
+     *     receiver -- tests/fuzz/fuzz_session.c's white-box clone: the struct
+     *     copied and its key block refilled (terminate zeroes it, never frees
+     *     it). Every inner opening while its padding is clean, through such a
+     *     clone, is the canary that a clone is the session it copies. */
+    {
+        int all = 1;
+        int canary = 1;
+        size_t cases = 0;
+        size_t inners = 0;
+        uint8_t tkeys[2u * AEAD_KEY_BYTES];
+        for (size_t b = 0; b < 6u; b++) {
+            const size_t bk = P_BUCKETS[b];
+            sp_t p;
+            p_open_pair(&p, (uint32_t)bk, (uint32_t)bk);
+            const session_t tpl = p.b;
+            memcpy(tkeys, p.b.keys, sizeof tkeys);
+            const size_t contents[4] = {0u, bk - 3u, bk - 1u, 2u * bk - 3u};
+            for (size_t k = 0; k < 4u; k++) {
+                if (bk < 3u && k != 0u && k != 2u) {
+                    continue; /* bk - 3 and 2bk - 3 underflow */
+                }
+                const size_t c = contents[k];
+                const size_t len = p_roundup(c, (uint32_t)bk);
+                if (len - 2u == c || len > sizeof inner) {
+                    continue;
+                }
+                inners++;
+                /* idx == 1 + c is the canary: nothing set. */
+                for (size_t idx = 1u + c; idx < len; idx++) {
+                    session_t s = tpl;
+                    memcpy(p.b.keys, tkeys, sizeof tkeys);
+                    s.keys = p.b.keys;
+                    size_t l = 0;
+                    size_t got = 0;
+                    memset(inner, 0, len);
+                    inner[0] = (uint8_t)(c >> 8);
+                    inner[1] = (uint8_t)c;
+                    memcpy(inner + 2, g_pt_in, c);
+                    if (idx >= 2u + c) {
+                        inner[idx] = 0x01;
+                    }
+                    p_seal_inner(&p, inner, len, g_rec, &l);
+                    memset(g_pt_out, 0xAA, len);
+                    if (idx < 2u + c) {
+                        canary &= open_from(&s, g_rec, l, &got) == SESSION_OK && got == c &&
+                                  memcmp(g_pt_out, g_pt_in, c) == 0;
+                    } else {
+                        all &= open_from(&s, g_rec, l, &got) == SESSION_ERR_MALFORMED &&
+                               session_get_state(&s) == SESSION_STATE_FAILED && sodium_is_zero(g_pt_out, len);
+                        cases++;
+                    }
+                    sodium_memzero(&s, sizeof s);
+                }
+            }
+            sodium_memzero(tkeys, sizeof tkeys);
+            sp_close(&p);
+        }
+        printf("  P4(h): %zu padding bytes set one at a time, across %zu inners\n", cases, inners);
+        CHECK(canary && inners == 20u, "v2-6 P4(h): each bucket's inner opens while its padding is clean (the canary)");
+        CHECK(all && cases > 0u, "v2-6 P4(h): EVERY padding byte of every bucket's inners, one at a time, nonzero -> "
+                                 "MALFORMED, FAILED, buffer zeroed");
     }
 
     /* (d) no padding at all, and (e) the smallest legal inner. */

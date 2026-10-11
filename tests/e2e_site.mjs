@@ -9,20 +9,28 @@
  *
  *   node e2e_site.mjs <site.sock> <code-base64url>
  *   node e2e_site.mjs <site.sock> --revoke <handle>
+ *   node e2e_site.mjs <site.sock> --recover-all <user> <recovery-code>
  *
  * The second form is the site's REVOKE-DEVICE (spec §8, Req 9): the device
  * and its key are revoked and its live sessions closed. authd_admin has no
  * revoke command -- revoking a device is the site's call -- so this is how
  * the e2e drives it (V4-15a).
  *
+ * The third is RECOVERY-USE with `revoke: 'all'` (spec §10.3), the stolen-
+ * device recovery, through the library's own recoveryUse: every device the
+ * user has is revoked in the same transaction that spends the code (V4-22a).
+ * The ticket it returns is a secret and is not printed.
+ *
  * Prints one JSON line on stdout and exits 0, or a reason on stderr and exits 1.
  */
-import { Authd, exchange, verify, logout } from '../examples/site-node/authd.mjs';
+import { Authd, exchange, verify, logout, recoveryUse } from '../examples/site-node/authd.mjs';
 
-const [sock, code, revokeHandle] = process.argv.slice(2);
-if (!sock || !code || (code === '--revoke' && !revokeHandle)) {
+const [sock, code, revokeHandle, recoveryCode] = process.argv.slice(2);
+if (!sock || !code || (code === '--revoke' && !revokeHandle) ||
+    (code === '--recover-all' && (!revokeHandle || !recoveryCode))) {
   console.error('usage: e2e_site.mjs <site.sock> <code-base64url>\n' +
-                '       e2e_site.mjs <site.sock> --revoke <handle>');
+                '       e2e_site.mjs <site.sock> --revoke <handle>\n' +
+                '       e2e_site.mjs <site.sock> --recover-all <user> <recovery-code>');
   process.exit(2);
 }
 
@@ -37,6 +45,15 @@ try {
       throw new Error(`REVOKE-DEVICE answered ${lines[0]}`);
     }
     console.log(JSON.stringify({ revoked: revokeHandle }));
+    process.exit(0);
+  }
+
+  if (code === '--recover-all') {
+    const { ticket } = await recoveryUse(authd, revokeHandle, recoveryCode, { revoke: 'all' });
+    if (!/^[0-9a-f]{64}$/.test(ticket)) {
+      throw new Error('RECOVERY-USE revoke=all returned no ticket');
+    }
+    console.log(JSON.stringify({ recovered_all: revokeHandle }));
     process.exit(0);
   }
 

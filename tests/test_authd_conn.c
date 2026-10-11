@@ -666,14 +666,17 @@ static void test_abandoned_handshake_frees_ledger(void)
 
 /* Builds a ROTATE the daemon should accept, then lets the caller corrupt it.
  * `sign_flags` is what goes INTO the digest and `wire_flags` what goes on the
- * wire -- normally equal; differing them is how the flags binding is tested. */
-static size_t build_rotate(uint8_t *out, size_t cap,
-                           const uint8_t hsid[STORE_HSID_BYTES],
-                           uint8_t sign_flags, uint8_t wire_flags,
-                           const uint8_t *handle, size_t hl,
-                           const mldsa_keypair_t *old_kp, const mldsa_keypair_t *new_kp,
-                           const mldsa_keypair_t *sig_new_signer,
-                           const char *label_old, const char *label_new)
+ * wire -- normally equal; differing them is how the flags binding is tested.
+ * The digests always name old_kp's public key; `sig_old_signer` is who signs
+ * the first of them, which build_rotate fixes to old_kp (V4-22a, CLAIMS D8). */
+static size_t build_rotate_ex(uint8_t *out, size_t cap,
+                              const uint8_t hsid[STORE_HSID_BYTES],
+                              uint8_t sign_flags, uint8_t wire_flags,
+                              const uint8_t *handle, size_t hl,
+                              const mldsa_keypair_t *old_kp, const mldsa_keypair_t *new_kp,
+                              const mldsa_keypair_t *sig_old_signer,
+                              const mldsa_keypair_t *sig_new_signer,
+                              const char *label_old, const char *label_new)
 {
     uint8_t d_old[32], d_new[32];
     uint8_t s_old[MLDSA_SIGNATURE_MAX_BYTES], s_new[MLDSA_SIGNATURE_MAX_BYTES];
@@ -684,7 +687,7 @@ static size_t build_rotate(uint8_t *out, size_t cap,
                               old_kp->public_key, new_kp->public_key) != AUTHMSG_OK) {
         return 0;
     }
-    if (mldsa_sign(s_old, &sol, d_old, sizeof d_old, old_kp) != 0 ||
+    if (mldsa_sign(s_old, &sol, d_old, sizeof d_old, sig_old_signer) != 0 ||
         mldsa_sign(s_new, &snl, d_new, sizeof d_new, sig_new_signer) != 0) {
         return 0;
     }
@@ -693,6 +696,18 @@ static size_t build_rotate(uint8_t *out, size_t cap,
         return 0;
     }
     return n;
+}
+
+static size_t build_rotate(uint8_t *out, size_t cap,
+                           const uint8_t hsid[STORE_HSID_BYTES],
+                           uint8_t sign_flags, uint8_t wire_flags,
+                           const uint8_t *handle, size_t hl,
+                           const mldsa_keypair_t *old_kp, const mldsa_keypair_t *new_kp,
+                           const mldsa_keypair_t *sig_new_signer,
+                           const char *label_old, const char *label_new)
+{
+    return build_rotate_ex(out, cap, hsid, sign_flags, wire_flags, handle, hl, old_kp, new_kp,
+                           old_kp, sig_new_signer, label_old, label_new);
 }
 
 /* Sends `content` as a sealed record and returns the daemon's decrypted reply.
@@ -837,6 +852,51 @@ static void test_rotate(void)
             "rotate: the journal names sig_old as the check that refused it");
       free(buf);
       if (lf != NULL) { (void)fclose(lf); } }
+
+    /* sig_old by a key OTHER than the old one, over the CORRECT rotate-old
+     * digest (V4-22a, CLAIMS D8). The case above varies the digest and keeps
+     * the signer, so a verifier that accepted the right digest under the
+     * wrong key would pass it. Two signers: a key enrolled nowhere, and the
+     * INCOMING key -- an attacker who holds only the key it wants installed
+     * signs both halves. Each is refused, and the journal says by sig_old.
+     * The incoming key goes last: if it were wrongly accepted the rotation
+     * would happen, and every later session under old_kp would fail too. */
+    {
+        const mldsa_keypair_t *const signers[2] = { &spare_kp, &new_kp };
+        const char *const m1s[2] = {
+            "rotate: a ROTATE whose sig_old is by a key enrolled nowhere, over the right digest, is REJECTED",
+            "rotate: a ROTATE whose sig_old is by the INCOMING key, over the right digest, is REJECTED" };
+        const char *const m2s[2] = {
+            "rotate: the journal names sig_old as refusing a key enrolled nowhere",
+            "rotate: the journal names sig_old as refusing the INCOMING key" };
+        for (size_t k = 0; k < 2u; k++) {
+            char lpath[512];
+            const char *const m1 = m1s[k], *const m2 = m2s[k];
+            snprintf(lpath, sizeof lpath, "%s/sigold3_%zu.log", g_dir, k);
+            FILE *lf = fopen(lpath, "w+");
+            CHECK(lf != NULL, "rotate: third-key capture file");
+            if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+            CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session (sig_old by another key)");
+            rl = build_rotate_ex(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                                 &old_kp, &new_kp, signers[k], &new_kp,
+                                 AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+            CHECK(rl > 0, "rotate: built a ROTATE with sig_old by another key");
+            pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+            CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED, m1);
+            client_close(&c);
+            authd_log_init(stderr, AUTHD_LOG_ERROR);
+            char *buf = NULL;
+            long sz = 0;
+            if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+                fseek(lf, 0, SEEK_SET) == 0) {
+                buf = (char *)calloc((size_t)sz + 1u, 1u);
+                if (buf != NULL && fread(buf, 1u, (size_t)sz, lf) != (size_t)sz) { buf[0] = '\0'; }
+            }
+            CHECK(buf != NULL && strstr(buf, "detail=rotate-sig-old") != NULL, m2);
+            free(buf);
+            if (lf != NULL) { (void)fclose(lf); }
+        }
+    }
 
     /* Both signatures under the same label: the separation is what stops one
      * key's signature standing in for the other's. */
