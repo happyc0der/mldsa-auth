@@ -373,3 +373,31 @@ jobs:
           grep -q "^SKIP:" offline.log && { echo "::error::the offline gate skipped"; exit 1; }
           grep -q "^PASS: OFFLINE: all checks" offline.log || {
             echo "::error::the offline gate did not report all checks passing"; exit 1; }
+
+  # The deployment shape with a REAL proxy (CLAIMS D12): a browser-shaped
+  # client through Caddy, over WebSocket, to the daemon's Unix socket with a
+  # PROXY v2 preamble. Until V4-22b this was hand-run only. It stays out of
+  # CTest -- a suite gate must not depend on a container registry -- and is a
+  # job of its own instead, with the image and the Caddy tarball pinned by
+  # digest inside the script.
+  caddy:
+    name: caddy proxy (Linux, Docker)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Record the runner (the label's meaning changes over time)
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          docker --version
+
+      # The script SKIPs when Docker is missing, which is right for a developer
+      # and wrong for a gate, so this run is required not to have skipped.
+      - name: A real Caddy in front of the daemon
+        run: |
+          sh tests/caddy_proxy.sh 2>&1 | tee caddy.log
+          grep -q "^SKIP:" caddy.log && { echo "::error::the Caddy gate skipped"; exit 1; }
+          grep -q "^PASS: CADDY: all checks" caddy.log || {
+            echo "::error::the Caddy gate did not report all checks passing"; exit 1; }
