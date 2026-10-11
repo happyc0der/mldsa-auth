@@ -7338,3 +7338,128 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   re-run kills show the same counts as here (GA5 25, W1 29, Q1 4, GB5 2).
   The twelve fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
 - **Not run anywhere:** gcc 16, which is the Mac's.
+
+## V4-22b — Caddy in CI, and a real second user
+
+The second of V4-22's three sub-steps: two claim-map gaps that need an
+environment rather than a unit test. D12's map said the real-Caddy leg "is
+hand-run, not a CTest and not in CI"; D11's said "no second real user
+connects".
+
+### What was decided
+
+- **D12: the Caddy leg becomes a CI job, `caddy proxy (Linux, Docker)`**,
+  shaped like the `deploy` job: `tests/caddy_proxy.sh` runs as written, a
+  `SKIP:` line is an error and `PASS: CADDY: all checks` is required. It stays
+  out of CTest for the reason its header gives. CI goes from 13 jobs to 14.
+- **Both network inputs of that script are pinned.**
+  - The image is `ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55`,
+    the tag's multi-arch index digest as Docker Hub served it on 2026-10-11.
+  - The Caddy 2.10.2 tarball's sha256 is now ASSERTED, per architecture,
+    where it used to be printed for this log to record -- and only the arm64
+    one ever was (V4-10b, above), while CI runs amd64. amd64:
+    `5c218bc34c9197369263da7e9317a83acdbd80ef45d94dca5eff76e727c67cdd`;
+    arm64: `501e955fa634c5aab63247458c3ac655cfdd6cbf1e0436528f41248451c190ac`,
+    re-fetched today and unchanged.
+  - Each was cross-checked against Caddy's published
+    `caddy_2.10.2_checksums.txt`, which lists sha512: amd64's tarball hashes
+    to `747df7ee…2646546`, its published value. That file is how anyone
+    re-derives the pins offline, which answers the old comment's objection to
+    "a hash hardcoded in a test that nobody can regenerate".
+  - What stays unpinned is what apt installs into the image, and the
+    dependencies the container build fetches are pinned by the project's own
+    CMake as everywhere else.
+- **D11: a real second user.** A new sub-leg of `authd_e2e`, after the uid+1
+  leg. `nobody` connects, through `setpriv` with the daemon's group as a
+  supplementary group -- spec 8's shape for the site's own user. It runs on
+  Linux with `setpriv` and either uid 0 or passwordless sudo (CI's Linux
+  runners, this container), and prints SKIP for itself elsewhere; the uid+1
+  leg still runs everywhere.
+  - Two barriers stand in front of a socket, and the leg separates them. File
+    permission first: `$TMP` is 0700, `site.sock` and `p.sock` 0660,
+    `admin.sock` 0600, so a real foreign uid never reached the peer check at
+    all. The sockets live in their own 0711 directory, and `admin.sock` is
+    opened to everyone for the leg, so the peer check has to hold by itself.
+  - The checks: `nobody` is SERVED on `site.sock`, whose list names it (the
+    canary: an answer, and no rejection counted); REFUSED at accept on
+    `admin.sock` and on the proxy socket, whose lists do not, with `connect()`
+    having succeeded (not `cannot-connect`) and one rejection counted each;
+    and, as the control, stopped by file permission with `cannot-connect` and
+    NOT counted when it lacks the daemon's group.
+  - **RU1, campaign v65**: the allowlist scan compares `getuid()` -- the
+    daemon's own uid -- instead of the peer's. It passed V4-22a's whole debug
+    suite, 47/47: every test ran the client as the daemon's own user, so the
+    two numbers were always equal. The new leg kills it at the canary.
+  - Shown both ways it can run: as root here, and as an ordinary user with
+    passwordless sudo -- a throwaway local user with a sudoers entry, both
+    removed afterwards -- where `sudo -n setpriv` ran it and passed; without
+    the sudoers entry the sub-leg printed its SKIP. LeakSanitizer runs under
+    `setpriv` in the ASan tree as it is, so no `ASAN_OPTIONS` override was
+    needed.
+- **Departures from the plan.**
+  - The plan re-ran the e2e's earlier kills (v50c O1-O4, v56 MB9, v58
+    GA13-GA14, v64 TG2) in case the new leg pre-empted them. It cannot: every
+    expectation those campaigns name is printed EARLIER in the script than the
+    new leg, and the e2e stops at its first failure, so nothing it adds can
+    stand in front of them. They were not re-run.
+  - No local run of the Caddy leg. A Docker daemon is installed in this
+    container, but the session's network reaches the internet only through a
+    proxy that a container cannot reach without `--network host` and a
+    trusted CA, which the script does not (and should not) set up -- and the
+    build inside it needs sqlite.org, which this session's policy denies.
+    The pin check was probed outside Docker with the script's own
+    `sha256sum -c` line on the real amd64 tarball: the pin accepted, a pin one
+    digit off refused, and the tarball with bytes appended refused. The whole
+    leg is CI's to show.
+- **F111** (Info, open): `listener.h:50` says an unlisted socket mode is
+  `LISTENER_ERR_PATH`, and `listener_open_unix` returns `LISTENER_ERR_ARG`.
+  Recorded, not fixed: outside this step.
+- **Numbering:** V4-22c's fault sweep becomes campaign v66 (pair FW).
+
+### Campaign v65 — RU, the real user
+
+| ID | Defect | Killed by |
+|---|---|---|
+| RU1 | the allowlist scan compares the daemon's own uid, not the peer's | `authd_e2e`: "nobody, whom site_uids names, was not served on site.sock (the canary)" |
+
+### Environment
+
+As for V4-22a: a Linux container running as root, every local result on
+SQLite 3.45.1 from the system's static archive, clang 18 and gcc 13; no
+macOS. A Docker client and daemon binary are installed, and nothing here
+could use them for this step (above).
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** RU1 applied by hand to V4-22a's tree: the whole debug suite
+  47/47, so no check could see it.
+- **The new leg**, as root: PASS, and RU1 killed at the canary ("...was not
+  served on site.sock (the canary): ... io-error" -- refused at accept). As an
+  ordinary user with passwordless sudo: PASS through `sudo -n setpriv`;
+  without the sudoers entry: the sub-leg's SKIP line, and the rest of the
+  e2e unchanged.
+- **The Caddy pin**, probed outside Docker with the script's own
+  `sha256sum -c` line on the real amd64 tarball: pinned digest accepted, a pin
+  one digit off refused, the tarball with bytes appended refused.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; Release with
+  gcc 13 47/47; the fuzz tree 82/82. The real-user leg printed its PASS line,
+  as uid 65534, in all five, and its SKIP line in none.
+- **Campaigns**, on the ASan tree: v65 1/1, killed by name, restored clean
+  with a passing clean suite and no residue. **Control:** RU1 with its
+  expectation replaced by text no check prints: `SURVIVED(BAD: [CONTROL:
+  ...])`, runner exit 1, restored clean.
+- **No fuzzing**: no product source changed.
+- **Documents.** Anchors 322 across 35 campaigns, 288 mutations; the nightly's
+  coverage check run locally: 35 committed, 35 wired; the claim map's 318
+  citations resolve, among them the new `ci` one; spec constants and names OK;
+  `constant_time_sites` passes; F111 has its 8 separators; the secret scan
+  finds 0 violations in CI's 28 files and in 282 across `tools tests docs apps
+  src`; `git diff --check` OK. Every statement of the mutation, campaign,
+  anchor, findings and CI-job counts was re-grepped.
+- **Not shown here, and CI's to show:** the Caddy job itself; the real-user
+  leg on GitHub's runners, where it runs through `sudo -n`; and its SKIP on
+  macOS.

@@ -88,7 +88,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-287 committed mutations in 34 campaigns, each a defect the tests must catch
+288 committed mutations in 35 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree:
 
 ```bash
@@ -104,7 +104,7 @@ check (audit F90). Before editing sources, check that every campaign still
 applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (321 anchors, 34 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (322 anchors, 35 campaigns)
 ```
 
 ## The formal model
@@ -133,7 +133,7 @@ python3 tools/audit/check_claim_map.py .            # OK: every requirement is m
 ## Scripts outside CTest
 
 ```bash
-sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; 8 PASS lines, "all checks"
+sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; 9 PASS lines, "all checks" (also a CI job since V4-22b)
 sh tests/deploy_checks.sh    # systemd's own analysers on the unit (Docker); exposure 1.7, "all checks"
 ```
 
@@ -157,7 +157,8 @@ gh api repos/open-quantum-safe/liboqs/security-advisories
   and UBSan on Linux and macOS, gcc, Release with the hardening check, the
   offline build, fuzz smoke and the secret scan, the specification checks, and
   the wasm and headless-browser job. 13 jobs; run 36345474470 on `6f9269b`:
-  13/13.
+  13/13. V4-22b added a fourteenth, `caddy proxy (Linux, Docker)`, which runs
+  `tests/caddy_proxy.sh`.
 - **Nightly** (`.github/workflows/nightly.yml`): all 26 mutation campaigns on
   fresh ASan trees, 600 s on each of twelve fuzz targets, the ProVerif model
   and its controls. Run 36345474231 on `6f9269b`: 41/41, with 223 of 233
