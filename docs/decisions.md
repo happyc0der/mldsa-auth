@@ -7322,3 +7322,19 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   across `tools tests docs apps src`; `git diff --check` OK. Every statement
   of the mutation, campaign, anchor, findings and errata counts was
   re-grepped.
+- **CI** 38147742977, dispatched on the pushed branch at `cb2e168`: 13/13,
+  every count as V4-21's run -- 47 per suite job on Linux (clang debug,
+  ASan, UBSan; gcc debug; Release with gcc and with clang) and on macOS
+  (clang debug, ASan, UBSan), 36 fuzz-labelled, 3 and 6 in the wasm job; the
+  12-target fuzz smoke 0 crashes and 0 artifacts, the secret scan 0
+  violations, the specification gates OK. The new checks live in existing
+  tests, so here they show as those tests passing -- on the pinned SQLite
+  3.53.4 and on macOS, which this container has neither of.
+- **The nightly**, with v64 TG1's expectation rotted (38148560358): red on
+  exactly that job, 48/49. TG1 `SURVIVED(BAD:)`; TG2-TG5 killed by the same
+  named-check counts as locally (1, 19, 3, 1). Every other campaign's
+  verdicts match its spec -- 286 of 287 killed in all, v24 M8 by its
+  allowlisted compile kill among them, every row restored clean -- and the
+  re-run kills show the same counts as here (GA5 25, W1 29, Q1 4, GB5 2).
+  The twelve fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
+- **Not run anywhere:** gcc 16, which is the Mac's.
