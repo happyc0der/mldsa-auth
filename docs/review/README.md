@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 108 findings (F1–F110), with severity, evidence and
+   register](../v4/audit.md). 109 findings (F1–F111), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 287 committed defects in 34 campaigns, each of which must be
+- **Mutations**: 288 committed defects in 35 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -167,6 +167,16 @@ It also corrected three sentences that had gone stale: D13 still said the
 logging sink accepts any 32-byte secret (**F109**), and this page's own counts
 of findings and errata had missed V4-20's additions to both (**F110**).
 liboqs 0.17.0, which F91's bump waits for, is still unreleased.
+
+V4-22b took two gaps that needed an environment rather than a unit test. The
+real-Caddy leg is now a CI job, with its container image and the Caddy
+tarball pinned by digest: until then the tarball's digest was printed, never
+checked, and only the arm64 one had ever been recorded while CI runs amd64.
+And a real second user now connects to the daemon's sockets. Every earlier
+test ran the client as the daemon's own user, so a peer check that compared
+the daemon's OWN uid instead of the peer's passed all of them; campaign v65
+shows the new leg killing exactly that. **F111** records a stale comment found
+on the way, left open.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

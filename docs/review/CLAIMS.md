@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 287 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 288 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -374,7 +374,9 @@ the most important thing on this page.
 - check `authd_e2e` "PASS: E2E: site.sock and admin.sock refuse a uid outside their own lists at accept; the proxy socket still serves"
 - mutation `v58 GA13` — `site.sock` registered with an empty allowlist in `authd_main.c`
 - mutation `v58 GA14` — `admin.sock` registered with an empty allowlist in `authd_main.c`
-**Not established:** the foreign uid is this process's uid plus one, refused by a daemon configured for it; no second real user connects. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
+- check `authd_e2e` "PASS: E2E: a real second user (nobody, uid"
+- mutation `v65 RU1` — the allowlist scan compares the daemon's own uid, not the peer's; no test with one user can tell
+**Not established:** since V4-22b a real second user connects -- `nobody`, holding the daemon's group, as spec 8's site user would -- and is served on the socket its uid is listed for and refused at accept on the two it is not, file access granted; a third connection without the group shows file permission stops it first and is not counted. That leg needs Linux's `setpriv` and root or passwordless sudo, so it runs in CI's Linux jobs and a root container, and is skipped on macOS; elsewhere only the uid+1 leg runs. `nobody` stands in for the site's user, and admin.sock is opened to it for the leg, since its 0600 would stop it before the check. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
 
 ### D12 — The client address used for rate limiting is obtained from a source the client cannot forge
 - check `test_authd_ws` "proxy-loop: a preamble with no client address is closed, and nothing is said"
@@ -387,7 +389,8 @@ the most important thing on this page.
 - fuzz `ws` — a client address never appears before the PROXY preamble completes; a poisoned connection refuses every later push
 - check `test_authd_evloop` "cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)"
 - mutation `v57 HC2` — `proxy_protocol = v2` without `proxy_uids` accepted again
-**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11); `proxy_protocol = v2` now requires `proxy_uids` (audit F92, fixed in V4-14c), but nothing checks that the uid named IS the proxy's. `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. The real-Caddy leg (`tests/caddy_proxy.sh`) is hand-run, not a CTest and not in CI.
+- ci `caddy proxy (Linux, Docker)` — a real login through Caddy over WebSocket with a PROXY v2 preamble, the client's address recorded, and refused once `proxy_protocol` is removed; the image and the Caddy tarball pinned by digest
+**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11); `proxy_protocol = v2` now requires `proxy_uids` (audit F92, fixed in V4-14c), but nothing checks that the uid named IS the proxy's. `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. Since V4-22b the real-Caddy leg (`tests/caddy_proxy.sh`) runs in CI as a job of its own, on amd64 only, with the container image and the Caddy tarball pinned by digest; the packages it installs into that image are not pinned, and it is still not a CTest.
 
 ### D13 — Logging never contains
 - check `test_authd_conn` "logscan: the login code never appears in the daemon's log"
