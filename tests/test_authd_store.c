@@ -716,6 +716,32 @@ int main(void)
         }
     }
 
+    /* ---- the key-status filter holds on its own (V4-22a, CLAIMS D9) ----
+     * The mirror of the block above: the KEY row is revoked under an active
+     * device and an active user. Rotation tests catch a filter that drops the
+     * key clause outright (a superseded key would resolve), but not one that
+     * only excludes superseded keys -- a revoked key under an active device
+     * is again a state no API path makes, so only this block can see it. */
+    {
+        store_t *s = fresh_store("keyfilter.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open keyfilter\n"); return 1; }
+        uint8_t got[STORE_PK_BYTES];
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK &&
+              store_lookup_active(s, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_OK,
+              "keyfilter: an active key resolves (the canary)");
+        store_close(s);
+        CHECK(raw_sql(dbp, "UPDATE device_keys SET status='revoked' WHERE handle=X'64316161';") == 0,
+              "keyfilter: the key is marked revoked behind the store's back, its device and user left active");
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK, "keyfilter: reopen");
+        if (s2 != NULL) {
+            CHECK(store_lookup_active(s2, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                  "keyfilter: a revoked key does not resolve even while its device and user are active");
+            store_close(s2);
+        }
+    }
+
     /* ---- revoke, disable and enroll, each crashed mid-way (V4-15a, D14) ----
      * Each runs in one transaction, and until V4-15a none had ever been
      * crashed part-way. A fault at the point after its first write must leave
