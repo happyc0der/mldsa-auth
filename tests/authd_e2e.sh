@@ -34,9 +34,11 @@ if [ "${#TMP}" -gt 80 ]; then
 fi
 
 DPID=""
+RU=""
 cleanup() {
     if [ -n "$DPID" ]; then kill "$DPID" 2>/dev/null || true; fi
     rm -rf "$TMP"
+    if [ -n "$RU" ]; then rm -rf "$RU"; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -813,6 +815,106 @@ while kill -0 "$DPID" 2>/dev/null; do
 done
 wait "$DPID" 2>/dev/null || true
 DPID=""
+
+# ------------------------------------------ a real second user (V4-22b)
+#
+# The leg above cannot tell WHOSE uid the listener compares: the client and the
+# daemon are one user, so a check that read the daemon's own uid instead of the
+# peer's would pass it, and pass every other test too (CLAIMS D11). Here a
+# genuinely different user connects: nobody, holding the daemon's group, which
+# is spec 8's shape for the site's own user. It needs Linux's setpriv and either
+# root or passwordless sudo -- CI's Linux runners and a root container both --
+# and is skipped elsewhere; the leg above still runs everywhere.
+#
+# Two barriers stand in front of each socket, and this tells them apart. File
+# permission comes first: $TMP is 0700, admin.sock 0600, so the sockets live in
+# their own 0711 directory and admin.sock is opened to everyone here -- the peer
+# check must hold by itself. The peer check comes second, at accept, and is what
+# the journal counts. A client stopped by file permission says cannot-connect
+# and is never counted; one refused at accept got through connect() and is.
+AS=""
+RU_OK=1
+if [ "$(uname -s)" != Linux ] || ! command -v setpriv > /dev/null 2>&1 || ! id -u nobody > /dev/null 2>&1; then
+    RU_OK=0
+elif [ "$(id -u)" -ne 0 ]; then
+    if sudo -n true 2> /dev/null; then AS="sudo -n"; else RU_OK=0; fi
+fi
+if [ "$RU_OK" -eq 1 ]; then
+    NB_UID=$(id -u nobody); NB_GID=$(id -g nobody); D_GID=$(id -g)
+    [ "$NB_UID" -ne "$(id -u)" ] || fail "nobody is this process's own uid"
+    RU=$(mktemp -d "${TMPDIR:-/tmp}/authd-ru.XXXXXX") && chmod 0711 "$RU" || fail "could not make the real-user socket directory"
+    cp "$ADMIN" "$RU/authd_admin" && chmod 0755 "$RU/authd_admin" || fail "could not copy authd_admin for nobody"
+    # $AS is "sudo -n" or nothing: word splitting is the point.
+    # shellcheck disable=SC2086
+    as_nobody()       { $AS setpriv --reuid="$NB_UID" --regid="$NB_GID" --groups="$D_GID" -- "$@"; }
+    # shellcheck disable=SC2086
+    as_nobody_alone() { $AS setpriv --reuid="$NB_UID" --regid="$NB_GID" --clear-groups -- "$@"; }
+    sed -e '/^listen_port/d' -e "s|^listen_unix = .*|listen_unix = $RU/p.sock|" \
+        -e "s|^site_socket = .*|site_socket = $RU/s.sock|" -e "s|^admin_socket = .*|admin_socket = $RU/a.sock|" \
+        -e "s/^site_uids = .*/site_uids = $NB_UID/" "$TMP/authd.conf" > "$TMP/realuser.conf"
+    grep -q "^site_uids = $NB_UID\$" "$TMP/realuser.conf" && grep -q "^admin_uids = $(id -u)\$" "$TMP/realuser.conf" \
+        && grep -q "^proxy_uids = $(id -u)\$" "$TMP/realuser.conf" && grep -q "^site_socket = $RU/s.sock\$" "$TMP/realuser.conf" \
+        || fail "the real-user config was not derived"
+    "$DAEMON" --config "$TMP/realuser.conf" > "$TMP/realuser.log" 2>&1 &
+    DPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/realuser.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] || kill -0 "$DPID" 2>/dev/null || fail "the real-user daemon exited during start-up"
+        [ "$i" -gt 400 ] && fail "the real-user daemon never logged event=started"
+        sleep 0.05
+    done
+    chmod 0666 "$RU/a.sock" || fail "could not open admin.sock's file mode for the leg"
+    rej() { grep -c 'event=listener-peer-rejected' "$TMP/realuser.log" || true; }
+    rej_after() {
+        j=0
+        while [ "$(rej)" -le "$1" ]; do j=$((j + 1)); [ "$j" -gt 100 ] && return 1; sleep 0.05; done
+        return 0
+    }
+    # The canary: site.sock's list names nobody, so nobody is SERVED -- the
+    # daemon answers (an admin command on site.sock is refused by the command
+    # table, which is an answer), and no rejection is counted.
+    n=$(rej)
+    as_nobody "$RU/authd_admin" list-users --socket "$RU/s.sock" > "$TMP/ru-site.txt" 2>&1 || true
+    grep -q "refused: " "$TMP/ru-site.txt" \
+        || fail "nobody, whom site_uids names, was not served on site.sock (the canary): $(cat "$TMP/ru-site.txt")"
+    [ "$(rej)" -eq "$n" ] || fail "nobody's served connection to site.sock was counted as a peer rejection"
+    # admin.sock: the file mode lets nobody connect, so only the peer check can
+    # refuse it -- and nobody is not in admin_uids.
+    n=$(rej)
+    as_nobody "$RU/authd_admin" list-users --socket "$RU/a.sock" > "$TMP/ru-admin.txt" 2>&1 \
+        && fail "admin.sock SERVED nobody, a real user outside admin_uids (Req 11)"
+    grep -q "cannot-connect" "$TMP/ru-admin.txt" && fail "nobody's connect() to admin.sock failed: file permission, not the peer check"
+    rej_after "$n" || fail "admin.sock did not refuse nobody at accept (Req 11)"
+    # p.sock: 0660, and nobody holds the daemon's group, so again only the peer
+    # check stands between them -- proxy_uids does not name nobody.
+    n=$(rej)
+    as_nobody "$RU/authd_admin" list-users --socket "$RU/p.sock" > "$TMP/ru-proxy.txt" 2>&1 \
+        && fail "the proxy socket SERVED nobody, a real user outside proxy_uids (Req 11)"
+    grep -q "cannot-connect" "$TMP/ru-proxy.txt" && fail "nobody's connect() to the proxy socket failed: file permission, not the peer check"
+    rej_after "$n" || fail "the proxy socket did not refuse nobody at accept (Req 11)"
+    # The control: without the daemon's group, nobody is stopped by site.sock's
+    # 0660 at connect() and the daemon never sees it -- so the two refusals
+    # above were the peer check, not a file permission counted by mistake.
+    n=$(rej)
+    as_nobody_alone "$RU/authd_admin" list-users --socket "$RU/s.sock" > "$TMP/ru-perm.txt" 2>&1 \
+        && fail "nobody without the daemon's group reached site.sock"
+    grep -q "cannot-connect" "$TMP/ru-perm.txt" || fail "nobody without the daemon's group was not stopped at connect(): $(cat "$TMP/ru-perm.txt")"
+    sleep 0.3
+    [ "$(rej)" -eq "$n" ] || fail "a connect() refused by file permission was counted as a peer rejection"
+    kill -0 "$DPID" 2>/dev/null || fail "the real-user daemon died refusing a peer"
+    echo "PASS: E2E: a real second user (nobody, uid $NB_UID) is served where its uid is listed and refused at accept where it is not; without the group it never reaches the check"
+    kill -TERM "$DPID"
+    i=0
+    while kill -0 "$DPID" 2>/dev/null; do
+        i=$((i + 1)); [ "$i" -gt 200 ] && fail "the real-user daemon did not exit on SIGTERM"
+        sleep 0.05
+    done
+    wait "$DPID" 2>/dev/null || true
+    DPID=""
+else
+    echo "SKIP: E2E: no setpriv, nobody, root or passwordless sudo here, so the real-second-user leg did not run"
+fi
 
 # ------------------------------------------------ sanitizer reports (F94)
 #
