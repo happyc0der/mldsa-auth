@@ -16,11 +16,17 @@
 #
 # Needs Docker and network access. It is NOT a CTest: a suite gate that
 # silently depends on a container registry is a gate that fails for reasons
-# that have nothing to do with the code.
+# that have nothing to do with the code. Since V4-22b it runs in CI as a job of
+# its own, `caddy proxy (Linux, Docker)`, where a SKIP is an error.
 set -eu
 
-IMAGE=ubuntu:24.04
+# Both inputs from the network are pinned (V4-22b). The image by its multi-arch
+# index digest, so the tag cannot move under the test; the tag stays for the
+# reader. The Caddy tarball by its sha256, per architecture -- see below.
+IMAGE=ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 CADDY_VERSION=2.10.2
+CADDY_SHA256_amd64=5c218bc34c9197369263da7e9317a83acdbd80ef45d94dca5eff76e727c67cdd
+CADDY_SHA256_arm64=501e955fa634c5aab63247458c3ac655cfdd6cbf1e0436528f41248451c190ac
 NAME=mldsa-caddy-$$
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -33,8 +39,8 @@ docker info > /dev/null 2>&1 || skip "no docker daemon is reachable"
 
 ARCH=$(docker run --rm "$IMAGE" uname -m 2>/dev/null) || skip "cannot run $IMAGE"
 case "$ARCH" in
-    aarch64) CADDY_ARCH=arm64 ;;
-    x86_64)  CADDY_ARCH=amd64 ;;
+    aarch64) CADDY_ARCH=arm64; CADDY_SHA256=$CADDY_SHA256_arm64 ;;
+    x86_64)  CADDY_ARCH=amd64; CADDY_SHA256=$CADDY_SHA256_amd64 ;;
     *)       skip "no Caddy build for $ARCH" ;;
 esac
 
@@ -54,12 +60,17 @@ inc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y
 inc "curl -fsSL -o /tmp/caddy.tgz \
      https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${CADDY_ARCH}.tar.gz" \
     || fail "could not download Caddy"
-# The binary is recorded by digest, not trusted by name: a release asset that
-# changed under its tag is exactly the thing a pin exists to notice. This
-# prints it rather than asserting it, because the expected value belongs in
-# docs/decisions.md next to the run it came from -- a hash hardcoded in a test
-# that nobody can regenerate offline is worse than a recorded one.
+# The binary is pinned by digest, not trusted by name: a release asset that
+# changed under its tag is exactly the thing a pin exists to notice. Until
+# V4-22b this only printed the digest, for docs/decisions.md to record -- and
+# only the arm64 one was ever recorded, while CI runs amd64. Each pin can be
+# re-derived by anyone: Caddy publishes caddy_<version>_checksums.txt (sha512)
+# beside the assets, and the decisions log records both digests and the sha512
+# each was cross-checked against.
 echo "caddy tarball sha256: $(inc 'sha256sum /tmp/caddy.tgz' | cut -d' ' -f1)"
+inc "echo '$CADDY_SHA256  /tmp/caddy.tgz' | sha256sum -c - > /dev/null" \
+    || fail "the Caddy $CADDY_VERSION $CADDY_ARCH tarball is not the pinned one ($CADDY_SHA256)"
+echo "PASS: CADDY: the Caddy tarball is the pinned one"
 inc "tar -xzf /tmp/caddy.tgz -C /usr/local/bin caddy && caddy version" || fail "could not unpack Caddy"
 
 echo "--- copying the source tree in"
