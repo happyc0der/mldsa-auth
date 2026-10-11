@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 105 findings (F1–F107), with severity, evidence and
+   register](../v4/audit.md). 108 findings (F1–F110), with severity, evidence and
    disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 45 errata, each
+3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 282 committed defects in 33 campaigns, each of which must be
+- **Mutations**: 287 committed defects in 34 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -151,6 +151,22 @@ produces, so the logging API's one byte sink no longer accepts a bare 32-byte
 secret: that call is a compile error, pinned by the CTest `log_fp_type`. The
 three mutations that leak a secret through it now need an explicit cast, and
 the journal scans still kill them; campaign v63 shows the new gate can fail.
+
+V4-22a took the claim map's next test-level gaps, each check shown able to
+fail by campaign v64. Each of the following now has a check of its own:
+- the active-key lookup's KEY clause (the mirror of V4-15a's device clause);
+- RECOVERY-USE with `revoke=all` through the shipped daemon and the site's own
+  library;
+- `sig_old` by the incoming key and by a key enrolled nowhere, each over the
+  right digest;
+- the store scans in upper-case hex and both base64 alphabets, run over a
+  backup as well;
+- every padding byte of the inners of every padding bucket, 10,907 cases.
+
+It also corrected three sentences that had gone stale: D13 still said the
+logging sink accepts any 32-byte secret (**F109**), and this page's own counts
+of findings and errata had missed V4-20's additions to both (**F110**).
+liboqs 0.17.0, which F91's bump waits for, is still unreleased.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

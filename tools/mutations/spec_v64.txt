@@ -1,0 +1,5 @@
+TG1|^test_authd_store$|keyfilter: a revoked key does not resolve even while its device and user are active
+TG2|^authd_e2e$|after RECOVERY-USE revoke=all, bob's first device still obtained a login code (Req 9)
+TG3|^test_authd_conn$|rotate: a ROTATE whose sig_old is by the INCOMING key, over the right digest, is REJECTED;rotate: the journal names sig_old as refusing the INCOMING key
+TG4|^test_authd_localapi$|exch: the plaintext token is NOT in the store (Req 4);exch: neither plaintext is in a backup of the store (Req 4)
+TG5|^test_session$|v2-6 P4(h): EVERY padding byte of every bucket's inners, one at a time, nonzero -> MALFORMED, FAILED, buffer zeroed

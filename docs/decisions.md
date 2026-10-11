@@ -7165,3 +7165,160 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   and GC4 and the re-anchored GA10, each by its usual check. The twelve fuzz
   targets ran 600 s each with 0 crashes.
 - **Not run anywhere:** gcc 16, which is the Mac's.
+
+## V4-22a — the claim map's test-level gaps
+
+Asked for "liboq 0.17.0 and claim map gaps". liboqs 0.17.0 still does not
+exist: on 2026-10-11 the project's public tags are `0.16.0` and
+`0.16.0-rc1`, with no 0.17.0 and no release candidate for it, so F91's bump
+waits, as its row says; the re-check is recorded there. Of the claim map's 27
+"Not established" paragraphs, the ones that need a timing lab, memory
+inspection or an outside reader stay as they are (P3, P9, D1, D3, the ProVerif
+abstractions). **[All seven engineering-closable gaps were chosen -- D9, D8,
+D4 and P13 at test level, D12, D11 and D14 as larger items -- and taken as
+three sub-steps in V4-15's a/b/c shape.]** This is V4-22a, the four
+test-level ones; V4-22b (Caddy in CI, a real second user) and V4-22c (a fault
+after every write) follow, each with its own plan, exit report and commits.
+
+### What was decided
+
+- **Each gap gets a check shown failing first, and a mutation that names
+  it.** Every mutation in campaign v64 except TG2 was first run against the
+  suite as it stood (V4-21's tree): each passed every test, which is what
+  makes it a gap rather than a restatement.
+- **D9, the key clause.** `test_authd_store`'s new `keyfilter` block mirrors
+  V4-15a's device-clause test: the key row is marked revoked behind the
+  store's back while the device and user stay active, and the lookup must
+  refuse it, after the same handle resolving first as the canary. The
+  obvious mutation, the key clause removed outright, is not a gap: rotation
+  tests kill it, because a superseded key would resolve. The one that
+  survived V4-21's whole suite (47/47) excludes only superseded keys --
+  `dk.status<>'superseded'` -- and that is TG1.
+- **D9, revoke=all end to end.** A third form of `tests/e2e_site.mjs`,
+  `--recover-all <user> <code>`, spends a recovery code with `revoke: 'all'`
+  through `examples/site-node/authd.mjs`'s own `recoveryUse`. In
+  `authd_e2e`'s revocation section, bob's two devices -- the first, which the
+  earlier `revoke=none` recovery left active, and the one it enrolled -- each
+  log in first (the canary), the second issued code is spent, and both are
+  then refused at login; the code is checked absent from the journal.
+  - *Placed in the revocation section, not in `e2e_recovery.mjs` as planned*:
+    the spend adds audit rows, and there it would have pushed
+    `device-enroll` out of the later `audit-tail --n 10` window.
+  - *TG2 is v49d G14's shape, as planned, named against `authd_e2e`.* A
+    mutation only the e2e can see exists -- `recoveryUse` sending
+    `revoke: 'none'` whatever it is given -- and a hand probe showed the new
+    leg kill it ("after RECOVERY-USE revoke=all, bob's first device still
+    obtained a login code (Req 9)"). It is not committed: the runner
+    snapshots, restores and fingerprints C sources and binaries only, so a
+    JavaScript mutant would be left unrestored and called
+    `MUTANT-NOT-IN-BINARY`. Teaching the runner other languages is outside
+    this step.
+- **D8, sig_old by another key.** `build_rotate_ex` takes the sig_old signer;
+  `build_rotate` passes the old key, so every existing case is
+  byte-identical. Two new cases sign the CORRECT rotate-old digest with a key
+  enrolled nowhere and with the incoming key, and each must be refused with
+  the journal naming `rotate-sig-old`. TG3 accepts sig_old under `pk_old` or
+  `pk_new` -- an attacker holding only the incoming key could rotate to it --
+  and passed V4-21's `test_authd_conn` (176 checks); only the incoming-key
+  case sees it. That case runs last, because when it is wrongly accepted the
+  rotation happens and every later session under the old key fails too:
+  TG3's 19 named FAIL lines are that cascade, the two it is named by among
+  them.
+- **D4, more encodings and the backup.** `secret_absent` also looks for each
+  secret's hex in upper case and for every 12-byte window in standard and
+  URL-safe base64 -- `test_authd_conn`'s journal rule. After the exchange's
+  and recovery's scans, `store_backup` writes a `VACUUM INTO` copy and the
+  same scans run over it, with the hashes present in the backup as the
+  canary; for recovery, the code's canonical base32 is looked for as well.
+  TG4 parks the token's base64 in its row's `handshake_id` column, where
+  v58 GA4 parks its raw half; V4-21's `test_authd_localapi` (282 checks)
+  passed it.
+- **P13, every bucket.** P4(h) sets every padding byte, one at a time, in 20
+  inners: for each bucket from 16 to 4096, empty content, content one byte
+  under and one over a bucket boundary, and the last one bucket on --
+  10,907 cases (bucket 1 pads nothing).
+  - *The first version took 35 s at -O0*, one full handshake per case, and
+    overflowed the fixture's 256-entry pending store on the way. It now
+    opens each case on a white-box clone of the bucket's freshly initialized
+    receiver -- `tests/fuzz/fuzz_session.c`'s technique: the struct copied
+    and its key block refilled, which works because `terminate` zeroes the
+    block and never frees it -- in 0.8 s. The canary is that each inner
+    opens through such a clone while its padding is clean.
+  - *TG5 caps the check at 64 padding bytes where `pad_len` is computed*,
+    not in the `sodium_is_zero` call: the first form also failed
+    `constant_time_sites`, which pins that call's text, so it was not a gap
+    of the claim. The 64-byte inner of P4(b), (c) and (g) has 52 padding
+    bytes, and V4-21's `test_session` passed TG5.
+- **Records.** D13's last sentence still said the logging sink accepts any
+  32-byte secret, which V4-21 made false (**F109**). Two lines above the
+  register's count in `docs/review/README.md`, the counts of findings and of
+  errata had missed V4-20's F108 and erratum 46 (**F110**) -- found because
+  this step had to change the first.
+
+### Campaign v64 — TG, the test gaps
+
+| ID | Defect | Killed by |
+|---|---|---|
+| TG1 | the lookup's key clause excludes only superseded keys | `keyfilter: a revoked key does not resolve even while its device and user are active`, alone |
+| TG2 | revoke=all's device search matches nothing (G14's shape) | `authd_e2e`: bob's first device still logs in |
+| TG3 | sig_old accepted under `pk_old` or `pk_new` | the incoming-key case and its journal line, then the cascade (19 named) |
+| TG4 | the token's base64 in its row's `handshake_id` | the store scan and the backup scan |
+| TG5 | the padding check capped at 64 bytes | P4(h), alone |
+
+### Environment
+
+As for V4-20 and V4-21: a Linux container, every local result on SQLite
+3.45.1 from the system's static archive (sqlite.org is denied by the
+session's network policy), clang 18 with its sanitizer and libFuzzer
+runtimes, gcc 13; no macOS, no gcc 16, no wasm or browser trees. A Docker
+client is installed but no daemon runs, which matters to V4-22b, not here.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** Each mutation except TG2 was run against V4-21's tests first
+  and survived: TG1 the whole debug suite (47/47), TG3 `test_authd_conn` (176
+  checks), TG4 `test_authd_localapi` (282) and five other daemon suites,
+  TG5 `test_session` and every other CTest. Then each new check failed by
+  name with its mutation applied by hand, and passed without it.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; Release with
+  gcc 13 (`-O3 -DNDEBUG -D_FORTIFY_SOURCE=2`, `x86-64-v3`) 47/47; the fuzz
+  tree 82/82. The test count did not change -- the new checks live in
+  existing tests: `test_authd_store` 234 checks (230), `test_authd_conn` 186
+  (176), `test_authd_localapi` 286 (282), `test_session` two more, and one
+  more `authd_e2e` leg, whose PASS line and P4(h)'s 10,907 cases printed in
+  every tree.
+- **Campaigns**, on the ASan tree, each run sized under the session's
+  two-hour job limit and none run beside another, since the runner mutates
+  the shared working tree: v64 5/5, each killed by exactly the checks the
+  table names. Re-run because this step changed the checks they are killed
+  by -- from scratch specs, the committed ones unchanged:
+  - `authd_e2e` stops at its first failure, so every mutation it kills after
+    the new leg: v50c O1-O4, v56 MB9, v58 GA13 and GA14;
+  - every `test_session` kill in v26 (Q1-Q9), v27 R4 and v59 GB1, GB2, GB5
+    (GB5 and Q1 now also fail P4(h));
+  - v49c's nine `test_authd_conn` rotation and journal kills, and v58 GA5,
+    which the new sig_old cases also catch;
+  - v58 GA3, GA4, GA6, GA9 and v49d G12, G14, the scans and revocation.
+
+  41 of 41 killed by name, every row restored clean with a passing clean
+  suite and no residue, every final fingerprint identical. The rest of those
+  campaigns is left to the nightly; their anchors all match.
+- **Control.** v64 TG4 with its expectation replaced by text no check prints:
+  `SURVIVED(BAD: [CONTROL: ...])`, runner exit 1, restored clean.
+- **gcc 13 at `-O3 -Wall -Wextra -Werror`** -- the Release tree's flags --
+  compiled the four changed C test files clean, as a stand-in for the Mac's
+  gcc 16.
+- **No fuzzing**: no product source changed in this step.
+- **Documents.** Anchors 321 across 34 campaigns, 287 mutations, and the
+  nightly matrix names v64 (the nightly's own coverage check, run locally:
+  34 committed, 34 wired); the claim map's 315 citations resolve; spec
+  constants and names OK; `constant_time_sites` passes; F109 and F110 have
+  their 8 separators (F14, F67, F69 and F105 carry `|` inside code, as
+  before); the secret scan finds 0 violations in CI's 28 files and in 280
+  across `tools tests docs apps src`; `git diff --check` OK. Every statement
+  of the mutation, campaign, anchor, findings and errata counts was
+  re-grepped.
