@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 288 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 290 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -436,4 +436,10 @@ the most important thing on this page.
 - check `test_authd_store` "clock: revoke=all's two device-revoke rows are stamped with the recovery's clock"
 - mutation `v62 AO1` — the audit row reads the wall clock again, not its transaction's (audit F45)
 - mutation `v62 AO2` — revoke=all stamps its revocations with the wall clock, not the recovery's
-**Not established:** eight fault points exist -- the rotation, the recovery consume, between revoke=all's revocations, revoke, disable, and three in enrollment (after the user, after the device row, after the ticket's spend) -- each after one write, not after every write; the rest rests on the transaction boundary. The fault hook's confinement to the test build is a CTest (`store_fault_hook`) since V4-15a -- before that the tool cited here ran nowhere (audit F99, fixed). RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.
+- check `test_authd_store` "sweep(rotate): a fault at each of its writes leaves the database exactly as it was"
+- check `test_authd_store` "sweep(recovery-consume-revoke-all): a fault at each of its writes leaves the database exactly as it was"
+- check `test_authd_store` "sweep(recovery-replace): a fault at each of its writes leaves the database exactly as it was"
+- check `test_authd_store` "sweep(add-token): a fault at each of its writes leaves the database exactly as it was"
+- mutation `v66 FW1` — recovery-replace commits after superseding the old codes; a fault on an insert leaves no usable code
+- mutation `v66 FW2` — add-token's error path returns without rolling back; the open transaction fails the next write
+**Not established:** since V4-22c every writing statement of every mutating primitive is failed in turn -- 23 cases, from one write to twelve (`revoke=all` over two devices) -- and after each, the committed database as another connection reads it is unchanged, and the same handle then completes the call; a transaction left open after a fault would fail that next attempt. The fault is a statement returning an I/O error, not a crash or a torn write; atomicity below the statement is SQLite's. COMMIT is not faulted (it runs through `sqlite3_exec`), and a failed COMMIT is never rolled back, which would leave the handle unable to write until a restart (audit F112, open, by reading). `store_open`'s schema setup and `store_backup` are outside the sweep. The fault hooks' confinement to the test build is a CTest (`store_fault_hook`) since V4-15a -- before that the tool cited here ran nowhere (audit F99, fixed) -- and the new write hook's symbols fall under the same gate. RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.

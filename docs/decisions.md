@@ -7477,3 +7477,139 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   exactly that job, 49/50. RU1 `SURVIVED(BAD:)`; every other campaign's
   verdicts match its spec -- 287 of 288 killed, every row restored clean --
   and the twelve fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
+
+## V4-22c — a fault on every write
+
+The last of V4-22's three sub-steps. CLAIMS D14's limit said "eight fault
+points exist ... each after one write, not after every write; the rest rests
+on the transaction boundary." V4-22b landed on main (`3395122`) while this
+step was being built; V4-22c starts from it.
+
+### What was decided
+
+- **A second test-only fault hook, over every writing statement.**
+  - Inside `store.c`'s existing `#ifdef MLDSA_STORE_FAULT_HOOK` block,
+    `store_fault_step` wraps `sqlite3_step`, and a `#define` routes every
+    call through it. The n-th statement for which `sqlite3_stmt_readonly`
+    is false fails with `SQLITE_IOERR`, without running.
+  - Mapping the store first showed why that reaches everything. Every
+    INSERT, UPDATE and DELETE is a prepared statement; `sqlite3_exec` runs
+    only BEGIN, COMMIT, ROLLBACK, the PRAGMAs and the schema.
+  - No call site changes, so no campaign anchor in `store.c` moved.
+  - The fault is never `SQLITE_CONSTRAINT`. `store_enroll_device` commits
+    on a conflict by design (Req 7's refusal keeps its audit row), so a fake
+    constraint error would commit half an enrollment.
+  - The old countdown and its seven fault points are untouched; tests rely
+    on their numbering.
+  - The new symbols are named `store_fault_arm_write*`, so the existing
+    `store_fault_hook` CTest, which greps for `store_fault_arm`, already
+    proves them absent from the shipped library and binaries. It does:
+    0 matches in `libmldsa_authd.a`.
+- **The sweep.** 23 cases in `test_authd_store`, one per mutating primitive
+  or variant, each on a fresh store with real work to do:
+  - add-user;
+  - enrollment three ways (creating the user, onto an existing user, and
+    Req 7's refusal);
+  - disable, enable, rotate with `drop_tokens`, revoke;
+  - touch-last-seen;
+  - verify-token's sliding update and the three token deletes;
+  - add-token, add-login-code, consume-login-code;
+  - recovery-replace over existing codes;
+  - recovery-consume with `revoke=none` and with `revoke=all` over two
+    devices;
+  - note-failure, plain and the one that locks;
+  - enroll-via-ticket;
+  - the expiry sweep.
+
+  For each case:
+  - It fails write 0, 1, 2, ... in turn on ONE store handle.
+  - While the fault fires, the call must fail and the committed database
+    must be unchanged. That is a SHA-256 over every table, every row and
+    every column's type and value, read through a separate connection, as
+    another process would see it.
+  - At the first N where the fault does not fire, the call must return
+    what it should, and change the digest (the canary).
+  - The write counts run from 1 to 12, `revoke=all`'s.
+  - Not reopening the handle between attempts is deliberate. A primitive
+    that left its transaction open after a fault fails its next attempt
+    with the fault unfired, and the sweep reports exactly that. A reopen
+    would have discarded the open transaction and hidden it.
+- **Out of the sweep:**
+  - `store_open`'s three schema-time meta writes;
+  - `store_backup`, which writes a different file;
+  - COMMIT, which runs through `sqlite3_exec`.
+- **F112** (Info, open): a failed COMMIT is never rolled back. It is found
+  by reading and recorded, not fixed.
+
+### Campaign v66 — FW, a fault on every write
+
+Both mutations passed V4-22b's whole debug suite (47/47) with both applied
+at once: neither primitive has a fault point, and nothing else fails one of
+their writes.
+
+| ID | Defect | Killed by |
+|---|---|---|
+| FW1 | `store_recovery_replace` commits after superseding the old codes, then begins again before inserting the new ones | "sweep(recovery-replace)": after the fault at write 1, the committed database had changed |
+| FW2 | one of `store_add_token`'s error paths returns without `tx_rollback` | "sweep(add-token)": the next attempt failed with the fault unfired |
+
+### Environment
+
+As for V4-22a and V4-22b: a Linux container, every local result on SQLite
+3.45.1 from the system's static archive (`sqlite3_stmt_readonly` has existed
+since 3.7.4; CI's pinned 3.53.4 has it too), clang 18 and gcc 13; no macOS.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** FW1 and FW2 applied together to V4-22b's tree: the whole debug
+  suite 47/47. With the hook in and disarmed, the store suites and the
+  `store_fault_hook` gate passed unchanged before the sweep was written.
+- **The sweep:** 23 cases, from 1 write to 12. With FW1 the recovery-replace
+  case fails at write 1, and with FW2 the add-token case fails on the next
+  attempt. Each fails alone and by name, and nothing else fails with them.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; Release with
+  gcc 13 at `-O3 -Werror` 47/47; the fuzz tree 82/82. `test_authd_store` has
+  257 checks (234), and all 23 sweep lines printed in every tree.
+- **Campaigns**, on the ASan tree, each run under the two-hour limit and none
+  beside another: v66 2/2, each killed by name. Re-run because the wrapper now
+  sits under their kills, from scratch specs: v47 S1, v49d G5 and G7, v57
+  HC3, v58 GA15-GA19. 9 of 9 killed; most by more checks than before, since
+  the sweep also sees the defects they plant. Every row restored clean with
+  a passing clean suite, no residue, every final fingerprint identical.
+  **Control:** FW1 with its expectation replaced by text no check prints:
+  `SURVIVED(BAD: [CONTROL: ...])`, runner exit 1, restored clean.
+- **No fuzzing**: the product's code is unchanged outside the test-only
+  `#ifdef`.
+- **Documents.** Anchors 324 across 36 campaigns, 290 mutations; the nightly's
+  coverage check run locally: 36 committed, 36 wired; the claim map's 324
+  citations resolve; spec constants and names OK; `constant_time_sites`
+  passes; F112 has its 8 separators; the secret scan finds 0 violations in
+  CI's 28 files and in 284 across `tools tests docs apps src`; `git diff
+  --check` OK. Every statement of the mutation, campaign, anchor and findings
+  counts was re-grepped.
+
+### V4-22 as a whole
+
+Asked for "liboq 0.17.0 and claim map gaps". liboqs 0.17.0 is still
+unreleased, so F91's bump waits. Of the claim map's "Not established"
+paragraphs, the seven the user chose are taken, in three sub-steps. Each step
+showed its new checks catching a defect that the suite before it let through
+(campaigns v64-v66, 8 mutations). What each paragraph still says:
+
+| Gap | Closed by | Still not established |
+|---|---|---|
+| D9 | key clause isolated; `revoke=all` through the shipped daemon | both clauses shown only for a state an attacker with the file creates; `revoke=all`'s session closing in-process only |
+| D8 | `sig_old` by the incoming key and by an unenrolled key, over the right digest | three vectors, not every key |
+| D4 | upper-case hex and both base64 alphabets; backups scanned | other encodings, pieces under a window, memory |
+| P13 | every padding byte of 20 inners across the buckets | lengths no bucket makes, two bytes at once (the fuzz model) |
+| D12 | the real-Caddy leg in CI, image and tarball pinned by digest | amd64 only; apt's packages unpinned; the proxy's own uid unchecked |
+| D11 | a real second user, refused by peer credentials with file access granted | Linux with root or sudo; `nobody` standing in for the site |
+| D14 | a fault on every write of 23 mutations, the committed database unchanged after each | COMMIT (F112); faults per statement, not crashes |
+
+Found on the way and recorded:
+- **Fixed:** F109 and F110, both stale prose.
+- **Left open, each for the owner's word:** F111 (a stale comment) and F112
+  (a failed COMMIT is never rolled back).
