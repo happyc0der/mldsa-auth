@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 109 findings (F1–F111), with severity, evidence and
+   register](../v4/audit.md). 110 findings (F1–F112), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 288 committed defects in 35 campaigns, each of which must be
+- **Mutations**: 290 committed defects in 36 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -177,6 +177,19 @@ test ran the client as the daemon's own user, so a peer check that compared
 the daemon's OWN uid instead of the peer's passed all of them; campaign v65
 shows the new leg killing exactly that. **F111** records a stale comment found
 on the way, left open.
+
+V4-22c closed the last of them. Every write of every mutation in the store is
+now failed in turn, on a test-only hook under the same gate as the old one.
+That is 23 operations, from one write to twelve. After each fault, the
+database another connection sees must be exactly as it was, and the same
+handle must then complete the call. Before V4-22c, eight hand-placed fault
+points covered one write each. Campaign v66 shows the sweep catching two
+defects nothing else did:
+- an early commit in recovery-code replacement;
+- a missing rollback in token issue.
+
+**F112** records that a failed COMMIT is never rolled back. It is open, and
+it rests on reading, because COMMIT is out of the hook's reach.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
