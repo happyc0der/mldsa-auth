@@ -56,6 +56,34 @@ static int store_fault_fire(void)
     return 0;
 }
 #define STORE_FAULT_POINT() (store_fault_fire())
+
+/* A second, independent countdown over every WRITING step (V4-22c, CLAIMS
+ * D14). The fault points above sit after one chosen write each; this fails
+ * the n-th statement that writes, wherever it is, so a test can fault every
+ * write of a mutation in turn. Every row write here is a prepared statement
+ * (sqlite3_exec runs only BEGIN, COMMIT, ROLLBACK, the PRAGMAs and the DDL),
+ * so wrapping sqlite3_step reaches all of them; COMMIT itself it cannot.
+ * The fault is SQLITE_IOERR, never SQLITE_CONSTRAINT: enrollment commits on a
+ * conflict by design (Req 7), and a fake one would commit half an enrollment.
+ * The names keep "store_fault_arm" in them so tools/check_store_fault_hook.sh
+ * finds them, and so proves them absent from what ships. */
+static int g_store_write_fault = -1;          /* <0 disarmed */
+void store_fault_arm_write(int n_writes);     /* fail the n-th writing step, 0 = the first */
+int store_fault_arm_write_left(void);         /* -1 once it has fired, or when disarmed */
+void store_fault_arm_write(int n_writes) { g_store_write_fault = n_writes; }
+int store_fault_arm_write_left(void) { return g_store_write_fault; }
+static int store_fault_step(sqlite3_stmt *st)
+{
+    if (g_store_write_fault >= 0 && !sqlite3_stmt_readonly(st)) {
+        if (g_store_write_fault == 0) {
+            g_store_write_fault = -1;
+            return SQLITE_IOERR;
+        }
+        g_store_write_fault--;
+    }
+    return (sqlite3_step)(st);
+}
+#define sqlite3_step(st) store_fault_step(st)
 #else
 #define STORE_FAULT_POINT() (0)
 #endif
