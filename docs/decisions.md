@@ -7463,3 +7463,17 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
 - **Not shown here, and CI's to show:** the Caddy job itself; the real-user
   leg on GitHub's runners, where it runs through `sudo -n`; and its SKIP on
   macOS.
+- **CI** 38222870757, dispatched on the pushed branch at `8878d90`: 14/14.
+  - The new `caddy proxy (Linux, Docker)` job's first run passed: on amd64,
+    the tarball's printed sha256 `5c218bc3…7cdd` equals the pin, and all 9
+    PASS lines through "all checks" printed. The container build took under a
+    minute.
+  - Every other count is as V4-22a's: 47 per suite job on Linux and macOS, 36
+    fuzz-labelled, 3 and 6 in the wasm job, 12 smoke targets with 0
+    artifacts, the secret scan 0 violations.
+  - CI prints no per-check lines, so it shows `authd_e2e` passing on Linux and
+    macOS but not which way the real-user leg went; the nightly shows that.
+- **The nightly**, with v65 RU1's expectation rotted (38263676205): red on
+  exactly that job, 49/50. RU1 `SURVIVED(BAD:)`; every other campaign's
+  verdicts match its spec -- 287 of 288 killed, every row restored clean --
+  and the twelve fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
