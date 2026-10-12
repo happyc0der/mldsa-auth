@@ -1,1 +1,1 @@
-RU1|^authd_e2e$|nobody, whom site_uids names, was not served on site.sock (the canary) CONTROL -- a check no test prints (the v65 job must go red)
+RU1|^authd_e2e$|nobody, whom site_uids names, was not served on site.sock (the canary)
