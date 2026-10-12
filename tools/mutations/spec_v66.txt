@@ -1,2 +1,2 @@
-FW1|^test_authd_store$|sweep(recovery-replace): a fault at each of its writes leaves the database exactly as it was
+FW1|^test_authd_store$|sweep(recovery-replace): a fault at each of its writes leaves the database exactly as it was CONTROL -- a check no test prints (the v66 job must go red)
 FW2|^test_authd_store$|sweep(add-token): a fault at each of its writes leaves the database exactly as it was
