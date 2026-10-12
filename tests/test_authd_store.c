@@ -28,6 +28,8 @@
 #include "kex.h"          /* kex_hkdf_sha256, to recompute key_log independently */
 
 void store_fault_arm(int n_steps);   /* test-only, from store.c under the hook */
+void store_fault_arm_write(int n_writes);   /* test-only: fail the n-th writing step (V4-22c) */
+int store_fault_arm_write_left(void);       /* -1 once that fault has fired */
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -160,6 +162,263 @@ static store_t *fresh_store(const char *leaf, char *path_out, size_t cap)
         return NULL;
     }
     return s;
+}
+
+/* ---- a fault on every write (V4-22c, CLAIMS D14) -------------------------
+ *
+ * The committed database as ANOTHER connection sees it -- which is what any
+ * other process, or the daemon after a crash, would find -- reduced to one
+ * SHA-256: every table in sqlite_master by name, every row by rowid, and
+ * each column's type and value. Two digests are equal only if no row of any
+ * table was added, removed or changed. */
+static int db_digest(const char *db, uint8_t out[crypto_hash_sha256_BYTES])
+{
+    sqlite3 *h = NULL;
+    if (sqlite3_open_v2(db, &h, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (h != NULL) { sqlite3_close(h); }
+        return -1;
+    }
+    crypto_hash_sha256_state hs;
+    crypto_hash_sha256_init(&hs);
+    int ok = 1;
+    sqlite3_stmt *t = NULL;
+    if (sqlite3_prepare_v2(h, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;", -1, &t, NULL)
+            != SQLITE_OK) {
+        ok = 0;
+    }
+    while (ok && sqlite3_step(t) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(t, 0);
+        char q[256];
+        sqlite3_stmt *r = NULL;
+        snprintf(q, sizeof q, "SELECT * FROM \"%s\" ORDER BY rowid;", name);
+        crypto_hash_sha256_update(&hs, (const unsigned char *)name, strlen(name) + 1u);
+        if (sqlite3_prepare_v2(h, q, -1, &r, NULL) != SQLITE_OK) { ok = 0; break; }
+        int rc;
+        while ((rc = sqlite3_step(r)) == SQLITE_ROW) {
+            const int nc = sqlite3_column_count(r);
+            for (int c = 0; c < nc; c++) {
+                const unsigned char ty = (unsigned char)sqlite3_column_type(r, c);
+                crypto_hash_sha256_update(&hs, &ty, 1u);
+                if (ty == SQLITE_INTEGER) {
+                    const sqlite3_int64 v = sqlite3_column_int64(r, c);
+                    crypto_hash_sha256_update(&hs, (const unsigned char *)&v, sizeof v);
+                } else if (ty == SQLITE_FLOAT) {
+                    const double v = sqlite3_column_double(r, c);
+                    crypto_hash_sha256_update(&hs, (const unsigned char *)&v, sizeof v);
+                } else if (ty == SQLITE_TEXT || ty == SQLITE_BLOB) {
+                    const void *v = ty == SQLITE_TEXT ? (const void *)sqlite3_column_text(r, c)
+                                                      : sqlite3_column_blob(r, c);
+                    const uint32_t n = (uint32_t)sqlite3_column_bytes(r, c);
+                    crypto_hash_sha256_update(&hs, (const unsigned char *)&n, sizeof n);
+                    if (n > 0u) { crypto_hash_sha256_update(&hs, (const unsigned char *)v, n); }
+                }
+            }
+            crypto_hash_sha256_update(&hs, (const unsigned char *)"\n", 1u);
+        }
+        if (rc != SQLITE_DONE) { ok = 0; }
+        sqlite3_finalize(r);
+    }
+    sqlite3_finalize(t);
+    sqlite3_close(h);
+    crypto_hash_sha256_final(&hs, out);
+    return ok ? 0 : -1;
+}
+
+/* One mutating primitive: `setup` gives it real work on a fresh store,
+ * `call` performs it once and returns its status, `want` is what it should
+ * return, and `changes` says whether a successful call changes the database
+ * (the canary that the digest sees the call at all). */
+typedef struct {
+    const char *name;
+    const char *check;          /* the named check, literal so the claim map can cite it */
+    int (*setup)(store_t *s);
+    store_status_t (*call)(store_t *s);
+    store_status_t want;
+    int changes;
+} sweep_case_t;
+
+static uint8_t g_swpk[4][STORE_PK_BYTES];
+static const uint8_t SW_HSID[STORE_HSID_BYTES] = { 0x5e };
+static const uint8_t SW_CODE[STORE_HASH_BYTES] = { 0xc0, 0xde };
+static const uint8_t SW_STATE[STORE_HASH_BYTES] = { 0x57 };
+
+static int sw_user(store_t *s) { return store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK ? 0 : -1; }
+static int sw_device(store_t *s)
+{
+    return sw_user(s) == 0 &&
+           store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, g_swpk[0], "site", "admin", NULL, 0) == STORE_OK
+           ? 0 : -1;
+}
+static int sw_token(store_t *s)
+{
+    return sw_device(s) == 0 &&
+           store_add_token(s, TH1, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 10000, 10000) == STORE_OK ? 0 : -1;
+}
+static int sw_none(store_t *s) { (void)s; return 0; }
+static int sw_disabled(store_t *s)
+{
+    return sw_device(s) == 0 && store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK ? 0 : -1;
+}
+static int sw_codes(store_t *s)
+{
+    static const char *const two[] = { "hash-a", "hash-b" };
+    return sw_device(s) == 0 && store_recovery_replace(s, U1, sizeof U1, two, 2, 100, NULL) == STORE_OK ? 0 : -1;
+}
+static int sw_two_devices(store_t *s)
+{
+    return sw_codes(s) == 0 &&
+           store_enroll_device(s, H2, sizeof H2, U1, sizeof U1, g_swpk[1], "site", "admin", NULL, 0) == STORE_OK &&
+           store_add_token(s, TH3, U1, sizeof U1, H2, sizeof H2, NULL, 0, 100, 10000, 10000) == STORE_OK ? 0 : -1;
+}
+static int sw_four_failures(store_t *s)
+{
+    int ok = sw_user(s) == 0;
+    for (int i = 0; ok && i < 4; i++) {
+        ok = store_recovery_note_failure(s, U1, sizeof U1, 1200, 5, 3600, NULL, NULL) == STORE_OK;
+    }
+    return ok ? 0 : -1;
+}
+static int sw_ticket(store_t *s)
+{
+    return sw_codes(s) == 0 &&
+           store_recovery_consume(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH2, 300, 900) == STORE_OK ? 0 : -1;
+}
+static int sw_login_code(store_t *s)
+{
+    return sw_device(s) == 0 &&
+           store_add_login_code(s, SW_CODE, U1, sizeof U1, H1, sizeof H1, NULL, 0, SW_STATE, 100, 200) == STORE_OK
+           ? 0 : -1;
+}
+static int sw_expired(store_t *s)
+{
+    return sw_ticket(s) == 0 &&
+           store_add_token(s, TH1, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 10000, 10000) == STORE_OK &&
+           store_add_login_code(s, SW_CODE, U1, sizeof U1, H1, sizeof H1, NULL, 0, SW_STATE, 100, 200) == STORE_OK
+           ? 0 : -1;
+}
+
+static store_status_t sc_add_user(store_t *s) { return store_add_user(s, U1, sizeof U1, STORE_ROLE_USER); }
+static store_status_t sc_enroll_new(store_t *s)
+{
+    return store_enroll_device_ex(s, H1, sizeof H1, U1, sizeof U1, STORE_ROLE_USER, g_swpk[0], "site", "admin",
+                                  NULL, 0, NULL, NULL);
+}
+static store_status_t sc_enroll(store_t *s)
+{
+    return store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, g_swpk[0], "site", "admin", NULL, 0);
+}
+static store_status_t sc_enroll_req7(store_t *s)
+{
+    return store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, g_swpk[1], "site", "admin", NULL, 0);
+}
+static store_status_t sc_disable(store_t *s) { return store_disable_user(s, U1, sizeof U1, "admin", NULL, 0); }
+static store_status_t sc_enable(store_t *s) { return store_enable_user(s, U1, sizeof U1, "admin"); }
+static store_status_t sc_rotate(store_t *s)
+{
+    return store_rotate_key(s, H1, sizeof H1, g_swpk[2], g_swpk[0], SW_HSID, sizeof SW_HSID, 1, 1000, NULL, NULL);
+}
+static store_status_t sc_revoke(store_t *s) { return store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0); }
+static store_status_t sc_touch(store_t *s) { return store_touch_last_seen(s, H1, sizeof H1); }
+static store_status_t sc_verify(store_t *s)
+{
+    store_token_verdict_t v = STORE_TOKEN_UNKNOWN;
+    const store_status_t r = store_verify_token(s, TH1, 150, 0u, &v, NULL);
+    return (r == STORE_OK && v != STORE_TOKEN_OK) ? STORE_ERR_NOT_FOUND : r;
+}
+static store_status_t sc_delete_token(store_t *s) { return store_delete_token(s, TH1, NULL); }
+static store_status_t sc_delete_handle(store_t *s) { return store_delete_tokens_for_handle(s, H1, sizeof H1, NULL); }
+static store_status_t sc_delete_user(store_t *s) { return store_delete_tokens_for_user(s, U1, sizeof U1, NULL); }
+static store_status_t sc_add_token(store_t *s)
+{
+    return store_add_token(s, TH1, U1, sizeof U1, H1, sizeof H1, NULL, 0, 100, 10000, 10000);
+}
+static store_status_t sc_add_code(store_t *s)
+{
+    return store_add_login_code(s, SW_CODE, U1, sizeof U1, H1, sizeof H1, NULL, 0, SW_STATE, 100, 200);
+}
+static store_status_t sc_consume_code(store_t *s)
+{
+    return store_consume_login_code(s, SW_CODE, SW_STATE, 150, NULL, 0, NULL, NULL, 0, NULL);
+}
+static store_status_t sc_replace(store_t *s)
+{
+    static const char *const two[] = { "hash-c", "hash-d" };
+    return store_recovery_replace(s, U1, sizeof U1, two, 2, 200, NULL);
+}
+static store_status_t sc_consume(store_t *s)
+{
+    return store_recovery_consume(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH2, 300, 900);
+}
+static store_status_t sc_consume_all(store_t *s)
+{
+    return store_recovery_consume_ex(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH2, 300, 900, 1, NULL);
+}
+static store_status_t sc_failure(store_t *s)
+{
+    return store_recovery_note_failure(s, U1, sizeof U1, 1200, 5, 3600, NULL, NULL);
+}
+static store_status_t sc_ticket(store_t *s)
+{
+    return store_enroll_via_ticket(s, TH2, U1, sizeof U1, H3, sizeof H3, g_swpk[3], NULL, 0, 400);
+}
+static store_status_t sc_sweep(store_t *s)
+{
+    store_sweep_counts_t n;
+    return store_sweep(s, 100000, &n);
+}
+
+/* Faults write 0, 1, 2, ... of one call, in turn, on ONE store handle. While
+ * the fault fires, the call must fail and the committed database must be
+ * exactly as before it; the first N at which it does not fire is the call's
+ * write count, and that call must return what it should. The handle is not
+ * reopened between attempts on purpose: a call that left its transaction
+ * open after a fault makes the NEXT attempt fail with the fault unfired. */
+static int sweep_one(const sweep_case_t *c)
+{
+    char dbp[600];
+    char leaf[64];
+    snprintf(leaf, sizeof leaf, "sweep-%s.sqlite3", c->name);
+    store_t *s = fresh_store(leaf, dbp, sizeof dbp);
+    if (s == NULL || c->setup(s) != 0) {
+        printf("  sweep(%s): setup failed\n", c->name);
+        if (s != NULL) { store_close(s); }
+        return 0;
+    }
+    uint8_t before[crypto_hash_sha256_BYTES], after[crypto_hash_sha256_BYTES];
+    int ok = 1, n = 0;
+    for (; n < 64; n++) {
+        if (db_digest(dbp, before) != 0) { ok = 0; break; }
+        store_fault_arm_write(n);
+        const store_status_t r = c->call(s);
+        const int fired = store_fault_arm_write_left() == -1;
+        store_fault_arm_write(-1);
+        if (db_digest(dbp, after) != 0) { ok = 0; break; }
+        if (fired) {
+            if (r == STORE_OK) {
+                printf("  sweep(%s): write %d failed and the call still returned OK\n", c->name, n);
+                ok = 0; break;
+            }
+            if (memcmp(before, after, sizeof before) != 0) {
+                printf("  sweep(%s): after the fault at write %d the committed database had changed\n", c->name, n);
+                ok = 0; break;
+            }
+            continue;
+        }
+        if (r != c->want) {
+            printf("  sweep(%s): with the fault unfired the call returned %s, expected %s\n",
+                   c->name, store_status_name(r), store_status_name(c->want));
+            ok = 0; break;
+        }
+        if (c->changes && memcmp(before, after, sizeof before) == 0) {
+            printf("  sweep(%s): the call changed nothing the digest could see (canary)\n", c->name);
+            ok = 0;
+        }
+        break;
+    }
+    if (n == 0 || n >= 64) { ok = 0; }
+    printf("  sweep(%s): %d write(s), each faulted in turn\n", c->name, n);
+    store_close(s);
+    return ok;
 }
 
 int main(void)
@@ -1077,6 +1336,62 @@ int main(void)
                   "lock: an unknown user has no lock state");
             CHECK(store_audit_verify(s2) == STORE_OK, "rec: audit chain verifies at the end");
             store_close(s2);
+        }
+    }
+
+    /* ---- a fault on every write of every mutation (V4-22c, CLAIMS D14) ---- */
+    {
+        for (int i = 0; i < 4; i++) { make_pk(g_swpk[i], (uint8_t)(0x90 + i)); }
+        static const sweep_case_t cases[] = {
+            { "add-user", "sweep(add-user): a fault at each of its writes leaves the database exactly as it was",
+              sw_none, sc_add_user, STORE_OK, 1 },
+            { "enroll-new-user", "sweep(enroll-new-user): a fault at each of its writes leaves the database exactly as it was",
+              sw_none, sc_enroll_new, STORE_OK, 1 },
+            { "enroll", "sweep(enroll): a fault at each of its writes leaves the database exactly as it was",
+              sw_user, sc_enroll, STORE_OK, 1 },
+            { "enroll-req7", "sweep(enroll-req7): a fault at each of its writes leaves the database exactly as it was",
+              sw_device, sc_enroll_req7, STORE_ERR_CONFLICT, 1 },
+            { "disable", "sweep(disable): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_disable, STORE_OK, 1 },
+            { "enable", "sweep(enable): a fault at each of its writes leaves the database exactly as it was",
+              sw_disabled, sc_enable, STORE_OK, 1 },
+            { "rotate", "sweep(rotate): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_rotate, STORE_OK, 1 },
+            { "revoke", "sweep(revoke): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_revoke, STORE_OK, 1 },
+            { "touch-last-seen", "sweep(touch-last-seen): a fault at each of its writes leaves the database exactly as it was",
+              sw_device, sc_touch, STORE_OK, 1 },
+            { "verify-token", "sweep(verify-token): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_verify, STORE_OK, 1 },
+            { "delete-token", "sweep(delete-token): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_delete_token, STORE_OK, 1 },
+            { "delete-tokens-for-handle", "sweep(delete-tokens-for-handle): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_delete_handle, STORE_OK, 1 },
+            { "delete-tokens-for-user", "sweep(delete-tokens-for-user): a fault at each of its writes leaves the database exactly as it was",
+              sw_token, sc_delete_user, STORE_OK, 1 },
+            { "add-token", "sweep(add-token): a fault at each of its writes leaves the database exactly as it was",
+              sw_device, sc_add_token, STORE_OK, 1 },
+            { "add-login-code", "sweep(add-login-code): a fault at each of its writes leaves the database exactly as it was",
+              sw_device, sc_add_code, STORE_OK, 1 },
+            { "consume-login-code", "sweep(consume-login-code): a fault at each of its writes leaves the database exactly as it was",
+              sw_login_code, sc_consume_code, STORE_OK, 1 },
+            { "recovery-replace", "sweep(recovery-replace): a fault at each of its writes leaves the database exactly as it was",
+              sw_codes, sc_replace, STORE_OK, 1 },
+            { "recovery-consume", "sweep(recovery-consume): a fault at each of its writes leaves the database exactly as it was",
+              sw_codes, sc_consume, STORE_OK, 1 },
+            { "recovery-consume-revoke-all", "sweep(recovery-consume-revoke-all): a fault at each of its writes leaves the database exactly as it was",
+              sw_two_devices, sc_consume_all, STORE_OK, 1 },
+            { "note-failure", "sweep(note-failure): a fault at each of its writes leaves the database exactly as it was",
+              sw_user, sc_failure, STORE_OK, 1 },
+            { "note-failure-lock", "sweep(note-failure-lock): a fault at each of its writes leaves the database exactly as it was",
+              sw_four_failures, sc_failure, STORE_OK, 1 },
+            { "enroll-via-ticket", "sweep(enroll-via-ticket): a fault at each of its writes leaves the database exactly as it was",
+              sw_ticket, sc_ticket, STORE_OK, 1 },
+            { "sweep", "sweep(sweep): a fault at each of its writes leaves the database exactly as it was",
+              sw_expired, sc_sweep, STORE_OK, 1 },
+        };
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            CHECK(sweep_one(&cases[i]), cases[i].check);
         }
     }
 
