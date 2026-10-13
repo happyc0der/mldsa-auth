@@ -7626,3 +7626,140 @@ Found on the way and recorded:
 - **Fixed:** F109 and F110, both stale prose.
 - **Left open, each for the owner's word:** F111 (a stale comment) and F112
   (a failed COMMIT is never rolled back).
+
+## V4-23 — F112, a failed COMMIT rolled back
+
+The owner asked for F112's fix after V4-22 landed (`82c7f7e`). F112 (Info,
+recorded in V4-22c): nothing rolled back when COMMIT itself failed.
+
+### What was decided
+
+- **The fix is one helper.** `tx_commit` now issues ROLLBACK whenever COMMIT
+  fails, and returns `STORE_ERR_DB`.
+  - SQLite documents both outcomes of a failed COMMIT: on `SQLITE_BUSY` the
+    transaction stays active, and after some errors it is already rolled
+    back. It advises an explicit ROLLBACK either way, which fails
+    harmlessly when nothing is open.
+  - Every caller is covered and none changed, so no campaign anchor in
+    `store.c` moved. `tx_rollback`'s definition moved above `tx_commit`,
+    which now calls it; no anchor cites either line.
+  - `store_open` already rolled back through its `fail_tx`; it now rolls
+    back twice on that path, and the second ROLLBACK fails harmlessly. It
+    was left unchanged to keep the diff to the helper.
+- **Mapping the sites again corrected F112's own row.** V4-22c counted 10
+  `return tx_commit(s);` and 3 `r = tx_commit(s)`. There are 11 and 3, and
+  Req 7's refusal path in `store_enroll_device` calls `(void)tx_commit(s)`
+  and ignores the result outright: 16 call sites with `store_open`'s.
+- **Req 7's refusal keeps returning CONFLICT when its COMMIT fails.** The
+  refusal stands, and so does the daemon's journal line for it, which is
+  Req 7's log (erratum 45). The store's own audit row of the refusal is
+  lost with the transaction, as with any database failure. Returning
+  DB-error instead would also fail closed, but would swap Req 7's journal
+  line for a generic one.
+- **A third test-only hook, over COMMIT.** `store_fault_arm_commit(n)` and
+  `store_fault_arm_commit_left()`, in the same `#ifdef` block and shaped
+  like V4-22c's write hook. When it fires, `tx_commit` fails WITHOUT running
+  COMMIT, so the transaction is still open: what SQLite leaves on
+  `SQLITE_BUSY`. The names contain `store_fault_arm`, so the
+  `store_fault_hook` CTest proves them absent from what ships.
+- **The checks.** V4-22c's sweep table gained a `commit_check`: a literal
+  check name for each of the 18 cases that run a transaction, NULL for the
+  five single-statement autocommit ones (touch-last-seen, verify-token and
+  the three token deletes). For each of the 18, on a fresh store:
+  - the commit hook is armed and the call made; the hook must fire, so a
+    COMMIT made around `tx_commit` fails here;
+  - the call must not return OK, and the committed database (V4-22c's
+    digest, through another connection) must be unchanged;
+  - a second store must open the same file, which takes the write lock;
+  - the same handle must then make the call again and get what it should,
+    changing the digest.
+
+  `test_authd_store` has 275 checks (257), and prints one `commit(...)`
+  line per case.
+- **The old helper failed all 18 checks before the fix was written**, and at
+  exactly the last two points: "a second store could not open the file: the
+  write lock is still held" and "the same handle then returned
+  database-error". That is F112's consequence shown, not read. The hook
+  fired, the call failed and the database was unchanged in every case.
+
+### A real COMMIT failure, by hand
+
+Not committed; recorded here. A scratch program linked against the same
+SQLite 3.45.1 archive registers a shim VFS over the default one that fails
+the WAL file's `xWrite` or `xSync` while armed, and replays the store's own
+pattern: WAL, `synchronous=FULL`, `BEGIN IMMEDIATE`, a prepared INSERT, then
+`sqlite3_exec("COMMIT;")`.
+
+| Injected at COMMIT | COMMIT returned | Transaction open after it | Another connection's `BEGIN IMMEDIATE` | Rows committed |
+|---|---|---|---|---|
+| WAL `xWrite` fails | `SQLITE_IOERR_WRITE` | no | OK | 0 |
+| WAL `xWrite` reports a full disk | `SQLITE_FULL` | no | OK | 0 |
+| WAL `xSync` fails | `SQLITE_IOERR_FSYNC` | no | OK | 0 |
+
+Each was run with and without a ROLLBACK after the failed COMMIT; the
+ROLLBACK then fails with "no transaction is active" and nothing else
+differs. So for these failures SQLite rolls back by itself, and the store
+never got stuck, before the fix or after it. The stuck state needs a COMMIT
+that fails with its transaction still open -- `SQLITE_BUSY` -- which in WAL
+mode with the write lock taken at `BEGIN IMMEDIATE` the probe could not
+construct. F112 stays Info; its row now says the path is this narrow. The
+probe ran on 3.45.1 only, not on CI's pinned 3.53.4.
+
+### Campaign v67 — FC, a failed COMMIT
+
+Both mutations passed V4-22c's whole debug suite (47/47), applied together
+to the new `store.c` with V4-22c's test file: nothing before V4-23 failed a
+COMMIT.
+
+| ID | Defect | Killed by |
+|---|---|---|
+| FC1 | `tx_commit` does not roll back when COMMIT fails (F112 restored) | all 18 commit checks: the write lock still held, and the same handle unable to begin |
+| FC2 | Req 7's refusal path commits with a raw `exec_simple(s->db, "COMMIT;")`, around the helper | "commit(enroll-req7)" alone: the call reached no COMMIT through `tx_commit` |
+
+### Environment
+
+As for V4-22c: a Linux container, every local result on SQLite 3.45.1 from
+the system's static archive, clang 18 and gcc 13; no macOS.
+
+The container restarted once during campaign v67, while FC2 was applied. The
+restart stopped the runner before it could restore, so `store.c` was left
+with FC2 in it. It was restored from a checksummed copy kept outside the
+tree, nothing having been committed, and v67 was re-run from scratch; the
+results below are that run's. FC1 had been killed the same way before the
+restart.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** With today's `tx_commit` under the new checks, all 18 commit
+  checks failed at exactly the second store and the same handle, and
+  nothing else failed. FC1 and FC2 applied together to the new `store.c`,
+  with V4-22c's test file: the whole debug suite 47/47 on a build proven
+  current.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; Release with
+  gcc 13 at `-O3 -Werror` 47/47; the fuzz tree 82/82. `test_authd_store`
+  has 275 checks (257); all 23 sweep lines and all 18 commit lines printed
+  in every tree. The `store_fault_hook` CTest passes: the commit hook's
+  symbols are in the test binary and not in what ships.
+- **Campaigns**, on the ASan tree, each run under the two-hour limit and
+  none beside another: v67 2/2, FC1 by all 18 commit checks and FC2 by
+  "commit(enroll-req7)" alone. **Control:** FC1 with its expectation
+  replaced by text no check prints: `SURVIVED(BAD: ...)`, runner exit 1,
+  restored clean. Re-run because `tx_commit` sits under their kills, from
+  scratch specs: v47 S1, v49d G7 and G15, v57 HC3, v58 GA15-GA19, v66 FW1
+  and FW2. 11 of 11 killed, FW1 now by one more check, since the commit
+  checks also see its early COMMIT. Every row restored clean with a passing
+  clean suite, no residue, every final fingerprint identical.
+- **No fuzzing**: the product's change is the one helper; the fuzz tree
+  builds and its suite passes.
+- **Documents.** Anchors 326 across 37 campaigns, 292 mutations; the
+  nightly's coverage check run locally: 37 committed, 37 wired; the claim
+  map's 328 citations resolve; spec constants and names OK;
+  `constant_time_sites` passes; F112's row keeps its 8 separators; the
+  secret scan finds 0 violations in CI's 28 files and in 286 across `tools
+  tests docs apps src`; `git diff --check` OK. Every statement of the
+  mutation, campaign and anchor counts was re-grepped, the campaign count
+  in words included.

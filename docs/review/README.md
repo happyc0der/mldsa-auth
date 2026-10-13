@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 290 committed defects in 36 campaigns, each of which must be
+- **Mutations**: 292 committed defects in 37 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -188,8 +188,19 @@ defects nothing else did:
 - an early commit in recovery-code replacement;
 - a missing rollback in token issue.
 
-**F112** records that a failed COMMIT is never rolled back. It is open, and
-it rests on reading, because COMMIT is out of the hook's reach.
+**F112** recorded that a failed COMMIT was never rolled back. It rested on
+reading, because COMMIT was out of the hook's reach.
+
+V4-23 closed F112. `tx_commit` now rolls back whenever COMMIT fails, so
+every mutation's commit is covered and no caller changed. A second test-only
+hook fails the COMMIT of each of the 18 mutations that run a transaction, and
+leaves the transaction open, as SQLite does on `SQLITE_BUSY`. The old helper
+failed all 18: the write lock stayed held against a second store, and the
+same handle could not begin again. Campaign v67 shows the new checks catching
+F112 restored, and a COMMIT made around the helper on Req 7's refusal path.
+Real I/O failures at COMMIT, injected once by hand through a failing VFS,
+were already rolled back by SQLite itself; the path F112 needs is as narrow
+as its row said. F111 is still open.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
