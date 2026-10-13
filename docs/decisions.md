@@ -7777,3 +7777,126 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   of 292 killed, every row restored clean with a passing clean suite and no
   residue -- and the twelve fuzz targets ran 600 s each with 0 crashes and 0
   artifacts.
+
+## V4-24a — F111, and the claim map's P11 and D13
+
+After V4-23 the owner asked for "F111 and claim maps", and chose six items:
+F111; the test-level gaps P11 and D13; the gate-level gaps P8 and P2; and
+the e2e gap D10. As with V4-22, they split into sub-steps, each planned and
+approved on its own: V4-24a takes F111, P11 and D13; V4-24b takes P8 and P2;
+V4-24c takes D10. Every new check comes with a mutation that survived the
+suite before it and is caught by name (campaign v68, pair CG, Claim Gaps).
+
+### What was decided
+
+- **F111.** `listener.h` now names the refusal its code makes,
+  `LISTENER_ERR_ARG`. Nothing had called `listener_open_unix` with a mode
+  outside spec 8's two, so the refusal itself was untested. `test_authd_ws`
+  now opens 0666, 0644, 0700 and 0 and needs each refused, `fd` left at -1
+  and nothing created at the path; 0660 and 0600 must open as exactly that
+  mode (the canary). Cited under D11, next to admin.sock's 0600.
+- **P11: the decapsulated bytes are chosen, not hoped for.**
+  - A branch on one byte value of the decapsulated secret would fire for
+    one random handshake in 256 across the whole suite, failing at random
+    rather than by name. So the planted defect (CG2) needs two leading zero
+    bytes, about one handshake in 65,536, and the check has to reach it on
+    purpose.
+  - A ciphertext found for one key is useless for the next handshake, which
+    generates a fresh one; searching by real decapsulation per handshake
+    would have cost about 139,000 of them. Instead the test predicts ML-KEM's
+    implicit-rejection secret directly, FIPS 203's J(z || c) =
+    SHAKE256(z || c), with z the last 32 bytes of the decapsulation key, over
+    candidate ciphertexts (the honest one with a counter in its first eight
+    bytes), until one has the property wanted. Each chosen ciphertext is then
+    really decapsulated, and must match the prediction and differ from the
+    honest secret: the canary that the model of implicit rejection is
+    liboqs's.
+  - 289 initiator handshakes, built on H3's hand-built responder: each value
+    of the secret's first byte, a zero at each of the 32 positions, and two
+    leading zeros. The initiator must complete, and both its keys must equal
+    HKDF over exactly the decapsulated secret, from the test's independent
+    reference. That is stronger than H3's "not the encapsulator's key and not
+    the zero key", which it implies.
+  - The whole of `test_handshake` takes 1.4 s in the Debug tree.
+- **D13: raw frames, decrypted payloads, and the ROTATE's signatures.**
+  - The journal test now keeps every byte the connection put on the wire --
+    ClientHello, ServerHello, ClientAuth, and the login-code, ROTATE,
+    ROTATE_ACK and BYE records -- and every payload a record carried,
+    decrypted, in both directions. A new `exchange_record_wire` returns the
+    records it sends and receives; the eight existing callers of
+    `exchange_record` are unchanged.
+  - The window search gained spans it does not look inside: a signature's
+    mostly-zero hint, evidence of nothing, as before; and the ROTATE_ACK's
+    `fp_new`, which the journal records on purpose. BYE's payload is one
+    byte, below any window; its record is searched.
+  - **F113** (Info, fixed): the claim map said the scan covered "each
+    signature's `c~ || z`", and the ROTATE's `sig_old` and `sig_new` had never
+    been looked for. They are now.
+  - What the scans still cannot see: `authd_log_slot_id` prints bytes as
+    escaped printable text, which these scans do not decode. Recorded in D13.
+- **F114** (Info, open): six tests name their scratch directory after their
+  PID and stop if it exists; a crashed run leaves its directory behind. It
+  failed the first control campaign's clean suite (`FAIL: mkdir` in 0.01 s,
+  three stale directories in `build-asan/tests`). The stale directories were
+  removed and the control re-run clean. Outside this step's scope; recorded.
+
+### Campaign v68 — CG, the claim gaps
+
+All five passed V4-23's whole debug suite (47/47) applied together, with
+V4-23's test files.
+
+| ID | Defect | Killed by |
+|---|---|---|
+| CG1 | `listener_open_unix`'s refusal of an unlisted mode can never hold | "modes: a socket mode other than spec 8's two is refused ..." |
+| CG2 | the initiator fails a handshake whose decapsulated secret starts with two zero bytes | "P11: a decapsulated secret whose first two bytes are zero ..." alone |
+| CG3 | `on_rotate` logs the decrypted ROTATE's first 32 bytes | "journal: no window of any decrypted payload" |
+| CG4 | `on_record` logs every received record's first ciphertext bytes | "journal: no window of any raw frame of the connection" |
+| CG5 | `on_rotate` logs the start of `sig_old` | "journal: no window of the ROTATE's own signatures", and the payload scan, since `sig_old` is part of the decrypted ROTATE |
+
+### Environment
+
+As for V4-23: a Linux container, every local result on SQLite 3.45.1, clang
+18 and gcc 13; no macOS.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** CG1-CG5 applied together to V4-23's tree, with V4-23's three
+  test files: the whole debug suite 47/47 on a build proven current. CG2
+  was then probed alone against the new sweep, before the campaign: only
+  the two-leading-zeros check failed.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 47/47; ASan 47/47 and UBSan 47/47, instrumentation proven linked into
+  all 42 executables, 0 ASan reports, 0 UBSan runtime errors; Release with
+  gcc 13 at `-O3 -Werror` 47/47; the fuzz tree 82/82. `test_handshake`
+  passes its four P11 checks in every tree, in 1.3-1.7 s for the whole test
+  (77,561 to 189,832 secrets predicted, a run's luck); `test_authd_conn` has
+  189 checks (186) and `test_authd_ws` 125 (123).
+- **Campaigns**, on the ASan tree, each run under the two-hour limit and
+  none beside another, every source backed up with checksums first and the
+  tree checked for leftover mutations after: v68 5/5, each by the check
+  named for it. **Control:** CG4 with its expectation replaced by text no
+  check prints: `SURVIVED(BAD: ...)`, runner exit 1. Its first run also
+  showed `CLEAN-SUITE=FAIL(BAD)`: `test_authd_conn` stopped at `FAIL: mkdir`
+  before any check, a stale scratch directory from an earlier crashed run
+  sharing its PID (F114). With the three stale directories removed it was
+  re-run: the same verdict, the clean suite passing. Re-run because the
+  journal test and H3's neighbourhood changed under their kills, from
+  scratch specs: v60 GC4, v49c W12, v63 FT1 and FT2, v25 N6, v24 M1 and M2.
+  7 of 7 killed; W12 now by one more check, since the payload scan also
+  sees the login code. Every row restored clean with a passing clean suite,
+  no residue, every final fingerprint identical.
+- **After the campaign** two P11 check names, split across adjacent string
+  literals, were joined into one literal each, so the claim map can cite
+  them (V4-22a's lesson). The strings compiled are the same.
+- **No fuzzing**: no product code changed beyond `listener.h`'s comment;
+  the fuzz tree builds and its suite passes.
+- **Documents.** Anchors 331 across 38 campaigns, 297 mutations; the
+  nightly's coverage check run locally: 38 committed, 38 wired; the claim
+  map's 339 citations resolve; spec constants and names OK;
+  `constant_time_sites` passes; F111-F114 have their 8 separators (F113's
+  `c~ || z` escaped); the secret scan finds 0 violations in CI's 28 files
+  and in 288 across `tools tests docs apps src`; `git diff --check` OK. Every
+  statement of the mutation, campaign, anchor and findings counts was
+  re-grepped, the campaign count in words included.
