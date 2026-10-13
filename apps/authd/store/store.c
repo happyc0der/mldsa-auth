@@ -84,8 +84,32 @@ static int store_fault_step(sqlite3_stmt *st)
     return (sqlite3_step)(st);
 }
 #define sqlite3_step(st) store_fault_step(st)
+
+/* A third countdown, over COMMITs (V4-23, audit F112), which the write hook
+ * above cannot reach: COMMIT runs through sqlite3_exec. When it fires,
+ * tx_commit fails WITHOUT running COMMIT, so the transaction is still open
+ * -- what SQLite leaves behind when COMMIT returns SQLITE_BUSY. */
+static int g_store_commit_fault = -1;         /* <0 disarmed */
+void store_fault_arm_commit(int n_commits);   /* fail the n-th COMMIT, 0 = the next */
+int store_fault_arm_commit_left(void);        /* -1 once it has fired, or when disarmed */
+void store_fault_arm_commit(int n_commits) { g_store_commit_fault = n_commits; }
+int store_fault_arm_commit_left(void) { return g_store_commit_fault; }
+static int store_commit_fault_fire(void)
+{
+    if (g_store_commit_fault < 0) {
+        return 0;
+    }
+    if (g_store_commit_fault == 0) {
+        g_store_commit_fault = -1;
+        return 1;
+    }
+    g_store_commit_fault--;
+    return 0;
+}
+#define STORE_COMMIT_FAULT() (store_commit_fault_fire())
 #else
 #define STORE_FAULT_POINT() (0)
+#define STORE_COMMIT_FAULT() (0)
 #endif
 
 struct store {
@@ -142,8 +166,22 @@ static store_status_t exec_simple(sqlite3 *db, const char *sql)
 }
 
 static store_status_t tx_begin(store_t *s)  { return exec_simple(s->db, "BEGIN IMMEDIATE;"); }
-static store_status_t tx_commit(store_t *s) { return exec_simple(s->db, "COMMIT;"); }
 static void           tx_rollback(store_t *s) { (void)exec_simple(s->db, "ROLLBACK;"); }
+
+/* A COMMIT that fails may leave its transaction open -- SQLite documents
+ * that for SQLITE_BUSY -- or may already be rolled back, as SQLite did for
+ * every I/O failure V4-23 tried. Either way, ROLLBACK (harmless when nothing
+ * is open, and what SQLite advises): a handle left inside the transaction
+ * fails every later BEGIN, and holds the write lock against every other
+ * connection until it closes (audit F112). */
+static store_status_t tx_commit(store_t *s)
+{
+    if (STORE_COMMIT_FAULT() || exec_simple(s->db, "COMMIT;") != STORE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    return STORE_OK;
+}
 
 static const char *role_text(store_role_t r) { return r == STORE_ROLE_OPERATOR ? "operator" : "user"; }
 
