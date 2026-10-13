@@ -1,0 +1,5 @@
+CG1|^test_authd_ws$|modes: a socket mode other than spec 8's two is refused with LISTENER_ERR_ARG, and nothing is created
+CG2|^test_handshake$|P11: a decapsulated secret whose first two bytes are zero -- the initiator completes, keyed by exactly what decapsulation returned
+CG3|^test_authd_conn$|journal: no window of any decrypted payload
+CG4|^test_authd_conn$|journal: no window of any raw frame of the connection
+CG5|^test_authd_conn$|journal: no window of the ROTATE's own signatures

@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 110 findings (F1–F112), with severity, evidence and
+   register](../v4/audit.md). 112 findings (F1–F114), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 49 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 292 committed defects in 37 campaigns, each of which must be
+- **Mutations**: 297 committed defects in 38 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -200,7 +200,23 @@ same handle could not begin again. Campaign v67 shows the new checks catching
 F112 restored, and a COMMIT made around the helper on Req 7's refusal path.
 Real I/O failures at COMMIT, injected once by hand through a failing VFS,
 were already rolled back by SQLite itself; the path F112 needs is as narrow
-as its row said. F111 is still open.
+as its row said. F111 was left open.
+
+V4-24a closed **F111** and took two more of the map's gaps:
+- F111's refusal of an unlisted socket mode is a check now, and its header
+  names it correctly.
+- P11's "no branch on the decapsulated bytes" had rested on reading. The
+  test now chooses ciphertexts whose implicit-rejection secret takes every
+  value of its first byte, a zero at each position, and two leading zeros,
+  and needs the initiator to complete, keyed by exactly that secret.
+- D13's journal scan now covers every raw frame and every decrypted payload
+  of the connection. Building it found **F113**: the map said the scan
+  covered every signature, and the ROTATE's two were never looked for.
+
+Campaign v68 shows each new check catching a defect V4-23's suite let
+through. **F114**, found on the way, records that six tests' scratch
+directories, named for their PID, can fail a later run in a tree reused
+across crashing runs; it is open. F91 is the only other open finding.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

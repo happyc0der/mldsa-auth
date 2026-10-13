@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 292 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 297 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -156,7 +156,10 @@ the most important thing on this page.
 - check `test_vectors` "mlkem768_implicit_rejection: decaps of a tampered ciphertext SUCCEEDS (no error signal)"
 - mutation `v25 N6` — decapsulation skipped; the initiator derives from a zero ss_k
 - mutation `v23 K2` — the wrapper ignores the decapsulation status
-**Not established:** "MUST NOT branch on the decapsulated bytes" rests on code review; no test or mutation injects such a branch. `handshake.c` does branch on the decapsulation wrapper's return code, which reports wrapper or argument errors, not ciphertext authenticity.
+- check `test_handshake` "P11: every value of the decapsulated secret's first byte -- the initiator completes, keyed by exactly what decapsulation returned"
+- check `test_handshake` "P11: a decapsulated secret whose first two bytes are zero -- the initiator completes, keyed by exactly what decapsulation returned"
+- mutation `v68 CG2` — the initiator fails a handshake whose decapsulated secret starts with two zero bytes
+**Not established:** since V4-24a the decapsulated bytes are CHOSEN: for each of 289 initiator handshakes the test predicts implicit-rejection secrets (FIPS 203's J(z || c)) over candidate ciphertexts until one has a given property -- each value of its first byte, a zero at each position, two leading zeros -- confirms it by a real decapsulation, and needs the initiator to complete, keyed by HKDF over exactly that secret. That catches a branch which changes whether the handshake completes or what it derives, at the values the sweep reaches; a branch with no functional effect is a timing question, and nothing here measures timing. `handshake.c` does branch on the decapsulation wrapper's return code, which reports wrapper or argument errors, not ciphertext authenticity.
 
 ### P12 — The responder's retained KEM secret is wiped on every path
 - check `test_handshake` "v2-5 H6: responder secrets wiped after UNKNOWN_IDENTITY"
@@ -376,6 +379,8 @@ the most important thing on this page.
 - mutation `v58 GA14` — `admin.sock` registered with an empty allowlist in `authd_main.c`
 - check `authd_e2e` "PASS: E2E: a real second user (nobody, uid"
 - mutation `v65 RU1` — the allowlist scan compares the daemon's own uid, not the peer's; no test with one user can tell
+- check `test_authd_ws` "modes: a socket mode other than spec 8's two is refused with LISTENER_ERR_ARG, and nothing is created"
+- mutation `v68 CG1` — the refusal of a mode outside spec 8's two can never hold; 0666 opens a world-writable socket
 **Not established:** since V4-22b a real second user connects -- `nobody`, holding the daemon's group, as spec 8's site user would -- and is served on the socket its uid is listed for and refused at accept on the two it is not, file access granted; a third connection without the group shows file permission stops it first and is not counted. That leg needs Linux's `setpriv` and root or passwordless sudo, so it runs in CI's Linux jobs and a root container, and is skipped on macOS; elsewhere only the uid+1 leg runs. `nobody` stands in for the site's user, and admin.sock is opened to it for the leg, since its 0600 would stop it before the check. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
 
 ### D12 — The client address used for rate limiting is obtained from a source the client cannot forge
@@ -409,7 +414,13 @@ the most important thing on this page.
 - check `test_authd_log` "fp: authd_fp_of_pk is the SHA-256 of the whole public key"
 - mutation `v63 FT1` — `authd_log_fp`'s parameter widened to `const void *`, so a bare secret compiles again (audit F41)
 - mutation `v63 FT2` — `authd_fp_of_pk` hashes one byte short of the public key
-**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing); the local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase), and raw frames and decrypted payloads are not searched for. "No option to enable any of them" rests on the logger's API shape. Since V4-21 that shape refuses a bare 32-byte buffer at compile time (`log_fp_type`), but a secret deliberately cast to `authd_fp_t` compiles, and only the journal scans catch it, as they catch W12, G12 and GC4. Until V4-22a this sentence still said the sink accepts any 32-byte secret (audit F109).
+- check `test_authd_conn` "journal: no window of any raw frame of the connection"
+- check `test_authd_conn` "journal: no window of any decrypted payload"
+- check `test_authd_conn` "journal: no window of the ROTATE's own signatures"
+- mutation `v68 CG3` — the decrypted ROTATE's first 32 bytes are logged
+- mutation `v68 CG4` — every received record's first ciphertext bytes are logged
+- mutation `v68 CG5` — the start of the ROTATE's sig_old is logged (audit F113)
+**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing) -- the ROTATE's `sig_old` and `sig_new` only since V4-24a, though this paragraph had said "each signature" before (audit F113). Since V4-24a it also covers every byte the connection put on the wire -- the three handshake messages and the four records -- and every payload a record carried, decrypted, in both directions; windows wholly inside the ROTATE_ACK's `fp_new`, which the journal records on purpose, are not looked for, and BYE's one-byte payload is below any window. `authd_log_slot_id` prints bytes as escaped printable text, which these scans do not decode. The local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase). "No option to enable any of them" rests on the logger's API shape. Since V4-21 that shape refuses a bare 32-byte buffer at compile time (`log_fp_type`), but a secret deliberately cast to `authd_fp_t` compiles, and only the journal scans catch it, as they catch W12, G12 and GC4. Until V4-22a this sentence still said the sink accepts any 32-byte secret (audit F109).
 
 ### D14 — Every store mutation is a single transaction
 - check `test_authd_store` "a half-rotation is impossible: after reopen the old key is still active"
