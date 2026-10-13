@@ -724,6 +724,22 @@ static size_t exchange_record(daemon_t *d, client_t *c, const uint8_t *content, 
     return pl;
 }
 
+/* exchange_record, keeping the bytes on the wire: the sealed record sent and
+ * the sealed reply received (V4-24a: the journal is searched for them). */
+static size_t exchange_record_wire(daemon_t *d, client_t *c, const uint8_t *content, size_t len,
+                                   uint8_t *sent, size_t *sent_len, uint8_t *got, size_t *got_len,
+                                   uint8_t *reply, size_t reply_cap)
+{
+    size_t pl = 0;
+    *sent_len = 0;
+    *got_len = 0;
+    if (session_seal(&c->sess, content, len, sent, AUTHD_MAX_RECORD, sent_len) != SESSION_OK) { return 0; }
+    if (send_frame(c->fd, sent, *sent_len) != 0) { return 0; }
+    if (recv_frame(d, c->fd, got, AUTHD_MAX_RECORD, got_len) != 0) { return 0; }
+    if (session_open(&c->sess, got, *got_len, reply, reply_cap, &pl) != SESSION_OK) { return 0; }
+    return pl;
+}
+
 static uint8_t reply_error_code(const uint8_t *pt, size_t len)
 {
     uint8_t code = 0xffu;
@@ -1076,11 +1092,26 @@ static int scan_hit(const char *what, size_t w, size_t len, const char *how)
  * search covers every alignment. With `is_sk`, s is an ML-DSA secret key and
  * only its wholly secret windows are looked for. A hit names `what` and the
  * window, so a failure explains itself. */
-static int log_holds_window(const char *log, const char *what, const uint8_t *s, size_t n, int is_sk)
+typedef struct { size_t lo, hi; } span_t;
+
+/* 1 if [w, w+len) lies wholly inside one of the spans. */
+static int in_spans(size_t w, size_t len, const span_t *skip, size_t nskip)
+{
+    for (size_t i = 0; i < nskip; i++) {
+        if (w >= skip[i].lo && w + len <= skip[i].hi) { return 1; }
+    }
+    return 0;
+}
+
+/* log_holds_window, not looking for windows wholly inside `skip`: the parts
+ * of a buffer that are logged on purpose (a fingerprint) or are evidence of
+ * nothing (a signature's mostly-zero hint). */
+static int log_holds_window_skip(const char *log, const char *what, const uint8_t *s, size_t n, int is_sk,
+                                 const span_t *skip, size_t nskip)
 {
     char hex[33], b64[32];
     for (size_t w = 0; w + 12u <= n; w++) {
-        if (w + 16u <= n && (!is_sk || sk_window_is_secret(w, 16u))) {
+        if (w + 16u <= n && (!is_sk || sk_window_is_secret(w, 16u)) && !in_spans(w, 16u, skip, nskip)) {
             (void)sodium_bin2hex(hex, sizeof hex, s + w, 16u);
             if (strstr(log, hex) != NULL) { return scan_hit(what, w, 16u, "hex"); }
             for (size_t i = 0; hex[i] != '\0'; i++) {
@@ -1088,7 +1119,7 @@ static int log_holds_window(const char *log, const char *what, const uint8_t *s,
             }
             if (strstr(log, hex) != NULL) { return scan_hit(what, w, 16u, "upper-case hex"); }
         }
-        if (!is_sk || sk_window_is_secret(w, 12u)) {
+        if ((!is_sk || sk_window_is_secret(w, 12u)) && !in_spans(w, 12u, skip, nskip)) {
             (void)sodium_bin2base64(b64, sizeof b64, s + w, 12u, sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
             if (strstr(log, b64) != NULL) { return scan_hit(what, w, 12u, "base64"); }
             (void)sodium_bin2base64(b64, sizeof b64, s + w, 12u, sodium_base64_VARIANT_URLSAFE_NO_PADDING);
@@ -1096,6 +1127,11 @@ static int log_holds_window(const char *log, const char *what, const uint8_t *s,
         }
     }
     return 0;
+}
+
+static int log_holds_window(const char *log, const char *what, const uint8_t *s, size_t n, int is_sk)
+{
+    return log_holds_window_skip(log, what, s, n, is_sk, NULL, 0u);
 }
 
 /* An ML-DSA-65 signature is c~ (48) || z (5 x 640) || h (55 + 6). h is mostly
@@ -1130,6 +1166,11 @@ static void test_journal_holds_no_key_material(void)
     uint8_t x_priv[KEX_PRIVATE_KEY_BYTES], ss_kem[MLKEM_SHARED_SECRET_BYTES];
     uint8_t keys_c[64], keys_s[64];
     int snap_x = 0, snap_ss = 0, snap_keys = 0;
+    /* V4-24a: the records on the wire and the payloads they carried, kept
+     * for the scan (CLAIMS D13 had searched for neither). */
+    static uint8_t code_rec[AUTHD_MAX_RECORD], code_pt[AUTHD_MAX_RECORD], rot[AUTHD_MAX_RECORD],
+        rot_rec[AUTHD_MAX_RECORD], ack_rec[AUTHD_MAX_RECORD], ack[AUTHD_MAX_RECORD], bye_rec[AUTHD_MAX_RECORD];
+    size_t code_n = 0, code_pl = 0, rl = 0, rot_n = 0, ack_n = 0, ackl = 0, bye_n = 0;
 
     client_t c;
     memset(&c, 0, sizeof c);
@@ -1160,14 +1201,9 @@ static void test_journal_holds_no_key_material(void)
     session_default_limits(&lim);
     lim.pad_bucket = 256u;
     CHECK(session_init_from_handshake(&c.sess, &c.hs, &lim, NULL, NULL) == SESSION_OK, "journal: session");
-    {
-        uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
-        size_t n = 0, pl = 0;
-        CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) == 0 &&
-                  session_open(&c.sess, rec, n, pt, sizeof pt, &pl) == SESSION_OK,
-              "journal: the login code arrives");
-        sodium_memzero(pt, sizeof pt);
-    }
+    CHECK(recv_frame(&d, c.fd, code_rec, sizeof code_rec, &code_n) == 0 &&
+              session_open(&c.sess, code_rec, code_n, code_pt, sizeof code_pt, &code_pl) == SESSION_OK,
+          "journal: the login code arrives");
     memcpy(keys_c, c.sess.keys, sizeof keys_c);
     for (size_t i = 0; i < d.nslots; i++) {
         if (d.conns[i].stage == CONN_STAGE_SERVING) { memcpy(keys_s, d.conns[i].sess.keys, sizeof keys_s); snap_keys = 1; }
@@ -1177,16 +1213,15 @@ static void test_journal_holds_no_key_material(void)
 
     /* the ROTATE, then the BYE */
     {
-        uint8_t rot[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
-        const size_t rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
-                                       &kp, &new_kp, &new_kp, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
-        const size_t pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
-        CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == 0xfeu, "journal: the ROTATE is acknowledged");
-        uint8_t bye[AUTHMSG_BYE_CONTENT_LEN], rec[AUTHD_MAX_RECORD];
-        size_t bl = 0, out_len = 0;
+        rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                          &kp, &new_kp, &new_kp, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        ackl = exchange_record_wire(&d, &c, rot, rl, rot_rec, &rot_n, ack_rec, &ack_n, ack, sizeof ack);
+        CHECK(rl > 0 && ackl > 0 && reply_error_code(ack, ackl) == 0xfeu, "journal: the ROTATE is acknowledged");
+        uint8_t bye[AUTHMSG_BYE_CONTENT_LEN];
+        size_t bl = 0;
         CHECK(authmsg_encode_bye(bye, sizeof bye, &bl) == AUTHMSG_OK &&
-                  session_seal(&c.sess, bye, bl, rec, sizeof rec, &out_len) == SESSION_OK &&
-                  send_frame(c.fd, rec, out_len) == 0 && PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u),
+                  session_seal(&c.sess, bye, bl, bye_rec, sizeof bye_rec, &bye_n) == SESSION_OK &&
+                  send_frame(c.fd, bye_rec, bye_n) == 0 && PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u),
               "journal: BYE closes the connection");
     }
     authd_log_init(stderr, AUTHD_LOG_ERROR);
@@ -1215,7 +1250,55 @@ static void test_journal_holds_no_key_material(void)
               !log_holds_window(log, "CH nonce", ch + chl - WIRE_NONCE_LEN, WIRE_NONCE_LEN, 0),
           "journal: no window of either signature or of the ClientHello's nonce");
 
+    /* V4-24a. Every byte the connection put on the wire, and every payload a
+     * record carried, decrypted -- in both directions. Two kinds of window
+     * are not looked for: those wholly inside a signature's hint, mostly zero
+     * padding and evidence of nothing (as above), and those wholly inside the
+     * ROTATE_ACK's fp_new, which the journal records on purpose
+     * (event=rotate-fp-new). BYE's payload is one byte, below any window;
+     * its record is searched. */
+    const size_t hint = sig_len - SIG_SCANNED;
+    authmsg_rotate_t rm;
+    memset(&rm, 0, sizeof rm);
+    const int rot_ok = rl > 0 && authmsg_decode_rotate(rot, rl, &rm) == AUTHMSG_OK &&
+                       rm.sig_old_len == sig_len && rm.sig_new_len == sig_len;
+    authmsg_rotate_ack_t am;
+    memset(&am, 0, sizeof am);
+    const uint8_t *fp_at = (ackl > 0 && authmsg_decode_rotate_ack(ack, ackl, &am) == AUTHMSG_OK)
+                               ? (const uint8_t *)memmem(ack, ackl, am.fp_new, sizeof am.fp_new) : NULL;
+    const span_t sh_hint[1] = { { shl - hint, shl } };
+    const span_t ca_hint[1] = { { cal - hint, cal } };
+    span_t rot_hints[2] = { { 0, 0 }, { 0, 0 } };
+    span_t ack_fp[1] = { { 0, 0 } };
+    if (rot_ok) {
+        const size_t o = (size_t)(rm.sig_old - rot), n2 = (size_t)(rm.sig_new - rot);
+        rot_hints[0] = (span_t){ o + SIG_SCANNED, o + sig_len };
+        rot_hints[1] = (span_t){ n2 + SIG_SCANNED, n2 + sig_len };
+    }
+    if (fp_at != NULL) {
+        const size_t o = (size_t)(fp_at - ack);
+        ack_fp[0] = (span_t){ o, o + sizeof am.fp_new };
+    }
+    CHECK(log != NULL && code_n > 0 && rot_n > 0 && ack_n > 0 && bye_n > 0 &&
+              !log_holds_window_skip(log, "ClientHello", ch, chl, 0, NULL, 0u) &&
+              !log_holds_window_skip(log, "ServerHello", sh, shl, 0, sh_hint, 1u) &&
+              !log_holds_window_skip(log, "ClientAuth", ca, cal, 0, ca_hint, 1u) &&
+              !log_holds_window(log, "the login-code record", code_rec, code_n, 0) &&
+              !log_holds_window(log, "the ROTATE record", rot_rec, rot_n, 0) &&
+              !log_holds_window(log, "the ROTATE_ACK record", ack_rec, ack_n, 0) &&
+              !log_holds_window(log, "the BYE record", bye_rec, bye_n, 0),
+          "journal: no window of any raw frame of the connection");
+    CHECK(log != NULL && code_pl > 0 && rot_ok && fp_at != NULL &&
+              !log_holds_window(log, "the login-code payload", code_pt, code_pl, 0) &&
+              !log_holds_window_skip(log, "the ROTATE payload", rot, rl, 0, rot_hints, 2u) &&
+              !log_holds_window_skip(log, "the ROTATE_ACK payload", ack, ackl, 0, ack_fp, 1u),
+          "journal: no window of any decrypted payload");
+    CHECK(log != NULL && rot_ok && !log_holds_window(log, "sig_old", rm.sig_old, SIG_SCANNED, 0) &&
+              !log_holds_window(log, "sig_new", rm.sig_new, SIG_SCANNED, 0),
+          "journal: no window of the ROTATE's own signatures");
+
     free(log);
+    sodium_memzero(code_pt, sizeof code_pt);
     sodium_memzero(x_priv, sizeof x_priv);
     sodium_memzero(ss_kem, sizeof ss_kem);
     sodium_memzero(keys_c, sizeof keys_c);

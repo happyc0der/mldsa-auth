@@ -956,6 +956,46 @@ static void test_proxy_uid_allowlist(void)
     h_stop(&d);
 }
 
+/* Spec 8 gives the local sockets exactly two modes, and listener_open_unix
+ * refuses any other (audit F111: its header named the wrong refusal). A mode
+ * outside the two must be refused with LISTENER_ERR_ARG before anything is
+ * created; the two it allows must come out exactly as asked. */
+static void test_listener_modes(void)
+{
+    static const mode_t refused[] = { 0666, 0644, 0700, 0 };
+    int all_refused = 1;
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        char path[384];
+        snprintf(path, sizeof path, "%s/mode-%03o.sock", g_dir, (unsigned)refused[i]);
+        int fd = -1;
+        struct stat st;
+        const listener_status_t r = listener_open_unix(path, 8, refused[i], &fd);
+        if (r != LISTENER_ERR_ARG || fd != -1 || stat(path, &st) == 0) {
+            printf("  modes: %03o was not refused cleanly (status %d, fd %d)\n", (unsigned)refused[i], (int)r, fd);
+            all_refused = 0;
+        }
+        if (fd >= 0) { listener_close(&fd, path); }
+    }
+    CHECK(all_refused,
+          "modes: a socket mode other than spec 8's two is refused with LISTENER_ERR_ARG, and nothing is created");
+
+    static const mode_t allowed[] = { LISTENER_MODE_GROUP, LISTENER_MODE_PRIVATE };
+    int all_exact = 1;
+    for (size_t i = 0; i < sizeof allowed / sizeof allowed[0]; i++) {
+        char path[384];
+        snprintf(path, sizeof path, "%s/mode-ok-%03o.sock", g_dir, (unsigned)allowed[i]);
+        int fd = -1;
+        struct stat st;
+        if (listener_open_unix(path, 8, allowed[i], &fd) != LISTENER_OK || fd < 0 ||
+            stat(path, &st) != 0 || (st.st_mode & 07777) != allowed[i]) {
+            printf("  modes: %03o did not open as exactly that mode\n", (unsigned)allowed[i]);
+            all_exact = 0;
+        }
+        if (fd >= 0) { listener_close(&fd, path); }
+    }
+    CHECK(all_exact, "modes: 0660 and 0600 each open, as exactly that mode (the canary)");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -978,6 +1018,7 @@ int main(void)
     test_ratelimit();
     test_proxy_through_loop();
     test_proxy_uid_allowlist();
+    test_listener_modes();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }
