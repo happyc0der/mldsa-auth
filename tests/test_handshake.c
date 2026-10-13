@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include <sodium.h>
+#include <oqs/sha3.h>
 
 #include "handshake.h"
 #include "kex.h"
@@ -2601,6 +2602,122 @@ static void test_v25_h3_tampered_ciphertext(void) {
     handshake_ctx_wipe(&ini);
 }
 
+/* ---- P11: decapsulation is never a validation signal (V4-24a) ----------
+ * Only the initiator decapsulates, and a ciphertext that is not the one
+ * encapsulated to its key yields ML-KEM's implicit-rejection secret,
+ * J(z || c) = SHAKE256(z || c) (FIPS 203; z is the last 32 bytes of the
+ * decapsulation key). A branch on that secret's bytes is invisible to a
+ * random tampering unless the tampering happens to hit it -- and a branch
+ * that a random secret hits often would fail the suite at random rather than
+ * by name. So each ciphertext here is CHOSEN, by predicting J over
+ * candidates, to give the secret one property: each value of its first
+ * byte, a zero at each position, or two leading zero bytes. Every chosen
+ * ciphertext is then really decapsulated (the prediction is the canary),
+ * validly signed into a ServerHello, and the initiator must complete, keyed
+ * by HKDF over exactly what decapsulation returned. */
+typedef int (*p11_pred_t)(const uint8_t ss[32], int arg);
+static int p11_first_byte_is(const uint8_t ss[32], int v) { return ss[0] == (uint8_t)v; }
+static int p11_zero_at(const uint8_t ss[32], int i) { return ss[i] == 0u; }
+static int p11_two_leading_zeros(const uint8_t ss[32], int unused) {
+    (void)unused;
+    return ss[0] == 0u && ss[1] == 0u;
+}
+
+static unsigned long g_p11_predicted;
+static int g_p11_canary_ok = 1;
+
+static int p11_one(p11_pred_t pred, int arg) {
+    static handshake_ctx_t ini;
+    kex_keypair_t b_eph;
+    client_hello_t chm;
+    uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN],
+        ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 0, ca_len = 0, consumed = 0;
+    uint8_t ct[WIRE_MLKEM_CT_LEN], ss_honest[32], ss_pred[32], ss_real[32], ss_x[32], sid[16], th[32];
+    uint8_t want_c2s[32], want_s2c[32];
+    static uint8_t jin[32 + WIRE_MLKEM_CT_LEN];
+
+    if (handshake_initiator_init(&ini, ID_A, sizeof(ID_A), &g_kp_a, &g_ks, ID_B, sizeof(ID_B)) != HANDSHAKE_OK ||
+        handshake_initiator_create_client_hello(&ini, ch, sizeof(ch), &ch_len) != HANDSHAKE_OK ||
+        kex_keypair_generate(&b_eph) != 0 || encaps_for(ch, ch_len, ct, ss_honest) != 0 ||
+        ini.kem.secret_key == NULL) {
+        fatal("P11 fixture");
+    }
+    /* Candidates: the honest ciphertext with its first eight bytes replaced
+     * by a counter, until J(z || c) has the property. */
+    memcpy(jin, ini.kem.secret_key + MLKEM_SECRET_KEY_BYTES - 32u, 32);
+    for (uint64_t n = 1;; n++) {
+        for (size_t i = 0; i < 8; i++) { ct[i] = (uint8_t)(n >> (8u * i)); }
+        memcpy(jin + 32, ct, WIRE_MLKEM_CT_LEN);
+        OQS_SHA3_shake256(ss_pred, sizeof(ss_pred), jin, sizeof(jin));
+        g_p11_predicted++;
+        if (pred(ss_pred, arg)) { break; }
+        if (n > 50000000u) { fatal("P11: no ciphertext found"); }
+    }
+    if (mlkem_decaps(ss_real, ct, &ini.kem) != 0 || sodium_memcmp(ss_real, ss_pred, 32) != 0 ||
+        sodium_memcmp(ss_real, ss_honest, 32) == 0) {
+        g_p11_canary_ok = 0;
+    }
+
+    session_id_of(ch, ch_len, sid);
+    if (build_signed_server_hello(ch, ch_len, ID_B, sizeof(ID_B), &g_kp_b, b_eph.public_key, ct, sid, sh,
+                                  sizeof(sh), &sh_len) != 0) {
+        fatal("P11 ServerHello");
+    }
+    const int done = handshake_initiator_verify_server_hello(&ini, sh, sh_len) == HANDSHAKE_OK &&
+                     handshake_initiator_create_client_auth(&ini, ca, sizeof(ca), &ca_len) == HANDSHAKE_OK &&
+                     handshake_initiator_finish(&ini) == HANDSHAKE_OK &&
+                     handshake_get_state(&ini) == HANDSHAKE_STATE_ESTABLISHED;
+
+    if (decode_client_hello(ch, ch_len, &chm, &consumed) != 0 ||
+        kex_shared_secret(ss_x, &b_eph, chm.ephemeral_pub) != 0 ||
+        transcript_hash_client_auth(ch, ch_len, sh, sh_len, th) != 0) {
+        fatal("P11 secrets");
+    }
+    expected_keys(ss_x, ss_real, sid, ID_A, sizeof(ID_A), ID_B, sizeof(ID_B), th, want_c2s, want_s2c);
+    const uint8_t *c2s = NULL, *s2c = NULL;
+    const int keyed = done && handshake_session_key_c2s(&ini, &c2s) == HANDSHAKE_OK &&
+                      handshake_session_key_s2c(&ini, &s2c) == HANDSHAKE_OK &&
+                      sodium_memcmp(c2s, want_c2s, 32) == 0 && sodium_memcmp(s2c, want_s2c, 32) == 0;
+
+    sodium_memzero(ss_honest, sizeof(ss_honest));
+    sodium_memzero(ss_pred, sizeof(ss_pred));
+    sodium_memzero(ss_real, sizeof(ss_real));
+    sodium_memzero(ss_x, sizeof(ss_x));
+    sodium_memzero(jin, sizeof(jin));
+    kex_keypair_free(&b_eph);
+    handshake_ctx_wipe(&ini);
+    return keyed;
+}
+
+static void test_p11_decapsulated_values(void) {
+    int handshakes = 0, first_ok = 1, zero_ok = 1;
+    for (int v = 0; v < 256; v++, handshakes++) {
+        if (!p11_one(p11_first_byte_is, v)) {
+            printf("  P11: a secret whose first byte is 0x%02x did not complete as keyed\n", (unsigned)v);
+            first_ok = 0;
+        }
+    }
+    for (int i = 0; i < 32; i++, handshakes++) {
+        if (!p11_one(p11_zero_at, i)) {
+            printf("  P11: a secret with a zero at byte %d did not complete as keyed\n", i);
+            zero_ok = 0;
+        }
+    }
+    const int two_ok = p11_one(p11_two_leading_zeros, 0);
+    handshakes++;
+    printf("  P11: %d handshakes on chosen ciphertexts, %lu implicit-rejection secrets predicted\n", handshakes,
+           g_p11_predicted);
+    CHECK(g_p11_canary_ok,
+          "P11: every chosen ciphertext was really decapsulated by implicit rejection, to the predicted secret (the canary)");
+    CHECK(first_ok,
+          "P11: every value of the decapsulated secret's first byte -- the initiator completes, keyed by exactly what decapsulation returned");
+    CHECK(zero_ok,
+          "P11: a zero at each of the 32 positions of the decapsulated secret -- the initiator completes, keyed by exactly what decapsulation returned");
+    CHECK(two_ok,
+          "P11: a decapsulated secret whose first two bytes are zero -- the initiator completes, keyed by exactly what decapsulation returned");
+}
+
 static void test_v25_h4_substitution(void) {
     static handshake_pending_store_t store;
     static handshake_ctx_t ini1, ini2, res;
@@ -3417,6 +3534,7 @@ static void run_step4_tests(void) {
     test_v25_h1_manual_responder();             /* V2-5 H1 */
     test_v25_h2_manual_initiator();             /* V2-5 H2 */
     test_v25_h3_tampered_ciphertext();          /* V2-5 H3 */
+    test_p11_decapsulated_values();             /* V4-24a, CLAIMS P11 */
     test_v25_h4_substitution();                 /* V2-5 H4 */
     test_v25_h5_malformed_ek();                 /* V2-5 H5 */
     test_v25_h6_wipe_matrix();                  /* V2-5 H6 */

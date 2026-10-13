@@ -47,7 +47,7 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
  * which made the admin socket group-reachable -- the uid allowlist still
  * refused such a peer, but defence in depth is exactly what a second layer is
  * for, and the spec said 0600. Only these two are permitted; anything else is
- * LISTENER_ERR_PATH, so a future caller cannot invent 0666. */
+ * LISTENER_ERR_ARG, so a future caller cannot invent 0666. */
 #define LISTENER_MODE_PRIVATE 0600  /* admin.sock */
 #define LISTENER_MODE_GROUP   0660  /* site.sock and the proxy-facing listener */
 listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode, int *fd);
