@@ -30,6 +30,8 @@
 void store_fault_arm(int n_steps);   /* test-only, from store.c under the hook */
 void store_fault_arm_write(int n_writes);   /* test-only: fail the n-th writing step (V4-22c) */
 int store_fault_arm_write_left(void);       /* -1 once that fault has fired */
+void store_fault_arm_commit(int n_commits); /* test-only: fail the n-th COMMIT, transaction left open (V4-23) */
+int store_fault_arm_commit_left(void);      /* -1 once that fault has fired */
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -235,6 +237,7 @@ typedef struct {
     store_status_t (*call)(store_t *s);
     store_status_t want;
     int changes;
+    const char *commit_check;   /* the case's own transaction ends in a COMMIT: its named check; NULL if not */
 } sweep_case_t;
 
 static uint8_t g_swpk[4][STORE_PK_BYTES];
@@ -417,6 +420,66 @@ static int sweep_one(const sweep_case_t *c)
     }
     if (n == 0 || n >= 64) { ok = 0; }
     printf("  sweep(%s): %d write(s), each faulted in turn\n", c->name, n);
+    store_close(s);
+    return ok;
+}
+
+/* A failed COMMIT (V4-23, audit F112). The commit hook fails the call's
+ * COMMIT with its transaction still open, which is what SQLite leaves after
+ * COMMIT returns SQLITE_BUSY. The call must fail and the committed database
+ * be as it was. Then a second store must open the same file -- store_open
+ * takes the write lock, which an open transaction would still hold -- and
+ * the same handle must complete the call, which it cannot from inside the
+ * failed transaction. A case with a transaction of its own must reach the
+ * hook: a COMMIT made around tx_commit would not. */
+static int commit_one(const sweep_case_t *c)
+{
+    char dbp[600];
+    char leaf[64];
+    snprintf(leaf, sizeof leaf, "commit-%s.sqlite3", c->name);
+    store_t *s = fresh_store(leaf, dbp, sizeof dbp);
+    if (s == NULL || c->setup(s) != 0) {
+        printf("  commit(%s): setup failed\n", c->name);
+        if (s != NULL) { store_close(s); }
+        return 0;
+    }
+    uint8_t before[crypto_hash_sha256_BYTES], after[crypto_hash_sha256_BYTES];
+    int ok = db_digest(dbp, before) == 0;
+    store_fault_arm_commit(0);
+    store_status_t r = c->call(s);
+    const int fired = store_fault_arm_commit_left() == -1;
+    store_fault_arm_commit(-1);
+    if (!fired) {
+        printf("  commit(%s): the call reached no COMMIT through tx_commit\n", c->name);
+        store_close(s);
+        return 0;
+    }
+    if (r == STORE_OK) {
+        printf("  commit(%s): the COMMIT failed and the call still returned OK\n", c->name);
+        ok = 0;
+    }
+    if (db_digest(dbp, after) != 0 || memcmp(before, after, sizeof before) != 0) {
+        printf("  commit(%s): after the failed COMMIT the committed database had changed\n", c->name);
+        ok = 0;
+    }
+    store_t *s2 = NULL;
+    if (store_open(dbp, KEK, &s2) != STORE_OK) {
+        printf("  commit(%s): a second store could not open the file: the write lock is still held\n", c->name);
+        ok = 0;
+    } else {
+        store_close(s2);
+    }
+    r = c->call(s);
+    if (r != c->want) {
+        printf("  commit(%s): the same handle then returned %s, expected %s\n",
+               c->name, store_status_name(r), store_status_name(c->want));
+        ok = 0;
+    } else if (c->changes && (db_digest(dbp, after) != 0 || memcmp(before, after, sizeof before) == 0)) {
+        printf("  commit(%s): the call made again changed nothing the digest could see (canary)\n", c->name);
+        ok = 0;
+    }
+    printf("  commit(%s): its COMMIT failed with the transaction open, then the same handle made the call again\n",
+           c->name);
     store_close(s);
     return ok;
 }
@@ -1344,54 +1407,83 @@ int main(void)
         for (int i = 0; i < 4; i++) { make_pk(g_swpk[i], (uint8_t)(0x90 + i)); }
         static const sweep_case_t cases[] = {
             { "add-user", "sweep(add-user): a fault at each of its writes leaves the database exactly as it was",
-              sw_none, sc_add_user, STORE_OK, 1 },
+              sw_none, sc_add_user, STORE_OK, 1,
+              "commit(add-user): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "enroll-new-user", "sweep(enroll-new-user): a fault at each of its writes leaves the database exactly as it was",
-              sw_none, sc_enroll_new, STORE_OK, 1 },
+              sw_none, sc_enroll_new, STORE_OK, 1,
+              "commit(enroll-new-user): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "enroll", "sweep(enroll): a fault at each of its writes leaves the database exactly as it was",
-              sw_user, sc_enroll, STORE_OK, 1 },
+              sw_user, sc_enroll, STORE_OK, 1,
+              "commit(enroll): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "enroll-req7", "sweep(enroll-req7): a fault at each of its writes leaves the database exactly as it was",
-              sw_device, sc_enroll_req7, STORE_ERR_CONFLICT, 1 },
+              sw_device, sc_enroll_req7, STORE_ERR_CONFLICT, 1,
+              "commit(enroll-req7): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "disable", "sweep(disable): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_disable, STORE_OK, 1 },
+              sw_token, sc_disable, STORE_OK, 1,
+              "commit(disable): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "enable", "sweep(enable): a fault at each of its writes leaves the database exactly as it was",
-              sw_disabled, sc_enable, STORE_OK, 1 },
+              sw_disabled, sc_enable, STORE_OK, 1,
+              "commit(enable): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "rotate", "sweep(rotate): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_rotate, STORE_OK, 1 },
+              sw_token, sc_rotate, STORE_OK, 1,
+              "commit(rotate): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "revoke", "sweep(revoke): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_revoke, STORE_OK, 1 },
+              sw_token, sc_revoke, STORE_OK, 1,
+              "commit(revoke): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "touch-last-seen", "sweep(touch-last-seen): a fault at each of its writes leaves the database exactly as it was",
-              sw_device, sc_touch, STORE_OK, 1 },
+              sw_device, sc_touch, STORE_OK, 1,
+              NULL },
             { "verify-token", "sweep(verify-token): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_verify, STORE_OK, 1 },
+              sw_token, sc_verify, STORE_OK, 1,
+              NULL },
             { "delete-token", "sweep(delete-token): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_delete_token, STORE_OK, 1 },
+              sw_token, sc_delete_token, STORE_OK, 1,
+              NULL },
             { "delete-tokens-for-handle", "sweep(delete-tokens-for-handle): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_delete_handle, STORE_OK, 1 },
+              sw_token, sc_delete_handle, STORE_OK, 1,
+              NULL },
             { "delete-tokens-for-user", "sweep(delete-tokens-for-user): a fault at each of its writes leaves the database exactly as it was",
-              sw_token, sc_delete_user, STORE_OK, 1 },
+              sw_token, sc_delete_user, STORE_OK, 1,
+              NULL },
             { "add-token", "sweep(add-token): a fault at each of its writes leaves the database exactly as it was",
-              sw_device, sc_add_token, STORE_OK, 1 },
+              sw_device, sc_add_token, STORE_OK, 1,
+              "commit(add-token): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "add-login-code", "sweep(add-login-code): a fault at each of its writes leaves the database exactly as it was",
-              sw_device, sc_add_code, STORE_OK, 1 },
+              sw_device, sc_add_code, STORE_OK, 1,
+              "commit(add-login-code): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "consume-login-code", "sweep(consume-login-code): a fault at each of its writes leaves the database exactly as it was",
-              sw_login_code, sc_consume_code, STORE_OK, 1 },
+              sw_login_code, sc_consume_code, STORE_OK, 1,
+              "commit(consume-login-code): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "recovery-replace", "sweep(recovery-replace): a fault at each of its writes leaves the database exactly as it was",
-              sw_codes, sc_replace, STORE_OK, 1 },
+              sw_codes, sc_replace, STORE_OK, 1,
+              "commit(recovery-replace): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "recovery-consume", "sweep(recovery-consume): a fault at each of its writes leaves the database exactly as it was",
-              sw_codes, sc_consume, STORE_OK, 1 },
+              sw_codes, sc_consume, STORE_OK, 1,
+              "commit(recovery-consume): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "recovery-consume-revoke-all", "sweep(recovery-consume-revoke-all): a fault at each of its writes leaves the database exactly as it was",
-              sw_two_devices, sc_consume_all, STORE_OK, 1 },
+              sw_two_devices, sc_consume_all, STORE_OK, 1,
+              "commit(recovery-consume-revoke-all): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "note-failure", "sweep(note-failure): a fault at each of its writes leaves the database exactly as it was",
-              sw_user, sc_failure, STORE_OK, 1 },
+              sw_user, sc_failure, STORE_OK, 1,
+              "commit(note-failure): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "note-failure-lock", "sweep(note-failure-lock): a fault at each of its writes leaves the database exactly as it was",
-              sw_four_failures, sc_failure, STORE_OK, 1 },
+              sw_four_failures, sc_failure, STORE_OK, 1,
+              "commit(note-failure-lock): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "enroll-via-ticket", "sweep(enroll-via-ticket): a fault at each of its writes leaves the database exactly as it was",
-              sw_ticket, sc_ticket, STORE_OK, 1 },
+              sw_ticket, sc_ticket, STORE_OK, 1,
+              "commit(enroll-via-ticket): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
             { "sweep", "sweep(sweep): a fault at each of its writes leaves the database exactly as it was",
-              sw_expired, sc_sweep, STORE_OK, 1 },
+              sw_expired, sc_sweep, STORE_OK, 1,
+              "commit(sweep): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
         };
         for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
             CHECK(sweep_one(&cases[i]), cases[i].check);
+        }
+        /* ---- and a failed COMMIT in each one with a transaction (V4-23, F112) */
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            if (cases[i].commit_check != NULL) {
+                CHECK(commit_one(&cases[i]), cases[i].commit_check);
+            }
         }
     }
 
