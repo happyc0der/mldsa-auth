@@ -7590,6 +7590,19 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   CI's 28 files and in 284 across `tools tests docs apps src`; `git diff
   --check` OK. Every statement of the mutation, campaign, anchor and findings
   counts was re-grepped.
+- **CI** 38312954860, dispatched on the pushed branch at `a6467f3`: 14/14.
+  Every count is as V4-22b's: 47 per suite job on Linux and macOS, 36
+  fuzz-labelled, 3 and 6 in the wasm job, the Caddy job's 9 PASS lines, the
+  secret scan 0 violations in 28 files. The claim map's gate resolved 324
+  citations. `test_authd_store` and the `store_fault_hook` gate passed on
+  all nine jobs that run the suite; CI prints no per-check lines, so the 23
+  sweep lines are the nightly's to show.
+- **The nightly**, with v66 FW1's expectation rotted (38315152955): red on
+  exactly that job, 50/51 (v66 adds the 51st). FW1 `SURVIVED(BAD:)` and FW2
+  `KILLED(2 named)`; every other campaign's verdicts match its spec -- 289
+  of 290 killed, every row restored clean with a passing clean suite and no
+  residue -- and the twelve fuzz targets ran 600 s each with 0 crashes and 0
+  artifacts.
 
 ### V4-22 as a whole
 
