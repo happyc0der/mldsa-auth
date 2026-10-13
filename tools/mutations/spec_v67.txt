@@ -1,2 +1,2 @@
-FC1|^test_authd_store$|commit(recovery-consume-revoke-all): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write;commit(add-user): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write CONTROL -- a check no test prints (the v67 job must go red)
+FC1|^test_authd_store$|commit(recovery-consume-revoke-all): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write;commit(add-user): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write
 FC2|^test_authd_store$|commit(enroll-req7): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write
