@@ -26,9 +26,10 @@ cmake -S . -B build && cmake --build build -j8
 tools/check_build_current.sh build && ctest --test-dir build
 ```
 
-`OK: build is current`, then `100% tests passed out of 40` (42 with
-`-DMLDSA_WASM_DIR` pointing at a wasm tree, 43 with a Chromium-family browser
-found as well).
+`OK: build is current`, then `100% tests passed out of 49` (51 with
+`-DMLDSA_WASM_DIR` pointing at a wasm tree, 52 with a Chromium-family browser
+found as well); `ubsan_aborts` and `fuzz_libfuzzer` report *Skipped* outside
+the trees they are for.
 
 ```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DENABLE_ASAN=ON && cmake --build build-asan -j8
@@ -38,14 +39,17 @@ tools/check_build_current.sh build-ubsan && tools/check_sanitizer_link.sh build-
 ```
 
 Each prints `OK: … is current`, `OK: asan|ubsan instrumentation present in all
-… executable(s)`, and `100% tests passed out of 40` -- or 43, with 41
-executables, when configured as this packet's trees were, with
-`-DMLDSA_WASM_DIR` and a browser found (the browser section below). Since
-V4-14c the UBSan build aborts on undefined behaviour (audit F94); before it, a
-UB report printed and the test still passed. To see it either way:
+… executable(s)` -- 42 in the ASan tree, 43 in the UBSan tree, which also
+builds `ubsan_canary` -- and `100% tests passed out of 49`, or 52 when
+configured as this packet's trees were, with `-DMLDSA_WASM_DIR` and a browser
+found (the browser section below). Since V4-14c the UBSan build aborts on
+undefined behaviour (audit F94); before it, a UB report printed and the test
+still passed. Since V4-24b that is a CTest, `ubsan_aborts`: a planted signed
+overflow must stop the process, and `build_flags` checks that every
+translation unit was told `-fno-sanitize-recover`. To see it either way:
 
 ```bash
-grep -c 'runtime error' build-ubsan/Testing/Temporary/LastTest.log     # printed 0
+grep -c 'runtime error' build-ubsan/Testing/Temporary/LastTest.log     # printed 1: ubsan_aborts's planted overflow, and nothing else
 ```
 
 `check_build_current.sh` rebuilds the project's own objects from scratch
@@ -56,7 +60,7 @@ A gcc 16 Release tree (the configuration no CI job uses):
 
 ```bash
 cmake -S . -B build-gcc16 -DCMAKE_C_COMPILER=gcc-16 -DCMAKE_BUILD_TYPE=Release && cmake --build build-gcc16 -j8
-ctest --test-dir build-gcc16                                           # 100% tests passed out of 40
+ctest --test-dir build-gcc16                                           # 100% tests passed out of 49
 ```
 
 ## The browser client
@@ -88,7 +92,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-297 committed mutations in 38 campaigns, each a defect the tests must catch
+299 committed mutations in 39 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree:
 
 ```bash
@@ -104,7 +108,7 @@ check (audit F90). Before editing sources, check that every campaign still
 applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (331 anchors, 38 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (336 anchors, 39 campaigns)
 ```
 
 ## The formal model
