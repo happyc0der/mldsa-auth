@@ -1,8 +1,8 @@
 # Build-flag evidence (V4-15c, CLAIMS P8). Run by CTest as
 #
 #   cmake -DCOMPILE_COMMANDS=<build>/compile_commands.json -DSOURCE_DIR=<repo>
-#         -DEXPECT_FORTIFY=ON|OFF -DARCHIVES="<a.a>|<b.a>" -DNM=<nm>
-#         -P check_build_flags.cmake
+#         -DEXPECT_FORTIFY=ON|OFF -DEXPECT_ASAN=ON|OFF -DEXPECT_UBSAN=ON|OFF
+#         -DARCHIVES="<a.a>|<b.a>" -DNM=<nm> -P check_build_flags.cmake
 #
 # tools/audit/check_hardening.sh reads the LINKED binaries, and there its
 # canary line cannot fail for this project's code: vendored liboqs and sqlite
@@ -16,6 +16,16 @@
 #   2. what the compiler DID with the canary flag: the project's own static
 #      archives, which hold project objects only, import __stack_chk_fail.
 #
+# Since V4-24b it also checks the sanitizer flags against the tree's intent
+# (EXPECT_ASAN / EXPECT_UBSAN, from ENABLE_ASAN, ENABLE_UBSAN and MLDSA_FUZZ):
+# a UBSan tree compiles every project TU with -fsanitize=undefined AND
+# -fno-sanitize-recover=undefined -- without the second, a UB report prints and
+# the test still passes (audit F94) -- an ASan tree with -fsanitize=address, and
+# a tree that is neither with no -fsanitize= at all. The flag strings are
+# written here, never read from MLDSA_SANITIZE_FLAGS: deleting a flag there must
+# not delete the expectation with it. What the compiler DID with the UBSan
+# flags is the CTest ubsan_aborts.
+#
 # FORTIFY gets no binary check: glibc ignores it without optimisation, and the
 # macOS SDK turns its checks on whatever the project asks, so a __*_chk
 # import proves nothing about this project in either place. What the gate
@@ -23,9 +33,9 @@
 # that is present and silently ignored would pass here.
 
 cmake_minimum_required(VERSION 3.20)
-foreach(_v COMPILE_COMMANDS SOURCE_DIR EXPECT_FORTIFY ARCHIVES NM)
+foreach(_v COMPILE_COMMANDS SOURCE_DIR EXPECT_FORTIFY EXPECT_ASAN EXPECT_UBSAN ARCHIVES NM)
   if(NOT DEFINED ${_v})
-    message(FATAL_ERROR "usage: cmake -DCOMPILE_COMMANDS=... -DSOURCE_DIR=... -DEXPECT_FORTIFY=ON|OFF -DARCHIVES=\"a|b\" -DNM=... -P check_build_flags.cmake")
+    message(FATAL_ERROR "usage: cmake -DCOMPILE_COMMANDS=... -DSOURCE_DIR=... -DEXPECT_FORTIFY=ON|OFF -DEXPECT_ASAN=ON|OFF -DEXPECT_UBSAN=ON|OFF -DARCHIVES=\"a|b\" -DNM=... -P check_build_flags.cmake")
   endif()
 endforeach()
 
@@ -85,6 +95,34 @@ foreach(_i RANGE 0 ${_last})
   elseif(NOT EXPECT_FORTIFY AND NOT _fort EQUAL -1)
     gate_fail("${_file} defines _FORTIFY_SOURCE in a sanitizer or fuzz tree, where it collides")
   endif()
+  # The sanitizers, by the tree's intent (V4-24b).
+  string(REGEX MATCHALL " -fsanitize=[^ ]+" _san "${_padded}")
+  set(_has_asan 0)
+  set(_has_ubsan 0)
+  foreach(_s IN LISTS _san)
+    if(_s MATCHES "address")
+      set(_has_asan 1)
+    endif()
+    if(_s MATCHES "undefined")
+      set(_has_ubsan 1)
+    endif()
+  endforeach()
+  string(FIND "${_padded}" " -fno-sanitize-recover=undefined " _norec_u)
+  string(FIND "${_padded}" " -fno-sanitize-recover=all " _norec_a)
+  if(EXPECT_UBSAN)
+    if(NOT _has_ubsan)
+      gate_fail("${_file} is compiled without -fsanitize=undefined in a UBSan tree")
+    endif()
+    if(_norec_u EQUAL -1 AND _norec_a EQUAL -1)
+      gate_fail("${_file} is compiled without -fno-sanitize-recover=undefined (a UBSan tree must stop on undefined behaviour, audit F94)")
+    endif()
+  endif()
+  if(EXPECT_ASAN AND NOT _has_asan)
+    gate_fail("${_file} is compiled without -fsanitize=address in an ASan tree")
+  endif()
+  if(NOT EXPECT_ASAN AND NOT EXPECT_UBSAN AND _san)
+    gate_fail("${_file} is instrumented (-fsanitize=) in a tree that is not a sanitizer tree")
+  endif()
 endforeach()
 
 if(_project EQUAL 0)
@@ -111,6 +149,15 @@ if(EXPECT_FORTIFY)
   message(STATUS "PASS: and with -D_FORTIFY_SOURCE=2 (not a sanitizer or fuzz tree)")
 else()
   message(STATUS "PASS: and without _FORTIFY_SOURCE, as a sanitizer or fuzz tree must be")
+endif()
+if(EXPECT_UBSAN)
+  message(STATUS "PASS: and with -fsanitize=undefined and -fno-sanitize-recover=undefined (a UBSan tree stops on undefined behaviour)")
+endif()
+if(EXPECT_ASAN)
+  message(STATUS "PASS: and with -fsanitize=address (an ASan tree)")
+endif()
+if(NOT EXPECT_ASAN AND NOT EXPECT_UBSAN)
+  message(STATUS "PASS: and with no -fsanitize= at all (not a sanitizer tree)")
 endif()
 message(STATUS "PASS: the project's own ${_n_arch} archives import __stack_chk_fail")
 message(STATUS "All checks passed")

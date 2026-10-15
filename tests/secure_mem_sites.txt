@@ -1,0 +1,47 @@
+# Every secure_mem_alloc call in src/ and apps/, checked BOTH ways by
+# secure_mem_sites.sh (V4-24b, CLAIMS P2/D2). One site per line:
+#
+#   path|the call's source line, whitespace-collapsed
+#
+# No line numbers, so an unrelated edit above a site does not move it; a
+# line that appears twice in one file is listed twice. Each site was read, in
+# V4-24b, to hold a secret: a key (ML-DSA, ML-KEM, X25519, the session keys,
+# the audit and log keys, the store KEK, a key envelope's key), a shared
+# secret, a passphrase, or a plaintext secret-key image -- or, at keyfile.c's
+# `out` and `fbuf`, a sealed envelope, kept in secure memory with the rest.
+# A site added to the tree must be read the same way before it is listed.
+src/protocol/session.c|uint8_t *keys = secure_mem_alloc(KEY_BLOCK_LEN);
+src/protocol/handshake.c|uint8_t *keys = secure_mem_alloc(SESSION_KEYS_LEN);
+src/protocol/handshake.c|probe = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
+src/protocol/handshake.c|shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
+src/protocol/handshake.c|ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
+src/protocol/handshake.c|keys = secure_mem_alloc(SESSION_KEYS_LEN);
+src/protocol/handshake.c|ctx->ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
+src/protocol/handshake.c|shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
+src/protocol/handshake.c|keys = secure_mem_alloc(SESSION_KEYS_LEN);
+src/crypto/mldsa_wrap.c|uint8_t *secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
+src/crypto/kex.c|uint8_t *sk = secure_mem_alloc(KEX_PRIVATE_KEY_BYTES);
+src/crypto/mlkem_wrap.c|uint8_t *secret_key = secure_mem_alloc(MLKEM_SECRET_KEY_BYTES);
+apps/authd/cli_prompt.c|uint8_t *buf = secure_mem_alloc(cap);
+apps/authd/cli_prompt.c|uint8_t *exact = secure_mem_alloc(len);
+apps/authd/authd_main.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+apps/authd/client_core.c|uint8_t *img = secure_mem_alloc(img_len);
+apps/authd/keyfile.c|uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+apps/authd/keyfile.c|uint8_t *out = secure_mem_alloc(total);
+apps/authd/keyfile.c|uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+apps/authd/keyfile.c|img = secure_mem_alloc(img_len);
+apps/authd/keyfile.c|uint8_t *fbuf = secure_mem_alloc(total);
+apps/authd/store/store.c|s->key_audit = secure_mem_alloc(STORE_AUDIT_MAC_BYTES);
+apps/authd/store/store.c|s->key_log = secure_mem_alloc(STORE_LOG_KEY_BYTES);
+apps/authd/authd_cli.c|uint8_t *img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
+apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+apps/authd/authd_cli.c|uint8_t *img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
+apps/authd/authd_cli.c|img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
+apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
+apps/authd/authd_secret.c|uint8_t *buf = secure_mem_alloc(want);
+apps/demo_keys.c|img = secure_mem_alloc(img_len);
+apps/demo_keys.c|kp->secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
+apps/demo_keys.c|uint8_t *img = secure_mem_alloc(img_len);
+apps/demo_keys.c|kp.secret_key = secure_mem_alloc(MLDSA_SECRET_KEY_BYTES);
+apps/demo_keys.c|img = secure_mem_alloc(img_len);

@@ -158,6 +158,11 @@ add_test(NAME store_fault_hook
 # the report; this is the gate that sees a sodium_memcmp swapped for memcmp.
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
+# V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure
+# memory -- the secure_mem_alloc sites, checked both ways against
+# secure_mem_sites.txt, and no raw libsodium allocator outside the wrapper.
+add_test(NAME secure_mem_sites
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/secure_mem_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-15c (CLAIMS P1/D1): no primitive's defining constant outside the one
 # sanctioned file, apps/authd/sha1.c, and sha1() called by ws.c alone.
 add_test(NAME no_hand_rolled_primitives
@@ -170,14 +175,41 @@ if(ENABLE_ASAN OR ENABLE_UBSAN OR MLDSA_FUZZ)
 else()
   set(_mldsa_expect_fortify ON)
 endif()
+# V4-24b: the sanitizer flags each tree must carry, from its INTENT (the
+# options), not from MLDSA_SANITIZE_FLAGS -- see check_build_flags.cmake.
+if(ENABLE_ASAN OR MLDSA_FUZZ)
+  set(_mldsa_expect_asan ON)
+else()
+  set(_mldsa_expect_asan OFF)
+endif()
+if(ENABLE_UBSAN OR MLDSA_FUZZ)
+  set(_mldsa_expect_ubsan ON)
+else()
+  set(_mldsa_expect_ubsan OFF)
+endif()
 add_test(NAME build_flags
          COMMAND ${CMAKE_COMMAND}
                  -DCOMPILE_COMMANDS=${CMAKE_BINARY_DIR}/compile_commands.json
                  -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
                  -DEXPECT_FORTIFY=${_mldsa_expect_fortify}
+                 -DEXPECT_ASAN=${_mldsa_expect_asan}
+                 -DEXPECT_UBSAN=${_mldsa_expect_ubsan}
                  "-DARCHIVES=$<TARGET_FILE:mldsa_core>|$<TARGET_FILE:mldsa_authd>"
                  -DNM=${CMAKE_NM}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_build_flags.cmake)
+# V4-24b (CLAIMS P8, audit F94): what the compiler DID with the UBSan flags.
+# A planted signed overflow must STOP the process in a UBSan or fuzz tree; in
+# any other tree there is nothing to stop, and the test reports Skipped, as
+# fuzz_libfuzzer does outside a fuzz tree.
+if(ENABLE_UBSAN OR MLDSA_FUZZ)
+  add_executable(ubsan_canary ubsan_canary.c)
+  target_compile_options(ubsan_canary PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+  target_link_options(ubsan_canary PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+  add_test(NAME ubsan_aborts COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/ubsan_aborts.sh $<TARGET_FILE:ubsan_canary>)
+else()
+  add_test(NAME ubsan_aborts COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/ubsan_aborts.sh -)
+endif()
+set_tests_properties(ubsan_aborts PROPERTIES SKIP_RETURN_CODE 77)
 # V4-21 (audit F41, CLAIMS D13): the fingerprint sink takes an authd_fp_t and
 # nothing else -- a bare 32-byte secret passed to it must not compile.
 add_test(NAME log_fp_type
