@@ -334,6 +334,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
         size_t ticket_len = 0;
         if (get_hex(req, "ticket", ticket, sizeof ticket, &ticket_len, RECOVERY_TICKET_BYTES) != 0 ||
             ticket_len != RECOVERY_TICKET_BYTES) {
+            sodium_memzero(ticket, sizeof ticket);   /* F115: a partly decoded ticket too */
             return send_err(slot, "malformed");
         }
         crypto_hash_sha256(thash, ticket, sizeof ticket);
@@ -509,10 +510,12 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
     uint8_t code[64], state[256];
     size_t code_len = 0, state_len = 0;
     if (get_hex(req, "code", code, sizeof code, &code_len, 32u) != 0 || code_len != 32u) {
+        sodium_memzero(code, sizeof code);   /* F115: a partly decoded code too */
         return send_err(slot, "malformed");
     }
     if (kv_get(req, "state") == NULL ||
         get_hex(req, "state", state, sizeof state, &state_len, 0u) != 0) {
+        sodium_memzero(code, sizeof code);   /* F115: a valid code was already decoded */
         return send_err(slot, "malformed");
     }
 
@@ -528,6 +531,7 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
                                     user, sizeof user, &user_len,
                                     handle, sizeof handle, &handle_len) != STORE_OK) {
         sodium_memzero(code_hash, sizeof code_hash);
+        sodium_memzero(state_hash, sizeof state_hash);   /* F115 */
         return send_err(slot, "internal");
     }
     sodium_memzero(code_hash, sizeof code_hash);
@@ -577,6 +581,7 @@ static ev_action_t h_verify(authd_app_t *app, authd_slot_t *slot, const req_t *r
     size_t token_len = 0;
     if (get_hex(req, "token", token, sizeof token, &token_len, TOKEN_BYTES) != 0 ||
         token_len != TOKEN_BYTES) {
+        sodium_memzero(token, sizeof token);   /* F115: a partly decoded token too */
         return send_err(slot, "malformed");
     }
     uint8_t token_hash[STORE_HASH_BYTES];
@@ -627,6 +632,7 @@ static ev_action_t h_logout(authd_app_t *app, authd_slot_t *slot, const req_t *r
     size_t token_len = 0;
     if (get_hex(req, "token", token, sizeof token, &token_len, TOKEN_BYTES) != 0 ||
         token_len != TOKEN_BYTES) {
+        sodium_memzero(token, sizeof token);   /* F115: a partly decoded token too */
         return send_err(slot, "malformed");
     }
     uint8_t token_hash[STORE_HASH_BYTES];
