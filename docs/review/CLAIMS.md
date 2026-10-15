@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 297 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 299 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -55,7 +55,10 @@ the most important thing on this page.
 - mutation `v25 N4` — finish keeps the decapsulation key
 - mutation `v53 F3` — the owned ML-DSA key is dropped, not freed, on success
 - mutation `v23 K4b` — the freed decapsulation-key pointer is left dangling
-**Not established:** most wipe checks observe a freed or NULL pointer (`sodium_free` zeroes), not the bytes. A structural scan covers `session.c` only; that every key in `src/` and `apps/` lives in `sodium_malloc` memory, and that stack copies are wiped on every error return, rests on code review.
+- check `secure_mem_sites` "PASS: every listed secret is still allocated with secure_mem_alloc"
+- mutation `v69 SM1` — the store's audit-MAC key is allocated with calloc and released with free
+- mutation `v69 SM2` — the client's plaintext secret-key image at enrollment is allocated with malloc and released with free
+**Not established:** most wipe checks observe a freed or NULL pointer (`sodium_free` zeroes), not the bytes. A structural scan of allocation covers `session.c` only (`session_no_alloc_scan`: no allocation in the steady state). Since V4-24b every `secure_mem_alloc` site in `src/` and `apps/` -- 35 of them -- is pinned both ways (`secure_mem_sites`), so a heap secret moved to ordinary memory fails by name; which buffers belong on that list rests on reading, done once in V4-24b; that every key in `src/` and `apps/` lives in `sodium_malloc` memory, and that stack copies are wiped on every error return, rests on code review.
 
 ### P3 — Constant-time comparisons
 - tool `tools/audit/constant_time_inventory.sh` — lists every `sodium_memcmp`/`sodium_is_zero` site against every `memcmp`/`strcmp`/`strncmp` site in `src/` and `apps/`; fails only on finding no constant-time site
@@ -133,8 +136,9 @@ the most important thing on this page.
 - ci `${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}` — ASan and UBSan on Linux and macOS, instrumentation proven, then the whole suite
 - ci `mutations · ${{ matrix.campaign }}` — every campaign on a fresh, proven ASan tree
 - check `authd_e2e` "PASS: E2E: no sanitizer report in any daemon or client log"
-- tool `tests/check_build_flags.cmake` — the CTest `build_flags`: every project translation unit in `compile_commands.json` is told `-Wall -Wextra -Werror -fstack-protector-strong`, and `-D_FORTIFY_SOURCE=2` exactly outside the sanitizer and fuzz trees; the project's own archives import `__stack_chk_fail`
-**Not established:** the flag gate reads what each translation unit was TOLD, not what the compiler did with it; `check_hardening.sh`'s binary canary cannot fail for this project's code, because vendored archives satisfy it (audit F104). FORTIFY is inert without optimisation: on glibc a `-O0` build with `-D_FORTIFY_SOURCE=2` compiles under `-Werror` and imports no `__*_chk` (measured on Ubuntu 22.04, gcc 11.4, glibc 2.35), so CI's Linux debug jobs carry the define and none of its checks; only optimised builds (the Release job) get them. Until V4-14c the UBSan build did not stop on undefined behaviour, so a report printed and the test passed (audit F94, fixed: `-fno-sanitize-recover=undefined`, shown both ways on a planted overflow). No mutation covers that flag -- the campaigns mutate C sources only.
+- tool `tests/check_build_flags.cmake` — the CTest `build_flags`: every project translation unit in `compile_commands.json` is told `-Wall -Wextra -Werror -fstack-protector-strong`, and `-D_FORTIFY_SOURCE=2` exactly outside the sanitizer and fuzz trees; the project's own archives import `__stack_chk_fail`; since V4-24b, each tree's sanitizer flags by its intent -- `-fsanitize=undefined` and `-fno-sanitize-recover=undefined` in a UBSan or fuzz tree, `-fsanitize=address` in an ASan or fuzz tree, none in any other
+- check `ubsan_aborts` "PASS: ubsan_aborts: a planted signed overflow stops the process"
+**Not established:** the flag gate reads what each translation unit was TOLD, not what the compiler did with it -- for UBSan alone, since V4-24b, `ubsan_aborts` also checks what was DONE, on one planted signed overflow; `check_hardening.sh`'s binary canary cannot fail for this project's code, because vendored archives satisfy it (audit F104). FORTIFY is inert without optimisation: on glibc a `-O0` build with `-D_FORTIFY_SOURCE=2` compiles under `-Werror` and imports no `__*_chk` (measured on Ubuntu 22.04, gcc 11.4, glibc 2.35), so CI's Linux debug jobs carry the define and none of its checks; only optimised builds (the Release job) get them. Until V4-14c the UBSan build did not stop on undefined behaviour, so a report printed and the test passed (audit F94, fixed: `-fno-sanitize-recover=undefined`, shown both ways on a planted overflow). No mutation covers that flag -- the campaigns mutate C sources only -- but since V4-24b it is pinned twice and shown by hand: with it removed from the UBSan branch, `build_flags` names every translation unit without it and `ubsan_aborts` sees the canary run on past the overflow; the same removal in the fuzz branch, `-fsanitize=address` removed, and a plain tree configured with `-fsanitize=undefined` each fail `build_flags` too (V4-24b's decisions entry).
 
 ### P9 — No secret-dependent control flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
@@ -216,7 +220,9 @@ the most important thing on this page.
 - mutation `v25 N3` — terminal handshake failures leak the responder's retained KEM secret
 - mutation `v49b R1` — a listener failure leaks the decrypted server key
 - fuzz `authd_conn` — after any close the connection record is free, its handle and user id zero and its session empty
-**Not established:** no gate lists every secret buffer or proves it comes from `secure_mem`. Several daemon secrets (the login code in a local struct, tokens, state hashes) live on the stack and are wiped with `sodium_memzero`, which no check observes; "every path" is tested on chosen failure paths, not exhaustively.
+- check `secure_mem_sites` "PASS: every secure_mem_alloc call in src/ and apps/ is on the list"
+- mutation `v69 SM1` — the store's audit-MAC key is allocated with calloc and released with free
+**Not established:** since V4-24b a gate lists every HEAP secret buffer and needs each to come from `secure_mem` (`secure_mem_sites`); which buffers are secret rests on reading, and a secret in a fixed-size array or on the stack is not an allocation, so it is not on the list. Several daemon secrets (the login code in a local struct, tokens, state hashes) live on the stack and are wiped with `sodium_memzero`, which no check observes; "every path" is tested on chosen failure paths, not exhaustively. Until V4-24b five local-API error returns left a decoded secret on the stack -- among them a valid login code, on a malformed `state` (audit F115, fixed, by reading: no check can read a dead stack frame).
 
 ### D3 — Constant-time comparison
 - check `test_authd_conn` "conn: the pin lookup refuses a PREFIX of its handle"

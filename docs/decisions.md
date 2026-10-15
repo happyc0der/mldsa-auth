@@ -7900,3 +7900,122 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   and in 288 across `tools tests docs apps src`; `git diff --check` OK. Every
   statement of the mutation, campaign, anchor and findings counts was
   re-grepped, the campaign count in words included.
+
+## V4-24b — P8's UBSan gate, P2's secure-memory inventory, F115
+
+The second of V4-24's sub-steps, on V4-24a's local commits. The owner chose,
+for P8, the flags as told **and** a canary of what the compiler did; for P2,
+an inventory of secure memory; and for F115, found while planning, a fix
+here rather than a record.
+
+### What was decided
+
+- **P8, as told.** `build_flags` gained `EXPECT_ASAN` and `EXPECT_UBSAN`,
+  set from the tree's INTENT -- `ENABLE_ASAN`, `ENABLE_UBSAN`, and
+  `MLDSA_FUZZ`, which implies both -- never from `MLDSA_SANITIZE_FLAGS`:
+  deleting a flag there must not delete the expectation with it. Every
+  project TU of a UBSan or fuzz tree must carry `-fsanitize=` with
+  `undefined` and `-fno-sanitize-recover=undefined` (or `=all`); of an ASan
+  or fuzz tree, `-fsanitize=` with `address`; of any other tree, no
+  `-fsanitize=` at all.
+- **P8, as done.** A new CTest, `ubsan_aborts`, runs `tests/ubsan_canary.c`
+  -- a signed overflow on a `volatile` value derived from `argc`, built only
+  in UBSan and fuzz trees with the project's flags -- and needs a non-zero
+  exit, UBSan's `runtime error` report, and no line printed after the
+  overflow. `UBSAN_OPTIONS` is cleared for the run, so a caller's
+  `halt_on_error` cannot make the canary pass for the build. Elsewhere it
+  reports Skipped (77), as `fuzz_libfuzzer` does, so every tree's count rises
+  by one.
+- **P2.** The existing structural scan, `session_no_alloc_scan`, proves
+  `session.c` does not allocate in its steady state; it says nothing about
+  where secrets live. The new CTest `secure_mem_sites` lists the 35
+  `secure_mem_alloc` sites in 13 files of `src/` and `apps/`
+  (`tests/secure_mem_sites.txt`, the `constant_time_sites` format: path and
+  whitespace-collapsed line, no line numbers, a repeated line listed twice)
+  and checks them both ways; it also refuses a raw `sodium_malloc`,
+  `sodium_allocarray` or `sodium_free` outside `src/util/secure_mem.c`, which
+  the list could not see. Each site was read to hold a secret -- keys, shared
+  secrets, passphrases, plaintext key images -- or, at `keyfile.c`'s `out` and
+  `fbuf`, a sealed envelope kept with them.
+- **F115** (Low, fixed). Five local-API error returns left a decoded secret
+  on the stack: `h_exchange`'s malformed-`state` return, with a valid login
+  code already decoded; its store-error path, which wiped `code_hash` but
+  not `state_hash`; and the wrong-length returns for a code, a recovery
+  ticket (`enroll_common`) and a token (`h_verify`, `h_logout`). Each of the
+  six paths now wipes before it returns. The evidence is reading and the
+  whole suite still passing; no check can read a dead stack frame, the
+  reason v49c declined such a mutation.
+- **F116** (Info, fixed). The documented test counts had drifted -- README
+  46, the packet 49, REPRODUCE 40 tests and 41 executables -- and the
+  README's table named none of the five gate CTests added since V4-15. All
+  are restated from ctest after this step's two CTests: 49 in a native tree
+  (47 without `node`), 51 with a WebAssembly tree, 52 with a browser too, 3
+  in the WebAssembly tree; 42 executables in a plain or ASan tree, 43 in a
+  UBSan tree. The table names all seven gates.
+
+### P8's hand controls
+
+The campaigns mutate C sources only, so the CMake side was shown by hand,
+each edit restored byte-exact and the tree reconfigured after it:
+
+| Control | `build_flags` | `ubsan_aborts` |
+|---|---|---|
+| `-fno-sanitize-recover=undefined` removed from the `ENABLE_UBSAN` branch (UBSan tree) | FAIL on 76 of 112 TU entries -- the other 36 are the fuzz replay binaries, which carry their own `-fno-sanitize-recover=all` and still stop | FAIL: the canary ran on past the overflow, exit 0 |
+| the same in the `MLDSA_FUZZ` branch (fuzz tree) | FAIL on 112 of 136 entries -- the other 24 are the libFuzzer targets, compiled with their own `-fno-sanitize-recover=undefined` (`tests/fuzz/CMakeLists.txt`) | FAIL, the same |
+| `-fsanitize=address` removed (ASan tree) | FAIL on all 111 entries | Skipped |
+| a plain Debug tree configured with `-DCMAKE_C_FLAGS=-fsanitize=undefined` | FAIL on all 111: instrumented in a tree that is not a sanitizer tree | Skipped |
+
+### Campaign v69 — SM, secure memory
+
+Both passed the whole debug suite but the new gate (48/48) applied
+together; the gate then named both.
+
+| ID | Defect | Killed by |
+|---|---|---|
+| SM1 | the store's audit-MAC key `s->key_audit` allocated with `calloc`, released with `free` | "a listed secure allocation is gone ...: apps/authd/store/store.c: ..." |
+| SM2 | the client's plaintext MLDSASK2 image at enrollment allocated with `malloc`, released with `free` (and `<stdlib.h>` included for it) | "a listed secure allocation is gone ...: apps/authd/client_core.c: ..." |
+
+### Environment
+
+As for V4-24a: a Linux container, every local result on SQLite 3.45.1, clang
+18 and gcc 13; no macOS -- `ubsan_aborts` on macOS is first seen in CI.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** SM1 and SM2 applied together: the whole debug suite but the
+  new gate, 48/48, on a build proven current; `secure_mem_sites` then named
+  both. P8's four hand controls are in the table above.
+- **Suites**, each tree proven current in the same invocation: Debug (clang
+  18) 49/49; ASan 49/49 and UBSan 49/49, instrumentation proven linked into
+  all 42 and 43 executables, 0 ASan reports, and in the UBSan log exactly
+  one `runtime error`, `ubsan_aborts`'s planted overflow; Release with gcc 13
+  at `-O3 -Werror` 49/49; the fuzz tree 84/84 (82 before), 55 executables.
+  `build_flags` and `secure_mem_sites` pass in all five; `ubsan_aborts`
+  passes in the UBSan and fuzz trees and is Skipped in the other three.
+  `test_authd_localapi` passes its 286 checks with F115's wipes.
+- **Campaigns**, on the ASan tree, each run under the two-hour limit and
+  none beside another, sources backed up with checksums first, the tree
+  checked for leftovers after and F114's stale directories cleared before:
+  v69 2/2, each by the gate's line naming its site. **Control:** SM1 with its
+  expectation rotted: `SURVIVED(BAD: ...)`, runner exit 1. A first control
+  ran on a spec whose two expectations ended in the C line's own `;`, which
+  the runner reads as a separator: harmless to the kills (bash drops the
+  trailing empty field, so the expectation was the text up to `)`), but the
+  rot then became a second expectation rather than a changed first one. The
+  semicolons were dropped and the control re-run. Re-run because F115's
+  wipes sit in `localapi.c` under their kills, from scratch specs: v49d G1-G5,
+  G9, G10, G12-G15 and v62 AO5. 12 of 12 killed, every row restored clean
+  with a passing clean suite, no residue, every final fingerprint identical.
+- **No fuzzing**: no product code changed beyond F115's wipes; the fuzz tree
+  builds and its suite passes.
+- **Documents.** Anchors 336 across 39 campaigns, 299 mutations; the
+  nightly's coverage check run locally: 39 committed, 39 wired; the claim
+  map's 345 citations resolve; spec constants and names OK;
+  `constant_time_sites` and `secure_mem_sites` pass; F115 and F116 have
+  their 8 separators; the secret scan finds 0 violations in CI's 28 files
+  and in 294 across `tools tests docs apps src`; `git diff --check` OK. Every
+  statement of the mutation, campaign, anchor, findings and test counts was
+  re-grepped, the campaign count in words included; REPRODUCE's UBSan
+  `runtime error` count now says 1, the canary's.

@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 112 findings (F1–F114), with severity, evidence and
+   register](../v4/audit.md). 114 findings (F1–F116), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 49 tests with the
+- **Tests** are named checks, not exit codes. The suite is 52 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 297 committed defects in 38 campaigns, each of which must be
+- **Mutations**: 299 committed defects in 39 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -217,6 +217,23 @@ Campaign v68 shows each new check catching a defect V4-23's suite let
 through. **F114**, found on the way, records that six tests' scratch
 directories, named for their PID, can fail a later run in a tree reused
 across crashing runs; it is open. F91 is the only other open finding.
+
+V4-24b took two gates:
+- **P8:** F94's fix had been pinned by nothing, and campaigns cannot mutate
+  CMake. `build_flags` now checks each tree's sanitizer flags against its
+  intent. A new CTest, `ubsan_aborts`, needs a planted signed overflow to
+  stop the process: what the compiler did, not only what it was told. Four
+  hand controls showed both failing.
+- **P2:** every heap secret's allocation site, 35 of them, is pinned to
+  libsodium's guarded memory (`secure_mem_sites`). Campaign v69 shows a key
+  moved to `malloc` caught by name.
+
+Two findings were fixed in V4-24b:
+- **F115:** five local-API error returns left a decoded secret on the stack,
+  among them a valid login code. Fixed, with the evidence stated as reading:
+  no check can read a dead stack frame.
+- **F116:** the documented test counts and the README's test table had
+  drifted. Corrected.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
