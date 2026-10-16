@@ -8019,3 +8019,20 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   statement of the mutation, campaign, anchor, findings and test counts was
   re-grepped, the campaign count in words included; REPRODUCE's UBSan
   `runtime error` count now says 1, the canary's.
+- **CI** 38914988973, dispatched on the pushed branch at `8242c64`, V4-24a's
+  two commits beneath it: 14/14. 49 per suite job on Linux and macOS (47
+  before `ubsan_aborts` and `secure_mem_sites`), 36 fuzz-labelled, 3 and 6
+  in the wasm job, the Caddy job through "all checks", the secret scan 0
+  violations in 28 files, the claim map's 345 citations. `ubsan_aborts`
+  passed in both UBSan jobs -- on macOS under Apple clang 21, its first run
+  there -- and reported Skipped in the other seven; `build_flags` and
+  `secure_mem_sites` passed in all nine. CI prints no per-check lines; the
+  nightly's logs carry them.
+- **The nightly**, with v68 CG1's and v69 SM1's expectations rotted
+  (38916552671): red on exactly those two jobs, 52/54 (v68 and v69 add the
+  53rd and 54th). Two campaigns joined at once, so the one control commit
+  rotted one expectation in each, and each new job is shown able to go red.
+  CG1 and SM1 `SURVIVED(BAD:)`; CG2-CG5 and SM2 killed by name; every other
+  campaign's verdicts match its spec -- 297 of 299 killed, every row
+  restored clean with a passing clean suite and no residue -- and the twelve
+  fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
