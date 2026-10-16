@@ -1,2 +1,2 @@
-SM1|^secure_mem_sites$|a listed secure allocation is gone (the secret moved out of secure memory, or was deleted): apps/authd/store/store.c: s->key_audit = secure_mem_alloc(STORE_AUDIT_MAC_BYTES)
+SM1|^secure_mem_sites$|a listed secure allocation is gone (the secret moved out of secure memory, or was deleted): apps/authd/store/store.c: s->key_audit = secure_mem_alloc(STORE_AUDIT_MAC_BYTES) CONTROL -- a check no test prints (the v69 job must go red)
 SM2|^secure_mem_sites$|a listed secure allocation is gone (the secret moved out of secure memory, or was deleted): apps/authd/client_core.c: uint8_t *img = secure_mem_alloc(img_len)
