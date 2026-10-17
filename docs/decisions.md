@@ -8036,3 +8036,140 @@ Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
   campaign's verdicts match its spec -- 297 of 299 killed, every row
   restored clean with a passing clean suite and no residue -- and the twelve
   fuzz targets ran 600 s each with 0 crashes and 0 artifacts.
+
+## V4-24c — D10's rotation keys by content, F117 and F118
+
+The last of V4-24's sub-steps, on main at `d37470e`. D10's limit ended
+"Rotation and recovery keys are covered by the e2e's header scan only, since
+the shell legs hold no plaintext key to look for." Two findings turned up in
+the planning; the owner chose to fix both here rather than record them.
+
+### What was decided
+
+- **What the claim's words meant.** The e2e calls its three
+  interrupted-rotation legs -- USE_EK, REFUSE, PROMOTE_NEXT -- "recovery",
+  and that is where D10's word came from. Account recovery makes no key of
+  its own: the replacement device's key is an ordinary `authd_client keygen`
+  (`authd_e2e.sh`, bob2), which the client keygen scan already covers, and
+  nothing in the recovery flow handles a secret key. The map says so, as
+  reading.
+- **Rotation, by content.** `cmd_client_rotate` and `client_resolve_key`
+  (`apps/authd/client_cli.c`) seal the new key to `.ek.next`, write a
+  `.newpub` temp file, rename `.ek.next` over `.ek`, unlink a stale
+  `.ek.next`, and -- in a later login -- complete an interrupted rotation. No
+  C test had run any of it; the e2e reads each file's first eight bytes, and
+  a raw secret key carries no magic. `test_authd_cli`'s new
+  `test_rotate_on_disk` runs the CLI's own `rotate` and `login` against the
+  in-process daemon (`tests/authd_harness.h`). The CLI blocks on its socket
+  and the harness is pumped in-thread, so each run is a forked child while
+  the parent pumps, with a 60 s limit. Every key the device held is opened
+  from its sealed file, and `any_file_has_key_window` -- the F105 rule,
+  failing closed (F86) -- searches the device's and the daemon's
+  directories for each:
+  1. an acknowledged rotation, A to B;
+  2. `.ek` put back to A and `.ek.next` to B, then a login, which must
+     complete the rename (PROMOTE_NEXT);
+  3. `.ek` put back to A again, then a rotation: the new key C is sealed to
+     `.ek.next` first (spec 10.2), the daemon refuses A, and `.ek.next` must
+     be kept, still sealed.
+  A raw copy of B planted in the device's directory must be found (the
+  canary).
+- **F117** (Info, fixed). `test_recovery` issues three codes; its store and
+  backup scans looked for the first only. Every code is now pulled out of
+  the reply (`nth_code`), all three are looked for, and a canary needs them
+  extracted and distinct. The check strings are unchanged.
+- **F118** (Info, fixed). The rotation leg's third case found it: the two
+  returns of `cmd_client_rotate` after the new key is sealed -- a failed
+  reopen of `.ek.next`, and a session that cannot open -- bypassed `out:`,
+  the only place `pub_tmp` was unlinked, and left
+  `<key>.ek.next.newpub.<pid>` behind. Both now unlink it. On V4-24b's code
+  the new check failed exactly so:
+  `(left behind: .../rot/dev/d1....ek.next.newpub.635)`,
+  `FAIL: stale rotate: no .newpub temp file is left behind (F118)`, every
+  other check of the leg passing. No test reaches the reopen-failure return;
+  that site rests on reading.
+- **RK5 differs from the plan.** The plan had RK5 keep every Argon2id hash
+  working and park the plaintext beside it. The store is handed only the
+  hashes, and libsodium refuses a hash string with anything appended (both
+  `$code` and a bare suffix, checked against the project's own libsodium),
+  so no single-file mutation can do that. RK5 stores every code from the
+  third on as itself instead: such a code can never be spent, but nothing
+  spends a third code -- the e2e issues two and spends both -- and every
+  check of V4-24b's suite passed with it.
+
+### Campaign v70 — RK, Rotation and Recovery
+
+RK1-RK5 were each applied to V4-24b's sources and passed its whole suite on
+the ASan tree, 49/49; RK6 is F118's fix reverted at the one site a test
+reaches.
+
+| ID | Defect | Killed by |
+|---|---|---|
+| RK1 | rotate keeps the OLD key's raw secret as `<key>.prev` once both ROTATE signatures are made | "rotate: no window of the old or the new secret key ..." |
+| RK2 | rotate writes the NEW key's raw secret beside `.ek.next` once it has reopened it | the same |
+| RK3 | the login that completes an interrupted rotation keeps the superseded key raw as `<key>.superseded` | "interrupted rotation: after the login that completes it, no window of either key in any file (Req 10)" |
+| RK4 | a rotation whose session cannot open keeps the new key raw "for a retry" | "stale rotate: no window of any of the three keys in any file (Req 10)" |
+| RK5 | every recovery code from the third on stored as itself, not its Argon2id hash | "recovery: the plaintext code is NOT in the store (Req 4)" and the backup check |
+| RK6 | the session-failure return no longer unlinks `.newpub` (F118 reverted there) | "stale rotate: no .newpub temp file is left behind (F118)" |
+
+### Environment
+
+A Linux container: SQLite 3.45.1, clang 18, gcc 13; no macOS -- the forked
+rotation leg on macOS is first seen in CI.
+
+### Verification
+
+Every local result is on SQLite 3.45.1 (above), on Linux x86_64.
+
+- **Before.** On V4-24b's code the new leg failed only its F118 check (the
+  line quoted above), every other check of it passing. RK1-RK5 were each
+  applied to V4-24b's sources and its whole suite run on the ASan tree, built
+  first: 49/49 for every one -- the e2e's rotation, interrupted-rotation and
+  recovery legs included.
+- **Suites**, each tree proven current in the same invocation: Debug
+  (clang), ASan, UBSan, Release with gcc 13 at `-O3 -Werror`, 49/49 each;
+  the fuzz tree, 84/84. Sanitizer instrumentation proven linked in every
+  ASan and UBSan executable; 0 ASan reports; 1 UBSan `runtime error`, the
+  canary's, as REPRODUCE says. `test_authd_cli` passes its 146 checks (128
+  before) and `test_authd_localapi` its 287 (286) in all five.
+  `test_authd_cli` now takes about 90 s rather than 49 s: the leg opens or
+  seals a key at the operator Argon2id cost about a dozen times.
+- **Campaigns**, on the ASan tree, each run under the two-hour limit and
+  none beside another, sources backed up with checksums first, the tree
+  checked for leftovers after and F114's stale directories cleared before:
+  v70 6/6, each by name. **Control:** RK1 with its expectation rotted:
+  `SURVIVED(BAD: ...)`, runner exit 1. Re-run because their checks or the
+  code under them changed, from scratch specs: every row killed through
+  `test_authd_cli` -- v49b C2, K1, P1, P2, L1, L2, E1, I1, v49c W14 and v60
+  GC3 -- the one row that mutates `cmd_client_rotate`, v49c W15, and v58
+  GA12, the only existing row whose expectations reach `test_recovery`. 12
+  of 12 killed, every row restored clean with a passing clean suite, no
+  residue, every final fingerprint identical.
+- **No fuzzing**: the product change is two `unlink` calls on error
+  returns; the fuzz tree builds and its suite passes.
+- **Documents.** Anchors 342 across 40 campaigns, 305 mutations; the
+  nightly's coverage check run locally: 40 committed, 40 wired; the claim
+  map's 355 citations resolve; spec constants and names OK;
+  `constant_time_sites` and `secure_mem_sites` pass; F117 and F118 have
+  their 8 separators; the secret scan finds 0 violations in 296 files across
+  `tools tests docs apps src`; `git diff --check` OK. Every statement of
+  the mutation, campaign, anchor and findings counts was re-grepped, the
+  campaign count in words included. The test counts are unchanged: the leg
+  extends an existing test.
+
+## V4-24 as a whole
+
+The owner chose six items after V4-23. What each still does not establish:
+
+| Item | Closed by | Still not established |
+|---|---|---|
+| F111 | the unlisted-mode refusal is a check (v68 CG1) | -- |
+| P11 | chosen ciphertexts reach every first-byte value, every zero position and two leading zeros of the implicit-rejection secret (v68 CG2) | a branch with no functional effect: a timing question, which nothing here measures |
+| D13 | every raw frame, decrypted payload and the ROTATE's signatures are looked for in the journal (v68 CG3-CG5, F113) | one connection's login, ROTATE and BYE only, and no encoding but hex and base64 |
+| P8 | `build_flags` checks each tree's sanitizer flags against its intent, and `ubsan_aborts` needs a planted overflow to stop the process (hand controls) | what the compiler DID is checked for UBSan alone; the hardening flags are still read as told, and `check_hardening.sh`'s binary canary cannot fail for this project (F104) |
+| P2 | 35 secure-allocation sites pinned both ways, no raw `sodium_malloc` (v69 SM1-SM2) | which buffers belong on the list rests on reading; that stack copies are wiped on every error return rests on review |
+| D10 | rotation's three on-disk states scanned for every key (v70 RK1-RK4) | a rotation whose reply is lost or refused after the session opens; the e2e's real processes; deleted temp files, swap and core dumps |
+
+Three findings were fixed on the way (F115, F117, F118), two were
+corrected in the records (F113, F116), and F114 stays open for the owner,
+with F91.

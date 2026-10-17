@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 114 findings (F1–F116), with severity, evidence and
+   register](../v4/audit.md). 116 findings (F1–F118), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 52 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 299 committed defects in 39 campaigns, each of which must be
+- **Mutations**: 305 committed defects in 40 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -234,6 +234,21 @@ Two findings were fixed in V4-24b:
   no check can read a dead stack frame.
 - **F116:** the documented test counts and the README's test table had
   drifted. Corrected.
+
+V4-24c took D10's last gap. Rotation's files had been looked at only by the
+e2e's header scan, which reads a file's first eight bytes; a raw secret key
+carries no magic. `test_authd_cli` now runs the CLI's own rotate and login
+against the in-process daemon and searches every file for every key the
+device held: after an acknowledged rotation, after the login that completes
+an interrupted one, and after a rotation from a superseded key. Account
+recovery makes no key of its own -- the replacement device's is an ordinary
+keygen -- so the map now says so. Campaign v70 shows each scan catching a
+raw key the V4-24b suite let through. Two findings were fixed on the way:
+- **F117:** D4's store and backup scans looked for the first of three
+  recovery codes only. All three are looked for now.
+- **F118:** a rotation that failed after sealing its new key left the new
+  public key's temp file in the device's directory. It is removed on every
+  return now.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

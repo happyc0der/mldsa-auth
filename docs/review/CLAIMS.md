@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 299 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 305 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -256,7 +256,9 @@ the most important thing on this page.
 - check `test_authd_localapi` "recovery: neither the ticket nor the code is in a backup of the store (Req 4)"
 - check `test_authd_localapi` "recovery: a backup holds the ticket's SHA-256 and the code's Argon2id hash (the present canary)"
 - mutation `v64 TG4` — the token's base64 parked in its row's `handshake_id` column, where the raw and lower-case hex scans cannot see it
-**Not established:** the scans read the database and its WAL at two moments, and a backup (`VACUUM INTO`) taken at each, for 16-byte windows of the raw secret, 32-character windows of its hex in either case, and 12-byte windows in standard and URL-safe base64 (since V4-22a, the journal scans' encodings). Other encodings, a secret split into pieces shorter than a window, and memory are not scanned, and the recovery code is looked for only in its canonical base32 form. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
+- check `test_authd_localapi` "recovery: all three issued codes were extracted and are distinct (the canary)"
+- mutation `v70 RK5` — every recovery code from the third on stored as itself instead of its Argon2id hash
+**Not established:** the scans read the database and its WAL at two moments, and a backup (`VACUUM INTO`) taken at each, for 16-byte windows of the raw secret, 32-character windows of its hex in either case, and 12-byte windows in standard and URL-safe base64 (since V4-22a, the journal scans' encodings). Other encodings, a secret split into pieces shorter than a window, and memory are not scanned, and the recovery codes -- since V4-24c every code issued, not only the first (F117) -- are looked for only in their canonical base32 form. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
 
 ### D5 — A login code is single-use, expires in ≤ 60 s, and is bound
 - check `test_authd_conn` "login: the code expires in at most 60 s (Req 5)"
@@ -367,7 +369,15 @@ the most important thing on this page.
 - check `test_authd_cli` "migrate-key: no window of the secret key outside its plaintext input (Req 10)"
 - check `authd_e2e` "PASS: E2E: after every key operation, still no plaintext secret-key file anywhere under the work directory"
 - mutation `v60 GC3` — the envelope stops encrypting; every round trip still works
-**Not established:** the window scans read files under the directories the CLI writes to, in raw bytes, for 16 contiguous SECRET bytes -- a window touching `rho` or `tr`, which the public key determines, is not looked for (F105) -- so fewer than 16 contiguous secret bytes would not be seen, nor would a deleted temp file, swap, a core dump or another encoding of the key. Rotation and recovery keys are covered by the e2e's header scan only, since the shell legs hold no plaintext key to look for.
+- check `test_authd_cli` "rotate: no window of the old or the new secret key in any file under the device's or the daemon's directory (Req 10)"
+- check `test_authd_cli` "rotate: a raw copy of the new key, planted beside it, IS found (the canary)"
+- check `test_authd_cli` "interrupted rotation: after the login that completes it, no window of either key in any file (Req 10)"
+- check `test_authd_cli` "stale rotate: no window of any of the three keys in any file (Req 10)"
+- mutation `v70 RK1` — rotate keeps the old key's raw secret beside `.ek` once both ROTATE signatures are made
+- mutation `v70 RK2` — rotate writes the new key's raw secret beside `.ek.next` once it has reopened it
+- mutation `v70 RK3` — the login that completes an interrupted rotation keeps the superseded key's raw secret
+- mutation `v70 RK4` — a rotation whose session cannot open keeps the new key's raw secret "for a retry"
+**Not established:** the window scans read files under the directories the CLI writes to, in raw bytes, for 16 contiguous SECRET bytes -- a window touching `rho` or `tr`, which the public key determines, is not looked for (F105) -- so fewer than 16 contiguous secret bytes would not be seen, nor would a deleted temp file, swap, a core dump or another encoding of the key. Since V4-24c the same scan covers rotation: `test_authd_cli` runs the CLI's own rotate and login against the in-process daemon and looks for every key the device held after an acknowledged rotation, after the login that completes an interrupted one, and after a rotation attempted from a key the daemon has superseded. A rotation whose session opens but whose reply is lost or refused, and the browser's IndexedDB, are not scanned; the e2e's real processes still have only its header scan, since the shell holds no plaintext key. Account recovery makes no key of its own: the replacement device's key is an ordinary keygen, covered by the client keygen scan, and nothing in the recovery flow handles a secret key -- that rests on reading.
 
 ### D11 — Every Unix-socket peer is authenticated by peer credentials
 - check `test_authd_ws` "proxy-uid: a peer outside the allowlist is refused at accept, occupying no slot"
