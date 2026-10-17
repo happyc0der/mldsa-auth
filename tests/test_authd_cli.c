@@ -12,6 +12,7 @@
  * this command's reply end with END?".
  */
 #include <dirent.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "authd_cli.h"
@@ -765,6 +767,212 @@ static void test_key_plan(void)
           "key-plan: a missing .ek.next is never promoted");
 }
 
+/* ----------------------------------------------- rotation on disk (V4-24c) */
+
+/* The CLI blocks on its socket and the harness daemon is pumped from this
+ * thread, so a CLI run is a child process while the parent pumps. Returns the
+ * child's exit status, or -1 if it did not exit within 60 s. The child's
+ * stdout -- a login code, a path -- goes nowhere; its stderr stays visible. */
+static int run_client_pumped(h_daemon_t *d, char **argv)
+{
+    fflush(stdout);
+    fflush(stderr);
+    const pid_t pid = fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        if (freopen("/dev/null", "w", stdout) == NULL) { _exit(125); }
+        const int rc = run_cli(authd_cli_client, argv);
+        fflush(stderr);
+        _exit(rc & 0xff);
+    }
+    const time_t start = time(NULL);
+    int ws = 0;
+    for (;;) {
+        h_tick(d);
+        const pid_t r = waitpid(pid, &ws, WNOHANG);
+        if (r == pid) { break; }
+        if (r < 0 || time(NULL) - start > 60) {
+            (void)kill(pid, SIGKILL);
+            (void)waitpid(pid, &ws, 0);
+            return -1;
+        }
+    }
+    return WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
+}
+
+static int read_bytes(const char *path, uint8_t *buf, size_t cap, size_t *n)
+{
+    *n = 0;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) { return -1; }
+    *n = fread(buf, 1u, cap, f);
+    const int more = (fgetc(f) != EOF);
+    (void)fclose(f);
+    return (*n > 0u && !more) ? 0 : -1;
+}
+
+static int write_bytes(const char *path, const uint8_t *buf, size_t n)
+{
+    FILE *f = fopen(path, "wb");
+    if (f == NULL) { return -1; }
+    const size_t put = fwrite(buf, 1u, n, f);
+    const int closed = fclose(f);
+    return (put == n && closed == 0 && chmod(path, 0600) == 0) ? 0 : -1;
+}
+
+static int same_bytes(const char *path, const uint8_t *buf, size_t n)
+{
+    static uint8_t got[8192];
+    size_t m = 0;
+    return read_bytes(path, got, sizeof got, &m) == 0 && m == n && memcmp(got, buf, n) == 0;
+}
+
+/* Does any entry directly under `dir` have `part` in its name? */
+static int any_name_contains(const char *dir, const char *part)
+{
+    DIR *d = opendir(dir);
+    if (d == NULL) { return 1; }
+    struct dirent *e;
+    int found = 0;
+    while ((e = readdir(d)) != NULL) {
+        if (strstr(e->d_name, part) != NULL) {
+            printf("  (left behind: %s/%s)\n", dir, e->d_name);
+            found = 1;
+        }
+    }
+    (void)closedir(d);
+    return found;
+}
+
+/* D10 for the keys keygen does not make. The header scan of authd_e2e.sh is
+ * all that ever looked at rotation's files, and it reads only a file's first
+ * eight bytes -- a raw secret key carries no magic, so it would pass. Here the
+ * CLI's own rotate and login run against the in-process daemon, every key the
+ * device ever held is opened from its sealed file, and every file under the
+ * device's and the daemon's directories is searched for it: after an
+ * acknowledged rotation, after the login that completes an interrupted one,
+ * and after a rotation attempted from a key the daemon has superseded. */
+static void test_rotate_on_disk(void)
+{
+    static const uint8_t RU[] = { 'r', 'u' };
+    static const char PASS[] = "rotation passphrase";
+    char root[256], dev[288], dd[288], pass[256], spub[320];
+    (void)snprintf(root, sizeof root, "%s/rot", g_dir);
+    (void)snprintf(dev, sizeof dev, "%s/dev", root);
+    (void)snprintf(dd, sizeof dd, "%s/d", root);
+    (void)snprintf(pass, sizeof pass, "%s/rotpass", g_dir);
+    (void)snprintf(spub, sizeof spub, "%s/server.pub", dd);
+    CHECK(mkdir(root, 0700) == 0 && mkdir(dd, 0700) == 0 &&
+          write_file(pass, "rotation passphrase\n", 0600) == 0, "rotate: fixture directories and passphrase");
+
+    CHECK(RUN_CLIENT("keygen", "--dir", dev, "--passphrase-file", pass) == 0,
+          "rotate: the device's first key is generated");
+    char handle[64] = { 0 };
+    DIR *dh = opendir(dev);
+    if (dh != NULL) {
+        struct dirent *e;
+        while ((e = readdir(dh)) != NULL) {
+            const size_t n = strlen(e->d_name);
+            if (n > 3u && strcmp(e->d_name + n - 3u, ".ek") == 0) {
+                (void)snprintf(handle, sizeof handle, "%.*s", (int)(n - 3u), e->d_name);
+            }
+        }
+        (void)closedir(dh);
+    }
+    const size_t hlen = strlen(handle);
+    char ek[400], next[408], pubp[400];
+    (void)snprintf(ek, sizeof ek, "%s/%s.ek", dev, handle);
+    (void)snprintf(next, sizeof next, "%s.next", ek);
+    (void)snprintf(pubp, sizeof pubp, "%s/%s.pub", dev, handle);
+
+    mldsa_keypair_t a, b, c;
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    memset(&c, 0, sizeof c);
+    CHECK(hlen == 34u && keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &a, NULL)
+              == KEYFILE_OK, "rotate: the first key opens");
+
+    h_daemon_t d;
+    CHECK(h_start(&d, dd, "rot.sqlite3", 0) == 0, "rotate: the daemon starts");
+    (void)store_add_user(d.store, RU, sizeof RU, STORE_ROLE_USER);
+    CHECK(a.public_key != NULL &&
+          store_enroll_device(d.store, (const uint8_t *)handle, hlen, RU, sizeof RU, a.public_key,
+                              "site", "test", NULL, 0) == STORE_OK, "rotate: the device is enrolled");
+    CHECK(demo_keys_write_public(spub, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key)
+              == DEMO_KEYS_OK, "rotate: the daemon's public key is pinned");
+    char port[8];
+    (void)snprintf(port, sizeof port, "%u", (unsigned)d.port);
+
+    static uint8_t sealed_a[8192], sealed_b[8192];
+    size_t na = 0, nb = 0;
+    CHECK(read_bytes(ek, sealed_a, sizeof sealed_a, &na) == 0, "rotate: the first sealed key is saved");
+
+    /* 1. An acknowledged rotation: A -> B. */
+    int rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                               "--passphrase-file", pass, "--server-id", "authd",
+                                               "--server-pub", spub, "--port", port, NULL });
+    uint8_t pub_pk[MLDSA_PUBLIC_KEY_BYTES];
+    const int b_ok = keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &b, NULL)
+                     == KEYFILE_OK;
+    CHECK(rc == 0 && b_ok && a.public_key != NULL &&
+          memcmp(b.public_key, a.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 &&
+          demo_keys_load_public(pubp, (const uint8_t *)handle, hlen, pub_pk) == DEMO_KEYS_OK &&
+          memcmp(pub_pk, b.public_key, sizeof pub_pk) == 0 && access(next, F_OK) != 0,
+          "rotate: the daemon acknowledged; .ek and .pub now name a new key, and no .ek.next is left");
+    CHECK(a.secret_key != NULL && b_ok &&
+          !any_file_has_key_window(root, a.secret_key, NULL) &&
+          !any_file_has_key_window(root, b.secret_key, NULL),
+          "rotate: no window of the old or the new secret key in any file under the device's or the daemon's directory (Req 10)");
+    {
+        char canary[320];
+        (void)snprintf(canary, sizeof canary, "%s/canary.raw", dev);
+        CHECK(b_ok && write_bytes(canary, b.secret_key, MLDSA_SECRET_KEY_BYTES) == 0 &&
+                  any_file_has_key_window(root, b.secret_key, NULL),
+              "rotate: a raw copy of the new key, planted beside it, IS found (the canary)");
+        (void)unlink(canary);
+    }
+    CHECK(read_bytes(ek, sealed_b, sizeof sealed_b, &nb) == 0, "rotate: the new sealed key is saved");
+
+    /* 2. The rename was interrupted: .ek is still A, the daemon holds B, and
+     *    .ek.next is B. The next login must complete it (PROMOTE_NEXT). */
+    CHECK(write_bytes(ek, sealed_a, na) == 0 && write_bytes(next, sealed_b, nb) == 0,
+          "interrupted rotation: .ek is the superseded key and .ek.next the live one");
+    rc = run_client_pumped(&d, (char *[]){ "authd_client", "login", "--handle", handle, "--key", ek,
+                                           "--passphrase-file", pass, "--server-id", "authd",
+                                           "--server-pub", spub, "--port", port, NULL });
+    CHECK(rc == 0 && access(next, F_OK) != 0 && same_bytes(ek, sealed_b, nb),
+          "interrupted rotation: the next login completes it -- .ek.next is gone and .ek holds the new key");
+    CHECK(a.secret_key != NULL && b_ok &&
+          !any_file_has_key_window(root, a.secret_key, NULL) &&
+          !any_file_has_key_window(root, b.secret_key, NULL),
+          "interrupted rotation: after the login that completes it, no window of either key in any file (Req 10)");
+
+    /* 3. A device that still holds the superseded key tries to rotate: the new
+     *    key C is sealed to .ek.next first (spec 10.2), the daemon refuses A,
+     *    and .ek.next must be KEPT -- still sealed. */
+    CHECK(write_bytes(ek, sealed_a, na) == 0, "stale rotate: .ek is the superseded key again");
+    rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                           "--passphrase-file", pass, "--server-id", "authd",
+                                           "--server-pub", spub, "--port", port, NULL });
+    const int c_ok = keyfile_open(next, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &c, NULL)
+                     == KEYFILE_OK;
+    CHECK(rc != 0 && rc != -1 && c_ok && a.public_key != NULL && b_ok &&
+          memcmp(c.public_key, a.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 &&
+          memcmp(c.public_key, b.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 && same_bytes(ek, sealed_a, na),
+          "stale rotate: the session is refused and .ek.next is kept, sealed");
+    CHECK(a.secret_key != NULL && b_ok && c_ok &&
+          !any_file_has_key_window(root, a.secret_key, NULL) &&
+          !any_file_has_key_window(root, b.secret_key, NULL) &&
+          !any_file_has_key_window(root, c.secret_key, NULL),
+          "stale rotate: no window of any of the three keys in any file (Req 10)");
+    CHECK(!any_name_contains(dev, ".newpub."), "stale rotate: no .newpub temp file is left behind (F118)");
+
+    mldsa_keypair_free(&a);
+    mldsa_keypair_free(&b);
+    mldsa_keypair_free(&c);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -784,6 +992,7 @@ int main(void)
     test_framing_rule();
     test_localcli_split_list();
     test_key_plan();
+    test_rotate_on_disk();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -801,15 +801,32 @@ static void test_log_privacy(void)
 
 /* ------------------------------------------------------------- recovery */
 
-/* Pulls the first code out of an `OK codes=c1,c2,...` reply. */
-static void first_code(const char *resp, char out[BASE32_CODE_CHARS + 1u])
+/* Pulls code number `idx` (from 0) out of an `OK codes=c1,c2,...` reply. */
+static void nth_code(const char *resp, size_t idx, char out[BASE32_CODE_CHARS + 1u])
 {
     memset(out, 0, BASE32_CODE_CHARS + 1u);
     const char *p = strstr(resp, "codes=");
     if (p == NULL) { return; }
     p += 6;
+    for (size_t k = 0; k < idx; k++) {
+        while (*p != '\0' && *p != ',' && *p != '\n') { p++; }
+        if (*p != ',') { return; }
+        p++;
+    }
     size_t i = 0;
     while (i < BASE32_CODE_CHARS && p[i] != '\0' && p[i] != ',' && p[i] != '\n') { out[i] = p[i]; i++; }
+}
+
+static void first_code(const char *resp, char out[BASE32_CODE_CHARS + 1u]) { nth_code(resp, 0u, out); }
+
+/* Is any of the three issued codes in `blob`, in canonical form? Until V4-24c
+ * only the first was looked for (audit F117). */
+static int any_code_in(const void *blob, size_t n, char gen[3][BASE32_CODE_CHARS + 1u])
+{
+    for (size_t k = 0; k < 3u; k++) {
+        if (memmem(blob, n, gen[k], BASE32_CODE_CHARS) != NULL) { return 1; }
+    }
+    return 0;
 }
 
 static size_t count_codes(const char *resp)
@@ -901,6 +918,12 @@ static void test_recovery(void)
     char gen1[BASE32_CODE_CHARS + 1u];
     first_code(resp, gen1);
     CHECK(strlen(gen1) == BASE32_CODE_CHARS, "recovery: a code is sixteen base32 characters");
+    char gen[3][BASE32_CODE_CHARS + 1u];
+    for (size_t k = 0; k < 3u; k++) { nth_code(resp, k, gen[k]); }
+    CHECK(strlen(gen[0]) == BASE32_CODE_CHARS && strlen(gen[1]) == BASE32_CODE_CHARS &&
+          strlen(gen[2]) == BASE32_CODE_CHARS && strcmp(gen[0], gen1) == 0 &&
+          strcmp(gen[0], gen[1]) != 0 && strcmp(gen[0], gen[2]) != 0 && strcmp(gen[1], gen[2]) != 0,
+          "recovery: all three issued codes were extracted and are distinct (the canary)");
     { char norm[BASE32_CODE_CHARS + 1u];
       CHECK(base32_normalize(gen1, strlen(gen1), norm) == 0 && strcmp(norm, gen1) == 0,
             "recovery: an issued code is already canonical"); }
@@ -912,7 +935,7 @@ static void test_recovery(void)
     { const size_t got = read_store_files("recovery.sqlite3", g_blob, sizeof g_blob);
       CHECK(memmem(g_blob, got, "$argon2id$", 10) != NULL,
             "recovery: the store holds an Argon2id hash (the present canary)");
-      CHECK(memmem(g_blob, got, gen1, BASE32_CODE_CHARS) == NULL,
+      CHECK(!any_code_in(g_blob, got, gen),
             "recovery: the plaintext code is NOT in the store (Req 4)"); }
 
     /* --- use --- */
@@ -964,7 +987,7 @@ static void test_recovery(void)
       const size_t nb = backup_and_read(&d, "recovery-backup.sqlite3", g_blob, sizeof g_blob);
       CHECK(secret_hash_present(g_blob, nb, ticket) && memmem(g_blob, nb, "$argon2id$", 10) != NULL,
             "recovery: a backup holds the ticket's SHA-256 and the code's Argon2id hash (the present canary)");
-      CHECK(secret_absent(g_blob, nb, ticket) && memmem(g_blob, nb, gen1, BASE32_CODE_CHARS) == NULL,
+      CHECK(secret_absent(g_blob, nb, ticket) && !any_code_in(g_blob, nb, gen),
             "recovery: neither the ticket nor the code is in a backup of the store (Req 4)");
       sodium_memzero(ticket, sizeof ticket); }
 
