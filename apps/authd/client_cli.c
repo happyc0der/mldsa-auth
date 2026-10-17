@@ -783,6 +783,7 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         mldsa_keypair_free(&old_kp);
+        (void)unlink(pub_tmp);   /* F118: every exit after the seal, not only `out:` */
         return failed(prog, "rotate", next_path, keyfile_status_name(ks));
     }
 
@@ -795,6 +796,7 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
     if (rc != EX_OK) {
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
+        (void)unlink(pub_tmp);   /* F118 */
         return rc;
     }
 
