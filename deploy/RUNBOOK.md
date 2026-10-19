@@ -423,12 +423,16 @@ connection comes through a carrier's address. Then check the journal shows
 `event=login-code-issued` with an `idh=` and a `/24`, and no plain `id=` or
 full address.
 
-**Phones have not been measured yet.** Spec §14's criteria are 50 ms of login
-cryptography and 2 s of Argon2id; the only in-browser figures so far are from
-headless Chromium (Edge 154) on the development Mac: a new identity (keygen +
-Argon2id 3/64 MiB + sealing) in 89–106 ms, a whole login in 85–153 ms. A phone
-will be several times slower, and a low-memory one may struggle with Argon2id's
-64 MiB. To measure yours, on the build host (not the production daemon):
+**What a phone costs, measured** (V4-25; the rows are in
+`bench/results.md`). Spec §14's criteria are 50 ms of login cryptography and
+2 s of Argon2id. A Xiaomi 12 Pro in Chrome and Edge made a new identity
+(keygen + Argon2id 3/64 MiB + sealing) in 255–393 ms, and logged in in
+301–719 ms over Wi-Fi and 512–645 ms over mobile data. Edge on the development
+Mac: 109 ms and 104–110 ms. **Safari on the same Mac took about 2.3 s for
+each, roughly 21× slower, for a reason not yet known** (audit F119) -- and
+every iPhone browser is WebKit, so try an iPhone before relying on it. A
+low-memory phone may still struggle with Argon2id's 64 MiB. To measure your
+own devices, on the build host (not the production daemon):
 
 ```bash
 node tools/phone_timing.mjs --fixture build/tests/authd_wasm_fixture \

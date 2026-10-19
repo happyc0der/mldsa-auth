@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.11, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20 errata)
+# mldsa-authd — deployment specification (v1.12, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -847,9 +847,16 @@ a whole login 106–118 ms under Node 24 on the development machine. At V4-13d,
 with V4-13c's 9,913-entry common-password list compiled in: 301,278 bytes
 (288,109 module, 13,169 glue), against the same 1.5 MB budget. In headless
 Chromium (Edge 154) on the same machine: a new identity in 89–106 ms, a whole
-login in 85–153 ms. **Phones are not yet measured** (erratum 40):
-`tools/phone_timing.mjs` serves a page that measures one on the operator's own
-network, and the numbers belong here when someone runs it with a phone in hand.
+login in 85–153 ms. **On a phone** (V4-25, erratum 47), measured with
+`tools/phone_timing.mjs`: a Xiaomi 12 Pro in Chrome and Edge 155 made a new
+identity (keygen + Argon2id 3/64 MiB + sealing) in 255–393 ms on either
+network, and a whole login (Argon2id to open the key, then the handshake) in
+301–719 ms over Wi-Fi and 512–645 ms over mobile data. On the development Mac,
+Edge 155 took 109 ms and 104–110 ms, and **Safari 27.0.1 took 2,303 ms and
+2,290–2,443 ms -- about 21× slower, for a cause not yet known** (audit F119).
+So the phone keeps Argon2id far inside V4-2's 2,000 ms and Safari does not; no
+iPhone has been measured, and every iPhone browser is WebKit. The rows, and
+what they do not establish, are in `bench/results.md`.
 
 **The login code's way to the site** (erratum 34). The page POSTs the code in a
 request **body** to the site's own endpoint, on the same origin, carrying the
@@ -1304,3 +1311,11 @@ An answer that asserted a relationship the store does not hold:
 | # | § | Change | Why |
 |---|---|---|---|
 | 46 | 8, 10.1 | A byte-identical re-enrollment is idempotent only for the user the handle belongs to; another user naming the handle and its key, on either `via`, is `pk-in-use`, and `pk-in-use` is defined to cover it | `ENROLL user=u2 handle=<u1's> pk=<u1's> via=site` answered `OK fp= idempotent=1`, and via=recovery answered a plain `OK fp=` with u2's ticket left unspent -- nothing was written, but a site could conclude it had enrolled a device for u2 (finding **F48**, fixed; user decision: no new error code) |
+
+### Revision v1.12 (V4-25)
+
+A measurement the section had been waiting for:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 47 | 14 | phones measured -- a Xiaomi 12 Pro in Chrome and Edge, over Wi-Fi and over mobile data -- with Edge and Safari on the development Mac; Safari's ~21× slowdown stated as open (audit F119); "Phones are not yet measured" removed | erratum 40 kept the sentence until "someone runs it with a phone in hand". V4-25 did: the phone keeps Argon2id far inside V4-2's 2,000 ms budget, Safari on a Mac does not, and the iPhone -- whose browsers are all WebKit -- is still unmeasured |

@@ -597,3 +597,90 @@ construction, because a completed handshake leaves a tombstone only expiry
 reclaims (audit F1). At 2048 with the default 10 s timeout that is 205/s, up
 from 25.6/s at the old 256-entry ceiling. Timing it would report an arithmetic
 identity as an observation.
+
+## The browser client in real browsers, a phone included (V4-25)
+
+Spec §14's figures for the WebAssembly client came from Node and headless
+Chromium only. Erratum 40 named the tool that would measure a phone, and
+V4-13d's attempt drew no phone in three hours. These are the first figures
+from real devices, run on 2026-10-19 between 20:06 and 20:14 UTC.
+
+### Environment
+
+- **Server side:** the development Mac (Apple M4 Pro, 14 cores, 24 GiB,
+  macOS 27.0.1) running `tools/phone_timing.mjs` under Node 24.21.0. The test
+  daemon (`tests/authd_wasm_fixture`) and the reference site come from a
+  native tree built at main `d37470e`: `build-p`, default build type,
+  fingerprint `d7e8a710c9ac77a9`, 52/52 tests including `browser_e2e`. The
+  module comes from a Release Emscripten 6.0.9 tree: `build-wasm-p`,
+  fingerprint `2c39f8ab7908049c`, 3/3. It is 288,109 + 13,169 = 301,278
+  bytes, the size §14 states.
+- **The phone:** a Xiaomi 12 Pro, named by Tailscale's device list, because
+  Chromium browsers report a frozen "Android 10; K" to every site. Chrome 155
+  and Edge 155.
+- **The networks:** home Wi-Fi to the Mac's LAN address, and mobile data
+  through Tailscale to the Mac's tailnet address. Tailscale showed the
+  phone's path as direct from 25.241.208.153, a different public network from
+  the Mac's 172.56.34.86, so the mobile runs did not pass through the home
+  network.
+- **The Mac's own browsers:** Edge 155 and Safari 27.0.1. Chrome is not
+  installed.
+
+### Method
+
+`web/pages/timing.mjs` times two things with `performance.now()`:
+- **seal:** `client.newIdentity()`, which is ML-DSA-65 keygen, then
+  Argon2id(3, 64 MiB), then sealing.
+- **login,** five times: `client.login()`, which is Argon2id to open the key,
+  then the hybrid handshake over the WebSocket to the daemon. Each login's
+  code is then spent at the site, so each was a real login.
+
+There is one run per browser per network. The figures are what the page
+reported, to the 0.1 ms it reports.
+
+### Results
+
+| Device, browser | Network | Seal (ms) | Logins, in order (ms) | Median login (ms) | Cores reported |
+|---|---|---|---|---|---|
+| Mac, Edge 155 | Wi-Fi | 109.2 | 109.9, 106.1, 104.5, 106.9, 104.2 | 106.1 | 14 |
+| Mac, Safari 27.0.1 | Wi-Fi | 2,303 | 2,320, 2,332, 2,290, 2,300, 2,443 | 2,320 | 8 |
+| Xiaomi 12 Pro, Edge 155 | home Wi-Fi | 392.6 | 519.6, 318.1, 697.3, 518.1, 407.2 | 518.1 | 8 |
+| Xiaomi 12 Pro, Chrome 155 | home Wi-Fi | 327.5 | 537.1, 301.3, 395.9, 316.5, 719.0 | 395.9 | 8 |
+| Xiaomi 12 Pro, Chrome 155 | mobile data, Tailscale | 340.2 | 570.2, 511.7, 632.9, 622.8, 587.6 | 587.6 | 8 |
+| Xiaomi 12 Pro, Edge 155 | mobile data, Tailscale | 255.2 | 638.1, 638.9, 629.8, 645.0, 633.4 | 638.1 | 8 |
+
+Safari's figures are whole milliseconds, because Safari coarsens
+`performance.now()`. Safari reported 8 cores on a 14-core Mac.
+
+### Reading these numbers
+
+- **The phone keeps Argon2id far inside V4-2's 2,000 ms budget.** Argon2id
+  dominates a new identity, and the whole new identity took 255–393 ms. That
+  is 2.3–3.6× the Mac's Edge figure, and at least 5× inside the budget.
+- **The network changes the login, not the computation.** A new identity,
+  which uses no network, cost the same on mobile data (255–340 ms) as on
+  Wi-Fi (328–393 ms). Logins over mobile data had medians of 588–638 ms,
+  against 396–518 ms on Wi-Fi, and a much narrower spread. So the difference
+  is the round trips through the carrier and Tailscale.
+- **Safari is about 21× slower than Edge on the same Mac:** a new identity in
+  2,303 ms against 109.2 ms, and a median login of 2,320 ms against 106.1 ms.
+  - The ratio is the same for every timing, so it is in how the engine runs
+    the module.
+  - The new identity reaches or passes the Argon2id budget.
+  - Lockdown Mode, which turns WebKit's JIT off, does not appear to be on: its
+    global setting is unset.
+  - The cause is unknown: audit **F119**.
+
+### What these numbers do not establish
+
+- **The 50 ms criterion for a login's cryptography.** The page times the
+  whole login, Argon2id and network included; V4-2 measured the cryptography
+  alone at 0.556 ms in Node.
+- **A population.** It is one phone model, with one run per browser per
+  network, and neither its thermal state nor its battery saver was
+  controlled.
+- **An iPhone.** No iPhone was measured. Every iPhone browser is WebKit, the
+  engine that was 21× slower on the Mac.
+- **Device memory.** `navigator.deviceMemory` is only exposed to secure
+  (https) pages, and the tool serves plain http by design, so memory is
+  unknown for every row.

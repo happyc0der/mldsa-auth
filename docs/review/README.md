@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 116 findings (F1–F118), with severity, evidence and
+   register](../v4/audit.md). 117 findings (F1–F119), with severity, evidence and
    disposition. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 46 errata, each
    citing the finding that forced it.
@@ -249,6 +249,12 @@ raw key the V4-24b suite let through. Two findings were fixed on the way:
 - **F118:** a rotation that failed after sealing its new key left the new
   public key's temp file in the device's directory. It is removed on every
   return now.
+
+V4-25 recorded the first measurements of the browser client on a phone (spec
+§14, erratum 47): a Xiaomi 12 Pro in Chrome and Edge keeps Argon2id far inside
+its 2 s budget, over Wi-Fi and over mobile data. It also found **F119**, open:
+Safari on a Mac runs the client about 21× slower than Edge on the same machine,
+and every iPhone browser shares Safari's engine.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

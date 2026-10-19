@@ -8194,3 +8194,64 @@ with F91.
   - The twelve fuzz targets ran 600 s each, with 0 crashes and 0 artifacts.
 - **The control's revert** restores `tools/mutations/spec_v70.txt`
   byte-exact (sha256 `478757c2c9f3dd15...` before and after).
+
+## V4-25 — phones measured (spec §14, erratum 47)
+
+Since V4-13d, §14 had said "**Phones are not yet measured**". The tool
+existed (`tools/phone_timing.mjs`), and it had been served for three hours
+without a phone reporting. This step is the measurement, recorded. No code
+changed.
+
+### The run
+
+The owner's Xiaomi 12 Pro, in Chrome 155 and Edge 155, over home Wi-Fi and
+then over mobile data, plus the Mac's own Edge 155 and Safari 27.0.1: six
+results, all in `bench/results.md` with their environment and method.
+- **Identifying the phone.** The Chromium browsers report a frozen "Android
+  10; K" to every site, so the model comes from Tailscale's device list.
+- **The mobile runs really were off Wi-Fi.** Wi-Fi off cannot be checked from
+  the page, so it was checked from Tailscale's side: the phone's path was
+  direct from 25.241.208.153, a different public network from the Mac's
+  172.56.34.86, and the bytes on that path grew between the two mobile runs.
+- **The invite stayed in the fragment.** Each run's invite was fresh and rode
+  the URL fragment, as the tool intends.
+- **Both servers are gone.** They were stopped by hand afterwards; no fixture
+  process remained, and the port refused connections.
+
+### What it shows
+
+- **The phone keeps Argon2id far inside V4-2's 2,000 ms budget.** Its new
+  identity (keygen + Argon2id 3/64 MiB + sealing) took 255–393 ms.
+- **The network costs only the login.** A login took 301–719 ms on Wi-Fi and
+  512–645 ms on mobile data; the extra is network round trips, not
+  computation.
+- **Safari on the same Mac is about 21× slower than Edge**, uniformly:
+  2,303 ms for a new identity, 2,290–2,443 ms per login. That is **F119**
+  (Low, open). The cause is unknown; Lockdown Mode's global setting is unset.
+  It matters beyond one Mac because every iPhone browser is WebKit, and no
+  iPhone was measured.
+
+### What broke on the way
+
+Every existing build tree failed with `'sodium.h' file not found`.
+`~/.cache/mldsa-tmp` -- the location the libsodium memory note chose
+precisely because `$TMPDIR` gets cleaned -- had been emptied too, by
+something outside this project. As that note prescribes, the old trees were
+left untouched, and fresh ones were built beside them:
+- `build-wasm-p`: Release, Emscripten 6.0.9, fingerprint `2c39f8ab7908049c`,
+  3/3.
+- `build-p`: native, pointing at it, fingerprint `d7e8a710c9ac77a9`, 52/52,
+  `browser_e2e` and `wasm_interop` included.
+
+Each was proven current before its suite ran. Deleting or rebuilding the old
+trees is the owner's decision.
+
+### Verification
+
+- **Spot-checked against the raw data:** every figure in §14, the runbook,
+  `bench/results.md`, F119 and this entry was compared with the tool's six
+  JSON rows.
+- **Gates:** spec constants and vocabularies, the claim map, anchors, the
+  audit table's separators and `git diff --check` pass.
+- **Scope:** only `docs/`, `bench/results.md` and `deploy/RUNBOOK.md`
+  changed; no source or test file did, so no campaign is affected.
