@@ -8173,3 +8173,24 @@ The owner chose six items after V4-23. What each still does not establish:
 Three findings were fixed on the way (F115, F117, F118), two were
 corrected in the records (F113, F116), and F114 stays open for the owner,
 with F91.
+
+### V4-24c: CI on the branch and the control nightly
+
+- **CI** 39311658216, dispatched on the pushed branch at `e409628`: 14/14.
+  - 49 per suite job on Linux and macOS, 36 fuzz-labelled, and 3 and 6 in
+    the wasm job.
+  - The Caddy, unit and offline-build jobs report "all checks"; the secret
+    scan finds 0 violations in 28 files; the claim map resolves 355
+    citations.
+  - `test_authd_cli` took 80.5-85.0 s on Linux and 104.8-114.1 s on macOS:
+    its first runs there with the rotation leg, against 36.1-38.9 s and
+    58.9-63.1 s on main's CI before it (38969780717).
+- **The nightly**, with v70 RK1's expectation rotted (39320603234), was red
+  on exactly that job, 54/55. v70 adds the 55th job.
+  - RK1 reported `SURVIVED(BAD:)`, naming the rotted text; RK2-RK6 were
+    killed by name.
+  - Every other campaign's verdicts match its spec: 304 of 305 killed, and
+    every row restored clean with a passing clean suite.
+  - The twelve fuzz targets ran 600 s each, with 0 crashes and 0 artifacts.
+- **The control's revert** restores `tools/mutations/spec_v70.txt`
+  byte-exact (sha256 `478757c2c9f3dd15...` before and after).
