@@ -273,6 +273,15 @@ key's secret windows and for the passphrase. It trusts a clean result only
 after the same scan finds, whole, a canary written into IndexedDB and the key
 itself planted in the clear. Nothing was found.
 
+V4-29 closed a gap in D13 that its own limits named. With `log_ids = full`,
+the logger prints an identifier as an escaped `id=` field: printable bytes as
+themselves, everything else as dots. A secret passed where an identifier
+belongs would print about a third of its bytes that way, and no hex or base64
+search sees it. Every journal scan now matches the `id=` fields against each
+secret's escaped image, in one shared header. Campaign v71 passes five
+secrets where identifiers belong: the login code, a nonce, a signature, a
+token and a ticket. Each passed V4-28's scans and is caught by name now.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
