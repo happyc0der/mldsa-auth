@@ -8670,3 +8670,37 @@ name.
 - **Gates:** spec constants and vocabularies, the claim map, the anchors
   (342 across 40 campaigns: no campaign anchors in the seven tests), the
   audit separators, and `git diff --check`.
+
+## V4-26, V4-27 and V4-28 — CI on the branch and the nightly bring-up
+
+**One bring-up for three steps.** V4-24a and V4-24b set the precedent. The
+three steps land in order on one line, and none changes a campaign's code:
+- V4-26 and V4-27 change pages, a tool, tests and documents.
+- V4-28 changes seven tests' scratch directories and adds a gate.
+
+So one control nightly shows the nightly can still go red. One final
+nightly then runs every campaign against the final tree, the tests V4-28
+changed included.
+
+### CI on the branches (14 jobs each)
+
+| Head | Step | Run | Result |
+|---|---|---|---|
+| `c40213f` | V4-26, the code | 39371836902 | 14/14; `phone_timing_tool` passed on Linux with Chrome for Testing 154 |
+| `5a0fdc1` | V4-26, with its docs | 39374788675 | 14/14 |
+| `45d24a3` | V4-27 | 39378680825 | **13/14**: the wasm job's IndexedDB canary on SQLite (V4-27's section above) |
+| `19fce3a` | V4-27, the canary fixed | 39380060622 | 14/14 |
+| `c906687` | V4-28 | 39383763957 | 14/14 |
+
+### The control nightly
+
+- **The control.** `9832761` rotted v70 RK6's expectation, appending
+  "CONTROL -- a check no test prints (V4-26)", on V4-26's code. spec_v70's
+  sha256 before was `478757c2c9f3dd15`.
+- **The run.** 39373351325 was red on exactly `mutations · v70`, 54/55:
+  - RK1–RK5 were killed by name;
+  - RK6 was **SURVIVED(BAD)**, naming the rotted text;
+  - every mutant restored clean, with a passing clean suite and residue 0.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with V4-29.
