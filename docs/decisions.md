@@ -9928,3 +9928,118 @@ gates, V4-39's `backend_symbols` and V4-40's `child_exit.h` in it.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-41 — F121's dead code removed, and the test counts gated (loop iteration 16: fixes and cleanup)
+
+### F121: three functions nothing called
+
+V4-40's coverage run found `conn_io_out_capacity`, `authd_conn_stage_name`
+and `listener_accept` with zero calls.
+- **Checked first:** nothing referenced any of them. No caller, campaign
+  anchor, test, CLAIMS citation or wasm export.
+- **Removed:** all three, with their declarations and comments.
+  `listener_accept` was the one that mattered: a single-uid wrapper whose
+  `(uid_t)-1` sentinel became an empty allowlist, which
+  `listener_accept_ex` reads as "no check". That is F92's shape, now gone
+  instead of merely unreachable.
+
+### The test counts, gated
+
+**Why.** The stated test counts drifted in F107, F116 and F120, each found
+by a hand sweep. V4-39 drifted them again: it restated README.md and
+REPRODUCE.md, but the review page kept 55 where the README said 56. A count
+that depends on the configuration cannot be read statically, so it is
+checked in the tree it describes.
+
+**`doc_test_counts`, a CTest in every native tree.** CMake passes the
+tree's configuration as six 0/1 flags (node, python3, nm and file, a wasm
+tree, a browser, a fuzz tree), each the same condition the optional tests
+are registered under. The script then checks:
+- **The count.** It parses the README's sentence (native N, without node M,
+  with a wasm tree W, with a browser B, and the "one fewer" rules for
+  python3 and for nm/file). It computes this configuration's number and
+  needs `ctest -N` to equal it.
+  - A fuzz tree registers its 36 fuzz-labelled libFuzzer tests in place of
+    the skipped `fuzz_libfuzzer` placeholder every other tree has, so the
+    README's number is the unlabelled tests plus that placeholder. The
+    label's own count must equal REPRODUCE.md's "out of 36".
+- **The other documents.** REPRODUCE.md's N/W/B, its sanitizer-tree pair and
+  its gcc 16 count, and the review page's browser-client count, must all
+  equal the README's.
+- **The table.** Every registered test needs a row in the README's table of
+  tests, by name or by a `prefix_*` group row. The first run found three
+  missing (`test_envelope_spec`, `client_links_no_sqlite_control`,
+  `liboqs_minimal`), F116's other half. In the fuzz tree it found the 36
+  labelled libFuzzer tests (`fuzz_seed_*`, `fuzz_seedgen_*`,
+  `fuzz_libfuzzer_smoke_*`) described nowhere. All have rows now: one each
+  for the three, and one group row for the 36.
+- **The sentences.** Every sentence must be found, so rewording one fails
+  rather than retiring a check.
+
+**Its first run, before any document was touched,** failed on two things:
+- the review page's 55 (**F124**, the real drift);
+- the new test's own uncounted registration (57 against 56).
+
+**The counts now:** native 53 (51 without node), 55 with a wasm tree, 57
+with a browser.
+
+### The controls
+
+Each stated number rotted once and restored byte-exactly (`cmp`); each
+failed by name:
+
+| Rot | Failed check |
+|---|---|
+| README native 53 → 52 | REPRODUCE.md's three statements no longer equal the README's |
+| README browser 57 → 58 | "this tree registers 57 tests; the README's count with a browser is 58", plus the three repetitions |
+| README's "`node`" unquoted | "README's count sentence was not found whole" |
+| REPRODUCE.md wasm 55 → 54 | "REPRODUCE.md states '53', '54', '57' where README states 53, 55, 57" |
+| REPRODUCE.md sanitizer 57 → 56 | the sanitizer-tree pair |
+| REPRODUCE.md gcc 16 53 → 52 | the gcc 16 count |
+| review page 57 → 56 | "the review packet states '56' … where README states 57" |
+
+**The configuration rule, run against `build-p` (57 registered).** Claiming
+each tool absent moved the expected count by exactly the README's amount,
+and failed:
+
+| Claimed absent | Expected |
+|---|---|
+| python3 | 56 |
+| nm and file | 56 |
+| the browser | 55 |
+| the wasm tree | 53 |
+| node | 51 |
+
+**The table check, by dropping rows** (each restored byte-exactly):
+
+| Row dropped | Tree | Failed check |
+|---|---|---|
+| `liboqs_minimal` | `build-p` | "registered tests with no row in the README's table: liboqs_minimal" |
+| the `fuzz_replay_*` group | `build-p` | the same check, naming all twelve `fuzz_replay_*` tests |
+| the fuzz-tree group | `build-fuzz-p` | the same check, naming the 36 |
+
+### Verification
+
+- **Every tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-wasm-p` | `2c39f8ab7908049c` | 3/3 |
+  | `build-p` | `1cdd7a4f02b16224` | 57/57 |
+  | `build-bench-p` | `606671199b94b388` | 53/53 |
+  | ASan | `9b92d914336932e4` | 57/57, instrumentation in all 43 |
+  | UBSan | `1d54c40c332615db` | 57/57; one runtime error, the planted canary |
+  | fuzz | `a8ff66a07508e0cf` | 36/36 |
+
+- **`doc_test_counts`, run again in all six native trees** after the last
+  document edit: 8 passing checks in each, 9 in the fuzz tree (its label
+  count), none failing.
+- **Coverage, re-measured** (`build-cov-p`, `00a48025fdefbcfc`, 57/57).
+  `apps/authd/` now has 429 functions, three fewer, with the same 421
+  covered (98.14%). Functions under 80% went from 76 to 73.
+- **Gates:**
+  - anchors (354 checked; 16 counts agreeing);
+  - the claim map, including the register's size (124, F0–F124);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.

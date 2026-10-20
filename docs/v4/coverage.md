@@ -127,7 +127,7 @@ uncovered regions are of three kinds, none of which a normal test can reach:
 | `ccw_diag_stage` (`client_wasm.c:246`) | live: the browser client calls it, and the wasm build is not measured |
 | `cli_prompt_status_name` (`cli_prompt.c`) | live: printed only on the prompt's error paths |
 
-The three dead ones are audit **F121**.
+The three dead ones are audit **F121**, removed in V4-41.
 
 ### Security checks no test reaches
 
