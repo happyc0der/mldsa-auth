@@ -84,7 +84,7 @@ register says how. Still open:
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F91 | Info | An advisory affects liboqs 0.16.0 in LMS/HSS, which this build does not compile. **Mitigated in V4-14d**: the fix is in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
+| F91 | Info | Two advisories affect liboqs 0.16.0 in LMS/HSS, which this build does not compile (the second, GHSA-xv6c-h66p-6mfq, found in V4-38). **Mitigated in V4-14d**: both fixes are in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite

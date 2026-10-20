@@ -1,6 +1,8 @@
 # Pinned dependencies against published advisories
 
-Checked **2026-09-27 (23:07 UTC)** for the review packet (V4-14b). Until this
+Checked **2026-09-27 (23:07 UTC)** for the review packet (V4-14b), and every
+query repeated on **2026-10-20** (V4-38): one new liboqs advisory, not
+exposed, and otherwise the same answers. Until the first
 check, the V4-1 audit said plainly that nobody had ever compared the pinned
 versions with published advisories. This page records **what was asked, of
 whom, and what came back — including "nothing"** — so a reviewer can repeat it
@@ -43,8 +45,26 @@ each channel was also run against a version known to be affected:
 
 ## What came back
 
-**liboqs 0.16.0 — one advisory affects this version, in code this build does
-not compile.**
+**liboqs 0.16.0 — two advisories affect this version, both in code this
+build does not compile.**
+
+- **GHSA-xv6c-h66p-6mfq / CVE-2026-104255** (2026-10-06, medium; found when
+  V4-38 re-ran these queries): in the LMS stateful-signature wrapper, lock
+  callbacks fail open, so an LM-OTS key can be reused and a signature forged.
+  Verification also fails to check the parameter set, and there are three
+  out-of-bounds or exhaustion defects on LMS key generation and signing.
+  - **Range:** 0.11.0 through 0.16.0, patched in **0.17.0** (not yet
+    released).
+  - **Reach:** every part needs `OQS_ENABLE_SIG_STFL_LMS=ON`, and most also
+    need `OQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN`.
+  - **This build:** `OQS_ENABLE_SIG_STFL_LMS:BOOL=OFF` and
+    `OQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN:BOOL=OFF`, with
+    the same minimal build as below. The built `liboqs.a`'s 21
+    `OQS_SIG_STFL_*` symbols are the generic stateful-signature dispatcher,
+    which with no stateful algorithm compiled has nothing to dispatch to.
+    No LMS, HSS or LM-OTS symbol is present (the advisory's exported
+    `OQS_SIG_STFL_alg_lms_verify` included), and `liboqs_minimal` fails the
+    build if one ever is. Recorded under F91.
 
 - **GHSA-wh5q-mpc8-67wf** (2026-09-22, medium): a heap out-of-bounds read in
   LMS/HSS signature verification, patched in **0.17.0** — so 0.16.0 is in
@@ -66,6 +86,10 @@ not compile.**
     0.10.1.
   - CVE-2024-31510: ML-DSA-44 IPD AVX2 in v0.10.0. That is NVD-only, and
     names a component and version this build does not use.
+  - CVE-2024-37305, the eighth NVD match for "liboqs", is in oqs-provider,
+    the separate OpenSSL provider built on liboqs, which this project does
+    not use. NVD did not yet list CVE-2026-104255 on 2026-10-20; GitHub's
+    advisory is the source for it.
 
 **libsodium 1.0.22 — no advisory affects it.**
 

@@ -129,6 +129,13 @@ STATED = [
     ("tools/README.md", r"All (\d+) committed campaigns run nightly", n_camp),
     ("tools/README.md", r"(\d+) architecture-independent ones on Linux", n_camp - 1),
     ("tools/README.md", r"The nightly verifies \*\*all (\d+)\*\*", n_mut),
+    # V4-38: REPRODUCE.md, the reviewer's first page, had drifted too (305,
+    # 40, 342 anchors) and was not in this list.
+    ("docs/review/REPRODUCE.md", r"(\d+) committed mutations in \d+ campaigns", n_mut),
+    ("docs/review/REPRODUCE.md", r"\d+ committed mutations in (\d+) campaigns", n_camp),
+    ("docs/review/REPRODUCE.md", r"ALL ANCHORS OK \((\d+) anchors checked", checked),
+    ("docs/review/REPRODUCE.md", r"anchors checked; (\d+) mutations across \d+ campaigns\)", n_mut),
+    ("docs/review/REPRODUCE.md", r"mutations across (\d+) campaigns\)", n_camp),
 ]
 for doc, pat, want_n in STATED:
     text = (repo/doc).read_text()
@@ -138,6 +145,7 @@ for doc, pat, want_n in STATED:
     elif int(m.group(1)) != want_n:
         print(f"COUNT {doc}: says {m.group(1)} where the campaigns say {want_n} (/{pat}/)"); bad += 1
 if bad == 0:
-    print(f"counts: the {len(STATED)} stated counts in README.md and tools/README.md agree ({n_mut} mutations, {n_camp} campaigns)")
+    print(f"counts: the {len(STATED)} stated counts in README.md, tools/README.md and REPRODUCE.md agree "
+          f"({n_mut} mutations, {n_camp} campaigns, {checked} anchors)")
 print("ALL ANCHORS OK" if bad == 0 else f"{bad} PROBLEM(S)")
 sys.exit(1 if bad else 0)

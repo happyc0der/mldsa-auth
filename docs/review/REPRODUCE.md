@@ -1,9 +1,11 @@
 # Reproducing every result
 
-Every command below was run for this packet (V4-14b, 2026-09-27) on macOS 26
-(arm64, Apple clang; Homebrew LLVM 23 for fuzzing; Homebrew gcc 16), and each
-says what it printed. The same gates run on Linux in CI and the nightly (see
-the last section), which is where a reviewer without a Mac should look first.
+Every command below was run again for V4-38 (2026-10-20), as written, in a
+fresh clone at a path without spaces, on macOS 27.0.1 (arm64, Apple clang;
+Homebrew LLVM for fuzzing; Homebrew gcc 16; Docker for the two scripts that
+need it), and each says what it printed then. They were first run for this
+packet in V4-14b. The same gates run on Linux in CI and the nightly (see the
+last section), which is where a reviewer without a Mac should look first.
 
 ## Before you start
 
@@ -71,7 +73,7 @@ With Emscripten **6.0.9** exactly (configure refuses any other version):
 emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j8
 ctest --test-dir build-wasm                                            # 100% tests passed out of 3
 cmake -S . -B build -DMLDSA_WASM_DIR="$PWD/build-wasm" && cmake --build build -j8
-ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e|phone_timing_tool)$'
+ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e|phone_timing_tool)$'   # 100% tests passed out of 4
 ```
 
 `wasm_module_gates` checks the module's exact export list; `test_client_core_kat`
@@ -87,7 +89,7 @@ which it came from (V4-26, F119).
 ```bash
 cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang -DMLDSA_FUZZ=ON
 cmake --build build-fuzz -j8 && ctest --test-dir build-fuzz -L fuzz    # 100% tests passed out of 36
-tests/fuzz/run_fuzz.sh local build-fuzz authd_config                   # 600 s; crashes=0 artifacts=0
+tests/fuzz/run_fuzz.sh local build-fuzz authd_config                   # 600 s; crashes=0 artifacts=0 (123,075,142 runs)
 ```
 
 Every target, at 600 s each: `tests/fuzz/run_fuzz.sh local build-fuzz`. Apple
@@ -95,23 +97,24 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-305 committed mutations in 40 campaigns, each a defect the tests must catch
-**by name**. One campaign, on an ASan tree:
+315 committed mutations in 44 campaigns, each a defect the tests must catch
+**by name**. One campaign, on an ASan tree -- v72's two mutations take about
+twenty minutes; a larger one, such as v56's twenty, takes hours:
 
 ```bash
-tools/run_mutations_v2.sh "$PWD" /tmp/mut tools/mutations/mutate_v56.py \
-    tools/mutations/spec_v56.txt build-asan
+tools/run_mutations_v2.sh "$PWD" /tmp/mut tools/mutations/mutate_v72.py \
+    tools/mutations/spec_v72.txt build-asan
 ```
 
 It ends with `residue: none` and `final: all sources restored; all artifacts
 identical to clean fingerprints`, and every row reads `KILLED(n named)`. A
 compile failure counts only if `tools/mutations/compile_kills_allowed.txt`
-lists it (one does: v24 M8). Nine older mutations are killed without a named
-check (audit F90). Before editing sources, check that every campaign still
-applies:
+lists it (one does: v24 M8). Since V4-14d every kill must be named (audit
+F90): a spec line without an expected check is refused. Before editing sources,
+check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (342 anchors, 40 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (354 anchors checked; 315 mutations across 44 campaigns)
 ```
 
 ## The formal model
@@ -123,9 +126,9 @@ ProVerif 2.05, built from source (its opam package needs GTK); see
 formal/run.sh path/to/proverif
 ```
 
-**Not re-run locally for this packet** — ProVerif is not installed on the
-machine that wrote it. It runs in the nightly job `ProVerif model +
-controls`, whose last log (run 36345474231) reads: `ok base`, `ok leak_kem`,
+**Not re-run locally**, in V4-14b or V4-38: ProVerif is not installed on the
+machine that wrote this page. It runs in the nightly job `ProVerif model +
+controls`, whose log in run 39447335408 (2026-10-20) reads: `ok base`, `ok leak_kem`,
 `ok leak_dh`, `ok leak_c2s`, and `no longer provable` for each of `ctl_sigb`,
 `ctl_kdf_nodh`, `ctl_kdf_nokem`, `ctl_rot_hsid` and `ctl_rot_sigold`.
 
@@ -140,8 +143,8 @@ python3 tools/audit/check_claim_map.py .            # OK: every requirement is m
 ## Scripts outside CTest
 
 ```bash
-sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; 9 PASS lines, "all checks" (also a CI job since V4-22b)
-sh tests/deploy_checks.sh    # systemd's own analysers on the unit (Docker); exposure 1.7, "all checks"
+sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; 9 PASS lines, "PASS: CADDY: all checks" (also a CI job since V4-22b)
+sh tests/deploy_checks.sh    # systemd's own analysers on the unit (Docker); exposure 1.7, "PASS: DEPLOY: all checks"
 ```
 
 ## The dependency advisories
@@ -158,16 +161,21 @@ curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?virtualMatchString=cpe
 gh api repos/open-quantum-safe/liboqs/security-advisories
 ```
 
+On 2026-10-20 (V4-38) the three pinned commits returned no vulnerabilities
+and the control returned CVE-2025-6965. NVD returned 8 matches for liboqs and
+1 for SQLite 3.53.4 (CVE-2022-31631, a PHP bug). GitHub returned 8 liboqs
+advisories, one of them new since V4-14b (GHSA-xv6c-h66p-6mfq, in LMS, which
+is not compiled). ADVISORIES.md accounts for every one.
+
 ## On Linux, without a Mac
 
 - **CI** (`.github/workflows/ci.yml`, every push): the suite under debug, ASan
   and UBSan on Linux and macOS, gcc, Release with the hardening check, the
-  offline build, fuzz smoke and the secret scan, the specification checks, and
-  the wasm and headless-browser job. 13 jobs; run 36345474470 on `6f9269b`:
-  13/13. V4-22b added a fourteenth, `caddy proxy (Linux, Docker)`, which runs
-  `tests/caddy_proxy.sh`.
-- **Nightly** (`.github/workflows/nightly.yml`): all 26 mutation campaigns on
-  fresh ASan trees, 600 s on each of twelve fuzz targets, the ProVerif model
-  and its controls. Run 36345474231 on `6f9269b`: 41/41, with 223 of 233
-  mutations killed by name, 9 without a named check (F90) and 1 by the
-  compiler (M8, allowlisted).
+  offline build, fuzz smoke and the secret scan, the specification checks
+  (since V4-34 the mutation anchors and the stated counts too), the wasm and
+  headless-browser job, and `caddy proxy (Linux, Docker)`. 14 jobs; run
+  39474140277 on main `71c8fc0`: 14/14.
+- **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
+  campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
+  ProVerif model and its controls. Run 39447335408 on `71c8fc0`'s tree: 58/58,
+  with 314 of 314 mutations killed by name (v74, V4-36's, joined after it).
