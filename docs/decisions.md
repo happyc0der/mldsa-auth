@@ -8552,3 +8552,28 @@ Re-run that way, C1, C2 and C5 were all killed. C3 and C4 change no binary.
     verbatim in its test;
   - anchors: 342 across 40 campaigns, unchanged;
   - audit separators and `git diff --check`.
+
+### CI: on Linux, Chromium's IndexedDB is SQLite
+
+CI 39378680825 failed one check in the wasm job: "every window of a
+canary", with 4,002 of 4,017 found, in both profiles.
+- **Two backends.** Chrome for Testing 154 on Linux keeps IndexedDB in
+  SQLite: a database file and its `-wal`, where the canary was found. Edge
+  155 on macOS keeps it in LevelDB, where the canary sat whole in the log.
+- **Why 15 are missing.** SQLite stores a value longer than its in-page
+  share in overflow pages, each of which begins with a 4-byte pointer. So
+  the bytes are split once, and the 15 windows straddling the split are not
+  contiguous on disk: 4,017 − 4,002 = 15.
+- **No leak was found.** Every key check passed there too (0 of 3,906), and
+  the planted key was found whole.
+- **The canary was too strict for SQLite.** It now needs every window but
+  at most two page splits, at least 3,987 of 4,017. A 4,032-byte value
+  crosses at most two splits on 4 KiB pages.
+- **The key checks are unchanged.** One window is a failure, and a key in
+  the clear in SQLite would still show thousands.
+- **The controls under the new condition.** C1, C3 and C5 were re-run and
+  are killed by name (0 of 4,017 each). CLAIMS D10 cites the new check
+  text.
+
+Both of Chromium's IndexedDB backends are now scanned: LevelDB locally,
+SQLite in CI.

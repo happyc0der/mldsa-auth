@@ -254,13 +254,20 @@ try {
   const held2 = [['the recovered device\'s key', await envOf(b2, handle2)]];
 
   // ---- at rest: both profiles, while the browsers still run (V4-27) ----
-  // The canary first: unless the scan finds every window of bytes IndexedDB
-  // was given, a clean result below would mean nothing.
+  // The canary first: unless the scan finds the bytes IndexedDB was given, a
+  // clean result below would mean nothing. Chromium's two backends store them
+  // differently. LevelDB (Edge on macOS) keeps the value whole. SQLite
+  // (Chrome for Testing on Linux) puts a value longer than its in-page share
+  // into overflow pages, each starting with a 4-byte pointer, so the 15
+  // windows straddling a split are not contiguous on disk: 4,002 of 4,017 in
+  // CI 39378680825, one split. A 4,032-byte value crosses at most two on
+  // 4 KiB pages. A key in the clear would still show thousands of windows,
+  // and one is a failure.
   for (const [br, canary, keys, h, name] of [[b, canary1, held, handle, 'profile 1'], [b2, canary2, held2, handle2, 'profile 2']]) {
     const c = scan(['--dir', br.profile, '--needle', hexFile(canary)]);
-    check(c !== null && c.of === 4017 && c.found === c.of && c.files > 0,
-          `at rest, ${name}: every window of a canary written into IndexedDB is found on disk -- the scan sees what IndexedDB writes ` +
-          `(${c ? `${c.found}/${c.of}; ${c.files} files, ${c.bytes} bytes` : 'scan failed'})`);
+    check(c !== null && c.of === 4017 && c.found >= c.of - 30 && c.files > 0,
+          `at rest, ${name}: a canary written into IndexedDB is found on disk, every window but at most two page splits' -- ` +
+          `the scan sees what IndexedDB writes (${c ? `${c.found}/${c.of}; ${c.files} files, ${c.bytes} bytes` : 'scan failed'})`);
     for (const [what, env] of keys) {
       const k = scan(['--dir', br.profile, '--envelope', hexFile(env), '--pass', join(work, 'pass'), '--handle', h]);
       check(k !== null && k.of > 3800 && k.found === 0,

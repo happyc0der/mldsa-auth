@@ -377,7 +377,7 @@ the most important thing on this page.
 - mutation `v70 RK2` — rotate writes the new key's raw secret beside `.ek.next` once it has reopened it
 - mutation `v70 RK3` — the login that completes an interrupted rotation keeps the superseded key's raw secret
 - mutation `v70 RK4` — a rotation whose session cannot open keeps the new key's raw secret "for a retry"
-- check `browser_e2e` "every window of a canary written into IndexedDB is found on disk -- the scan sees what IndexedDB writes"
+- check `browser_e2e` "a canary written into IndexedDB is found on disk, every window but at most two page splits'"
 - check `browser_e2e` "no window of ${what} is anywhere in the profile"
 - check `browser_e2e` "planted in the profile in the clear, is found by the same scan, every window"
 - check `browser_e2e` "the passphrase is in no file of the profile, as UTF-8 or UTF-16"
