@@ -141,6 +141,33 @@ try {
   check(n.code.length === 32, 'rotate: the new key logs in');
   await n.close();
 
+  // V4-32 (CLAIMS D9, Req 9): revocation closes a LIVE session, observed from
+  // outside the daemon. Until now that was checked in-process only
+  // (test_authd_localapi). Two devices of the same user each hold a session
+  // the daemon keeps open after issuing its code; the site revokes one. Its
+  // WebSocket must be closed by the daemon -- seen here, in another process --
+  // and the other device's must stay open: the canary that the close was
+  // the revoked device's and not everyone's.
+  const enc = (t) => new TextEncoder().encode(t);
+  const devA = client.newIdentity(PASS), devB = client.newIdentity(PASS);
+  const ea = await site(`ENROLL user=${user} handle=${hex(enc(devA.handle))} pk=${hex(pkOf(devA.publicImage))} via=site`);
+  const eb = await site(`ENROLL user=${user} handle=${hex(enc(devB.handle))} pk=${hex(pkOf(devB.publicImage))} via=site`);
+  check(ea.startsWith('OK fp=') && eb.startsWith('OK fp='), 'revoke: two more devices of the same user are enrolled');
+  const sa = await client.login({ ...base, handle: devA.handle, envelope: devA.envelope });
+  const sb = await client.login({ ...base, handle: devB.handle, envelope: devB.envelope });
+  check(sa.ws.readyState === 1 && sb.ws.readyState === 1, 'revoke: both devices hold a live session');
+  const closedWithin = (sess, ms) => new Promise((res) => {
+    if (sess.ws.readyState === 3) { res(true); return; }
+    const t = setTimeout(() => res(false), ms);
+    sess.ws.addEventListener('close', () => { clearTimeout(t); res(true); });
+  });
+  const rv = await site(`REVOKE-DEVICE handle=${hex(enc(devA.handle))}`);
+  check(rv.startsWith('OK'), `revoke: the site revokes the first device (${rv.trim()})`);
+  check(await closedWithin(sa, 3000),
+        "revoke: the daemon closes the revoked device's live WebSocket, seen from the client's process (Req 9, D9)");
+  check(sb.ws.readyState === 1, "revoke: the other device's live session stays open (the canary)");
+  await sb.close();
+
   console.log(`\ntimings (Node ${process.version}): Argon2id 3/64 MiB ${tSeal.toFixed(1)} ms ` +
               `(V4-2 S6: 111.5 ms); login round trip ${tLogin.toFixed(1)} ms`);
 } catch (e) {
