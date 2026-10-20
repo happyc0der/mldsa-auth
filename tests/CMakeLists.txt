@@ -180,6 +180,35 @@ if(MLDSA_PYTHON3)
            COMMAND ${MLDSA_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/hand_control_selftest.py)
   set_tests_properties(hand_control_selftest PROPERTIES TIMEOUT 300)
 endif()
+# V4-39 (CLAIMS P10): one ML-DSA/ML-KEM backend linked, the intended one, in
+# every executable of this tree -- and tools/check_backend_symbols.sh tested
+# on planted executables first. The family is what the project INTENDS, never
+# what liboqs's configure happened to pick, or a configure that silently lost
+# the optimised backend would expect the portable one and pass: aarch64 on
+# arm64 (`generic` there is armv8-a+crypto and keeps it); on x86_64, x86_64,
+# except under `generic`, which spec-v2 section 3 says gives up AVX2, leaving
+# portable C as the one backend. A target this rule does not know (an x86_64
+# CPU name without AVX2, say) sets MLDSA_EXPECT_BACKEND itself.
+find_program(MLDSA_NM nm)
+find_program(MLDSA_FILE file)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  if(MLDSA_OQS_OPT_TARGET STREQUAL "generic")
+    set(_mldsa_backend_default c)
+  else()
+    set(_mldsa_backend_default x86_64)
+  endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+  set(_mldsa_backend_default aarch64)
+else()
+  set(_mldsa_backend_default "")
+endif()
+set(MLDSA_EXPECT_BACKEND "${_mldsa_backend_default}" CACHE STRING
+    "the liboqs backend family every executable must link: aarch64, x86_64 or c")
+if(MLDSA_NM AND MLDSA_FILE AND MLDSA_EXPECT_BACKEND)
+  add_test(NAME backend_symbols
+           COMMAND /bin/bash ${CMAKE_CURRENT_SOURCE_DIR}/backend_symbols.sh ${PROJECT_SOURCE_DIR}
+                   ${PROJECT_BINARY_DIR} ${CMAKE_C_COMPILER} "${CMAKE_OSX_SYSROOT}" ${MLDSA_EXPECT_BACKEND})
+endif()
 # V4-15c (CLAIMS P8): the build flags as evidence -- what compile_commands.json
 # says every project translation unit was told, and a stack canary in the
 # project's OWN archives, which vendored code cannot satisfy (audit F104).

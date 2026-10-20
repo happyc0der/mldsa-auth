@@ -92,7 +92,9 @@ jobs:
           # step above records what native resolves to here. `generic` is the
           # project's own documented portable target (-march=armv8-a+crypto on
           # arm64) and still selects the AARCH64 backends, so the macOS jobs
-          # pin it rather than silently losing the platform.
+          # pin it rather than silently losing the platform. Since V4-39 that
+          # is checked, not asserted: the suite's `backend_symbols` needs every
+          # executable here to link the aarch64 family and no other.
           opt=
           if [ "${{ runner.os }}" = "macOS" ]; then
             opt=-DMLDSA_OQS_OPT_TARGET=generic
@@ -108,8 +110,14 @@ jobs:
 
       # Standing rule 3: currency and the suite in ONE invocation, so a stale
       # tree cannot produce a number at all.
+      # backend_symbols registers only where nm and file exist, so here it is
+      # asserted (V4-39): a gate that can pass by not having the test is not a
+      # gate.
       - name: Standing rule 3 + suite
-        run: tools/check_build_current.sh "$BUILD_DIR" && ctest --test-dir "$BUILD_DIR" --output-on-failure
+        run: |
+          ctest --test-dir "$BUILD_DIR" -N -R '^backend_symbols$' | grep -q 'Total Tests: 1' || \
+            { echo "::error::backend_symbols is not registered"; exit 1; }
+          tools/check_build_current.sh "$BUILD_DIR" && ctest --test-dir "$BUILD_DIR" --output-on-failure
 
       - name: Environment block (records the CPU these results came from)
         run: ./"$BUILD_DIR"/bench/bench_primitives --smoke | sed -n '/^mldsa-auth bench/,/^  mode /p'
