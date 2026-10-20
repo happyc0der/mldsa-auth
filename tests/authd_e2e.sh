@@ -327,6 +327,31 @@ if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
     grep -q '"role":"operator"' "$TMP/site.txt" || fail "the site did not receive an operator token"
     grep -q '"ttl":28800' "$TMP/site.txt" || fail "the operator token TTL is not 8 hours (spec 11)"
     echo "PASS: E2E: the site exchanged the code for a token, verified it, and logged it out"
+
+    # V4-36 (CLAIMS D5): the REAL daemon's clock. Every expiry -- a login
+    # code's 60 s, a token's TTL -- is now_unix plus a constant, and every C
+    # test sets now_unix itself, so nothing had watched authd_main advance it.
+    # A daemon whose loop stopped updating it would issue codes that never
+    # expire, and every other check would pass. `issued` in an EXCHANGE reply
+    # is that clock: a second exchange, 2 s of wall time later, must say so,
+    # and both must agree with this shell's clock.
+    ISSUED1=$(sed -n 's/.*"issued":\([0-9]*\).*/\1/p' "$TMP/site.txt")
+    T1=$(date +%s)
+    sleep 2
+    CODE3=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+            --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+            --unix "$TMP/p.sock" --proxy-v2 2>> "$TMP/login.err") || fail "third login exited nonzero"
+    "$NODE" "$SITE" "$TMP/s.sock" "$CODE3" > "$TMP/site3.txt" 2>> "$TMP/site.err" \
+        || fail "the site could not exchange the third login code"
+    ISSUED2=$(sed -n 's/.*"issued":\([0-9]*\).*/\1/p' "$TMP/site3.txt")
+    T2=$(date +%s)
+    [ -n "$ISSUED1" ] && [ -n "$ISSUED2" ] || fail "an EXCHANGE reply carried no issued time"
+    [ $((ISSUED2 - ISSUED1)) -ge 2 ] \
+        || fail "the daemon's clock did not advance: a code exchanged 2 s later was issued at $ISSUED2, the first at $ISSUED1 (D5)"
+    d1=$((ISSUED1 - T1)); d2=$((ISSUED2 - T2))
+    [ "${d1#-}" -le 5 ] && [ "${d2#-}" -le 5 ] \
+        || fail "the daemon's clock is not the wall clock: issued $ISSUED1 and $ISSUED2 against this shell's $T1 and $T2 (D5)"
+    echo "PASS: E2E: the daemon's clock advances with the wall clock -- two exchanges $((ISSUED2 - ISSUED1)) s apart, each within 5 s of this shell (D5)"
 else
     echo "SKIP: E2E: node not found, so the EXCHANGE/VERIFY leg did not run"
 fi

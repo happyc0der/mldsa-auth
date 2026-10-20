@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """One hand control: break the code, show a named check fails, restore (V4-34).
 
-    hand_control.py --build B --target T --ctest REGEX --expect TEXT \\
+    hand_control.py --build B --target T [--binary NAME] --ctest REGEX --expect TEXT \\
         (--mutation FILE --old TEXT --new TEXT | --campaign vNN --id ID) \\
         [--repo R] [--label NAME]
+
+--binary names the file the target builds, when its OUTPUT_NAME differs
+(mldsa_authd_bin builds mldsa-authd); it defaults to the target's name.
 
 Hand controls are how a check the nightly campaign tree cannot run is shown
 to be able to fail: the browser and wasm tests, the tools (V4-13c, V4-26,
@@ -16,11 +19,13 @@ Two mutants "SURVIVED" on unmutated binaries. This is that rule, kept where
 it cannot be lost:
 
   1. Build the target CLEAN, with the artifacts below deleted first, and
-     record the target binary's sha256.
+     record the sha256 of the target's CODE (its text section, as
+     check_build_current.sh fingerprints it: a whole-file hash moves with a
+     link's UUID even when not one instruction changed).
   2. Apply the mutation: an anchor that must occur exactly once, or a
      campaign's own mutate_vNN.py with its ID.
-  3. Delete, build, and hash again. A mutant binary equal to the clean one
-     is VOID, never SURVIVED: the code under test did not change.
+  3. Delete, build, and fingerprint again. A mutant whose code equals the
+     clean code is VOID, never SURVIVED: the code under test did not change.
   4. Run `ctest -R REGEX -V`. KILLED needs a nonzero exit AND TEXT on a
      `FAIL: ` line, or in a node:test assertion message. A nonzero exit
      without TEXT is KILLED(other); a pass is SURVIVED. A failed build is
@@ -48,6 +53,30 @@ import sys
 
 def sha(p):
     return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+
+
+def _text_tool():
+    if sys.platform == "darwin":
+        return ["otool", "-X", "-t"]
+    for t in ("objdump", "llvm-objdump"):
+        if subprocess.run(["sh", "-c", f"command -v {t}"], capture_output=True).returncode == 0:
+            return [t, "-d", "--section=.text"]
+    return None
+
+
+TEXT_TOOL = _text_tool()
+
+
+def code_fingerprint(exe):
+    """The CODE, not the file: a link can differ from the last in its UUID or
+    an embedded build time while its text is byte-identical (measured on
+    mldsa-authd, V4-36: three links, three file hashes, one text hash). The
+    same choice as check_build_current.sh. Whole file only without a tool."""
+    if TEXT_TOOL is not None:
+        r = subprocess.run(TEXT_TOOL + [exe], capture_output=True)
+        if r.returncode == 0 and r.stdout:
+            return hashlib.sha256(r.stdout).hexdigest()
+    return sha(exe)
 
 
 def objects_of(build, src):
@@ -86,7 +115,7 @@ def build(args, sources):
             victims.append(obj)
             if lib:
                 victims.append(lib)
-    exe = target_binary(args.build, args.target)
+    exe = target_binary(args.build, args.binary or args.target)
     if exe:
         victims.append(exe)
     for v in victims:
@@ -94,15 +123,16 @@ def build(args, sources):
             os.remove(v)
     r = subprocess.run(["cmake", "--build", args.build, "--target", args.target, "-j6"],
                        capture_output=True, text=True)
-    exe = target_binary(args.build, args.target)
-    return r.returncode, (sha(exe) if (r.returncode == 0 and exe) else None)
+    exe = target_binary(args.build, args.binary or args.target)
+    return r.returncode, (code_fingerprint(exe) if (r.returncode == 0 and exe) else None)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo", default=".")
     ap.add_argument("--build", required=True)
-    ap.add_argument("--target", required=True, help="the executable the ctest runs (or that it spawns)")
+    ap.add_argument("--target", required=True, help="the executable target the ctest runs (or that it spawns)")
+    ap.add_argument("--binary", default=None, help="the file that target builds, if its OUTPUT_NAME differs")
     ap.add_argument("--ctest", required=True, help="ctest -R regex")
     ap.add_argument("--expect", required=True, help="text a FAIL: line (or node:test assertion) must contain")
     ap.add_argument("--mutation", help="file to mutate, relative to --repo")
@@ -153,7 +183,7 @@ def main():
         if mutant is None:
             verdict = "KILLED(compile) -- not a kill"
         elif mutant == clean:
-            verdict = "VOID (the mutant binary is the clean binary)"
+            verdict = "VOID (the mutant's code is the clean code)"
         else:
             r = subprocess.run(["ctest", "--test-dir", args.build, "-R", args.ctest, "-V"],
                                capture_output=True, text=True, timeout=3600)
@@ -167,7 +197,7 @@ def main():
             (repo / s).write_bytes(b)
     restored = all(sha(repo / s) == before[s] for s in sources)
     rc2, back = build(args, sources)
-    print(f"{label}: {verdict} | clean={clean[:12]} mutant={(mutant or 'none')[:12]} "
+    print(f"{label}: {verdict} | clean={clean[:12]} mutant={(mutant or 'none')[:12]} (text) "
           f"| restored={'byte-exact' if restored else 'MISMATCH'} | rebuilt={'ok' if back else 'FAILED'}")
     for f in fails:
         print(f"    FAIL: {f[:200]}")

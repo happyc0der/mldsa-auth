@@ -1,0 +1,1 @@
+CK1|^authd_e2e$|the daemon's clock did not advance

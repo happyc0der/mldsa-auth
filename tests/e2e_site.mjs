@@ -93,8 +93,11 @@ try {
     throw new Error(`VERIFY after LOGOUT gave ${after}, expected code=unknown`);
   }
 
+  // `issued` is the daemon's own clock at EXCHANGE (V4-36): authd_e2e compares
+  // two of them, seconds apart, to see the real daemon's clock advance.
   console.log(JSON.stringify({ user: session.user, handle: session.handle,
-                               role: session.role, ttl: session.expires - session.issued }));
+                               role: session.role, ttl: session.expires - session.issued,
+                               issued: session.issued }));
   process.exit(0);
 } catch (e) {
   console.error(`site: ${e.message}${e.code ? ` (code=${e.code})` : ''}`);
