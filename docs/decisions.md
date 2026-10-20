@@ -8436,3 +8436,119 @@ ran. The re-check was clean.
     registration, CI's wasm step, and the records.
   - No C file changed. So no campaign's code changed, and the nightly's
     campaigns are unaffected except as the bring-up's control.
+
+## V4-27 — D10 in the browser: both profiles scanned for every key, and the passphrase
+
+Loop iteration 2. CLAIMS D10 listed "the browser's IndexedDB" among what its
+window scans did not reach.
+- **The mechanism was argued, not observed.** The key is made, sealed and
+  opened inside the wasm module, so IndexedDB is only ever handed the sealed
+  envelope. Nothing had looked at what Chromium actually writes to disk.
+- **Why it matters:** the browser is milestone B's client.
+
+### What was built
+
+- **`tests/envelope_key_scan.c`**, a native test helper. It takes an
+  envelope read back from IndexedDB, opens it with the test's passphrase
+  through the same `keyfile_open_buf` the module runs, and scans a directory
+  for every 16-byte window of the secret key made wholly of secret bytes.
+  - **Speed.** The windows are indexed by their first 8 bytes, so each file
+    position costs a binary search. `test_authd_cli`'s `memmem` per window
+    would be about 3,900 passes over a 15 MB profile.
+  - **What it reads.** Every regular file, whatever its size; the CLI scan
+    skips files over 1 MiB, and a profile has bigger ones. Symlinks and
+    sockets are counted, not followed; a profile has a dangling lock
+    symlink and a socket. A regular file it cannot read is an error.
+  - **What it prints.** Positions and counts only.
+  - **Two more modes.** `--needle` looks for arbitrary bytes, for the
+    canary and the passphrase. `--plant` writes the opened key into the
+    scanned directory in the clear, scans, and removes it again.
+- **`browser_e2e` collects every envelope its store held**, as the flows
+  create them:
+  - the enrolled key;
+  - the stale pending key;
+  - the lost-ACK rotation's key;
+  - the account page's rotation;
+  - in the second profile, the recovered device's key.
+
+  Before the browsers close, both profiles are scanned.
+- **The canary is the precondition.** Each profile's first page writes 4,032
+  random bytes into IndexedDB as a `Uint8Array` value, the way the store
+  writes an envelope, so the canary is at least as old as any key. All 4,017
+  of its windows must be found. They were, in the origin's LevelDB
+  `000003.log`.
+- **The key path proves itself the same way:** the last key, planted by the
+  helper, must be found whole (3,906 of 3,906).
+- **The passphrase is looked for as UTF-8 and UTF-16LE.** Chromium could keep
+  form data, or a page could store it.
+- **`MLDSA_KEY_SCAN` names the helper** through CTest's environment. Unset is
+  a FAIL, not a skip.
+- **F105's window rule moves to `tests/key_windows.h`.** `test_authd_cli` and
+  `test_authd_conn` each had a copy; the helper is the third user. The check
+  strings, and every campaign's anchors, are unchanged (0 campaigns anchor in
+  those files).
+
+### What the scan found
+
+Nothing:
+- every key, 0 of 3,906 windows;
+- the passphrase, 0 of 13 (UTF-8) and 0 of 41 (UTF-16);
+- profile 1 ran to 339 files and 15.0 MB, profile 2 to 307 files and
+  14.3 MB.
+
+The claim now has an observation behind it for headless Chromium at the
+moment of the scan.
+
+### Controls, by hand (the nightly tree has no browser)
+
+| | Mutation | Red at |
+|---|---|---|
+| C1 | the helper ignores its hits | the canary, and the planted key, in both profiles |
+| C2 | the helper indexes the public key instead | every key check (1,937 windows, not > 3,800), and the planted key (17 of 1,937 found: `rho`, which is `pk[0..32)` and `sk[0..32)`) |
+| C3 | the canary is not written | the canary, in both profiles |
+| C4 | the enroll page keeps the passphrase in `localStorage` | the passphrase, profile 1 (13 of 13 UTF-8 windows) |
+| C5 | the helper skips `.log` files | the canary, in both profiles |
+
+C4 shows the passphrase scan reaching a second storage area:
+`localStorage`, flushed within the test's run.
+
+**C2 first SURVIVED, and that was the stale-object trap again.** The
+control script restored C1 and rebuilt the helper, then wrote C2's mutation
+within the same second. `make`'s mtime test saw nothing to do, so C2 ran
+the unmutated binary. The script now deletes the object and the executable
+before every build and prints the resulting binary's sha256:
+- baseline `d965b685`;
+- C1 `9cbeb589`;
+- C2 `e8be3b42`;
+- C5 `06b103bc`;
+- every restore different again, since macOS links are not byte-stable.
+
+Re-run that way, C1, C2 and C5 were all killed. C3 and C4 change no binary.
+
+### Still not established (said so in CLAIMS D10)
+
+- **A later compaction.** LevelDB compacts its log into Snappy-compressed
+  tables later. The canary shows what the scan sees in the state it
+  scanned, and nothing after.
+- **Memory, swap, Safari and Firefox.**
+- **A CLI rotation whose session opens but whose reply is lost or refused.**
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `f29536f`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `65f2c1930ba2bf36`, 53/53;
+  - ASan `d5adbb8aaf8ec45d`, 53/53, with 0 reports;
+  - UBSan `56ecbea2b1433346`, 53/53, with 0 runtime errors;
+  - fuzz `8e1a2f5379f53c6e`, 36/36.
+
+  `browser_e2e`, with its at-rest checks, passed in all three native
+  trees: the helper ran under ASan and UBSan. No fixture was left running.
+- **Controls C1–C5:** all killed by name, each restored byte-exactly, with
+  no marker left behind.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 194 checks and 16 tools, every cited check string found
+    verbatim in its test;
+  - anchors: 342 across 40 campaigns, unchanged;
+  - audit separators and `git diff --check`.

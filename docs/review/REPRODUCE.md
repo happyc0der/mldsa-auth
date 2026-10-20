@@ -77,7 +77,8 @@ ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e|phone_timing_too
 `wasm_module_gates` checks the module's exact export list; `test_client_core_kat`
 checks that the wasm build reproduces the native known-answer golden byte for
 byte; `browser_e2e` drives a real headless Chromium through enrollment, login,
-the CSP and the storage rules; `phone_timing_tool` runs `tools/phone_timing.mjs`
+the CSP and the storage rules, then scans both browser profiles on disk for
+every key the browser held and for the passphrase (V4-27); `phone_timing_tool` runs `tools/phone_timing.mjs`
 through a secure and a non-secure origin and checks that each timing row says
 which it came from (V4-26, F119).
 

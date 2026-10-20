@@ -265,6 +265,14 @@ timing row now records whether its page was a secure context, and
 that. Safari on a non-local HTTPS origin, which is what a deployment is, and
 any iPhone are still unmeasured.
 
+V4-27 took D10 into the browser. The key never leaves the wasm module except
+sealed, but nothing had looked at what Chromium actually writes to disk.
+`browser_e2e` now opens every envelope its store held, natively, with the
+test's passphrase. It then scans both profiles, about 15 MB each, for the
+key's secret windows and for the passphrase. It trusts a clean result only
+after the same scan finds, whole, a canary written into IndexedDB and the key
+itself planted in the clear. Nothing was found.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
