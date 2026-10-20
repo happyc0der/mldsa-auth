@@ -9278,3 +9278,86 @@ and v73. So:
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-36 — D5: the real daemon's clock, seen advancing (campaign v74); hand controls compare code
+
+Loop iteration 11.
+
+### The gap
+
+Every expiry `mldsa-authd` enforces is `now_unix` plus a constant: a login
+code's 60 s, a token's TTL, a ticket's ten minutes.
+- **Who sets the clock.** `authd_main`'s loop sets `now_unix` from
+  `time(NULL)` on every turn, while every C test drives `app.now_unix`
+  itself.
+- **The consequence.** Nothing had ever watched the real daemon's clock
+  move. A loop that stopped updating it, which is campaign v74's CK1, would
+  issue codes and tokens that never expire, and every check in the tree
+  passed it.
+
+### The check
+
+`authd_e2e`'s site leg exchanged one code through `tests/e2e_site.mjs`. The
+script now also prints the reply's `issued`, which is the daemon's clock at
+EXCHANGE.
+1. After a 2 s sleep, a third login's code is exchanged too.
+2. The two `issued` values must be at least 2 s apart.
+3. Each must be within 5 s of the shell's `date +%s`, so the daemon's clock
+   is the wall clock, not merely a moving one.
+
+No test waits out a real 60 s, and CLAIMS D5 says so.
+
+### Campaign v74 (CK1)
+
+CK1 keeps every use, per F79: `app.now_unix = app.now_unix + 0`. It passes
+V4-35's `authd_e2e` (SURVIVED, with its code differing from the clean
+build's). It is killed here by name: "the daemon's clock did not advance: a
+code exchanged 2 s later was issued at 1792510237, the first at
+1792510237".
+
+### Two flaws in tools/hand_control.py, found by using it
+
+1. **No way to name the binary.** `mldsa_authd_bin`'s OUTPUT_NAME is
+   `mldsa-authd`, and the tool looked for a file named after the target, so
+   it would have reported a failed clean build. It now takes `--binary`; the
+   self-test gains a renamed-target case (11 checks).
+2. **It hashed whole files.** Three links of `mldsa-authd` from identical
+   source gave three file hashes and three LC_UUIDs, with one text hash
+   (`d485e9ae`). `test_authd_cli` and `test_authd_localapi` behave the same.
+   - So "the mutant binary differs from the clean one" was blind: a stale,
+     unmutated binary would have differed too.
+   - The tool now fingerprints the code, `otool -X -t` (or `objdump -d
+     --section=.text`), exactly as `check_build_current.sh` does.
+
+That also weakened evidence I had already recorded. The gap demonstrations
+of V4-29 (EI1–EI5), V4-30 (TK1) and V4-35 (RL1, RL2) said "mutant linked"
+from whole-file hashes.
+- **They were sound for a different reason.** Deleting objects, archives
+  and executables before every build defeats the stale trap by
+  construction, and the self-test proves it.
+- **The hash said nothing.** All eight were redone with the fixed tool:
+  each mutant's code differs from its clean build's, and each survives its
+  predecessor's tests. The claims stand, now with evidence that means what
+  it says.
+- **Campaign v74 on the ASan tree:** 1 of 1 KILLED by name, restored clean
+  with a passing clean suite. Every artifact was identical to its clean
+  fingerprint.
+
+### Verification
+
+- **Every tree proven current and run in full** at `3c56fc5`. The
+  fingerprints equal V4-35's, since no C file changed:
+  - `build-wasm-p`, 3/3;
+  - `build-p`, 55/55;
+  - `build-bench-p`, 51/51;
+  - ASan, 55/55, with 0 reports;
+  - UBSan, 55/55, with 0 runtime errors;
+  - fuzz, 36/36.
+
+  `authd_e2e`'s clock check and `hand_control_selftest` (11 checks) passed
+  in every native tree. No fixture or `mldsa-hc-*` directory was left.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 208 checks, 137 mutations;
+  - anchors: 354 across 44 campaigns, the counts agreeing at 315 and 44;
+  - `git diff --check`.

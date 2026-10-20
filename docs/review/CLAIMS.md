@@ -278,7 +278,9 @@ the most important thing on this page.
 - check `test_authd_localapi` "expiry: one second earlier the same code exchanges -- the expired attempt did not spend it"
 - mutation `v58 GA1` — the store's boundary moves from `now >= expires_at` to `now >`
 - mutation `v58 GA2` — the STORED expiry an hour late while the wire still says 60 s
-**Not established:** expiry is tested on the harness clock (`app.now_unix`), set rather than elapsed; the sweep that deletes expired rows reads the same column and is tested separately (it catches GA2 too). `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it); since V4-14d the requirement says "recorded with", not "bound to" (erratum 44, audit F96). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
+- check `authd_e2e` "PASS: E2E: the daemon's clock advances with the wall clock"
+- mutation `v74 CK1` — the daemon's main loop stops updating `now_unix`, so no code or token ever expires
+**Not established:** expiry is tested on the harness clock (`app.now_unix`), set rather than elapsed. Since V4-36 the real daemon's clock is watched too: `authd_e2e` exchanges two codes 2 s apart against the `mldsa-authd` process and needs their `issued` times 2 s apart and within 5 s of the wall clock (v74 CK1 freezes it and passed every check before), but no test waits out a real 60 s; the sweep that deletes expired rows reads the same column and is tested separately (it catches GA2 too). `handshake_id` is recorded with the code but never consulted when it is spent (the site cannot know it); since V4-14d the requirement says "recorded with", not "bound to" (erratum 44, audit F96). The ProVerif query is non-injective and has no time, and `formal/controls/state.pv` is no longer generated or run.
 
 ### D6 — Uniform responder flow
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
