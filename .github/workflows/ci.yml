@@ -147,6 +147,13 @@ jobs:
       - name: The review packet's claim map matches the tree
         run: python3 tools/audit/check_claim_map.py "$PWD"
 
+      # V4-34: the campaigns' anchors, and the mutation counts the READMEs
+      # state, on every push -- not first in the nightly, hours later. A step
+      # that rots another step's anchor, or leaves a count stale (three had
+      # drifted: 305/40 for 312/42, a "thirty-nine", a "299"), fails here.
+      - name: Every campaign anchor matches once, and the stated counts agree
+        run: python3 tools/audit/check_mutation_anchors.py "$PWD"
+
   fuzz-and-scan:
     name: fuzz smoke + secret scan (Linux only)
     runs-on: ubuntu-26.04

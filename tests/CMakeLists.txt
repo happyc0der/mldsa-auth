@@ -171,6 +171,15 @@ add_test(NAME no_hand_rolled_primitives
 # seven F114 named make theirs with mkdtemp.
 add_test(NAME scratch_dirs
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/scratch_dirs.sh ${PROJECT_SOURCE_DIR})
+# V4-34: tools/hand_control.py, the tool every hand control uses, tested on a
+# CMake project of its own in a temporary directory (never this tree's
+# sources): each verdict, and the archive-level stale-object trap made real.
+find_program(MLDSA_PYTHON3 python3)
+if(MLDSA_PYTHON3)
+  add_test(NAME hand_control_selftest
+           COMMAND ${MLDSA_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/hand_control_selftest.py)
+  set_tests_properties(hand_control_selftest PROPERTIES TIMEOUT 300)
+endif()
 # V4-15c (CLAIMS P8): the build flags as evidence -- what compile_commands.json
 # says every project translation unit was told, and a stack canary in the
 # project's OWN archives, which vendored code cannot satisfy (audit F104).

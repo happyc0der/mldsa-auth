@@ -111,6 +111,33 @@ for spec in specs:
     missing = [i for i in want if i not in seen]
     if missing:
         print(f"UNCOVERED {ver}: spec IDs with no checked anchor: {missing}"); bad += 1
-print(f"--- {checked} anchors checked; {sum(len([l for l in s.read_text().splitlines() if l.strip() and not l.startswith('#')]) for s in specs)} mutations across {len(specs)} campaigns")
+n_mut = sum(len([l for l in s.read_text().splitlines() if l.strip() and not l.startswith('#')]) for s in specs)
+print(f"--- {checked} anchors checked; {n_mut} mutations across {len(specs)} campaigns")
+
+# V4-34: the documents that state these counts, checked against them. Three
+# had drifted unnoticed -- 305 and 40 after V4-29 and V4-30 made it 312 and
+# 42, and a "thirty-nine" and a "299" older still -- because nothing compared
+# them. Each pattern must be FOUND as well as agree, so rewording a sentence
+# fails here instead of silently retiring its check.
+n_camp = len(specs)
+STATED = [
+    ("README.md", r"\*\*all (\d+)\*\* must-kill mutations", n_mut),
+    ("README.md", r"all (\d+) committed campaigns against fresh ASan trees", n_camp),
+    ("README.md", r"fresh ASan trees \u2014 (\d+) on Linux, and v35 on macOS", n_camp - 1),
+    ("tools/README.md", r"authority on the count: (\d+) must-kill mutations", n_mut),
+    ("tools/README.md", r"must-kill mutations across (\d+) campaigns", n_camp),
+    ("tools/README.md", r"All (\d+) committed campaigns run nightly", n_camp),
+    ("tools/README.md", r"(\d+) architecture-independent ones on Linux", n_camp - 1),
+    ("tools/README.md", r"The nightly verifies \*\*all (\d+)\*\*", n_mut),
+]
+for doc, pat, want_n in STATED:
+    text = (repo/doc).read_text()
+    m = re.search(pat, text)
+    if m is None:
+        print(f"COUNT {doc}: the sentence /{pat}/ is gone -- update this check with the document"); bad += 1
+    elif int(m.group(1)) != want_n:
+        print(f"COUNT {doc}: says {m.group(1)} where the campaigns say {want_n} (/{pat}/)"); bad += 1
+if bad == 0:
+    print(f"counts: the {len(STATED)} stated counts in README.md and tools/README.md agree ({n_mut} mutations, {n_camp} campaigns)")
 print("ALL ANCHORS OK" if bad == 0 else f"{bad} PROBLEM(S)")
 sys.exit(1 if bad else 0)
