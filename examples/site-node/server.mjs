@@ -128,12 +128,17 @@ export async function startSite(opt) {
     ...(opt.onTiming ? { 'POST /api/timing': async (req, res) => {
       const t = await body(req);
       const num = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x < 600000;
+      // V4-26: `secure` (was the page a secure context?) and `jsLoopMs` (the
+      // page's no-crypto JIT probe) are what make a row readable (F119), so a
+      // row without them, or with them mistyped, is refused rather than kept.
       if (!num(t.sealMs) || !Array.isArray(t.loginMs) || t.loginMs.length < 1 || t.loginMs.length > 10 ||
-          !t.loginMs.every(num) || typeof t.ua !== 'string' || t.ua.length > 512) {
+          !t.loginMs.every(num) || typeof t.ua !== 'string' || t.ua.length > 512 ||
+          typeof t.secure !== 'boolean' || !num(t.jsLoopMs)) {
         return send(res, 400, { error: 'malformed timing' });
       }
       opt.onTiming({ ua: t.ua, cores: Number.isInteger(t.cores) ? t.cores : null,
-                     memoryGiB: num(t.memoryGiB) ? t.memoryGiB : null, sealMs: t.sealMs, loginMs: t.loginMs });
+                     memoryGiB: num(t.memoryGiB) ? t.memoryGiB : null, sealMs: t.sealMs, loginMs: t.loginMs,
+                     secure: t.secure, jsLoopMs: t.jsLoopMs });
       send(res, 200, { ok: true });
     } } : {}),
     // The page's starting point: a FRESH state for its next login, and the
