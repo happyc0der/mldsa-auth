@@ -167,6 +167,10 @@ add_test(NAME secure_mem_sites
 # sanctioned file, apps/authd/sha1.c, and sha1() called by ws.c alone.
 add_test(NAME no_hand_rolled_primitives
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/no_hand_rolled_primitives.sh ${PROJECT_SOURCE_DIR})
+# V4-28 (audit F114): no test names its scratch directory after its pid; the
+# seven F114 named make theirs with mkdtemp.
+add_test(NAME scratch_dirs
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/scratch_dirs.sh ${PROJECT_SOURCE_DIR})
 # V4-15c (CLAIMS P8): the build flags as evidence -- what compile_commands.json
 # says every project translation unit was told, and a stack canary in the
 # project's OWN archives, which vendored code cannot satisfy (audit F104).

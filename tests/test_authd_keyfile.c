@@ -65,8 +65,10 @@ int main(void) {
      * named failure that way on the nightly while macOS kept it. */
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { puts("sodium_init failed"); return 2; }
-    snprintf(g_dir, sizeof(g_dir), "/tmp/authd_kf_%d", (int)getpid());
-    if (mkdir(g_dir, 0700) != 0) { perror("mkdir"); return 2; }
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    snprintf(g_dir, sizeof(g_dir), "/tmp/authd_kf_XXXXXX");
+    if (mkdtemp(g_dir) == NULL) { perror("mkdtemp"); return 2; }
 
     size_t ilen = 0; uint8_t *img = fresh_image(&ilen);
     if (img == NULL) { puts("fixture failed"); return 2; }

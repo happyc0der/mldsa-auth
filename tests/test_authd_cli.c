@@ -972,8 +972,10 @@ int main(void)
      * named failure that way on the nightly while macOS kept it. */
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
-    (void)snprintf(g_dir, sizeof g_dir, "/tmp/authd-cli-%ld", (long)getpid());
-    if (mkdir(g_dir, 0700) != 0) { printf("FAIL: mkdir %s\n", g_dir); return 1; }
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    (void)snprintf(g_dir, sizeof g_dir, "/tmp/authd-cli-XXXXXX");
+    if (mkdtemp(g_dir) == NULL) { printf("FAIL: mkdtemp %s\n", g_dir); return 1; }
 
     test_init();
     test_keys();

@@ -1505,8 +1505,10 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
     authd_log_init(stderr, AUTHD_LOG_ERROR);
-    snprintf(g_dir, sizeof g_dir, "/tmp/authd-localapi-%ld", (long)getpid());
-    if (mkdir(g_dir, 0700) != 0) { printf("FAIL: mkdir\n"); return 1; }
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    snprintf(g_dir, sizeof g_dir, "/tmp/authd-localapi-XXXXXX");
+    if (mkdtemp(g_dir) == NULL) { printf("FAIL: mkdtemp\n"); return 1; }
 
     test_grammar();
     test_two_tables();
