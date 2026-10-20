@@ -75,11 +75,6 @@ void conn_io_ws_silence(conn_io_t *c)
     c->ws.stage = WS_STAGE_CLOSED;
 }
 
-size_t conn_io_out_capacity(void)
-{
-    return (size_t)AUTHD_FRAME_MAX;
-}
-
 void conn_io_reset(conn_io_t *c)
 {
     if (c == NULL) {

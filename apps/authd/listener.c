@@ -247,15 +247,6 @@ listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n
     return LISTENER_OK;
 }
 
-listener_status_t listener_accept(int listen_fd, uid_t require_uid, int *out_fd)
-{
-    if (require_uid == (uid_t)-1) {
-        return listener_accept_ex(listen_fd, NULL, 0u, out_fd, NULL);
-    }
-    const uid_t one[1] = { require_uid };
-    return listener_accept_ex(listen_fd, one, 1u, out_fd, NULL);
-}
-
 void listener_close(int *fd, const char *unix_path)
 {
     if (fd != NULL && *fd >= 0) {
