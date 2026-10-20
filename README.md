@@ -209,7 +209,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-50 tests in a native tree (48 if no `node` is found: two run under it), 52 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 54 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+51 tests in a native tree (49 if no `node` is found: two run under it; one fewer without `python3`), 53 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 55 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -223,6 +223,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `constant_time_sites` | Every `sodium_memcmp`/`sodium_is_zero` call site checked both ways against a list, so a constant-time comparison swapped for `memcmp` fails by name (V4-15b) |
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |
 | `scratch_dirs` | No test names its scratch directory after its pid: the seven that did make theirs with `mkdtemp`, so a directory a crashed run left behind can no longer fail a later run (V4-28, F114) |
+| `hand_control_selftest` | `tools/hand_control.py`, the tool hand controls use, on a CMake project of its own in a temporary directory: KILLED by name, KILLED(other), SURVIVED, VOID for an unchanged binary, KILLED(compile), and the archive-level stale-object trap made real and defeated (V4-34) |
 | `build_flags` | What every project translation unit was told, from `compile_commands.json`: the hardening flags, FORTIFY outside sanitizer trees, and each tree's sanitizer flags by its intent — a UBSan tree must carry `-fno-sanitize-recover` (V4-15c, V4-24b) |
 | `ubsan_aborts` | In a UBSan or fuzz tree, a planted signed overflow must stop the process — undefined behaviour cannot pass a test (V4-24b; *Skipped* elsewhere) |
 | `store_fault_hook` | The store's test-only fault hooks are absent from the shipped library and binaries and present in the test (V4-15a) |
@@ -300,7 +301,7 @@ turn the badge red when broken — the four controls and what each one
 produced are in [docs/decisions.md](docs/decisions.md) under *V3-3*.
 
 The **Nightly** badge is [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml):
-at 03:17 UTC every day, and on demand, **all 305** must-kill mutations in
+at 03:17 UTC every day, and on demand, **all 314** must-kill mutations in
 [`tools/mutations/`](tools/mutations/) run as one campaign per step against a
 fresh Linux ASan tree — gated by a job that first checks every campaign's
 anchor still matches its source exactly once, because a rotted anchor aborts
@@ -778,7 +779,7 @@ enforced by CI rather than by anyone remembering them:
 | Workflow | When | What it runs |
 |---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the whole test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan, and a real login through Caddy in Docker — ~5 min |
-| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all forty committed campaigns against fresh ASan trees — thirty-nine on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
+| [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all 43 committed campaigns against fresh ASan trees — 42 on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
 Every one of these gates has been shown to go **red** for the right reason by

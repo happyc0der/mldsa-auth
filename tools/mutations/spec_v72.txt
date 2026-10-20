@@ -1,2 +1,2 @@
 TK1|^test_authd_localapi$|recovery: after the ticket is spent, the plaintext ticket is NOT in the store (Req 4);recovery: after the ticket is spent, it is NOT in a backup of the store (Req 4)
-TK2|^test_authd_localapi$|recovery: the plaintext ticket is NOT in the store (Req 4) CONTROL -- a check no test prints (V4-29..31)
+TK2|^test_authd_localapi$|recovery: the plaintext ticket is NOT in the store (Req 4)

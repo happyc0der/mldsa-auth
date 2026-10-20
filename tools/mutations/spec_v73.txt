@@ -1,0 +1,2 @@
+RL1|^test_authd_cli$|rotate refused: no window of the old or the new secret key in any file (Req 10)
+RL2|^test_authd_cli$|rotate lost: no window of the old or the new secret key in any file (Req 10)

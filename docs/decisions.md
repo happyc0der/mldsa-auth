@@ -8914,3 +8914,367 @@ source restored byte-exactly:
   running.
 - **Gates:** spec constants and vocabularies, the claim map, anchors (349
   across 42 campaigns), and `git diff --check`.
+
+## V4-32 — D9: revocation closes a live session, seen from another process
+
+Loop iteration 7.
+- **The gap.** CLAIMS D9 said closing a revoked device's live sessions "is
+  checked in-process only". `test_authd_localapi` reads the daemon's own
+  slot table, and `authd_e2e` checks only that a revoked device is refused
+  at its next login.
+- **What was missing.** No check stood where a real client stands: outside
+  the daemon's process, holding a socket.
+
+### The check
+
+`wasm_interop` already runs the wasm client in Node against the fixture
+daemon, a separate process.
+1. It enrolls two more devices for the same user.
+2. It logs each one in and keeps the session: the daemon serves on after
+   issuing the code.
+3. It has the site send `REVOKE-DEVICE` for the first.
+4. The first device's WebSocket must be closed by the daemon within 3 s,
+   observed as a `close` event in Node. The second's must still be open:
+   the canary that the close was the revoked device's and not everyone's.
+
+### Controls, by hand
+
+`wasm_interop` runs only in trees with a wasm module, so the nightly
+campaign tree cannot run it. Each control rebuilt the fixture and restored
+its source byte-exactly:
+
+| | Mutation | Red at |
+|---|---|---|
+| D1 | v49a's V1: REVOKE-DEVICE closes no live session | "revoke: the daemon closes the revoked device's live WebSocket, seen from the client's process (Req 9, D9)" |
+| D2 | `close_matching` matches every live session | "revoke: the other device's live session stays open (the canary)" |
+
+D2's first form was `if (0)`. It left `have` unused, `-Werror` refused to
+compile it, and no test ran, which is not a kill. It was rewritten as
+`if ((…) && 0)` so every variable stays used, and was then killed by name.
+
+### Not established
+
+- **`revoke=all` and DISABLE-USER.** Their closing is still observed in
+  process only.
+- **Raw-listener sessions.** Only WebSocket sessions were observed.
+
+### Verification
+
+- **Every tree proven current and run in full** at `808509b`. The
+  fingerprints equal V4-31's, as they must: no C file changed.
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `db37a89be25f62ac`, 54/54;
+  - `build-bench-p` `10aa86de66fb7eca`, 50/50;
+  - ASan `c0b0ed54b1fb3a83`, 54/54, with 0 reports;
+  - UBSan `8c113229b9d2cb35`, 54/54, with 0 runtime errors;
+  - fuzz `df58d74c967b911c`, 36/36.
+
+  Fixture directories in `$TMPDIR` stayed at 0.
+- **Gates:** spec constants and vocabularies, the claim map (202 checks),
+  anchors (349 across 42 campaigns), and `git diff --check`.
+
+## V4-33 — D9: DISABLE-USER and revoke=all close live sessions, seen from another process
+
+Loop iteration 8. V4-32 observed REVOKE-DEVICE's close from Node. D9's two
+user-wide closes were still in-process only.
+
+### The checks, in `wasm_interop`
+
+Three more users each hold live WebSocket sessions against the fixture
+daemon. Throughout, V4-32's surviving session of `u-wasm` is the canary that
+a close reached only the user it named.
+- **DISABLE-USER.** It is an operator command, sent on the fixture's
+  `admin.sock` beside the site socket; the harness allowlists this uid. The
+  user's session must be closed within 3 s, and another user's must stay
+  open.
+- **RECOVERY-USE with `revoke=all`.** Both of the user's sessions must close
+  within 3 s.
+- **RECOVERY-USE with `revoke=none`.** The user's session must stay open:
+  the canary for the flag.
+
+The checks print only the reply's verb. An earlier draft printed the first
+characters of each throwaway ticket, which no check message should.
+
+### Controls, by hand
+
+Each control rebuilt the fixture, recorded the mutant's hash against the
+clean one, and was restored byte-exactly:
+
+| | Mutation | Red at |
+|---|---|---|
+| E1 | v58 GA8: DISABLE-USER closes no live session | the disable close check |
+| E2 | v58 GA9: revoke=all closes no live session | the revoke=all close check |
+| E3 | v58 GA7: live sessions no longer matched by user | the disable AND the revoke=all close checks |
+| E4 | `close_matching` matches every session | all four canaries |
+
+### What the first pass got wrong: the archive-level stale-object trap
+
+E2 and E3 first SURVIVED, and their "mutant" fixtures had the same sha256
+as the previous control's restored fixture.
+- **The cause.** The control loop deleted the mutated source's object and
+  the fixture, but not `libmldsa_authd.a`. macOS's make 3.81 compares
+  timestamps to the second, and the rebuilt object was not newer than the
+  archive linked in the same second. So the archive was kept, and the
+  fixture linked the old code.
+- **The fix.** Deleting the archive too, and calling a mutant VOID whenever
+  its binary equals the clean one, made E2 and E3 KILLED by name.
+- **What it called into question.** Every loop today that rebuilt a
+  library source the same way. A KILLED verdict proves its mutant was
+  linked, but a pass does not. Two results rested on passes:
+  - **V4-29's gap,** "EI1–EI5 pass V4-28's tests";
+  - **V4-30's gap,** "TK1 passes V4-29's tests".
+- **Both redone,** archives deleted and each mutant binary hash-checked
+  against its clean build:
+  - all five EI mutants pass 2870470's `test_authd_conn` and
+    `test_authd_localapi` while linked, and fail the current tests at the
+    predicted names;
+  - TK1 passes 83bd93e's `test_authd_localapi` while linked and fails the
+    after-spend checks;
+  - TK2 fails both.
+
+  The records' claims stand.
+- **Unaffected:** the campaigns (v71 and v72 ran through
+  `run_mutations_v2.sh`, which deletes and fingerprints every artifact)
+  and every KILLED hand control.
+
+The rule is in the stale-object memory note: delete object, archive and
+executable; hash the clean binary first; VOID, never SURVIVED, for a
+mutant equal to it.
+
+### Verification
+
+- **Every tree proven current and run in full** at `a14f396`. The
+  fingerprints are unchanged from V4-31, since no C file changed:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `db37a89be25f62ac`, 54/54;
+  - `build-bench-p` `10aa86de66fb7eca`, 50/50;
+  - ASan `c0b0ed54b1fb3a83`, 54/54, with 0 reports;
+  - UBSan `8c113229b9d2cb35`, 54/54, with 0 runtime errors;
+  - fuzz `df58d74c967b911c`, 36/36.
+
+  Fixture directories in `$TMPDIR` stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 205 checks. It first FAILED on a single-quoted check
+    whose source spelled `user\'s`; the string is double-quoted now, so it
+    appears verbatim;
+  - anchors: 349 across 42 campaigns;
+  - `git diff --check`.
+
+## V4-34 — a tested tool for hand controls, and the stated mutation counts gated (loop iteration 9: fixes and cleanup)
+
+### Why a tool
+
+Hand controls are how a check the nightly's campaign tree cannot run (the
+wasm and browser tests, the tools) is shown able to fail: V4-13c, V4-26,
+V4-27, V4-31, V4-32 and V4-33 each needed them.
+- **Each step wrote its own script.** V4-33's deleted the mutated object
+  but not `libmldsa_authd.a`, so two mutants "survived" on unmutated code,
+  and two earlier gap demonstrations had to be redone.
+- **A rule that lives in a throwaway script is lost with it.**
+
+`tools/hand_control.py` keeps the rule:
+1. Build the target clean and hash its binary. Before every build, delete
+   the objects of the touched sources, **the static libraries those objects
+   belong to**, and the executable.
+2. Apply the mutation: an anchor that must match exactly once, or a
+   campaign's own `mutate_vNN.py`.
+3. Rebuild. A mutant binary equal to the clean one is **VOID**, never
+   SURVIVED.
+4. KILLED needs a nonzero exit and the named text: on a `FAIL:` line, or in
+   a node:test assertion. A failed build is KILLED(compile), which is not a
+   kill.
+5. Restore byte-exactly (checked by sha256), and rebuild.
+
+### Testing the tool: `hand_control_selftest`
+
+It never mutates this tree. It generates a CMake project (a static library,
+a probe linking it, a CTest) in a temporary directory and runs the tool
+against it. Its 10 checks:
+- each verdict: KILLED, KILLED(other), SURVIVED, VOID for a comment-only
+  change (the binary is byte-identical), KILLED(compile);
+- **the trap made real.** With the library's archive dated an hour ahead,
+  deleting only the object leaves the old code linked: the probe still
+  passes;
+- **the trap defeated.** The tool, deleting the archive, still links the
+  mutant and kills it;
+- the probe project is left as found.
+
+Three controls on the tool, each restored byte-exactly, are killed by name:
+
+| | Mutation of the tool | Red at |
+|---|---|---|
+| H1 | archives not deleted | the archive-ahead check, and also the plain KILLED, SURVIVED and VOID checks: back-to-back controls in a quick project ran stale code without it |
+| H2 | no VOID verdict | "a mutation that leaves the binary unchanged is VOID" |
+| H3 | an unnamed failure taken as a kill | "… is KILLED(other) -- not a named kill" |
+
+H1's spread is the point. The trap was not contrived: it hit ordinary,
+quick, consecutive controls.
+
+### The stated counts, gated
+
+Three documents stated campaign and mutation counts, and nothing checked
+them:
+- **`README.md`:** "**all 305**" and "all forty … thirty-nine on Linux".
+- **`tools/README.md`:** "305 must-kill mutations across 40 campaigns",
+  "All thirty-nine", "thirty-eight" and "verifies **all 299**".
+- **The truth:** 312 and 42, with 41 on Linux, since V4-29 and V4-30. Some
+  of those figures were older still.
+
+Changes:
+- **`check_mutation_anchors.py` now checks all eight.** Each sentence must
+  be found as well as agree, so rewording one fails the gate instead of
+  retiring it. It failed 8 of 8 on the stale documents before they were
+  corrected; the counts are digits now so they can be read.
+- **It runs in CI's spec job too,** so an anchor rotted by another step,
+  or a stale count, fails on push rather than in the nightly hours later.
+- **`tools/README.md`** lists v71 and v72 and their letter pairs. Its
+  introduction no longer claims nothing there is used by CMake: two tools
+  are run by CTests.
+- **The test counts move again** (`hand_control_selftest`, wherever
+  `python3` is found): 51 native, 53 with a wasm tree, 55 with a browser.
+  The README and REPRODUCE.md say so.
+
+### Routine checks
+
+F91: liboqs's latest release is still 0.16.0 (checked 2026-10-20).
+
+### Verification
+
+- **Every tree proven current and run in full** at `69c4220`. The
+  fingerprints are unchanged from V4-31: a Python tool and its test add
+  no compiled code.
+  - `build-wasm-p`: 3/3;
+  - `build-p`: 55/55;
+  - `build-bench-p`: 51/51, the plain native count the README states;
+  - ASan: 55/55, with 0 reports;
+  - UBSan: 55/55, with 0 runtime errors;
+  - fuzz: 36/36.
+
+  `hand_control_selftest` passed in all four native trees. It left no
+  `mldsa-hc-*` directory, and fixture directories stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map;
+  - anchors: 349 across 42 campaigns, plus the new counts check, 8 of 8
+    agreeing;
+  - `git diff --check`.
+
+## V4-35 — D10: a CLI rotation whose reply is refused or lost leaves no key in the clear (campaign v73)
+
+Loop iteration 10. CLAIMS D10's limits: "A CLI rotation whose session opens
+but whose reply is lost or refused is not scanned."
+- **What was covered.** `test_authd_cli` scanned every file for every key
+  after an acknowledged rotation, after the login completing an
+  interrupted one, and after a rotation from a superseded key, whose
+  session is refused before ROTATE.
+- **What was not.** The two paths after ROTATE is SENT: the daemon refuses,
+  or nothing comes back. `cmd_client_rotate` keeps `.ek.next`, sealed, on
+  both, and nothing looked at the disk then.
+
+### The two runs
+
+`run_client_pumped` takes a hook called after every tick. Acting between two
+loop turns is where nothing on the wire can interleave.
+- **Refused.** The hook waits until the CLI's session is SERVING (its login
+  code queued), then rotates the store's key behind the session to one the
+  test made. The ROTATE that follows reaches the daemon's own
+  `store_rotate_key`, whose `pk_old` is no longer active. It refuses: error
+  0x03 on the wire, "the daemon refused the rotation".
+  - The fault hook was not usable here: it is compiled only into
+    `test_authd_store`'s own copy of the store.
+- **Lost.** The hook waits until the handle's active key moves, which is
+  the daemon's commit. The daemon queued its ACK in that same turn, and
+  `conn_io_queue` only buffers; the write happens on a later turn's
+  POLLOUT. Closing the session then loses the ACK, as a crash or a dropped
+  link would, and the CLI says "no reply".
+- **The canaries.** Each case checks that it is the path it claims:
+  - refused: the store holds the test's key and never the sealed one;
+  - lost: the store holds the sealed key, and at least one session was
+    closed.
+
+  Both: `.ek` unchanged and `.ek.next` kept, sealed. Then the same scan as
+  the other cases, for both keys in every file.
+
+### Campaign v73 (RL1, RL2)
+
+Each mutation keeps the new key's raw secret as `<.ek.next>.retry` on one
+path. The CLI frees the new key before it sends ROTATE, so each is two sites:
+that free moved into the path that keeps the key.
+- **The script as first written failed the anchors gate.** It used `%`
+  formatting, which the static anchor extractor cannot evaluate (it parses
+  the scripts and never runs them). The mutation texts are plain literals
+  now, as every other campaign's are.
+- **The gap, shown with hashes.** It used the archive-safe procedure, with
+  `tools/hand_control.py`'s own artifact discovery. RL1 and RL2 were each
+  linked (binary unlike the clean build), each passed V4-34's
+  `test_authd_cli`, and each is killed by its named check:
+  - RL1 by "rotate refused: no window…";
+  - RL2 by "rotate lost: no window…".
+- **The counts gate earned its keep at once.** Adding v73 made every stated
+  count stale, and the gate said so: 11 problems before the documents moved
+  to 314 mutations and 43 campaigns.
+- **Campaign v73 on the ASan tree:** 2 of 2 KILLED by name, each restored
+  clean with a passing clean suite. Every artifact was identical to its
+  clean fingerprint.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `5f2021b`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `0a3d4a73c4b716ef`, 55/55;
+  - `build-bench-p` `8cf184663a8e6ec9`, 51/51;
+  - ASan `a8e2a8c4ce11e663`, 55/55, with 0 reports;
+  - UBSan `e55a68821a621edd`, 55/55, with 0 runtime errors;
+  - fuzz `f3a5a0d892136f61`, 36/36.
+
+  Fixture directories stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 207 checks, 136 mutations;
+  - anchors: 353 across 43 campaigns, and the 8 stated counts agreeing at
+    314 and 43;
+  - `git diff --check`.
+
+## V4-29 to V4-35 — CI on the branches and the nightly bring-up
+
+**One bring-up for seven steps,** as V4-24a/b and V4-26..28 did. The steps
+stack on one line, and only V4-29, V4-30 and V4-35 add campaigns: v71, v72
+and v73. So:
+- the control nightly ran on V4-29..31's code and rotted one v72
+  expectation;
+- the final nightly runs every campaign against the final tree, which
+  includes V4-35's v73 for the first time on Linux.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-29 | `83bd93e` | 39396696722 |
+| V4-30 | `a974a02` | 39404637352 |
+| V4-31 | `6676460` | 39409550134 |
+| V4-32 | `ce0578c` | 39420088841 |
+| V4-33 | `aa38a5a` | 39426792410 |
+| V4-34 | `6b0f3f6` | 39432985761 |
+| V4-35 | `94c3bd8` | 39445471524 |
+
+### The control nightly
+
+- **How the control was built.** `a3deaba` is `nightly-bringup`'s previous
+  head `52db54b` with V4-29..31 cherry-picked; its tree is `4b9eb47c`,
+  equal to V4-31's `6676460`. On top, v72 TK2's expectation was rotted
+  ("… CONTROL -- a check no test prints (V4-29..31)"). spec_v72's sha256
+  before was `b8655c3e3b01f12f`.
+- **Why cherry-picks.** A first control built on top of `6676460` itself
+  could not be pushed without a force push. Cherry-picking onto
+  `nightly-bringup`'s head keeps every push a fast-forward.
+- **The result.** Run 39415250556 was red on exactly `mutations · v72`,
+  56/57:
+  - TK1 KILLED (3 named on Linux);
+  - TK2 **SURVIVED(BAD)**, naming the rotted text;
+  - every mutant restored clean.
+
+  It was also v71's first run on Linux: green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.

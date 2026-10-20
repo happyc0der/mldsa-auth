@@ -764,7 +764,19 @@ static void test_key_plan(void)
  * thread, so a CLI run is a child process while the parent pumps. Returns the
  * child's exit status, or -1 if it did not exit within 60 s. The child's
  * stdout -- a login code, a path -- goes nowhere; its stderr stays visible. */
+/* V4-35: called after every tick, so a test can act on the daemon at a chosen
+ * moment of a CLI run -- between two loop turns, which is where nothing on the
+ * wire can interleave. */
+typedef void (*pump_hook_fn)(h_daemon_t *d, void *ctx);
+
+static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook, void *ctx);
+
 static int run_client_pumped(h_daemon_t *d, char **argv)
+{
+    return run_client_pumped_hook(d, argv, NULL, NULL);
+}
+
+static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook, void *ctx)
 {
     fflush(stdout);
     fflush(stderr);
@@ -780,6 +792,7 @@ static int run_client_pumped(h_daemon_t *d, char **argv)
     int ws = 0;
     for (;;) {
         h_tick(d);
+        if (hook != NULL) { hook(d, ctx); }
         const pid_t r = waitpid(pid, &ws, WNOHANG);
         if (r == pid) { break; }
         if (r < 0 || time(NULL) - start > 60) {
@@ -964,6 +977,157 @@ static void test_rotate_on_disk(void)
     h_stop(&d);
 }
 
+/* --------------------------- a rotation whose reply is refused or lost (V4-35) */
+
+/* CLAIMS D10 said "a CLI rotation whose session opens but whose reply is lost
+ * or refused is not scanned". cmd_client_rotate has two answers to that after
+ * ROTATE is SENT -- "the daemon refused" and "no reply" -- and keeps .ek.next,
+ * sealed, on both, "so the next run can resolve it". These are those two runs,
+ * against the in-process daemon, each followed by the same scan as the others:
+ * every key the device held, in any file. */
+enum { ROT_REFUSE = 1, ROT_LOSE = 2 };
+typedef struct {
+    int mode, fired;
+    const uint8_t *handle;
+    size_t hlen;
+    uint8_t old_pk[MLDSA_PUBLIC_KEY_BYTES];   /* the key the CLI's session opens with */
+    uint8_t other_pk[MLDSA_PUBLIC_KEY_BYTES]; /* ROT_REFUSE: rotated to behind the session's back */
+    size_t closed;
+} rot_hook_t;
+
+static void rot_hook(h_daemon_t *d, void *vctx)
+{
+    rot_hook_t *h = (rot_hook_t *)vctx;
+    if (h->fired) { return; }
+    if (h->mode == ROT_REFUSE) {
+        /* The session is open and its login code queued: rotate the store's key
+         * now, before ROTATE can arrive. The daemon's own store_rotate_key then
+         * finds its pk_old no longer active and refuses -- a real refusal, on
+         * the wire, for a session that did open. */
+        for (size_t i = 0; i < d->nslots; i++) {
+            const authd_conn_t *c = &d->conns[i];
+            if (c->stage == CONN_STAGE_SERVING && c->handle_len == h->hlen &&
+                memcmp(c->handle, h->handle, h->hlen) == 0) {
+                static const uint8_t hsid[16] = { 0 };
+                int64_t at = 0;
+                size_t dropped = 0;
+                if (store_rotate_key(d->store, h->handle, h->hlen, h->other_pk, h->old_pk, hsid, sizeof hsid,
+                                     0, d->app.now_unix, &at, &dropped) == STORE_OK) {
+                    h->fired = 1;
+                }
+                return;
+            }
+        }
+    } else {
+        /* The daemon committed (the handle's active key moved) and queued its
+         * ACK in the same turn; the ACK goes out on a LATER turn's POLLOUT.
+         * Closing the session now loses it, as a crash or a dropped link would. */
+        uint8_t now_pk[MLDSA_PUBLIC_KEY_BYTES];
+        if (store_lookup_active(d->store, h->handle, h->hlen, now_pk, NULL, 0, NULL, NULL) == STORE_OK &&
+            memcmp(now_pk, h->old_pk, sizeof now_pk) != 0) {
+            h->closed = authd_app_close_handle(&d->app, h->handle, h->hlen);
+            h->fired = 1;
+        }
+    }
+}
+
+static void test_rotate_reply_refused_or_lost(void)
+{
+    static const uint8_t RU[] = { 'r', 'l' };
+    static const char PASS[] = "rotation passphrase";
+    char root[256], dd[288], pass[256], spub[320], port[8];
+    (void)snprintf(root, sizeof root, "%s/rotrl", g_dir);
+    (void)snprintf(dd, sizeof dd, "%s/d", root);
+    (void)snprintf(pass, sizeof pass, "%s/rotrlpass", g_dir);
+    (void)snprintf(spub, sizeof spub, "%s/server.pub", dd);
+    CHECK(mkdir(root, 0700) == 0 && mkdir(dd, 0700) == 0 &&
+          write_file(pass, "rotation passphrase\n", 0600) == 0, "rotate-reply: fixture directories and passphrase");
+    h_daemon_t d;
+    CHECK(h_start(&d, dd, "rotrl.sqlite3", 0) == 0, "rotate-reply: the daemon starts");
+    (void)store_add_user(d.store, RU, sizeof RU, STORE_ROLE_USER);
+    CHECK(demo_keys_write_public(spub, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key) == DEMO_KEYS_OK,
+          "rotate-reply: the daemon's public key is pinned");
+    (void)snprintf(port, sizeof port, "%u", (unsigned)d.port);
+
+    for (int mode = ROT_REFUSE; mode <= ROT_LOSE; mode++) {
+        const char *what = (mode == ROT_REFUSE) ? "refused" : "lost";
+        char dev[320];
+        (void)snprintf(dev, sizeof dev, "%s/dev-%s", root, what);
+        CHECK(RUN_CLIENT("keygen", "--dir", dev, "--passphrase-file", pass) == 0,
+              mode == ROT_REFUSE ? "rotate-reply: a device for the refused case" : "rotate-reply: a device for the lost case");
+        char handle[64] = { 0 };
+        DIR *dh = opendir(dev);
+        if (dh != NULL) {
+            struct dirent *e;
+            while ((e = readdir(dh)) != NULL) {
+                const size_t n = strlen(e->d_name);
+                if (n > 3u && strcmp(e->d_name + n - 3u, ".ek") == 0) {
+                    (void)snprintf(handle, sizeof handle, "%.*s", (int)(n - 3u), e->d_name);
+                }
+            }
+            (void)closedir(dh);
+        }
+        const size_t hlen = strlen(handle);
+        char ek[400], next[408];
+        (void)snprintf(ek, sizeof ek, "%s/%s.ek", dev, handle);
+        (void)snprintf(next, sizeof next, "%s.next", ek);
+        mldsa_keypair_t a, n, other;
+        memset(&a, 0, sizeof a);
+        memset(&n, 0, sizeof n);
+        memset(&other, 0, sizeof other);
+        const int a_ok = hlen == 34u &&
+            keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &a, NULL) == KEYFILE_OK;
+        CHECK(a_ok && store_enroll_device(d.store, (const uint8_t *)handle, hlen, RU, sizeof RU, a.public_key,
+                                          "site", "test", NULL, 0) == STORE_OK &&
+              mldsa_keypair_generate(&other) == 0,
+              mode == ROT_REFUSE ? "rotate-reply: the refused case's device is enrolled" : "rotate-reply: the lost case's device is enrolled");
+        static uint8_t sealed_a[8192];
+        size_t na = 0;
+        (void)read_bytes(ek, sealed_a, sizeof sealed_a, &na);
+
+        rot_hook_t hk;
+        memset(&hk, 0, sizeof hk);
+        hk.mode = mode;
+        hk.handle = (const uint8_t *)handle;
+        hk.hlen = hlen;
+        if (a_ok) { memcpy(hk.old_pk, a.public_key, sizeof hk.old_pk); }
+        if (other.secret_key != NULL) { memcpy(hk.other_pk, other.public_key, sizeof hk.other_pk); }
+        const int rc = run_client_pumped_hook(&d, (char *[]){ "authd_client", "rotate", "--handle", handle,
+                                                              "--key", ek, "--passphrase-file", pass,
+                                                              "--server-id", "authd", "--server-pub", spub,
+                                                              "--port", port, NULL }, rot_hook, &hk);
+        const int n_ok = keyfile_open(next, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &n, NULL)
+                         == KEYFILE_OK;
+        uint8_t now_pk[MLDSA_PUBLIC_KEY_BYTES];
+        const int looked = store_lookup_active(d.store, (const uint8_t *)handle, hlen, now_pk, NULL, 0, NULL, NULL)
+                           == STORE_OK;
+        if (mode == ROT_REFUSE) {
+            /* The canary that this IS the refused path: the store moved to the
+             * key the test chose, never to the one the CLI sealed. */
+            CHECK(hk.fired && rc != 0 && rc != -1 && n_ok && looked && same_bytes(ek, sealed_a, na) &&
+                      memcmp(now_pk, other.public_key, sizeof now_pk) == 0 &&
+                      memcmp(n.public_key, now_pk, sizeof now_pk) != 0,
+                  "rotate refused: the session opened, the daemon refused ROTATE, .ek is unchanged and .ek.next kept, sealed");
+            CHECK(a_ok && n_ok && !any_file_has_key_window(root, a.secret_key, NULL) &&
+                      !any_file_has_key_window(root, n.secret_key, NULL),
+                  "rotate refused: no window of the old or the new secret key in any file (Req 10)");
+        } else {
+            /* The canary that this IS the lost path: the daemon committed the
+             * key the CLI sealed, and the session was closed before its ACK. */
+            CHECK(hk.fired && hk.closed >= 1u && rc != 0 && rc != -1 && n_ok && looked &&
+                      same_bytes(ek, sealed_a, na) && memcmp(now_pk, n.public_key, sizeof now_pk) == 0,
+                  "rotate lost: the daemon committed, the ACK never arrived, .ek is unchanged and .ek.next kept, sealed");
+            CHECK(a_ok && n_ok && !any_file_has_key_window(root, a.secret_key, NULL) &&
+                      !any_file_has_key_window(root, n.secret_key, NULL),
+                  "rotate lost: no window of the old or the new secret key in any file (Req 10)");
+        }
+        mldsa_keypair_free(&a);
+        mldsa_keypair_free(&n);
+        mldsa_keypair_free(&other);
+    }
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -986,6 +1150,7 @@ int main(void)
     test_localcli_split_list();
     test_key_plan();
     test_rotate_on_disk();
+    test_rotate_reply_refused_or_lost();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
