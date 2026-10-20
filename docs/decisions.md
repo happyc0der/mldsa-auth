@@ -9440,3 +9440,491 @@ The new named checks did not fail falsely under the same load.
 - **Gates:** spec constants and vocabularies, the claim map, anchors (354
   across 44 campaigns, the counts agreeing), and `git diff --check`. No
   campaign anchors in either test, and every check name is unchanged.
+
+## V4-38 — the reviewer's reproduction page, re-run from a fresh clone (loop iteration 13: coverage)
+
+### Why
+
+`docs/review/REPRODUCE.md` is the first page a reviewer runs. It had last
+been run as written in V4-14b (2026-09-27), and twenty-four steps had landed
+since. Nothing checked that its commands still printed what it says they
+print.
+
+### The run
+
+A fresh clone of V4-37's head `b05ed0b`, at a path without spaces (the
+scratchpad), with every command copied from the page verbatim by a script
+that greps out the lines the page quotes. macOS 27.0.1, arm64, 13:32 to
+14:59.
+
+| Block | Printed |
+|---|---|
+| the suite, `build` | current (`0373304110d9ffa7`), 51/51, two *Skipped* as the page says |
+| ASan | current (`abb67318716d7a66`), instrumentation in all 43, 51/51 |
+| UBSan | current (`9ed2208e7c985049`), instrumentation in all 44, 51/51; `runtime error` count 1, `ubsan_canary.c:15`'s planted overflow |
+| gcc 16 Release | 51/51 |
+| wasm, then the browser tests | 3/3, then 4/4 |
+| fuzz tree, then `run_fuzz.sh … authd_config` | 36/36, then 600 s, 123,075,142 runs, `crashes=0 artifacts=0` |
+| campaign v72 on the ASan tree | TK1 `KILLED(3 named)`, TK2 `KILLED(15 named)`, `residue: none`, `final: all sources restored …` |
+| anchors | `ALL ANCHORS OK`, 354 anchors, 315 mutations, 44 campaigns |
+| the three document checks | each `OK` |
+| `caddy_proxy.sh`, `deploy_checks.sh` | 9 PASS lines and `PASS: CADDY: all checks`; exposure 1.7 and `PASS: DEPLOY: all checks` |
+| the advisory queries | below |
+
+Every command worked as written. ProVerif was not run (not installed here,
+as before).
+
+### What the page said that was no longer true
+
+- **The counts:** "305 committed mutations in 40 campaigns" and "342
+  anchors, 40 campaigns" (now 315, 44 and 354).
+- **F90's sentence:** "Nine older mutations are killed without a named
+  check". Since V4-14d a spec line without an expected check is refused, so
+  there are none.
+- **The CI and nightly runs it cited:** from `6f9269b`, with 13 jobs, 26
+  campaigns and 223 of 233 mutations. Now 14 jobs on main `71c8fc0`
+  (39474140277), and nightly 39447335408: 58/58, 314 of 314 by name.
+- **The ProVerif log** was cited from that old nightly. It is now cited from
+  39447335408, whose nine lines read the same.
+- **Lines printed but not quoted.** The page now quotes:
+  - the browser block's count;
+  - the fuzz run's run count;
+  - the full `PASS: CADDY:` and `PASS: DEPLOY:` lines;
+  - the advisory queries' answers.
+- **The campaign example** was v56, whose twenty mutations take hours. It is
+  now v72 (two, about twenty minutes), with the difference stated.
+
+### The counts gate now covers it
+
+The page's counts had drifted because V4-34's gate in
+`tools/audit/check_mutation_anchors.py` checked only README.md and
+tools/README.md. Five patterns for REPRODUCE.md were added, for 13 stated
+counts in all. The patterns cover the mutation and campaign counts and the
+anchor line.
+- **Shown red by hand:** with 342 written back in, the gate printed
+  `COUNT docs/review/REPRODUCE.md: says 342 where the campaigns say 354` and
+  `1 PROBLEM(S)`, exit 1. The file was then restored.
+- **It then printed** "counts: the 13 stated counts in README.md,
+  tools/README.md and REPRODUCE.md agree (315 mutations, 44 campaigns, 354
+  anchors)". The sweep below took it to 16.
+
+CI's spec job already runs the script.
+
+### The advisories: one new, not exposed
+
+All of ADVISORIES.md's queries were repeated, controls included:
+- OSV by commit for the three pins and Emscripten;
+- NVD for liboqs, libsodium, Emscripten and SQLite 3.53.4 / 3.50.1;
+- the GitHub advisories for liboqs and libsodium.
+
+One answer changed. GitHub lists **GHSA-xv6c-h66p-6mfq / CVE-2026-104255**
+(2026-10-06, medium), affecting liboqs 0.11.0 through 0.16.0:
+- **What it is:** LMS lock callbacks fail open, so a one-time key can be
+  reused and a signature forged. LMS verification ignores the parameter set,
+  and there are three defects on LMS key generation and signing.
+- **What it needs:** every part requires `OQS_ENABLE_SIG_STFL_LMS=ON`.
+- **This build:** it is OFF, as is
+  `OQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN`. The built
+  `liboqs.a` has no LMS, HSS or LM-OTS symbol, including the advisory's
+  exported `OQS_SIG_STFL_alg_lms_verify`. Its 21 `OQS_SIG_STFL_*` symbols are
+  the generic dispatcher, with nothing to dispatch to.
+- **The gate:** `liboqs_minimal` passes, and already fails the build if such
+  a symbol appears.
+- **The fix** is in 0.17.0, still unreleased (latest 0.16.0).
+
+It is recorded in ADVISORIES.md and in F91's rows (Info, unchanged), and
+the pin stays.
+
+The run also found one NVD match the page had never accounted for:
+**CVE-2024-37305**, the eighth match for "liboqs". It is in oqs-provider, a
+separate project this one does not use. Everything else matched the page:
+- libsodium's nine NVD matches (CVE-2025-69277 plus the eight wrappers it
+  names);
+- Emscripten's six;
+- SQLite 3.53.4's one (CVE-2022-31631, PHP);
+- SQLite 3.50.1's five, CVE-2025-6965 among them;
+- OSV empty for libsodium 1.0.18 too;
+- no libsodium GitHub advisories.
+
+NVD did not yet list CVE-2026-104255.
+
+### The sweep after it: the packet's front page, F120
+
+With REPRODUCE.md fixed, every tracked document was searched for stated
+counts of mutations, campaigns, anchors, tests, findings and errata. Five
+more were stale:
+
+| Where | Said | Is |
+|---|---|---|
+| `docs/review/README.md`, the register | 117 findings (F1–F119) | 119 (F0–F119; no F16 was ever assigned), 120 with F120 |
+| `docs/review/README.md`, the spec | §20 lists 46 errata | 48 |
+| `docs/review/README.md`, tests | 52 with the browser client | 55 |
+| `docs/review/README.md`, mutations | 305 in 40 campaigns | 315 in 44 |
+| `README.md`, the `tools/` row | 305 committed mutations | 315 |
+
+That is F106, F110 and F116's class again, so it is recorded as **F120**
+(Info, fixed). Ten new patterns now read these counts from their sources:
+- **`check_mutation_anchors.py`:** eight. They cover REPRODUCE.md's five,
+  the front page's two and README's one, for 16 stated counts in all.
+- **`check_claim_map.py`:** two, comparing the front page's findings count
+  and range with the register's rows, and its errata count with §20's rows
+  (each must be found, and §20's numbers distinct).
+
+Each was shown red once by a rotted count, and restored byte-exactly:
+
+| Rotted | Gate | Printed |
+|---|---|---|
+| README 315 → 305 | anchors | `COUNT README.md: says 305 where the campaigns say 315` |
+| front page 44 → 40 campaigns | anchors | `COUNT docs/review/README.md: says 40 where the campaigns say 44` |
+| front page 315 → 305 | anchors | `COUNT docs/review/README.md: says 305 where the campaigns say 315` |
+| 119 → 118 findings | claim map | `FAIL the register's stated size and range … page says 118 findings (F0–F119); the register holds 119` |
+| 48 → 47 errata | claim map | `FAIL the spec's stated errata count … page says 47; §20 holds 48 row(s)` |
+
+Before the fix, the claim-map checks failed on the stale page itself (117
+and 46). That is the gap shown on the real defect, not only a planted one.
+
+**The test counts are not gated.** They depend on the configuration (node,
+python3, a wasm tree, a browser), which no static check sees. F107, F116 and
+now F120 are three drifts of them, and a CTest that compares `ctest -N` with
+what the README states for its own configuration is the next fixes-and-cleanup
+iteration's candidate.
+
+The front page's narrative also stopped at V4-36 and never mentioned V4-28,
+so F114 still read as open there. V4-28, V4-37 and V4-38 now have their
+sentences.
+
+**"F91 is the only open finding" was not true.** The page said it in
+V4-24a's paragraph, and this step's first draft of V4-28's repeated it. Then
+every row's disposition was read: three rows older than the packet stay
+open by their own account.
+- **F5 (Med):** no coverage figure for anything under `apps/authd/`.
+- **F15 (Info):** v1's x86_64 target can no longer be measured.
+- **F17 (Med):** Req 4.9's timing is unmeasured.
+
+The page's "Still open" table listed only F91 because it covers the seven
+findings the packet itself found. The three older rows are now listed beside
+it, both sentences say "since the packet was built", and F120 records it.
+Which rows are open is prose, so no gate reads it.
+
+### Verification
+
+- **Gates:** spec constants and vocabularies, the claim map (with its two
+  new count checks), anchors (354, with the 16 counts agreeing), the audit
+  table's separators, and `git diff --check`.
+- **The code changes** are the two gates' checks. Each ran green, and red
+  under the hand controls above.
+- **No source or test file changed,** so no campaign is affected.
+
+## V4-39 — P10's backend check in every native tree, and shown able to fail (loop iteration 14: coverage)
+
+### The gap
+
+CLAIMS P10 rests on `tools/check_backend_symbols.sh`, which proves that one
+optimised ML-DSA-65 / ML-KEM-768 backend is linked and no portable-C one. Its
+own limit said two things:
+- **It ran on Linux x86_64 only:** CI's Release job and bench.yml.
+- **Nothing covered it.** It had never been shown to fail.
+
+Three consequences:
+- **macOS was unchecked.** The macOS CI jobs build liboqs with
+  `MLDSA_OQS_OPT_TARGET=generic`, and ci.yml's comment asserted that this
+  "still selects the AARCH64 backends". Nothing looked.
+- **The tool disagreed with the spec on x86_64 `generic`.** Spec-v2 §3
+  requires `generic` for distribution and says it "gives up the AVX2
+  backend" on x86_64. There the one linked backend is portable C, which
+  the tool would have failed.
+- **"Exactly one optimised family" was claimed but not checked.** An
+  executable with both aarch64 and x86_64 symbols would have passed as
+  x86_64.
+
+### The change
+
+- **The tool:**
+  - `--expect aarch64|x86_64|c` names the one family every executable must
+    link, and no other family's symbols may appear beside it;
+  - without `--expect` it behaves as before, for CI's Release step,
+    bench.yml and the RUNBOOK, and now also fails on two optimised families
+    (in one executable or across two);
+  - a missing `nm` or `file` is a FAIL with its reason, not "no executables
+    found".
+- **A CTest, `backend_symbols`, in every native tree,** registered where
+  `nm` and `file` exist. CI's suite step asserts that it is registered.
+  - First it tests the tool on executables planted in a `mktemp -d` outside
+    the tree. They are compiled with the tree's own compiler, each defining
+    functions under the family prefixes. Eleven named checks each read the
+    exit status and the line that explains it.
+  - Then it runs the tool on the tree with `--expect`. The family is what
+    the project intends, set at configure time, never what liboqs picked:
+    aarch64 on arm64, x86_64 on x86_64, and `c` for x86_64 `generic`.
+    `MLDSA_EXPECT_BACKEND` overrides it for a target the rule does not
+    know. Taking liboqs's own choice would have made the test agree with a
+    configure that silently lost the optimised backend.
+- **Test counts:** native 52, with a wasm tree 54, with a browser 56.
+
+### The controls
+
+**Real builds, by hand.** Each scratch tree has `mldsa-authd`,
+`auth_client` and `test_handshake` built; the clean tree has aarch64=147,
+portable-C=0 in each. In every one, `backend_symbols` failed on "this tree
+links one backend, aarch64, in every executable that links one":
+
+| Control | aarch64 | portable-C | in each of the three |
+|---|---|---|---|
+| (a) `-DOQS_ENABLE_SIG_ml_dsa_65_aarch64=OFF` | 60 | 69 | FAIL |
+| (b) `-DOQS_ENABLE_KEM_ml_kem_768_aarch64=OFF` | 87 | 45 | FAIL |
+| (c) `OQS_DIST_BUILD ON` in `cmake/Dependencies.cmake`, in a separate worktree | 147 | 114 | FAIL |
+
+The counts add up: 60 + 87 = 147, and 69 + 45 = 114. Runtime dispatch (c)
+links both whole families, which is what P10 forbids.
+
+**The tool's own verdicts, broken one at a time** and restored byte-exactly
+(`cmp`). Each was killed by name:
+
+| Control | Break | Killed by |
+|---|---|---|
+| D1 | `--expect` ignores another family beside the expected one | "two families in one executable fail when one is expected" |
+| D2 | default mode ignores two families in one executable | "without --expect, two optimised families in one executable fail, named" |
+| D3 | default mode ignores portable C | "without --expect, portable C fails" |
+| D4 | the no-backend guard removed | "an executable with no backend at all proves nothing" |
+| D5 | default mode ignores two families across executables | "without --expect, two optimised families in two executables fail" |
+| D6 | the no-executables guard removed | "a directory with no executables proves nothing" |
+
+Two things these runs taught:
+- **D2 first SURVIVED.** The cross-executable guard caught the same input,
+  and the selftest's expected line matched both guards' messages. The
+  selftest now names the per-executable message, and has a case of its own
+  (D5) for two families split across executables.
+- **D7 was an equivalent mutant.** Making `--expect c`'s "has the expected
+  family" condition always true changed nothing. Every executable that
+  reaches it links some backend, so "none of the expected family" already
+  implies another family's symbols. The redundant condition was removed,
+  and the one left (D1') is killed by three named checks.
+
+**In CI**, a control branch, `v4-39-ctl` (1487d05 on 376ae3a): v4-39 plus
+`OQS_ENABLE_KEM_ml_kem_768_x86_64` forced OFF. Run 39485860730 went 8/14:
+- **The six red jobs** are exactly the four Linux suite jobs (clang debug,
+  ASan and UBSan; gcc debug) and both Linux Release jobs.
+- **In each,** 1 test of 52 failed, `backend_symbols`, with x86_64=83 and
+  portable-C=45 (41 in Release) in every executable.
+- **Green:** all three macOS jobs, which the forced option cannot reach,
+  plus the spec, fuzz-and-scan, wasm, deploy and Caddy jobs.
+
+The branch was then deleted.
+
+### What it shows
+
+- **macOS.** In V4-39's green CI (39485765975), `backend_symbols` passed in
+  all seven suite jobs. So `generic` on the macOS runner does keep the
+  aarch64 backends, which ci.yml's comment had only asserted.
+- **Still not established:**
+  - "No runtime branching" is inferred from symbols, not by looking for
+    CPU-feature branches.
+  - libsodium's ChaCha20 selection is not covered.
+  - The x86_64 `generic` expectation (`c`) is tested only on planted
+    executables: no x86_64 machine here builds it.
+  - No campaign covers the gate: the runner needs a mutant in the
+    binaries, and a gate script or a CMake option is in none.
+
+### Verification
+
+- **Every tree rebuilt, proven current and run in full:**
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `33e75f1ea4f5b73b`, 56/56;
+  - `build-bench-p` `84c658426e8025f9`, 52/52;
+  - ASan `812bba1fc6bf2bbe`, 56/56, instrumentation in all 43;
+  - UBSan `196284b3c0dd6d71`, 56/56, instrumentation in all 44. Its one
+    runtime error is `ubsan_canary.c:15`'s planted overflow;
+  - fuzz `c7dcfc497f0ab0c5`, 36/36, and `backend_symbols` passes there too
+    (Homebrew clang, the Xcode SDK passed as the sysroot).
+
+  The fingerprints equal V4-37's: no C source changed.
+- **CI:** 39485765975, 14/14.
+- **Gates:** anchors and counts, the claim map, the spec checks, `git diff
+  --check`, and the workflow YAML parsed.
+
+## V4-40 — the daemon's coverage, measured for the first time (loop iteration 15: coverage; F5)
+
+### Why
+
+F5 (Med) was open by its own account: coverage had been measured once, in
+V4-1, before the daemon existed. Nothing under `apps/authd/` had a figure.
+Coverage is deliberately not a gate here; the campaigns are. But an
+uncovered region is one no mutation can be killed in, so a figure finds
+gaps that the claim map's "not established" entries can only name by
+reading.
+
+### What measuring it found first
+
+**Forked test children were never counted.** A child leaves with `_exit()`,
+which skips the hook the profile runtime writes from. The first run (via
+`CMAKE_C_FLAGS`) put `cli_prompt.c` at 4.5% of lines, though
+`test_client_prompt` drives the prompt through every path under `forkpty`.
+Three tests fork such children:
+- `test_client_prompt`: the prompt;
+- `test_authd_cli`: the client CLI, run pumped;
+- `test_net`: the demo server and proxy.
+
+Their twelve `_exit()` calls now go through `tests/child_exit.h`. Under
+`MLDSA_COVERAGE` it writes the profile first. In every other build it calls
+`_exit()` and nothing else. It is not the same machine code: at `-O0` the
+inline function is a real call, and the added `#include` shifts line
+numbers. So the three tests' objects differ from V4-39's, and the plain
+trees' fingerprints changed. No other source changed, and no plain tree's
+compile commands carry a coverage flag (below). With the children counted:
+- `cli_prompt.c` reads 67.2% of lines;
+- `client_cli.c` reads 75.7%, up from 71.0%;
+- `apps/authd/` as a whole reads 81.30%, up from 79.80%.
+
+The profile count did not change (137), because `%m` in the profile name
+makes a child merge into its parent's file.
+
+**The tool had three defects of its own:**
+- **An empty list, silently.** Its "uncovered regions by function (top
+  25)" came out empty without saying so: the text report cannot be parsed
+  under a path with spaces, and the source filter was relative.
+- **CMake's probes in the totals.** Its totals counted CMake's
+  compiler-identification programs.
+- **Unscoped flags.** Instrumenting through `CMAKE_C_FLAGS` reached the
+  dependencies too, and something run during that build wrote a stray
+  `default.profraw` into the repository root (removed). With the new option
+  it did not recur.
+
+### The change
+
+- **`-DMLDSA_COVERAGE=ON`** (clang only) adds the instrumentation after the
+  dependencies are created: 112 project sources instrumented, 105 liboqs
+  sources not. It also defines `MLDSA_COVERAGE` for `child_exit.h`.
+- **`tools/audit/coverage.sh`:**
+  - it refuses a tree without the option;
+  - it finds the source tree from the cache;
+  - it skips `CMakeFiles`;
+  - it computes the totals by area and the functions under 80% from `llvm-cov
+    export`, counting code regions only, as llvm-cov does. Its first count,
+    of all region records, gave a one-line function 56 regions.
+- **The record:** `docs/v4/coverage.md` holds the method, the figures by
+  area and by file, and the triage.
+
+### The figures
+
+`build-cov-p`, all 56 tests, macOS, Apple clang 21:
+
+| Area | Lines | Regions | Branches | Functions |
+|---|---|---|---|---|
+| `src/` | 83.67% | 92.02% | 73.37% | 100% |
+| `apps/authd/` | 81.30% | 87.51% | 69.05% | 97.45% |
+| all | 80.20% | 87.66% | 67.89% | 97.44% |
+
+### The triage, and three findings
+
+Most of what is uncovered is of three kinds:
+- the failure of a primitive or an allocation, which needs fault injection;
+- `EINTR` and `EAGAIN` retries;
+- name tables.
+
+Beyond those, three findings:
+- **F121 (Info):** `conn_io_out_capacity`, `authd_conn_stage_name` and
+  `listener_accept` have no caller. `listener_accept`'s `(uid_t)-1`
+  sentinel becomes an empty allowlist, which means no credential check:
+  F92's shape, unreachable. Their removal is the next fixes-and-cleanup
+  iteration's.
+- **F122 (Low):** five security checks no test drives to their refusal:
+  - key-file custody (`keyfile_open`, `keyfile_promote`): the refusal ran 0
+    times against 174 and 4 runs of the condition;
+  - the CLI client's WebSocket frame reader, including its frame-versus-buffer
+    bound;
+  - `REVOKE-TOKENS handle=`;
+  - `store_open`'s refusal of a damaged store;
+  - the daemon's oversized-record, BYE-length and post-rotation drop paths.
+  The code reads correctly; the evidence is what is missing. They are the
+  next coverage iterations' work.
+- **F123 (Low, for the owner):** with `handle=`, `REVOKE-TOKENS` validates
+  `user=` and then ignores it. Nothing sends that form today, so nothing
+  ever showed it. Its scope is a decision about the interface's meaning,
+  so it is parked with a proposed fix: `AND user_id=?2`, answering `OK
+  count=0` for a mismatched pair (no new error code), plus an erratum and a
+  test.
+
+F5 stays open: it has a figure, and the figure names F122.
+
+### The controls
+
+- **`coverage.sh build-p`**, a tree without the option, prints "FAIL: …
+  was not configured with -DMLDSA_COVERAGE=ON", exits 2 and writes nothing.
+- **The coverage tree's `test_client_prompt`** references
+  `__llvm_profile_write_file`. Every plain tree's does not (below).
+- **The flush itself** is shown by the before/after figures above, on the
+  same tests: 8 of `cli_prompt.c`'s 177 lines before, 119 after.
+
+### Verification
+
+- **Every plain tree rebuilt, proven current and run in full,** with
+  `MLDSA_COVERAGE=OFF` and no coverage flag in its compile commands:
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-wasm-p` | `2c39f8ab7908049c` | 3/3 |
+  | `build-p` | `8133e8e65c9f728f` | 56/56 |
+  | `build-bench-p` | `c36e71ec4d73e2db` | 52/52 |
+  | ASan | `1c26ca6470293b67` | 56/56, instrumentation in all 43 |
+  | UBSan | `4edf84ad150b8bfc` | 56/56, instrumentation in all 44; one runtime error, the planted canary |
+  | fuzz | `bc023da52c87bbe5` | 36/36, `backend_symbols` 1/1 |
+
+  In each, `test_client_prompt` references no `__llvm_profile_write_file`.
+- **The coverage tree** `build-cov-p` (`5b44c662708d4ac3`): 56/56, 137
+  profiles. The final `coverage.sh` was run end to end once more, since a
+  script outside CTest is believed only when run. It matched the figures
+  above, except for one branch fewer (a timing-dependent retry); the
+  function list was the same apart from call counts.
+- **Campaign v73 on ASan.** Its two mutations are killed through
+  `test_authd_cli`'s pumped children, the path this step changed: RL1 and
+  RL2 each `KILLED(1 named)`, `residue: none`, all sources restored.
+- **Gates:**
+  - anchors (354; 16 counts agreeing);
+  - the claim map, including the register's size (123, F0–F123);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-36 to V4-40 — CI on the branches and the nightly bring-up
+
+**One bring-up for five steps.** Only V4-36 adds a campaign (v74). So the
+control nightly ran on V4-36..37's code and rotted v74 CK1's expectation.
+The final nightly runs every campaign against the final tree, with V4-38's
+gates, V4-39's `backend_symbols` and V4-40's `child_exit.h` in it.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-36 | `b17d4f5` | 39458988769 |
+| V4-37 | `b05ed0b` | 39466279083 |
+| V4-38 | `fa074df`, then `322b2f4` | 39482219983, 39485600435 |
+| V4-39 | `376ae3a` (`df2172e` adds only its decisions entry) | 39485765975 |
+| V4-40 | `6b2635a` | 39507356666 |
+
+**Superseded and control runs:**
+- **39481080552,** V4-38's first head, was cancelled by CI's concurrency
+  group when the second dispatch on the same branch went in. That is its
+  design, not a failure.
+- **39485860730,** V4-39's CI control on `v4-39-ctl`, was red on exactly the
+  six Linux suite and Release jobs, as recorded in V4-39.
+
+### The control nightly
+
+- **How the control was built.** `20fa4ec` is `nightly-bringup`'s previous
+  head `6649e49` with V4-36 and V4-37 cherry-picked; its parent's tree
+  equals V4-37's `b05ed0b`. On top, v74 CK1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-36..37)"). spec_v74's sha256 before
+  was `1eddf58883c83ac5`.
+- **The result.** Run 39474217806 was red on exactly `mutations · v74`,
+  58/59:
+  - CK1 **SURVIVED(BAD)**, naming the rotted text;
+  - `residue: none`, all sources restored;
+  - across the 44 campaign jobs, 315 rows: 314 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+  It was v74's first run on Linux.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.

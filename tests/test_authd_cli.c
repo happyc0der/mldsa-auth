@@ -27,6 +27,7 @@
 #include "authd_config.h"
 #include "authd_harness.h"
 #include "authd_secret.h"
+#include "child_exit.h"
 #include "key_windows.h"
 #include "keyfile.h"
 #include "localcli.h"
@@ -724,7 +725,7 @@ static void test_localcli_split_list(void)
         (void)!write(c, rest, sizeof rest - 1u);
         usleep(100000);
         (void)close(c);
-        _exit(0);
+        child_exit(0);
     }
     char out[4096];
     size_t n = 0;
@@ -783,10 +784,10 @@ static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook,
     const pid_t pid = fork();
     if (pid < 0) { return -1; }
     if (pid == 0) {
-        if (freopen("/dev/null", "w", stdout) == NULL) { _exit(125); }
+        if (freopen("/dev/null", "w", stdout) == NULL) { child_exit(125); }
         const int rc = run_cli(authd_cli_client, argv);
         fflush(stderr);
-        _exit(rc & 0xff);
+        child_exit(rc & 0xff);
     }
     const time_t start = time(NULL);
     int ws = 0;

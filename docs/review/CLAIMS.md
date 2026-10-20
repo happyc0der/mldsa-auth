@@ -24,8 +24,10 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 requirement in either specification lacks an entry here, if a heading's
 title differs from its requirement's, or if anything cited no longer exists:
 a check text not in its test, a mutation not in its campaign, a query
-`formal/run.sh` does not expect. It runs in CI's specification job. It
-cannot check the prose: "not established" is this document's judgement.
+`formal/run.sh` does not expect. Since V4-38 it also fails if the packet's
+front page misstates the audit register's size and range or the deployment
+spec's errata count. It runs in CI's specification job. It cannot check the
+prose: "not established" is this document's judgement.
 
 Findings cited as **F**nn are in the audit register,
 [`docs/v4/audit.md`](../v4/audit.md). Several are open, and the open ones are
@@ -151,7 +153,12 @@ the most important thing on this page.
 ### P10 — Build-time algorithm backend selection
 - tool `tools/check_backend_symbols.sh` — every executable links no portable-C ML-DSA-65/ML-KEM-768 and exactly one optimised family; fails on no executables, no backend, or no optimised family
 - ci `Release + install + hardening (Linux, ${{ matrix.cc }})` — runs it as "One optimized backend, no portable-C" on a Release x86-64-v3 build
-**Not established:** the check infers "no runtime branching" from `OQS_DIST_BUILD=OFF` and symbol names, not by looking for CPU-feature branches. It does not cover libsodium, whose ChaCha20 selects its implementation at `sodium_init` by CPU features (a one-time pointer choice, not a per-call branch, but a runtime selection all the same). It runs on Linux x86_64 only, and no mutation covers it.
+- check `backend_symbols` "this tree links one backend, "
+- check `backend_symbols` "a portable-C executable beside it fails, named"
+- check `backend_symbols` "two families in one executable fail when one is expected"
+- check `backend_symbols` "without --expect, portable C fails"
+- check `backend_symbols` "an executable with no backend at all proves nothing"
+**Not established:** the check infers "no runtime branching" from `OQS_DIST_BUILD=OFF` and symbol names, not by looking for CPU-feature branches. It does not cover libsodium, whose ChaCha20 selects its implementation at `sodium_init` by CPU features (a one-time pointer choice, not a per-call branch, but a runtime selection all the same). Since V4-39 the CTest `backend_symbols` runs it in every native tree, on macOS arm64 as well as Linux x86_64, expecting the family the project intends rather than the one liboqs picked. Its verdicts are tested on planted executables, and three real builds were shown to fail it by hand: liboqs's aarch64 ML-DSA or ML-KEM backend turned off, and `OQS_DIST_BUILD=ON`. No campaign covers it: the runner needs a mutant in the binaries, and a gate script or a CMake option is in none. The x86_64 `generic` case, portable C as the one backend, is tested only on planted executables: no x86_64 machine here builds it.
 
 ### P11 — ML-KEM decapsulation is never a validation signal
 - check `test_handshake` "v2-5 H3: the initiator's key does NOT match the encapsulator's -- the sides disagree, as designed"

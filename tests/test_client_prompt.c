@@ -33,6 +33,7 @@
 #include <sodium.h>
 
 #include "authd_secret.h"
+#include "child_exit.h"
 #include "cli_prompt.h"
 #include "client_cli.h"
 #include "keyfile.h"
@@ -132,7 +133,7 @@ static pid_t run_child(int slave, int report_fd, int which)
         authd_secret_free(p, n);
     }
     (void)!write(report_fd, &r, sizeof r);
-    _exit(0);
+    child_exit(0);
 }
 
 static int child_result(int report_rd, pid_t pid, result_t *r, int *wstatus)
@@ -304,7 +305,7 @@ static void test_cli(void)
         const int rc = authd_cli_client(5, argv);
         fflush(stdout);
         fflush(stderr);
-        _exit(rc);
+        child_exit(rc);
     }
     CHECK(pid > 0, "cli: forkpty");
     if (pid < 0) { return; }

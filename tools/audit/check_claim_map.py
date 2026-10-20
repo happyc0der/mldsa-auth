@@ -20,6 +20,9 @@ does, in both directions:
       fuzz `name`         tests/fuzz/fuzz_<name>.c exists
       tool `path`         the file exists
       ci `job`            some workflow names that job
+  - and (V4-38) the packet's front page states the audit register's size
+    and range, and the deployment spec's errata count, as those documents
+    hold them.
 
 Usage: check_claim_map.py <repo>
 """
@@ -57,6 +60,32 @@ def spec_titles(path, heading, count_stop):
 def norm(s):
     """Titles compare without Markdown backticks and trailing punctuation."""
     return re.sub(r'\s+', ' ', s.replace('`', '')).strip().rstrip('.:,')
+
+
+def packet_counts():
+    """The packet's front page states how many findings the register holds and
+    how many errata the deployment spec lists. Both drifted once (audit F110),
+    were fixed by hand, and drifted again: V4-38 found "117 findings
+    (F1-F119)" against a register of 119 (F0-F119, no F16 was ever assigned)
+    and "46 errata" against 48. A count no gate reads is a count that rots, so
+    both are now read from the documents they describe. Each sentence must be
+    FOUND, so rewording it fails here rather than retiring the check."""
+    audit = open("docs/v4/audit.md", encoding="utf-8").read()
+    ids = sorted(int(n) for n in re.findall(r'^\| \*{0,2}F(\d+)\b', audit, re.M))
+    spec = open("docs/mldsa-authd-spec.md", encoding="utf-8").read()
+    i = spec.find("\n## 20. Errata")
+    errata = re.findall(r'^\| (\d+) \|', spec[i:] if i >= 0 else "", re.M)
+    page = open("docs/review/README.md", encoding="utf-8").read()
+    m = re.search(r'(\d+) findings \(F(\d+)\u2013F(\d+)\)', page)
+    report("the register's stated size and range", bool(ids) and bool(m) and
+           (int(m.group(1)), int(m.group(2)), int(m.group(3))) == (len(ids), ids[0], ids[-1]),
+           "page says %s; the register holds %d (F%d-F%d)" % (
+               m.group(0) if m else "nothing matching /N findings (Fa\u2013Fb)/",
+               len(ids), ids[0] if ids else -1, ids[-1] if ids else -1))
+    m = re.search(r"deployment spec's \u00a720 lists (\d+) errata", page)
+    report("the spec's stated errata count", bool(errata) and bool(m) and
+           int(m.group(1)) == len(errata) and len(set(errata)) == len(errata),
+           "page says %s; \u00a720 holds %d row(s)" % (m.group(1) if m else "nothing", len(errata)))
 
 
 def main(repo):
@@ -165,6 +194,8 @@ def main(repo):
     for b in bad:
         print("          " + b)
     print("  ---   " + ", ".join("%d %s" % (v, k) for k, v in counts.items()))
+
+    packet_counts()
     if ok:
         print("OK: every requirement is mapped, and everything the map cites exists")
         return 0

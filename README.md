@@ -102,6 +102,7 @@ Two constraints that will otherwise cost you an afternoon:
 | UndefinedBehaviorSanitizer | `-DENABLE_UBSAN=ON` | UB runs of the whole suite |
 | libFuzzer | `-DMLDSA_FUZZ=ON` + a libFuzzer-capable clang | Coverage-guided fuzzing |
 | Portable binaries | `-DMLDSA_OQS_OPT_TARGET=generic` | Anything you distribute (see below) |
+| Coverage | `-DMLDSA_COVERAGE=ON` + clang, in a tree of its own | `tools/audit/coverage.sh <tree>`: line, region and branch coverage of the project's own code ([docs/v4/coverage.md](docs/v4/coverage.md)); never a campaign or currency tree |
 
 Project sources are compiled with `-Wall -Wextra -Werror
 -fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8), and linked
@@ -209,7 +210,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-51 tests in a native tree (49 if no `node` is found: two run under it; one fewer without `python3`), 53 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 55 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+52 tests in a native tree (50 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 54 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 56 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -224,6 +225,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |
 | `scratch_dirs` | No test names its scratch directory after its pid: the seven that did make theirs with `mkdtemp`, so a directory a crashed run left behind can no longer fail a later run (V4-28, F114) |
 | `hand_control_selftest` | `tools/hand_control.py`, the tool hand controls use, on a CMake project of its own in a temporary directory: KILLED by name, KILLED(other), SURVIVED, VOID for an unchanged binary, KILLED(compile), and the archive-level stale-object trap made real and defeated (V4-34) |
+| `backend_symbols` | One ML-DSA-65/ML-KEM-768 backend is linked in every executable of the tree, and it is the intended family: aarch64 on arm64, x86_64 on x86_64, portable C only for x86_64 `generic`. `tools/check_backend_symbols.sh` is first tested on planted executables, once for each verdict it can give (V4-39, CLAIMS P10) |
 | `build_flags` | What every project translation unit was told, from `compile_commands.json`: the hardening flags, FORTIFY outside sanitizer trees, and each tree's sanitizer flags by its intent — a UBSan tree must carry `-fno-sanitize-recover` (V4-15c, V4-24b) |
 | `ubsan_aborts` | In a UBSan or fuzz tree, a planted signed overflow must stop the process — undefined behaviour cannot pass a test (V4-24b; *Skipped* elsewhere) |
 | `store_fault_hook` | The store's test-only fault hooks are absent from the shipped library and binaries and present in the test (V4-15a) |
@@ -802,7 +804,7 @@ inactivity still shows its last green run — check the date, not the colour.
 | `docs/` | The specification and the decision log |
 | `cmake/` | Pinned dependency definitions |
 | `deploy/` | What a deployment needs and nothing else: the systemd unit, a commented example config, `fetch-deps.sh` for an offline dependency cache, and `RUNBOOK.md` — the numbered checklist from an empty VPS to a first login |
-| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 305 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
+| `tools/` | The verification gates themselves — `run_mutations_v2.sh` plus the 315 committed mutations in `tools/mutations/`, and the checkers that must pass before a result is believed: `check_build_current.sh` (the binaries match the sources), `check_sanitizer_link.sh` (the instrumentation is really linked), `check_backend_symbols.sh` (one optimized backend is linked, no portable-C), and under `tools/audit/` the gates that check the documents against the code: `check_spec_constants.sh`, `check_spec_vocabularies.py`, `check_mutation_anchors.py` and `check_hardening.sh`. Not part of the build |
 
 ## License
 

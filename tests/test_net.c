@@ -40,6 +40,7 @@
 
 #include <sodium.h>
 
+#include "child_exit.h"
 #include "demo_app.h"
 #include "demo_keys.h"
 #include "frame.h"
@@ -252,7 +253,7 @@ static void storm_body(int stop_fd, pid_t a, pid_t b) {
         (void)kill(b, SIGALRM);
         sched_yield();
     }
-    _exit(0);
+    child_exit(0);
 }
 
 static storm_t storm_begin(pid_t a, pid_t b) {
@@ -301,7 +302,7 @@ static void write_full(int fd, const void *p, size_t n) {
             continue;
         }
         if (w <= 0) {
-            _exit(3);
+            child_exit(3);
         }
         off += (size_t)w;
     }
@@ -362,7 +363,7 @@ static child_t spawn(void (*body)(int wfd, const void *arg), const void *arg) {
     if (pid == 0) {
         (void)close(p[0]);
         body(p[1], arg);
-        _exit(0);
+        child_exit(0);
     }
     (void)close(p[1]);
     child_t c = {pid, p[0]};
@@ -396,7 +397,7 @@ static void server_body(int wfd, const void *arg) {
     demo_buffers_t *buf = calloc(1, sizeof(*buf));
     if (rep == NULL || buf == NULL ||
         handshake_pending_store_init(&g_child_store, 8, HANDSHAKE_PENDING_TTL_MS_DEFAULT, NULL, NULL) != PENDING_OK) {
-        _exit(4);
+        child_exit(4);
     }
     demo_config_t cfg = make_cfg_pad(0, o->pins, o->hs_ms, o->idle_ms, &rep->log, o->pad_bucket);
     if (o->storm) {
@@ -520,13 +521,13 @@ static void proxy_body(int wfd, const void *arg) {
     size_t have[2] = {0, 0};
     net_conn_t side[2]; /* side[C2S] = client socket (source of C2S), side[S2C] = server socket */
     if (rep == NULL || fbuf[0] == NULL || fbuf[1] == NULL) {
-        _exit(4);
+        child_exit(4);
     }
     if (net_accept(o->listen_fd, net_deadline_in(OPS_MS), &side[C2S]) != NET_OK) {
-        _exit(5);
+        child_exit(5);
     }
     if (net_connect_loopback(o->server_port, net_deadline_in(OPS_MS), &side[S2C]) != NET_OK) {
-        _exit(6);
+        child_exit(6);
     }
     const uint64_t deadline = net_deadline_in(CHILD_WAIT_MS - 2000u);
     int done = 0;

@@ -176,6 +176,23 @@ endif()
 # --- Dependencies (pinned versions; see cmake/Dependencies.cmake) ---------
 include(cmake/Dependencies.cmake)
 
+# --- Coverage (V4-40, audit F5) --------------------------------------------
+# A measurement build, read by tools/audit/coverage.sh and never by a gate.
+# The instrumentation is added AFTER the dependencies exist, so liboqs,
+# libsodium and SQLite are not instrumented. MLDSA_COVERAGE is also defined,
+# because a forked test child leaves by _exit(), which skips the runtime's
+# profile write (tests/child_exit.h). Keep it out of the trees the campaigns
+# and the currency checker use.
+option(MLDSA_COVERAGE "instrument the project's own code for llvm-cov (clang only)" OFF)
+if(MLDSA_COVERAGE)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "MLDSA_COVERAGE needs clang's source-based coverage, not ${CMAKE_C_COMPILER_ID}")
+  endif()
+  add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+  add_compile_definitions(MLDSA_COVERAGE=1)
+  add_link_options(-fprofile-instr-generate)
+endif()
+
 # --- Test discovery ---------------------------------------------------------
 # Declared at the top level (not only in tests/CMakeLists.txt) so `ctest`
 # can discover tests from the repo root once Step 2 adds them.

@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 117 findings (F1–F119), with severity, evidence and
-   disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 46 errata, each
+   register](../v4/audit.md). 123 findings (F0–F123), with severity, evidence and
+   disposition; no F16 was ever assigned. The open ones are listed below.
+3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 52 tests with the
+- **Tests** are named checks, not exit codes. The suite is 55 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 305 committed defects in 40 campaigns, each of which must be
+- **Mutations**: 315 committed defects in 44 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -84,7 +84,16 @@ register says how. Still open:
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F91 | Info | An advisory affects liboqs 0.16.0 in LMS/HSS, which this build does not compile. **Mitigated in V4-14d**: the fix is in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
+| F91 | Info | Two advisories affect liboqs 0.16.0 in LMS/HSS, which this build does not compile (the second, GHSA-xv6c-h66p-6mfq, found in V4-38). **Mitigated in V4-14d**: both fixes are in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
+
+Three rows older than the packet also stay open, by their own account (this
+page said only F91 until V4-38, F120):
+
+| Finding | Severity | In one line |
+|---|---|---|
+| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure (81.3% of lines, 87.5% of regions; [coverage.md](../v4/coverage.md)), and it names the security checks no test reaches (F122); it stays open until those are covered |
+| F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
+| F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite
@@ -216,7 +225,8 @@ V4-24a closed **F111** and took two more of the map's gaps:
 Campaign v68 shows each new check catching a defect V4-23's suite let
 through. **F114**, found on the way, records that six tests' scratch
 directories, named for their PID, can fail a later run in a tree reused
-across crashing runs; it is open. F91 is the only other open finding.
+across crashing runs; it is open. F91 is the only other finding open since
+the packet was built (three older rows also stay open; see the table above).
 
 V4-24b took two gates:
 - **P8:** F94's fix had been pinned by nothing, and campaigns cannot mutate
@@ -273,6 +283,11 @@ key's secret windows and for the passphrase. It trusts a clean result only
 after the same scan finds, whole, a canary written into IndexedDB and the key
 itself planted in the clear. Nothing was found.
 
+V4-28 closed **F114**. The seven tests that named a scratch directory after
+their pid make it with `mkdtemp` now, and a CTest, `scratch_dirs`, fails if
+a pid is formatted into a name again. That left F91 the only finding open
+since the packet was built.
+
 V4-29 closed a gap in D13 that its own limits named. With `log_ids = full`,
 the logger prints an identifier as an escaped `id=` field: printable bytes as
 themselves, everything else as dots. A secret passed where an identifier
@@ -309,6 +324,32 @@ exchanged 2 s apart report issued times 2 s apart. Using the hand-control
 tool here found two flaws in it, both fixed. It could not name a binary whose
 file name differs from its target. It also compared whole-file hashes,
 which change on every link here, so it now compares the code.
+
+V4-37 made the event-loop tests wait for what they expect, not for a fixed
+number of turns: a wait that never ends is a failed check by name. Under
+load they had never flaked here, so it is insurance. V4-38 re-ran
+[REPRODUCE.md](REPRODUCE.md) word for word in a fresh clone. Every command
+worked, but that page and this one had stale counts (**F120**). The counts
+that can be read from the tree are gated now. A second liboqs advisory in
+LMS, which is not compiled, joined F91.
+
+V4-39 took P10's backend check into every native tree. The CTest
+`backend_symbols` needs each executable to link the one intended
+ML-DSA/ML-KEM family. It is shown failing on three real builds: each
+aarch64 backend turned off, and liboqs's runtime dispatch. In CI it failed
+exactly the Linux jobs when the x86_64 ML-KEM backend was forced off. That
+checked a claim ci.yml had only asserted: `generic` on the macOS runners
+keeps the aarch64 backends.
+
+V4-40 measured the daemon's coverage for the first time (F5;
+[coverage.md](../v4/coverage.md)). Forked test children had never been
+counted, and are now. Three findings are open from it:
+- **F121:** three functions nothing calls, one of them a wrapper whose
+  sentinel would skip the peer-credential check.
+- **F122:** five security checks no test drives to their refusal, among
+  them key-file custody and the CLI's WebSocket frame bounds.
+- **F123:** `REVOKE-TOKENS user= handle=` ignores `user=`. Its scope is the
+  owner's decision.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
