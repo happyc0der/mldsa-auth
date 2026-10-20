@@ -86,6 +86,15 @@ register says how. Still open:
 |---|---|---|
 | F91 | Info | Two advisories affect liboqs 0.16.0 in LMS/HSS, which this build does not compile (the second, GHSA-xv6c-h66p-6mfq, found in V4-38). **Mitigated in V4-14d**: both fixes are in 0.17.0, which is not yet released, and a CTest now fails if the linked archive ever holds LMS, HSS or XMSS code |
 
+Three rows older than the packet also stay open, by their own account (this
+page said only F91 until V4-38, F120):
+
+| Finding | Severity | In one line |
+|---|---|---|
+| F5 | Med | Coverage was measured once, before the daemon existed: nothing under `apps/authd/` has a coverage figure. The gaps it meant became the claim map's "not established" entries, closed by checks shown able to fail rather than by a percentage |
+| F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
+| F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
+
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite
 equality on a 256-bit hash; spec erratum 43), and Req 5 says the
@@ -216,7 +225,8 @@ V4-24a closed **F111** and took two more of the map's gaps:
 Campaign v68 shows each new check catching a defect V4-23's suite let
 through. **F114**, found on the way, records that six tests' scratch
 directories, named for their PID, can fail a later run in a tree reused
-across crashing runs; it is open. F91 is the only other open finding.
+across crashing runs; it is open. F91 is the only other finding open since
+the packet was built (three older rows also stay open; see the table above).
 
 V4-24b took two gates:
 - **P8:** F94's fix had been pinned by nothing, and campaigns cannot mutate
@@ -275,7 +285,8 @@ itself planted in the clear. Nothing was found.
 
 V4-28 closed **F114**. The seven tests that named a scratch directory after
 their pid make it with `mkdtemp` now, and a CTest, `scratch_dirs`, fails if
-a pid is formatted into a name again. That left F91 the only open finding.
+a pid is formatted into a name again. That left F91 the only finding open
+since the packet was built.
 
 V4-29 closed a gap in D13 that its own limits named. With `log_ids = full`,
 the logger prints an identifier as an escaped `id=` field: printable bytes as
