@@ -8840,3 +8840,77 @@ recovered device is active with the NEW key":
   - the claim map: 200 checks, 134 mutations;
   - anchors: 349 across 42 campaigns, 312 mutations;
   - `git diff --check`.
+
+## V4-31 — the daemon fixtures clean up when stopped (the loop's sixth iteration: fixes and cleanup)
+
+### The bug
+
+`tests/authd_node_fixture.c` and `tests/authd_wasm_fixture.c` each make a
+`mkdtemp` directory under `$TMPDIR` holding a store (with its WAL and SHM)
+and two sockets.
+- **Their cleanup came too late.** It ran only after the serve loop's
+  deadline: 20 s by default, 60 s or 300 s as the callers ask.
+- **Every caller stops them first.** `wasm_interop`, `web_flows`,
+  `browser_e2e` and `phone_timing.mjs` send SIGTERM. The site handler's
+  tests (`examples/site-node/authd.test.mjs`) sent SIGKILL, which no
+  handler can catch.
+- **So no run ever cleaned up.** Measured this morning: 411 directories and
+  119 MB in `~/.cache/mldsa-tmp`, from about a day of runs (307 and 91 MB
+  when first counted).
+- **A leak, not a collision.** `mkdtemp` still made each name unique, which
+  is why the fixture's own comment about pid-keyed names did not cover it.
+
+### The fix
+
+- **The fixtures.** Both catch SIGTERM and SIGINT with a `sig_atomic_t` flag,
+  installed before anything is created. The serve loop exits on the flag,
+  and the existing cleanup (`h_stop`, then removing the directory) runs.
+- **The callers.** The site handler's tests stop the fixture with SIGTERM
+  and wait for it.
+- **The checks.** `wasm_interop`, and every site-handler test through its
+  `withDaemon` helper, check three things:
+  - the directory exists while the fixture runs (the canary);
+  - the fixture exits within 3 s of SIGTERM;
+  - the directory is gone afterwards.
+- **Why the 3 s bound.** Without it, a fixture that caught the signal and
+  went on serving would have cleaned up at its deadline and looked tidy.
+  Thinking through the controls is what found that.
+
+### Controls, by hand
+
+Each fixture was rebuilt from scratch, its binary's hash printed, and every
+source restored byte-exactly:
+
+| | Mutation | Red at |
+|---|---|---|
+| C1 | the wasm fixture installs no SIGTERM handler | `wasm_interop`: "fixture: stopped with SIGTERM, it removed its scratch directory (V4-31)" |
+| C2 | the wasm fixture's loop ignores the flag | `wasm_interop`: "fixture: it exits within 3 s of SIGTERM, not at its deadline (V4-31)" |
+| C3 | the node fixture installs no SIGTERM handler | `site_node_handler`: "the fixture, stopped with SIGTERM, removed its scratch directory (V4-31)", in all 8 tests |
+| C4 | the node fixture's loop ignores the flag | `site_node_handler`: "the fixture exits within 3 s of SIGTERM, not at its deadline (V4-31)", in all 8 tests |
+
+### Cleanup
+
+- **The leftover fixture directories.** All 411 were removed by exact name
+  pattern (`authd-node-XXXXXX` and `authd-wasm-XXXXXX`), after checking that
+  no fixture was running. They are throwaway test stores that every run
+  regenerates. The eight libsodium installs beside them were not touched.
+- **Branches and the bring-up worktree.** The branches merged into main
+  (`v4-26` … `v4-30`) and the `../mldsa-auth-bringup` worktree are removed
+  once each has landed. Every branch is then contained in main, so it is
+  recreatable by SHA.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `d7cf434`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `db37a89be25f62ac`, 54/54;
+  - `build-bench-p` `10aa86de66fb7eca`, 50/50;
+  - ASan `c0b0ed54b1fb3a83`, 54/54, with 0 reports;
+  - UBSan `8c113229b9d2cb35`, 54/54, with 0 runtime errors;
+  - fuzz `df58d74c967b911c`, 36/36.
+- **The fix, measured.** Fixture directories in `$TMPDIR` were 0 before the
+  first suite, 0 after each, and 0 at the end, across five trees' full
+  suites, which start the fixtures dozens of times. No fixture was left
+  running.
+- **Gates:** spec constants and vocabularies, the claim map, anchors (349
+  across 42 campaigns), and `git diff --check`.
