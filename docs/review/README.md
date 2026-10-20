@@ -302,6 +302,14 @@ gated the mutation counts the READMEs state; three had drifted. V4-35
 closed D10's last CLI gap: a rotation whose reply is refused, or lost after
 the daemon committed, now gets the same disk scan as every other rotation.
 
+V4-36 watched the real daemon's clock. Every expiry is the daemon's clock
+plus a constant, and every C test sets that clock itself, so a daemon whose
+clock stopped would have passed everything. `authd_e2e` now has two codes
+exchanged 2 s apart report issued times 2 s apart. Using the hand-control
+tool here found two flaws in it, both fixed. It could not name a binary whose
+file name differs from its target. It also compared whole-file hashes,
+which change on every link here, so it now compares the code.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
