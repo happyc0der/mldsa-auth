@@ -9440,3 +9440,119 @@ The new named checks did not fail falsely under the same load.
 - **Gates:** spec constants and vocabularies, the claim map, anchors (354
   across 44 campaigns, the counts agreeing), and `git diff --check`. No
   campaign anchors in either test, and every check name is unchanged.
+
+## V4-38 — the reviewer's reproduction page, re-run from a fresh clone (loop iteration 13: coverage)
+
+### Why
+
+`docs/review/REPRODUCE.md` is the first page a reviewer runs. It had last
+been run as written in V4-14b (2026-09-27), and twenty-four steps had landed
+since. Nothing checked that its commands still printed what it says they
+print.
+
+### The run
+
+A fresh clone of V4-37's head `b05ed0b`, at a path without spaces (the
+scratchpad), with every command copied from the page verbatim by a script
+that greps out the lines the page quotes. macOS 27.0.1, arm64, 13:32 to
+14:59.
+
+| Block | Printed |
+|---|---|
+| the suite, `build` | current (`0373304110d9ffa7`), 51/51, two *Skipped* as the page says |
+| ASan | current (`abb67318716d7a66`), instrumentation in all 43, 51/51 |
+| UBSan | current (`9ed2208e7c985049`), instrumentation in all 44, 51/51; `runtime error` count 1, `ubsan_canary.c:15`'s planted overflow |
+| gcc 16 Release | 51/51 |
+| wasm, then the browser tests | 3/3, then 4/4 |
+| fuzz tree, then `run_fuzz.sh … authd_config` | 36/36, then 600 s, 123,075,142 runs, `crashes=0 artifacts=0` |
+| campaign v72 on the ASan tree | TK1 `KILLED(3 named)`, TK2 `KILLED(15 named)`, `residue: none`, `final: all sources restored …` |
+| anchors | `ALL ANCHORS OK`, 354 anchors, 315 mutations, 44 campaigns |
+| the three document checks | each `OK` |
+| `caddy_proxy.sh`, `deploy_checks.sh` | 9 PASS lines and `PASS: CADDY: all checks`; exposure 1.7 and `PASS: DEPLOY: all checks` |
+| the advisory queries | below |
+
+Every command worked as written. ProVerif was not run (not installed here,
+as before).
+
+### What the page said that was no longer true
+
+- **The counts:** "305 committed mutations in 40 campaigns" and "342
+  anchors, 40 campaigns" (now 315, 44 and 354).
+- **F90's sentence:** "Nine older mutations are killed without a named
+  check". Since V4-14d a spec line without an expected check is refused, so
+  there are none.
+- **The CI and nightly runs it cited:** from `6f9269b`, with 13 jobs, 26
+  campaigns and 223 of 233 mutations. Now 14 jobs on main `71c8fc0`
+  (39474140277), and nightly 39447335408: 58/58, 314 of 314 by name.
+- **The ProVerif log** was cited from that old nightly. It is now cited from
+  39447335408, whose nine lines read the same.
+- **Lines printed but not quoted.** The page now quotes:
+  - the browser block's count;
+  - the fuzz run's run count;
+  - the full `PASS: CADDY:` and `PASS: DEPLOY:` lines;
+  - the advisory queries' answers.
+- **The campaign example** was v56, whose twenty mutations take hours. It is
+  now v72 (two, about twenty minutes), with the difference stated.
+
+### The counts gate now covers it
+
+The page's counts had drifted because V4-34's gate in
+`tools/audit/check_mutation_anchors.py` checked only README.md and
+tools/README.md. Five patterns for REPRODUCE.md were added, for 13 stated
+counts in all. The patterns cover the mutation and campaign counts and the
+anchor line.
+- **Shown red by hand:** with 342 written back in, the gate printed
+  `COUNT docs/review/REPRODUCE.md: says 342 where the campaigns say 354` and
+  `1 PROBLEM(S)`, exit 1. The file was then restored.
+- **It now prints** "counts: the 13 stated counts in README.md,
+  tools/README.md and REPRODUCE.md agree (315 mutations, 44 campaigns, 354
+  anchors)".
+
+CI's spec job already runs the script.
+
+### The advisories: one new, not exposed
+
+All of ADVISORIES.md's queries were repeated, controls included:
+- OSV by commit for the three pins and Emscripten;
+- NVD for liboqs, libsodium, Emscripten and SQLite 3.53.4 / 3.50.1;
+- the GitHub advisories for liboqs and libsodium.
+
+One answer changed. GitHub lists **GHSA-xv6c-h66p-6mfq / CVE-2026-104255**
+(2026-10-06, medium), affecting liboqs 0.11.0 through 0.16.0:
+- **What it is:** LMS lock callbacks fail open, so a one-time key can be
+  reused and a signature forged. LMS verification ignores the parameter set,
+  and there are three defects on LMS key generation and signing.
+- **What it needs:** every part requires `OQS_ENABLE_SIG_STFL_LMS=ON`.
+- **This build:** it is OFF, as is
+  `OQS_HAZARDOUS_EXPERIMENTAL_ENABLE_SIG_STFL_KEY_SIG_GEN`. The built
+  `liboqs.a` has no LMS, HSS or LM-OTS symbol, including the advisory's
+  exported `OQS_SIG_STFL_alg_lms_verify`. Its 21 `OQS_SIG_STFL_*` symbols are
+  the generic dispatcher, with nothing to dispatch to.
+- **The gate:** `liboqs_minimal` passes, and already fails the build if such
+  a symbol appears.
+- **The fix** is in 0.17.0, still unreleased (latest 0.16.0).
+
+It is recorded in ADVISORIES.md and in F91's rows (Info, unchanged), and
+the pin stays.
+
+The run also found one NVD match the page had never accounted for:
+**CVE-2024-37305**, the eighth match for "liboqs". It is in oqs-provider, a
+separate project this one does not use. Everything else matched the page:
+- libsodium's nine NVD matches (CVE-2025-69277 plus the eight wrappers it
+  names);
+- Emscripten's six;
+- SQLite 3.53.4's one (CVE-2022-31631, PHP);
+- SQLite 3.50.1's five, CVE-2025-6965 among them;
+- OSV empty for libsodium 1.0.18 too;
+- no libsodium GitHub advisories.
+
+NVD did not yet list CVE-2026-104255.
+
+### Verification
+
+- **Gates:** spec constants and vocabularies, the claim map, anchors (354,
+  with the 13 counts agreeing), the audit table's separators, and `git diff
+  --check`.
+- **The one code change** is the gate's pattern list. It ran green, and red
+  under the hand control above.
+- **No source or test file changed,** so no campaign is affected.
