@@ -8972,3 +8972,91 @@ compile it, and no test ran, which is not a kill. It was rewritten as
   Fixture directories in `$TMPDIR` stayed at 0.
 - **Gates:** spec constants and vocabularies, the claim map (202 checks),
   anchors (349 across 42 campaigns), and `git diff --check`.
+
+## V4-33 — D9: DISABLE-USER and revoke=all close live sessions, seen from another process
+
+Loop iteration 8. V4-32 observed REVOKE-DEVICE's close from Node. D9's two
+user-wide closes were still in-process only.
+
+### The checks, in `wasm_interop`
+
+Three more users each hold live WebSocket sessions against the fixture
+daemon. Throughout, V4-32's surviving session of `u-wasm` is the canary that
+a close reached only the user it named.
+- **DISABLE-USER.** It is an operator command, sent on the fixture's
+  `admin.sock` beside the site socket; the harness allowlists this uid. The
+  user's session must be closed within 3 s, and another user's must stay
+  open.
+- **RECOVERY-USE with `revoke=all`.** Both of the user's sessions must close
+  within 3 s.
+- **RECOVERY-USE with `revoke=none`.** The user's session must stay open:
+  the canary for the flag.
+
+The checks print only the reply's verb. An earlier draft printed the first
+characters of each throwaway ticket, which no check message should.
+
+### Controls, by hand
+
+Each control rebuilt the fixture, recorded the mutant's hash against the
+clean one, and was restored byte-exactly:
+
+| | Mutation | Red at |
+|---|---|---|
+| E1 | v58 GA8: DISABLE-USER closes no live session | the disable close check |
+| E2 | v58 GA9: revoke=all closes no live session | the revoke=all close check |
+| E3 | v58 GA7: live sessions no longer matched by user | the disable AND the revoke=all close checks |
+| E4 | `close_matching` matches every session | all four canaries |
+
+### What the first pass got wrong: the archive-level stale-object trap
+
+E2 and E3 first SURVIVED, and their "mutant" fixtures had the same sha256
+as the previous control's restored fixture.
+- **The cause.** The control loop deleted the mutated source's object and
+  the fixture, but not `libmldsa_authd.a`. macOS's make 3.81 compares
+  timestamps to the second, and the rebuilt object was not newer than the
+  archive linked in the same second. So the archive was kept, and the
+  fixture linked the old code.
+- **The fix.** Deleting the archive too, and calling a mutant VOID whenever
+  its binary equals the clean one, made E2 and E3 KILLED by name.
+- **What it called into question.** Every loop today that rebuilt a
+  library source the same way. A KILLED verdict proves its mutant was
+  linked, but a pass does not. Two results rested on passes:
+  - **V4-29's gap,** "EI1–EI5 pass V4-28's tests";
+  - **V4-30's gap,** "TK1 passes V4-29's tests".
+- **Both redone,** archives deleted and each mutant binary hash-checked
+  against its clean build:
+  - all five EI mutants pass 2870470's `test_authd_conn` and
+    `test_authd_localapi` while linked, and fail the current tests at the
+    predicted names;
+  - TK1 passes 83bd93e's `test_authd_localapi` while linked and fails the
+    after-spend checks;
+  - TK2 fails both.
+
+  The records' claims stand.
+- **Unaffected:** the campaigns (v71 and v72 ran through
+  `run_mutations_v2.sh`, which deletes and fingerprints every artifact)
+  and every KILLED hand control.
+
+The rule is in the stale-object memory note: delete object, archive and
+executable; hash the clean binary first; VOID, never SURVIVED, for a
+mutant equal to it.
+
+### Verification
+
+- **Every tree proven current and run in full** at `a14f396`. The
+  fingerprints are unchanged from V4-31, since no C file changed:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `db37a89be25f62ac`, 54/54;
+  - `build-bench-p` `10aa86de66fb7eca`, 50/50;
+  - ASan `c0b0ed54b1fb3a83`, 54/54, with 0 reports;
+  - UBSan `8c113229b9d2cb35`, 54/54, with 0 runtime errors;
+  - fuzz `df58d74c967b911c`, 36/36.
+
+  Fixture directories in `$TMPDIR` stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 205 checks. It first FAILED on a single-quoted check
+    whose source spelled `user\'s`; the string is double-quoted now, so it
+    appears verbatim;
+  - anchors: 349 across 42 campaigns;
+  - `git diff --check`.

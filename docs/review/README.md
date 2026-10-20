@@ -293,7 +293,8 @@ deadline, the only point where they cleaned up, so every run left a test
 store behind (411 of them). V4-32 moved one of D9's checks out of process.
 The wasm client in Node holds live sessions for two devices against the
 real daemon process. After the site revokes one, that device's WebSocket
-closes and the other's stays open.
+closes and the other's stays open. V4-33 did the same for DISABLE-USER and
+RECOVERY-USE with `revoke=all`.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
