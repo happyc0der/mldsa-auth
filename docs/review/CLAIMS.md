@@ -24,8 +24,10 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 requirement in either specification lacks an entry here, if a heading's
 title differs from its requirement's, or if anything cited no longer exists:
 a check text not in its test, a mutation not in its campaign, a query
-`formal/run.sh` does not expect. It runs in CI's specification job. It
-cannot check the prose: "not established" is this document's judgement.
+`formal/run.sh` does not expect. Since V4-38 it also fails if the packet's
+front page misstates the audit register's size and range or the deployment
+spec's errata count. It runs in CI's specification job. It cannot check the
+prose: "not established" is this document's judgement.
 
 Findings cited as **F**nn are in the audit register,
 [`docs/v4/audit.md`](../v4/audit.md). Several are open, and the open ones are

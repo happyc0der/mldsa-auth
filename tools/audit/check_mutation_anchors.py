@@ -136,6 +136,11 @@ STATED = [
     ("docs/review/REPRODUCE.md", r"ALL ANCHORS OK \((\d+) anchors checked", checked),
     ("docs/review/REPRODUCE.md", r"anchors checked; (\d+) mutations across \d+ campaigns\)", n_mut),
     ("docs/review/REPRODUCE.md", r"mutations across (\d+) campaigns\)", n_camp),
+    # ... and so had the packet's front page (305, 40) and README's tools row
+    # (305), found by the same sweep.
+    ("docs/review/README.md", r"\*\*Mutations\*\*: (\d+) committed defects", n_mut),
+    ("docs/review/README.md", r"committed defects in (\d+) campaigns", n_camp),
+    ("README.md", r"plus the (\d+) committed mutations in", n_mut),
 ]
 for doc, pat, want_n in STATED:
     text = (repo/doc).read_text()
@@ -145,7 +150,7 @@ for doc, pat, want_n in STATED:
     elif int(m.group(1)) != want_n:
         print(f"COUNT {doc}: says {m.group(1)} where the campaigns say {want_n} (/{pat}/)"); bad += 1
 if bad == 0:
-    print(f"counts: the {len(STATED)} stated counts in README.md, tools/README.md and REPRODUCE.md agree "
+    print(f"counts: the {len(STATED)} stated counts in README.md, tools/README.md and docs/review agree "
           f"({n_mut} mutations, {n_camp} campaigns, {checked} anchors)")
 print("ALL ANCHORS OK" if bad == 0 else f"{bad} PROBLEM(S)")
 sys.exit(1 if bad else 0)

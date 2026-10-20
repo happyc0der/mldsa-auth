@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 117 findings (F1–F119), with severity, evidence and
-   disposition. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 46 errata, each
+   register](../v4/audit.md). 120 findings (F0–F120), with severity, evidence and
+   disposition; no F16 was ever assigned. The open ones are listed below.
+3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -58,9 +58,9 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 52 tests with the
+- **Tests** are named checks, not exit codes. The suite is 55 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 305 committed defects in 40 campaigns, each of which must be
+- **Mutations**: 315 committed defects in 44 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -273,6 +273,10 @@ key's secret windows and for the passphrase. It trusts a clean result only
 after the same scan finds, whole, a canary written into IndexedDB and the key
 itself planted in the clear. Nothing was found.
 
+V4-28 closed **F114**. The seven tests that named a scratch directory after
+their pid make it with `mkdtemp` now, and a CTest, `scratch_dirs`, fails if
+a pid is formatted into a name again. That left F91 the only open finding.
+
 V4-29 closed a gap in D13 that its own limits named. With `log_ids = full`,
 the logger prints an identifier as an escaped `id=` field: printable bytes as
 themselves, everything else as dots. A secret passed where an identifier
@@ -309,6 +313,14 @@ exchanged 2 s apart report issued times 2 s apart. Using the hand-control
 tool here found two flaws in it, both fixed. It could not name a binary whose
 file name differs from its target. It also compared whole-file hashes,
 which change on every link here, so it now compares the code.
+
+V4-37 made the event-loop tests wait for what they expect, not for a fixed
+number of turns: a wait that never ends is a failed check by name. Under
+load they had never flaked here, so it is insurance. V4-38 re-ran
+[REPRODUCE.md](REPRODUCE.md) word for word in a fresh clone. Every command
+worked, but that page and this one had stale counts (**F120**). The counts
+that can be read from the tree are gated now. A second liboqs advisory in
+LMS, which is not compiled, joined F91.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
