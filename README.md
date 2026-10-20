@@ -209,7 +209,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-51 tests in a native tree (49 if no `node` is found: two run under it; one fewer without `python3`), 53 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 55 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+52 tests in a native tree (50 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 54 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 56 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -224,6 +224,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |
 | `scratch_dirs` | No test names its scratch directory after its pid: the seven that did make theirs with `mkdtemp`, so a directory a crashed run left behind can no longer fail a later run (V4-28, F114) |
 | `hand_control_selftest` | `tools/hand_control.py`, the tool hand controls use, on a CMake project of its own in a temporary directory: KILLED by name, KILLED(other), SURVIVED, VOID for an unchanged binary, KILLED(compile), and the archive-level stale-object trap made real and defeated (V4-34) |
+| `backend_symbols` | One ML-DSA-65/ML-KEM-768 backend is linked in every executable of the tree, and it is the intended family: aarch64 on arm64, x86_64 on x86_64, portable C only for x86_64 `generic`. `tools/check_backend_symbols.sh` is first tested on planted executables, once for each verdict it can give (V4-39, CLAIMS P10) |
 | `build_flags` | What every project translation unit was told, from `compile_commands.json`: the hardening flags, FORTIFY outside sanitizer trees, and each tree's sanitizer flags by its intent — a UBSan tree must carry `-fno-sanitize-recover` (V4-15c, V4-24b) |
 | `ubsan_aborts` | In a UBSan or fuzz tree, a planted signed overflow must stop the process — undefined behaviour cannot pass a test (V4-24b; *Skipped* elsewhere) |
 | `store_fault_hook` | The store's test-only fault hooks are absent from the shipped library and binaries and present in the test (V4-15a) |
