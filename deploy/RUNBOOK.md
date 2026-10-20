@@ -428,11 +428,17 @@ full address.
 2 s of Argon2id. A Xiaomi 12 Pro in Chrome and Edge made a new identity
 (keygen + Argon2id 3/64 MiB + sealing) in 255–393 ms, and logged in in
 301–719 ms over Wi-Fi and 512–645 ms over mobile data. Edge on the development
-Mac: 109 ms and 104–110 ms. **Safari on the same Mac took about 2.3 s for
-each, roughly 21× slower, for a reason not yet known** (audit F119) -- and
-every iPhone browser is WebKit, so try an iPhone before relying on it. A
-low-memory phone may still struggle with Argon2id's 64 MiB. To measure your
-own devices, on the build host (not the production daemon):
+Mac: 109 ms and 104–110 ms. Safari on the same Mac: 94 ms and 85–100 ms on a
+secure origin (V4-26).
+
+**Safari needs a secure origin** (audit F119). Safari runs a page from plain
+http on any name but `localhost` without its JIT, and is then 8–30× slower:
+2.1–2.3 s for each of the above. Your site is HTTPS, so its pages are a
+secure context. Every iPhone browser is WebKit and none has been measured, so
+try an iPhone before relying on it. A low-memory phone may still struggle with
+Argon2id's 64 MiB.
+
+To measure your own devices, on the build host (not the production daemon):
 
 ```bash
 node tools/phone_timing.mjs --fixture build/tests/authd_wasm_fixture \
@@ -441,6 +447,13 @@ node tools/phone_timing.mjs --fixture build/tests/authd_wasm_fixture \
 
 It prints a URL; open it on the phone and tap Measure. The page makes a
 throwaway identity, logs in five times and reports the times back.
+
+Each result says whether the page was a **secure context**, with the time of
+a plain JavaScript loop. A phone reaches the tool over plain http, which is
+not a secure context. An iPhone's WebKit may then run without its JIT, as
+Safari on a Mac does, so read its row with that in mind. For a browser on the build host itself, use `--host 127.0.0.1`,
+which is a secure context; `--auto` starts the page without the tap. The tool
+exits 1 if no result arrived before `--minutes` ran out.
 
 ---
 

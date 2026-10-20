@@ -71,13 +71,15 @@ With Emscripten **6.0.9** exactly (configure refuses any other version):
 emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j8
 ctest --test-dir build-wasm                                            # 100% tests passed out of 3
 cmake -S . -B build -DMLDSA_WASM_DIR="$PWD/build-wasm" && cmake --build build -j8
-ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e)$'
+ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e|phone_timing_tool)$'
 ```
 
 `wasm_module_gates` checks the module's exact export list; `test_client_core_kat`
 checks that the wasm build reproduces the native known-answer golden byte for
 byte; `browser_e2e` drives a real headless Chromium through enrollment, login,
-the CSP and the storage rules.
+the CSP and the storage rules; `phone_timing_tool` runs `tools/phone_timing.mjs`
+through a secure and a non-secure origin and checks that each timing row says
+which it came from (V4-26, F119).
 
 ## Fuzzing
 

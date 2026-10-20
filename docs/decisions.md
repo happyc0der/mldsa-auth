@@ -8255,3 +8255,184 @@ trees is the owner's decision.
   audit table's separators and `git diff --check` pass.
 - **Scope:** only `docs/`, `bench/results.md` and `deploy/RUNBOOK.md`
   changed; no source or test file did, so no campaign is affected.
+
+## V4-26 — F119's cause: Safari has no JIT on a non-secure origin (spec §14, erratum 48)
+
+The first iteration of the owner's continuous loop (2026-10-20: "plan ->
+execute -> ci/nightly -> continue", with bug fixes and cleanup every third
+iteration). Under that instruction the plan was written down, not held for
+approval. V4-25 had left F119 open: Safari 27.0.1 ran the client about 21×
+slower than Edge on the same Mac, cause unknown.
+
+### Finding the cause
+
+The investigation used throwaway probes. Their sources and every raw row are
+kept beside the repository in `jit-probe-2026-10-20/`, as V4-25's rows were.
+Each probe was a page compiled against `build-wasm-p`'s own libsodium and
+liboqs with the module's link flags, opened in Safari or Edge with
+`open -a … URL`, which POSTed its times to a collector. The steps, in order:
+
+1. **The components, on `http://127.0.0.1`.**
+   - Argon2id(3, 64 MiB) took 77 ms in Safari against Node's 98.6.
+   - ML-DSA-65, ML-KEM-768 and X25519 ran at Node's speed.
+   - SHAKE256 took 1.7× Node's time and BLAKE2b 4.7×.
+
+   No primitive explains 21×.
+2. **The shipped module with the shipped JS client, the same origin.** A new
+   identity took 81 ms and a login's first step 81 ms. Adding the site's
+   exact CSP changed nothing. **Safari was not slow at all**, which is how
+   it became clear that V4-25's origin was the variable.
+3. **The same page from the Mac's LAN address**, which is what the tool
+   serves: 2,133 ms and 2,143 ms. Everything was 8–30× slower, a
+   crypto-free wasm loop included.
+4. **Seven origins, each reporting `isSecureContext`.**
+   - The 20× split follows the secure context exactly, for a plain
+     JavaScript loop as much as for wasm.
+   - `localtest.me` resolves to 127.0.0.1 and is still slow, so the
+     network is not the cause.
+   - `probe.localhost` is fast.
+   - Edge showed no difference.
+
+**Conclusion.** Safari 27.0.1 on this Mac runs a non-secure origin's pages
+without its optimizing JIT. A web search found no WebKit or Apple document
+describing this, and Lockdown Mode's global key is unset. Whether it is
+Safari 27's default or this Mac's configuration is left open: one Mac, one
+Safari.
+
+### What was decided
+
+- **F119 is RESOLVED, not FIXED: there was no defect in the client.** The
+  defect was in the measurement: the tool served an origin no deployment
+  has, and nothing in a row said so. A deployment is HTTPS behind the site's
+  TLS proxy (§7.1), and therefore a secure context.
+- **Record the origin rather than change it.** Serving the tool over HTTPS
+  to a phone needs a certificate the phone trusts for a LAN or tailnet
+  name. Tailscale's HTTPS certificates would do it, but they are a tailnet
+  setting, which is the owner's call. So every row now carries:
+  - `secure`, which is `window.isSecureContext`;
+  - `jsLoopMs`, a fixed 10⁷-step xorshift loop, best of three, timed before
+    any cryptography: a JIT indicator that does not depend on the module.
+    It measured 13–14 ms in Edge, 62 ms in Safari on a secure origin and
+    361 ms on a non-secure one.
+- **The page shows a note on a non-secure origin.**
+- **The site's route requires both fields.** A row without them is exactly
+  the ambiguous kind V4-25 published.
+- **`--auto`** starts the page from its fragment, so a desktop browser opened
+  by a script, and the test, need no click.
+- **The tool exits 1 when `--minutes` run out before `--count` results.** It
+  exited 0 before, so a run that measured nothing looked like success.
+- **On SIGTERM or SIGINT the tool takes the daemon fixture down with it.**
+  Before, a killed tool left the fixture serving for its whole lifetime.
+- **The tool notes a non-loopback `--host`** and names `--host 127.0.0.1` for
+  same-machine browsers. The note says "Safari on a Mac" and that iPhones are
+  unmeasured: it claims nothing about a device that was never timed.
+
+### The test, and its controls
+
+`phone_timing_tool` runs the real tool as a process and drives headless
+Chromium through two origins of one server:
+- `http://127.0.0.1:P`;
+- `http://timing.test:P`, mapped to loopback by `--host-resolver-rules`, so
+  it is a non-secure origin in CI without DNS or a second interface.
+
+It makes 20 checks, listed in the `test:` commit. It is registered beside
+`browser_e2e`, because it needs a browser and the wasm tree. CI's wasm job
+runs it and asserts that both are registered. That loop runs outside CTest,
+so it was executed under bash against `build-p`, both ways.
+
+The nightly campaign tree has no wasm and no browser, so the controls were
+run by hand, as V4-13c's were. Eight mutations, each restored byte-exactly,
+with sha256 compared before and after and a residue grep for the marker:
+
+| | Mutation | Red at |
+|---|---|---|
+| K1 | the page reports `secure: true` always | row 2 records secure: false |
+| K2 | the route drops `secure` | row 1 records secure: true |
+| K3 | the JS loop reports 0 | each row has … a JS loop time, all positive |
+| K4 | `auto=1` ignored | the run completed (timed out waiting for leg 1's result) |
+| K5 | the tool prints "yes" always | the tool printed "secure context: yes" … and "no" |
+| K6 | the tool exits 0 on timeout | … the tool says "time is up" and exits 1 |
+| K7 | the route accepts any `secure` | a row with secure "yes" or missing … is refused 400 |
+| K8 | no note on a non-secure origin | leg 2: and shows the insecure-origin note |
+
+**K7 first went red at the wrong check, which was the test's fault.**
+Accepting `secure: "yes"` made that malformed row the tool's second result,
+so the tool exited. The next probe's fetch then threw, and the run died
+before reaching the 400 check. The probe now records a failed fetch as "no
+response", and K7 goes red where predicted. All eight were then re-run
+against the final test, and all eight were killed at their named checks.
+
+Not gated: the tool's note for a non-loopback `--host`, since CI has no
+second address to bind. It was checked by running the tool on
+192.168.12.123; its output is saved in
+`jit-probe-2026-10-20/tool-192.168.12.123.log`.
+
+### The measurements
+
+Recorded in `bench/results.md`: the seven-origin table, the component table,
+the module table and the tool's own four rows. In the tool's rows:
+- Safari on `127.0.0.1`: a new identity in 94 ms and logins in 85–100 ms.
+- Edge on the same origin: 88.4 ms and 84.6–91.9 ms.
+- Safari on the LAN address: 2,138 ms and 2,168–2,191 ms, V4-25's figure
+  reproduced.
+
+Every number in the new tables was checked by script against the raw logs:
+33 rows, 0 missing. The Node baseline existed only in this session's
+command output, so it was saved verbatim and also rerun. The rerun
+reproduced it to within run-to-run spread; Argon2id 3/64 MiB was 81.8 ms
+against 98.6 and 81.9 before.
+
+### Still open (and said so in §14, the runbook and F119)
+
+- **Safari on a non-local HTTPS origin.** That is a deployment's shape, and
+  it needs a trusted certificate for a non-local name. Offered to the owner:
+  Tailscale HTTPS for the Mac's tailnet name.
+- **An iPhone.**
+- **Chrome on Android on a secure origin.** V4-25's phone rows were taken
+  on non-secure origins; Edge on the Mac shows Chromium unaffected.
+
+### The fresh trees
+
+`~/.cache/mldsa-tmp` had been emptied (V4-25), so the sanitizer and fuzz
+trees were rebuilt beside the broken old ones, with the old trees' exact
+configurations:
+- `build-asan-p`: Debug, `/usr/bin/cc`, ASan, the wasm dir, Node and Edge;
+- `build-ubsan-p`: the same with UBSan;
+- `build-fuzz-p`: Homebrew clang, the Xcode SDK as sysroot, `MLDSA_FUZZ`.
+
+Built from main `6008d70`'s C sources, which this step leaves unchanged:
+ASan `88d7912493793fcf` 52/52 and UBSan `55d7cb28ec5c6421` 52/52, with 0
+sanitizer reports. Fuzz `4ac22c8dbe47e497` 36/36 fuzz-labelled.
+Its first currency check came back VOID: one object, CMake's compiler-ID
+probe, differed, because `tests/CMakeLists.txt` was edited while the check
+ran. The re-check was clean.
+
+### Verification
+
+- **Every tree proven current by the from-scratch gate**, with the
+  sanitizer link proven, then its whole suite, at the branch's code head
+  `c40213f`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `6256693b772a00b0`, 53/53;
+  - ASan `88d7912493793fcf`, 53/53, with 0 reports;
+  - UBSan `55d7cb28ec5c6421`, 53/53, with 0 runtime errors;
+  - fuzz `4ac22c8dbe47e497`, 36/36 fuzz-labelled.
+
+  `phone_timing_tool` passed in all three native trees. No fixture process
+  was left running afterwards.
+- **Controls K1–K8:** each killed by name, each restored byte-exactly, and
+  no marker left behind.
+- **Gates:**
+  - spec constants and vocabularies, the claim map (190 checks), the anchors
+    (342 across 40 campaigns), every audit row at 8 unescaped separators,
+    and `git diff --check`;
+  - `web_no_crypto` on `web/client` (the gate) and on `web/pages`, which
+    shows the calibration loop trips nothing.
+- **Branch CI** 39371836902 on `c40213f`: 14/14. In the wasm job,
+  `phone_timing_tool` passed on Linux with Chrome for Testing 154 (7/7
+  selected).
+- **Scope:**
+  - The page, the site's timing route, the tool, one new test and its
+    registration, CI's wasm step, and the records.
+  - No C file changed. So no campaign's code changed, and the nightly's
+    campaigns are unaffected except as the bring-up's control.
