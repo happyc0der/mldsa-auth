@@ -9614,3 +9614,130 @@ Which rows are open is prose, so no gate reads it.
 - **The code changes** are the two gates' checks. Each ran green, and red
   under the hand controls above.
 - **No source or test file changed,** so no campaign is affected.
+
+## V4-39 — P10's backend check in every native tree, and shown able to fail (loop iteration 14: coverage)
+
+### The gap
+
+CLAIMS P10 rests on `tools/check_backend_symbols.sh`, which proves that one
+optimised ML-DSA-65 / ML-KEM-768 backend is linked and no portable-C one. Its
+own limit said two things:
+- **It ran on Linux x86_64 only:** CI's Release job and bench.yml.
+- **Nothing covered it.** It had never been shown to fail.
+
+Three consequences:
+- **macOS was unchecked.** The macOS CI jobs build liboqs with
+  `MLDSA_OQS_OPT_TARGET=generic`, and ci.yml's comment asserted that this
+  "still selects the AARCH64 backends". Nothing looked.
+- **The tool disagreed with the spec on x86_64 `generic`.** Spec-v2 §3
+  requires `generic` for distribution and says it "gives up the AVX2
+  backend" on x86_64. There the one linked backend is portable C, which
+  the tool would have failed.
+- **"Exactly one optimised family" was claimed but not checked.** An
+  executable with both aarch64 and x86_64 symbols would have passed as
+  x86_64.
+
+### The change
+
+- **The tool:**
+  - `--expect aarch64|x86_64|c` names the one family every executable must
+    link, and no other family's symbols may appear beside it;
+  - without `--expect` it behaves as before, for CI's Release step,
+    bench.yml and the RUNBOOK, and now also fails on two optimised families
+    (in one executable or across two);
+  - a missing `nm` or `file` is a FAIL with its reason, not "no executables
+    found".
+- **A CTest, `backend_symbols`, in every native tree,** registered where
+  `nm` and `file` exist. CI's suite step asserts that it is registered.
+  - First it tests the tool on executables planted in a `mktemp -d` outside
+    the tree. They are compiled with the tree's own compiler, each defining
+    functions under the family prefixes. Eleven named checks each read the
+    exit status and the line that explains it.
+  - Then it runs the tool on the tree with `--expect`. The family is what
+    the project intends, set at configure time, never what liboqs picked:
+    aarch64 on arm64, x86_64 on x86_64, and `c` for x86_64 `generic`.
+    `MLDSA_EXPECT_BACKEND` overrides it for a target the rule does not
+    know. Taking liboqs's own choice would have made the test agree with a
+    configure that silently lost the optimised backend.
+- **Test counts:** native 52, with a wasm tree 54, with a browser 56.
+
+### The controls
+
+**Real builds, by hand.** Each scratch tree has `mldsa-authd`,
+`auth_client` and `test_handshake` built; the clean tree has aarch64=147,
+portable-C=0 in each. In every one, `backend_symbols` failed on "this tree
+links one backend, aarch64, in every executable that links one":
+
+| Control | aarch64 | portable-C | in each of the three |
+|---|---|---|---|
+| (a) `-DOQS_ENABLE_SIG_ml_dsa_65_aarch64=OFF` | 60 | 69 | FAIL |
+| (b) `-DOQS_ENABLE_KEM_ml_kem_768_aarch64=OFF` | 87 | 45 | FAIL |
+| (c) `OQS_DIST_BUILD ON` in `cmake/Dependencies.cmake`, in a separate worktree | 147 | 114 | FAIL |
+
+The counts add up: 60 + 87 = 147, and 69 + 45 = 114. Runtime dispatch (c)
+links both whole families, which is what P10 forbids.
+
+**The tool's own verdicts, broken one at a time** and restored byte-exactly
+(`cmp`). Each was killed by name:
+
+| Control | Break | Killed by |
+|---|---|---|
+| D1 | `--expect` ignores another family beside the expected one | "two families in one executable fail when one is expected" |
+| D2 | default mode ignores two families in one executable | "without --expect, two optimised families in one executable fail, named" |
+| D3 | default mode ignores portable C | "without --expect, portable C fails" |
+| D4 | the no-backend guard removed | "an executable with no backend at all proves nothing" |
+| D5 | default mode ignores two families across executables | "without --expect, two optimised families in two executables fail" |
+| D6 | the no-executables guard removed | "a directory with no executables proves nothing" |
+
+Two things these runs taught:
+- **D2 first SURVIVED.** The cross-executable guard caught the same input,
+  and the selftest's expected line matched both guards' messages. The
+  selftest now names the per-executable message, and has a case of its own
+  (D5) for two families split across executables.
+- **D7 was an equivalent mutant.** Making `--expect c`'s "has the expected
+  family" condition always true changed nothing. Every executable that
+  reaches it links some backend, so "none of the expected family" already
+  implies another family's symbols. The redundant condition was removed,
+  and the one left (D1') is killed by three named checks.
+
+**In CI**, a control branch, `v4-39-ctl` (1487d05 on 376ae3a): v4-39 plus
+`OQS_ENABLE_KEM_ml_kem_768_x86_64` forced OFF. Run 39485860730 went 8/14:
+- **The six red jobs** are exactly the four Linux suite jobs (clang debug,
+  ASan and UBSan; gcc debug) and both Linux Release jobs.
+- **In each,** 1 test of 52 failed, `backend_symbols`, with x86_64=83 and
+  portable-C=45 (41 in Release) in every executable.
+- **Green:** all three macOS jobs, which the forced option cannot reach,
+  plus the spec, fuzz-and-scan, wasm, deploy and Caddy jobs.
+
+The branch was then deleted.
+
+### What it shows
+
+- **macOS.** In V4-39's green CI (39485765975), `backend_symbols` passed in
+  all seven suite jobs. So `generic` on the macOS runner does keep the
+  aarch64 backends, which ci.yml's comment had only asserted.
+- **Still not established:**
+  - "No runtime branching" is inferred from symbols, not by looking for
+    CPU-feature branches.
+  - libsodium's ChaCha20 selection is not covered.
+  - The x86_64 `generic` expectation (`c`) is tested only on planted
+    executables: no x86_64 machine here builds it.
+  - No campaign covers the gate: the runner needs a mutant in the
+    binaries, and a gate script or a CMake option is in none.
+
+### Verification
+
+- **Every tree rebuilt, proven current and run in full:**
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `33e75f1ea4f5b73b`, 56/56;
+  - `build-bench-p` `84c658426e8025f9`, 52/52;
+  - ASan `812bba1fc6bf2bbe`, 56/56, instrumentation in all 43;
+  - UBSan `196284b3c0dd6d71`, 56/56, instrumentation in all 44. Its one
+    runtime error is `ubsan_canary.c:15`'s planted overflow;
+  - fuzz `c7dcfc497f0ab0c5`, 36/36, and `backend_symbols` passes there too
+    (Homebrew clang, the Xcode SDK passed as the sysroot).
+
+  The fingerprints equal V4-37's: no C source changed.
+- **CI:** 39485765975, 14/14.
+- **Gates:** anchors and counts, the claim map, the spec checks, `git diff
+  --check`, and the workflow YAML parsed.
