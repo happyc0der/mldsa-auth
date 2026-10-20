@@ -8577,3 +8577,96 @@ canary", with 4,002 of 4,017 found, in both profiles.
 
 Both of Chromium's IndexedDB backends are now scanned: LevelDB locally,
 SQLite in CI.
+## V4-28 — F114 fixed, and the working copy cleaned (the loop's third iteration)
+
+Every third iteration of the owner's loop is bug fixes and repo cleanup.
+This is the first.
+
+### F114: scratch directories named after the pid
+
+F114 was recorded in V4-24a and left "for the owner's word". The owner's
+standing instruction to fix bugs every third iteration is that word.
+
+- **The bug.** Seven tests made `/tmp/<name>-<pid>` (two of them relative to
+  the build tree) with `mkdir`, and stopped if it existed. A run that crashes
+  never reaches the cleanup at the end of `main`, so a later run that drew
+  the same pid failed before its first check.
+- **The fix.** Each now uses `mkdtemp`, which is unique by construction, as
+  `authd_node_fixture` and `authd_wasm_fixture` already did.
+- **The row was wrong in one detail.** It said `test_authd_cli` ignored the
+  error, but that test had stopped on a failed `mkdir` since V4-9b
+  (`cd85092`), before F114 was written. It is fixed with the others.
+- **A gate keeps it fixed.** `scratch_dirs`, a new CTest in every native tree,
+  fails if any line under `tests/` or `bench/` formats `getpid()` into a
+  string. Its canary requires `mkdtemp(g_dir)` in each of the seven, so the
+  gate cannot pass because a test stopped making its directory. It was shown
+  red both ways by hand, each control restored byte-exactly (`cmp`):
+  - **A pid name put back** in `test_authd_ws.c`: "a pid formatted into a
+    string", naming the line.
+  - **`mkdtemp` taken out** of `test_client_core.c`: "no longer makes its
+    scratch directory with mkdtemp(g_dir)".
+- **The counts.** Every native tree runs one test more: 50 (48 without
+  node), 52 with a wasm tree, 54 with a browser. The README and REPRODUCE.md
+  say so, and the README's table has the row.
+
+### Three stray fuzz inputs, moved rather than deleted
+
+The repository root held three untracked, gitignored files:
+- `crash-45895c33…`, 132 bytes, from 2026-09-26;
+- `crash-localapi-replay-input`, 4,021 bytes;
+- `crash-keys-replay-input`, empty.
+
+No record says where they came from.
+- **Replayed today**, against all 12 libFuzzer targets and their 12 replay
+  drivers in the fresh fuzz tree: every run exited 0, so neither non-empty
+  input reproduces anything.
+- **Never a committed regression:** `tests/fuzz/regressions/` holds only
+  `.gitkeep` files.
+- **Moved, with a note and their checksums,** to
+  `stray-fuzz-inputs-2026-10-20/` beside the repository. Their contents
+  cannot be recreated, so deleting them is not this loop's call.
+
+### The old build trees
+
+On 2026-10-19 `~/.cache/mldsa-tmp` was emptied, and six trees lost
+libsodium's headers. None of them can build:
+- `build-v413d`;
+- `build-asan-v413d`;
+- `build-ubsan-v413d`;
+- `build-fuzz-v415`;
+- `build-wasm-d`;
+- `build-bench-v412`.
+
+**Each has a proven replacement with the same configuration**, read from
+its `CMakeCache.txt`:
+- `build-p`, `build-asan-p`, `build-ubsan-p`, `build-fuzz-p` and
+  `build-wasm-p`, all current and green since V4-26;
+- for the Release bench tree (`/usr/bin/cc`, `auto`), a fresh
+  `build-bench-p`, built here and run.
+
+A build tree holds only what configure and build regenerate from the
+source, so the old ones are deleted.
+
+**Two directories are not build trees and stay:**
+- `build-bench` holds `bench-results`;
+- `build-fuzz` holds a 28 MB fuzz corpus and its logs.
+
+Both are data, and both are the default paths the README and the workflows
+name.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `85a1571`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `40b2e8bdfb822f12`, 54/54;
+  - `build-bench-p` `6a19208817413ae5`, 50/50, `bench_smoke` included;
+  - ASan `5595425cba5517b4`, 54/54, with 0 reports;
+  - UBSan `a0eea500676dd628`, 54/54, with 0 runtime errors;
+  - fuzz `674ded0df9b85b76`, 36/36.
+
+  `scratch_dirs` passed in all four native trees.
+- **Nothing left behind.** After every suite, `find` showed no scratch
+  directory in `/tmp` or in any build tree, and no fixture process.
+- **Gates:** spec constants and vocabularies, the claim map, the anchors
+  (342 across 40 campaigns: no campaign anchors in the seven tests), the
+  audit separators, and `git diff --check`.

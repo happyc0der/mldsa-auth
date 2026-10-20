@@ -26,8 +26,8 @@ cmake -S . -B build && cmake --build build -j8
 tools/check_build_current.sh build && ctest --test-dir build
 ```
 
-`OK: build is current`, then `100% tests passed out of 49` (51 with
-`-DMLDSA_WASM_DIR` pointing at a wasm tree, 53 with a Chromium-family browser
+`OK: build is current`, then `100% tests passed out of 50` (52 with
+`-DMLDSA_WASM_DIR` pointing at a wasm tree, 54 with a Chromium-family browser
 found as well); `ubsan_aborts` and `fuzz_libfuzzer` report *Skipped* outside
 the trees they are for.
 
@@ -40,7 +40,7 @@ tools/check_build_current.sh build-ubsan && tools/check_sanitizer_link.sh build-
 
 Each prints `OK: … is current`, `OK: asan|ubsan instrumentation present in all
 … executable(s)` -- 43 in the ASan tree, 44 in the UBSan tree, which also
-builds `ubsan_canary` -- and `100% tests passed out of 49`, or 53 when
+builds `ubsan_canary` -- and `100% tests passed out of 50`, or 54 when
 configured as this packet's trees were, with `-DMLDSA_WASM_DIR` and a browser
 found (the browser section below). Since V4-14c the UBSan build aborts on
 undefined behaviour (audit F94); before it, a UB report printed and the test
@@ -60,7 +60,7 @@ A gcc 16 Release tree (the configuration no CI job uses):
 
 ```bash
 cmake -S . -B build-gcc16 -DCMAKE_C_COMPILER=gcc-16 -DCMAKE_BUILD_TYPE=Release && cmake --build build-gcc16 -j8
-ctest --test-dir build-gcc16                                           # 100% tests passed out of 49
+ctest --test-dir build-gcc16                                           # 100% tests passed out of 50
 ```
 
 ## The browser client

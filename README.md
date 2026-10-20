@@ -209,7 +209,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-49 tests in a native tree (47 if no `node` is found: two run under it), 51 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 53 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+50 tests in a native tree (48 if no `node` is found: two run under it), 52 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 54 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -222,6 +222,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `secure_mem_sites` | Every secret on the heap — keys, shared secrets, passphrases, plaintext key images — is allocated in libsodium's guarded memory: the 35 `secure_mem_alloc` sites checked both ways against a list, and no raw libsodium allocator outside the wrapper (V4-24b) |
 | `constant_time_sites` | Every `sodium_memcmp`/`sodium_is_zero` call site checked both ways against a list, so a constant-time comparison swapped for `memcmp` fails by name (V4-15b) |
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |
+| `scratch_dirs` | No test names its scratch directory after its pid: the seven that did make theirs with `mkdtemp`, so a directory a crashed run left behind can no longer fail a later run (V4-28, F114) |
 | `build_flags` | What every project translation unit was told, from `compile_commands.json`: the hardening flags, FORTIFY outside sanitizer trees, and each tree's sanitizer flags by its intent — a UBSan tree must carry `-fno-sanitize-recover` (V4-15c, V4-24b) |
 | `ubsan_aborts` | In a UBSan or fuzz tree, a planted signed overflow must stop the process — undefined behaviour cannot pass a test (V4-24b; *Skipped* elsewhere) |
 | `store_fault_hook` | The store's test-only fault hooks are absent from the shipped library and binaries and present in the test (V4-15a) |
