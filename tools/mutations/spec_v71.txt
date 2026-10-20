@@ -1,0 +1,5 @@
+EI1|^test_authd_conn$|journal: no window of any decrypted payload
+EI2|^test_authd_conn$|journal: no window of either signature or of the ClientHello's nonce;journal: no window of any raw frame of the connection
+EI3|^test_authd_conn$|journal: no window of the ROTATE's own signatures;journal: no window of any decrypted payload
+EI4|^test_authd_localapi$|log: no window of the issued token in any form -- hex, base64, an escaped id= field (V4-29)
+EI5|^test_authd_localapi$|recovery: no window of the enrollment TICKET in any form -- hex, base64, an escaped id= field (V4-29)
