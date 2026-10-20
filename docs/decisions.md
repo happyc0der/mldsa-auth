@@ -9159,3 +9159,79 @@ F91: liboqs's latest release is still 0.16.0 (checked 2026-10-20).
   - anchors: 349 across 42 campaigns, plus the new counts check, 8 of 8
     agreeing;
   - `git diff --check`.
+
+## V4-35 — D10: a CLI rotation whose reply is refused or lost leaves no key in the clear (campaign v73)
+
+Loop iteration 10. CLAIMS D10's limits: "A CLI rotation whose session opens
+but whose reply is lost or refused is not scanned."
+- **What was covered.** `test_authd_cli` scanned every file for every key
+  after an acknowledged rotation, after the login completing an
+  interrupted one, and after a rotation from a superseded key, whose
+  session is refused before ROTATE.
+- **What was not.** The two paths after ROTATE is SENT: the daemon refuses,
+  or nothing comes back. `cmd_client_rotate` keeps `.ek.next`, sealed, on
+  both, and nothing looked at the disk then.
+
+### The two runs
+
+`run_client_pumped` takes a hook called after every tick. Acting between two
+loop turns is where nothing on the wire can interleave.
+- **Refused.** The hook waits until the CLI's session is SERVING (its login
+  code queued), then rotates the store's key behind the session to one the
+  test made. The ROTATE that follows reaches the daemon's own
+  `store_rotate_key`, whose `pk_old` is no longer active. It refuses: error
+  0x03 on the wire, "the daemon refused the rotation".
+  - The fault hook was not usable here: it is compiled only into
+    `test_authd_store`'s own copy of the store.
+- **Lost.** The hook waits until the handle's active key moves, which is
+  the daemon's commit. The daemon queued its ACK in that same turn, and
+  `conn_io_queue` only buffers; the write happens on a later turn's
+  POLLOUT. Closing the session then loses the ACK, as a crash or a dropped
+  link would, and the CLI says "no reply".
+- **The canaries.** Each case checks that it is the path it claims:
+  - refused: the store holds the test's key and never the sealed one;
+  - lost: the store holds the sealed key, and at least one session was
+    closed.
+
+  Both: `.ek` unchanged and `.ek.next` kept, sealed. Then the same scan as
+  the other cases, for both keys in every file.
+
+### Campaign v73 (RL1, RL2)
+
+Each mutation keeps the new key's raw secret as `<.ek.next>.retry` on one
+path. The CLI frees the new key before it sends ROTATE, so each is two sites:
+that free moved into the path that keeps the key.
+- **The script as first written failed the anchors gate.** It used `%`
+  formatting, which the static anchor extractor cannot evaluate (it parses
+  the scripts and never runs them). The mutation texts are plain literals
+  now, as every other campaign's are.
+- **The gap, shown with hashes.** It used the archive-safe procedure, with
+  `tools/hand_control.py`'s own artifact discovery. RL1 and RL2 were each
+  linked (binary unlike the clean build), each passed V4-34's
+  `test_authd_cli`, and each is killed by its named check:
+  - RL1 by "rotate refused: no window…";
+  - RL2 by "rotate lost: no window…".
+- **The counts gate earned its keep at once.** Adding v73 made every stated
+  count stale, and the gate said so: 11 problems before the documents moved
+  to 314 mutations and 43 campaigns.
+- **Campaign v73 on the ASan tree:** 2 of 2 KILLED by name, each restored
+  clean with a passing clean suite. Every artifact was identical to its
+  clean fingerprint.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `5f2021b`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `0a3d4a73c4b716ef`, 55/55;
+  - `build-bench-p` `8cf184663a8e6ec9`, 51/51;
+  - ASan `a8e2a8c4ce11e663`, 55/55, with 0 reports;
+  - UBSan `e55a68821a621edd`, 55/55, with 0 runtime errors;
+  - fuzz `f3a5a0d892136f61`, 36/36.
+
+  Fixture directories stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 207 checks, 136 mutations;
+  - anchors: 353 across 43 campaigns, and the 8 stated counts agreeing at
+    314 and 43;
+  - `git diff --check`.

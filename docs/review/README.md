@@ -296,6 +296,12 @@ real daemon process. After the site revokes one, that device's WebSocket
 closes and the other's stays open. V4-33 did the same for DISABLE-USER and
 RECOVERY-USE with `revoke=all`.
 
+V4-34 put the hand-control method into a tested tool, after a throwaway
+script's stale library archive produced two false survivals. It also
+gated the mutation counts the READMEs state; three had drifted. V4-35
+closed D10's last CLI gap: a rotation whose reply is refused, or lost after
+the daemon committed, now gets the same disk scan as every other rotation.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
