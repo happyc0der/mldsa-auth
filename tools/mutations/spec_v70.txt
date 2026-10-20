@@ -3,4 +3,4 @@ RK2|^test_authd_cli$|rotate: no window of the old or the new secret key in any f
 RK3|^test_authd_cli$|interrupted rotation: after the login that completes it, no window of either key in any file (Req 10)
 RK4|^test_authd_cli$|stale rotate: no window of any of the three keys in any file (Req 10)
 RK5|^test_authd_localapi$|recovery: the plaintext code is NOT in the store (Req 4);recovery: neither the ticket nor the code is in a backup of the store (Req 4)
-RK6|^test_authd_cli$|stale rotate: no .newpub temp file is left behind (F118)
+RK6|^test_authd_cli$|stale rotate: no .newpub temp file is left behind (F118) CONTROL -- a check no test prints (V4-26)
