@@ -1075,6 +1075,23 @@ static void test_recovery(void)
       CHECK(store_lookup_active(d.store, HANDLE2, sizeof HANDLE2, seen, NULL, 0, NULL, NULL) == STORE_OK &&
             memcmp(seen, kp2.public_key, STORE_PK_BYTES) == 0,
             "enroll: the recovered device is active with the NEW key"); }
+    /* V4-30 (CLAIMS D4): and once the ticket is SPENT. The scans above ran
+     * when it was issued; ENROLL holds the plaintext until it hashes it, and
+     * keeps a free-form label, and nothing looked at the store after. The
+     * canary: the store read here holds the recovered device's new key, so
+     * the read sees what that enrollment wrote. */
+    { uint8_t ticket[32];
+      size_t tl = 0;
+      const int dec = sodium_hex2bin(ticket, sizeof ticket, ticket_hex, strlen(ticket_hex), NULL, &tl, NULL) == 0 &&
+                      tl == 32u;
+      const size_t n = read_store_files("recovery.sqlite3", g_blob, sizeof g_blob);
+      CHECK(memmem(g_blob, n, kp2.public_key, 32u) != NULL,
+            "recovery: the store read after the spend holds the recovered device's key (the present canary)");
+      CHECK(dec && secret_absent(g_blob, n, ticket),
+            "recovery: after the ticket is spent, the plaintext ticket is NOT in the store (Req 4)");
+      const size_t nb = backup_and_read(&d, "recovery-spent-backup.sqlite3", g_blob, sizeof g_blob);
+      CHECK(memmem(g_blob, nb, kp2.public_key, 32u) != NULL && dec && secret_absent(g_blob, nb, ticket),
+            "recovery: after the ticket is spent, it is NOT in a backup of the store (Req 4)"); }
 
     snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h2h, pk2h, ticket_hex);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
