@@ -11,6 +11,7 @@
  * It exits on its own after a bounded time, so a wedged test can never leave
  * it behind.
  */
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,9 +21,26 @@
 
 #include "authd_harness.h"
 
+/* V4-31: every caller stops this fixture with SIGTERM long before its deadline
+ * (examples/site-node/authd.test.mjs
+ * runs it), and the cleanup at the end of main ran only after the
+ * deadline -- so every run left its directory, a store and two sockets, in
+ * $TMPDIR: with the other fixture's, 307 of them and 91 MB from one day's runs.
+ * A signal now ends the serve loop instead, and the cleanup runs. */
+static volatile sig_atomic_t g_stop = 0;
+static void on_stop(int sig) { (void)sig; g_stop = 1; }
+
 int main(int argc, char **argv)
 {
     const int seconds = (argc > 1) ? atoi(argv[1]) : 20;
+    {   /* before anything is created, so a signal at any point still cleans up */
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_stop;
+        (void)sigemptyset(&sa.sa_mask);
+        (void)sigaction(SIGTERM, &sa, NULL);
+        (void)sigaction(SIGINT, &sa, NULL);
+    }
     if (sodium_init() < 0) { return 1; }
     authd_log_init(stderr, AUTHD_LOG_ERROR);
 
@@ -78,7 +96,7 @@ int main(int argc, char **argv)
     /* Serve until the deadline. Real time here, because Node is a separate
      * process on the wall clock -- the injected clock is for the C tests. */
     const time_t deadline = time(NULL) + seconds;
-    while (time(NULL) < deadline) {
+    while (!g_stop && time(NULL) < deadline) {
         d.app.now_ms += 5u;
         d.app.now_unix = (int64_t)time(NULL);
         (void)evloop_run_once(&d.ev, 5, d.app.now_ms);

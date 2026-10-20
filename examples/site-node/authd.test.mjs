@@ -15,6 +15,8 @@ import { test, skip } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { once } from 'node:events';
+import { dirname } from 'node:path';
 
 import { Authd, AuthdError, exchange, verify, logout, ping, listDevices } from './authd.mjs';
 
@@ -41,15 +43,28 @@ async function startDaemon(seconds = 25) {
   return { proc, info };
 }
 
+// V4-31: stopped with SIGTERM, as every other caller stops a fixture, and
+// waited for. It used to be SIGKILL, which no handler can catch, so every test
+// here left the fixture's directory -- a store and two sockets -- behind.
 async function withDaemon(fn) {
   const { proc, info } = await startDaemon();
+  const dir = dirname(info.sock);
+  assert.ok(existsSync(dir), "the fixture's scratch directory exists while it runs (the canary)");
   const authd = await new Authd(info.sock).connect();
+  let quick = false;
   try {
     await fn(authd, info);
   } finally {
     authd.close();
-    proc.kill('SIGKILL');
+    const exited = once(proc, 'exit');
+    proc.kill('SIGTERM');
+    // Not its deadline: a fixture that caught SIGTERM and served on would
+    // clean up then and look tidy.
+    quick = await Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 3000))]);
+    if (!quick) { proc.kill('SIGKILL'); await exited; }
   }
+  assert.ok(quick, 'the fixture exits within 3 s of SIGTERM, not at its deadline (V4-31)');
+  assert.ok(!existsSync(dir), 'the fixture, stopped with SIGTERM, removed its scratch directory (V4-31)');
 }
 
 if (!FIXTURE || !existsSync(FIXTURE)) {
