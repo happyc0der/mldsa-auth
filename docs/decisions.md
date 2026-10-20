@@ -9235,3 +9235,46 @@ that free moved into the path that keeps the key.
   - anchors: 353 across 43 campaigns, and the 8 stated counts agreeing at
     314 and 43;
   - `git diff --check`.
+
+## V4-29 to V4-35 — CI on the branches and the nightly bring-up
+
+**One bring-up for seven steps,** as V4-24a/b and V4-26..28 did. The steps
+stack on one line, and only V4-29, V4-30 and V4-35 add campaigns: v71, v72
+and v73. So:
+- the control nightly ran on V4-29..31's code and rotted one v72
+  expectation;
+- the final nightly runs every campaign against the final tree, which
+  includes V4-35's v73 for the first time on Linux.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-29 | `83bd93e` | 39396696722 |
+| V4-30 | `a974a02` | 39404637352 |
+| V4-31 | `6676460` | 39409550134 |
+| V4-32 | `ce0578c` | 39420088841 |
+| V4-33 | `aa38a5a` | 39426792410 |
+| V4-34 | `6b0f3f6` | 39432985761 |
+| V4-35 | `94c3bd8` | 39445471524 |
+
+### The control nightly
+
+- **How the control was built.** `a3deaba` is `nightly-bringup`'s previous
+  head `52db54b` with V4-29..31 cherry-picked; its tree is `4b9eb47c`,
+  equal to V4-31's `6676460`. On top, v72 TK2's expectation was rotted
+  ("… CONTROL -- a check no test prints (V4-29..31)"). spec_v72's sha256
+  before was `b8655c3e3b01f12f`.
+- **Why cherry-picks.** A first control built on top of `6676460` itself
+  could not be pushed without a force push. Cherry-picking onto
+  `nightly-bringup`'s head keeps every push a fast-forward.
+- **The result.** Run 39415250556 was red on exactly `mutations · v72`,
+  56/57:
+  - TK1 KILLED (3 named on Linux);
+  - TK2 **SURVIVED(BAD)**, naming the rotted text;
+  - every mutant restored clean.
+
+  It was also v71's first run on Linux: green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
