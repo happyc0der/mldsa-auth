@@ -9060,3 +9060,102 @@ mutant equal to it.
     appears verbatim;
   - anchors: 349 across 42 campaigns;
   - `git diff --check`.
+
+## V4-34 — a tested tool for hand controls, and the stated mutation counts gated (loop iteration 9: fixes and cleanup)
+
+### Why a tool
+
+Hand controls are how a check the nightly's campaign tree cannot run (the
+wasm and browser tests, the tools) is shown able to fail: V4-13c, V4-26,
+V4-27, V4-31, V4-32 and V4-33 each needed them.
+- **Each step wrote its own script.** V4-33's deleted the mutated object
+  but not `libmldsa_authd.a`, so two mutants "survived" on unmutated code,
+  and two earlier gap demonstrations had to be redone.
+- **A rule that lives in a throwaway script is lost with it.**
+
+`tools/hand_control.py` keeps the rule:
+1. Build the target clean and hash its binary. Before every build, delete
+   the objects of the touched sources, **the static libraries those objects
+   belong to**, and the executable.
+2. Apply the mutation: an anchor that must match exactly once, or a
+   campaign's own `mutate_vNN.py`.
+3. Rebuild. A mutant binary equal to the clean one is **VOID**, never
+   SURVIVED.
+4. KILLED needs a nonzero exit and the named text: on a `FAIL:` line, or in
+   a node:test assertion. A failed build is KILLED(compile), which is not a
+   kill.
+5. Restore byte-exactly (checked by sha256), and rebuild.
+
+### Testing the tool: `hand_control_selftest`
+
+It never mutates this tree. It generates a CMake project (a static library,
+a probe linking it, a CTest) in a temporary directory and runs the tool
+against it. Its 10 checks:
+- each verdict: KILLED, KILLED(other), SURVIVED, VOID for a comment-only
+  change (the binary is byte-identical), KILLED(compile);
+- **the trap made real.** With the library's archive dated an hour ahead,
+  deleting only the object leaves the old code linked: the probe still
+  passes;
+- **the trap defeated.** The tool, deleting the archive, still links the
+  mutant and kills it;
+- the probe project is left as found.
+
+Three controls on the tool, each restored byte-exactly, are killed by name:
+
+| | Mutation of the tool | Red at |
+|---|---|---|
+| H1 | archives not deleted | the archive-ahead check, and also the plain KILLED, SURVIVED and VOID checks: back-to-back controls in a quick project ran stale code without it |
+| H2 | no VOID verdict | "a mutation that leaves the binary unchanged is VOID" |
+| H3 | an unnamed failure taken as a kill | "… is KILLED(other) -- not a named kill" |
+
+H1's spread is the point. The trap was not contrived: it hit ordinary,
+quick, consecutive controls.
+
+### The stated counts, gated
+
+Three documents stated campaign and mutation counts, and nothing checked
+them:
+- **`README.md`:** "**all 305**" and "all forty … thirty-nine on Linux".
+- **`tools/README.md`:** "305 must-kill mutations across 40 campaigns",
+  "All thirty-nine", "thirty-eight" and "verifies **all 299**".
+- **The truth:** 312 and 42, with 41 on Linux, since V4-29 and V4-30. Some
+  of those figures were older still.
+
+Changes:
+- **`check_mutation_anchors.py` now checks all eight.** Each sentence must
+  be found as well as agree, so rewording one fails the gate instead of
+  retiring it. It failed 8 of 8 on the stale documents before they were
+  corrected; the counts are digits now so they can be read.
+- **It runs in CI's spec job too,** so an anchor rotted by another step,
+  or a stale count, fails on push rather than in the nightly hours later.
+- **`tools/README.md`** lists v71 and v72 and their letter pairs. Its
+  introduction no longer claims nothing there is used by CMake: two tools
+  are run by CTests.
+- **The test counts move again** (`hand_control_selftest`, wherever
+  `python3` is found): 51 native, 53 with a wasm tree, 55 with a browser.
+  The README and REPRODUCE.md say so.
+
+### Routine checks
+
+F91: liboqs's latest release is still 0.16.0 (checked 2026-10-20).
+
+### Verification
+
+- **Every tree proven current and run in full** at `69c4220`. The
+  fingerprints are unchanged from V4-31: a Python tool and its test add
+  no compiled code.
+  - `build-wasm-p`: 3/3;
+  - `build-p`: 55/55;
+  - `build-bench-p`: 51/51, the plain native count the README states;
+  - ASan: 55/55, with 0 reports;
+  - UBSan: 55/55, with 0 runtime errors;
+  - fuzz: 36/36.
+
+  `hand_control_selftest` passed in all four native trees. It left no
+  `mldsa-hc-*` directory, and fixture directories stayed at 0.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map;
+  - anchors: 349 across 42 campaigns, plus the new counts check, 8 of 8
+    agreeing;
+  - `git diff --check`.
