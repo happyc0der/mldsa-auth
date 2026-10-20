@@ -758,6 +758,7 @@ static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *o
         "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
         "Sec-WebSocket-Version: 13\r\n\r\n";
+    const size_t before = evloop_active(&d->ev);
     const int fd = h_dial_unix(d->ws_path);
     if (fd < 0) { return -1; }
     /* ONE write, deliberately: coalescing the preamble and the request is what
@@ -782,7 +783,11 @@ static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *o
     }
     out[n] = '\0';
     (void)close(fd);
-    for (int i = 0; i < 50; i++) { h_tick(d); }   /* let the daemon reap the slot */
+    /* Until the daemon has reaped the slot (V4-37: this was a fixed 50 ticks,
+     * which a loaded machine can outrun, leaving a slot the next probe meets).
+     * A slot never reaped is a failure of its own, not something to carry on
+     * past. */
+    CHECK(H_PUMP_UNTIL(d, evloop_active(&d->ev) <= before), "ws: the daemon reaps a raw probe's slot once it closes");
     return (int)n;
 }
 

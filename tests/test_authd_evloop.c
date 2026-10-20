@@ -325,13 +325,37 @@ static int dial(uint16_t port)
     return fd;
 }
 
-/* Runs the loop until `pred` holds or `max` iterations pass, holding time
- * fixed so only I/O progresses. */
-static void pump(evloop_t *ev, uint64_t now, int iters)
+/* Runs the loop until `pred` holds, holding time fixed so only I/O
+ * progresses. V4-37: these were fixed counts of three to six turns, and the
+ * comment here promised a predicate the function never took. A loaded
+ * machine (a busy CI runner, the sanitizers, a parallel ctest) can need more
+ * turns than a count allows, and the test then fails for a reason that is
+ * not a defect. The ceiling -- 2,000 turns, at most 10 ms each -- bounds a
+ * predicate that never holds, and that is a FAILED CHECK of its own, named by
+ * the predicate: a wait that never ends as intended must not pass just
+ * because the check after it happens to hold anyway. */
+#define PUMP_UNTIL(ev, now, pred) ({ int _ok = 0;                                  \
+    for (int _i = 0; _i < 2000; _i++) {                                         \
+        if (pred) { _ok = 1; break; }                                            \
+        (void)evloop_run_once((ev), 10, (now));                                  \
+    }                                                                            \
+    check(_ok, "ev: the loop reached, within 2,000 turns: " #pred);              \
+    _ok; })
+
+/* A fixed number of turns, for the one place nothing is awaited. */
+static void pump_n(evloop_t *ev, uint64_t now, int iters)
 {
     for (int i = 0; i < iters; i++) {
         (void)evloop_run_once(ev, 10, now);
     }
+}
+
+static int partial_buffered(const authd_slot_t *slots, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (memmem(slots[i].io.in, sizeof slots[i].io.in, "PART", 4) != NULL) { return 1; }
+    }
+    return 0;
 }
 
 static void test_evloop(void)
@@ -354,7 +378,7 @@ static void test_evloop(void)
     /* accept + echo one frame */
     int c1 = dial(port);
     CHECK(c1 >= 0, "ev: client connects");
-    pump(&ev, 1000, 3);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
     CHECK(evloop_active(&ev) == 1u, "ev: the connection occupies exactly one slot");
     CHECK(slots[0].deadline_ms == 1000u + 5000u,
           "ev: a fresh connection gets the HANDSHAKE deadline");
@@ -363,7 +387,9 @@ static void test_evloop(void)
         uint8_t f[4 + 5];
         put_be32(f, 5); memcpy(f + 4, "hello", 5);
         CHECK(write(c1, f, sizeof f) == (ssize_t)sizeof f, "ev: client sends a frame");
-        pump(&ev, 1000, 5);
+        /* Until the reply is written too: the read below blocks, and an
+         * unflushed reply would hang it rather than fail. */
+        (void)PUMP_UNTIL(&ev, 1000, h.frames >= 1 && conn_io_pending(&slots[0].io) == 0u);
         CHECK(h.frames == 1 && h.last_len == 5, "ev: the loop delivered exactly one 5-byte frame");
         uint8_t back[4 + 5];
         ssize_t got = read(c1, back, sizeof back);
@@ -390,26 +416,26 @@ static void test_evloop(void)
     {
         int a = dial(port), b = dial(port), c = dial(port);
         CHECK(a >= 0 && b >= 0 && c >= 0, "ev: three clients connect");
-        pump(&ev, 2000, 6);
+        (void)PUMP_UNTIL(&ev, 2000, evloop_active(&ev) == (size_t)NSLOTS && ev.refused_no_slot >= 1u);
         CHECK(evloop_active(&ev) == (size_t)NSLOTS, "ev: only max_slots connections are held");
         CHECK(ev.refused_no_slot >= 1u, "ev: the connection beyond capacity is refused, not queued");
         (void)close(a); (void)close(b); (void)close(c);
-        pump(&ev, 2000, 6);
+        (void)PUMP_UNTIL(&ev, 2000, evloop_active(&ev) == 0u);
     }
 
     /* a slot is wiped before reuse -- with a present canary so it is not vacuous */
     {
         evloop_close_all(&ev);
-        pump(&ev, 3000, 2);
+        pump_n(&ev, 3000, 2);   /* nothing to await: close_all is synchronous */
         int d = dial(port);
         CHECK(d >= 0, "ev: reuse client connects");
-        pump(&ev, 3000, 3);
+        (void)PUMP_UNTIL(&ev, 3000, evloop_active(&ev) == 1u);
         uint8_t f[4 + 6];
         put_be32(f, 6); memcpy(f + 4, "SECRET", 6);
         h.canary = "SECRET";
         h.canary_seen_live = 0;
         CHECK(write(d, f, sizeof f) == (ssize_t)sizeof f, "ev: reuse client sends a marker frame");
-        pump(&ev, 3000, 4);
+        (void)PUMP_UNTIL(&ev, 3000, h.canary_seen_live == 1);
         CHECK(h.canary_seen_live == 1,
               "ev: the canary IS observable in the live slot (the wipe check is not vacuous)");
         (void)close(d);
@@ -431,13 +457,13 @@ static void test_evloop(void)
     {
         int d = dial(port);
         CHECK(d >= 0, "ev: partial-frame client connects");
-        pump(&ev, 5000, 3);
+        (void)PUMP_UNTIL(&ev, 5000, evloop_active(&ev) == 1u);
         uint8_t part[4 + 4];
         put_be32(part, 32);                    /* declares 32 bytes ... */
         memcpy(part + 4, "PART", 4);           /* ... but sends only 4 */
         CHECK(write(d, part, sizeof part) == (ssize_t)sizeof part,
               "ev: client sends an incomplete frame");
-        pump(&ev, 5000, 4);
+        (void)PUMP_UNTIL(&ev, 5000, partial_buffered(slots, NSLOTS));
         int live = 0;
         for (int i = 0; i < NSLOTS; i++) {
             if (memmem(slots[i].io.in, sizeof slots[i].io.in, "PART", 4) != NULL) { live = 1; }
@@ -456,11 +482,11 @@ static void test_evloop(void)
     {
         int e = dial(port);
         CHECK(e >= 0, "ev: drain client connects");
-        pump(&ev, 4000, 3);
+        (void)PUMP_UNTIL(&ev, 4000, evloop_active(&ev) == 1u);
         CHECK(evloop_active(&ev) == 1u, "ev: drain client is accepted before the stop");
         evloop_stop(&ev);
         int late = dial(port);
-        pump(&ev, 4000, 4);
+        (void)PUMP_UNTIL(&ev, 4000, evloop_active(&ev) == 0u);
         CHECK(ev.accepted >= 1u, "ev: accepted counter is live");
         CHECK(evloop_active(&ev) == 0u, "ev: after the drain every slot is released");
         if (late >= 0) { (void)close(late); }
