@@ -16,6 +16,8 @@
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const [fixturePath, modulePath, clientPath] = process.argv.slice(2);
 if (!fixturePath || !modulePath || !clientPath) {
@@ -40,6 +42,11 @@ const info = await new Promise((resolve, reject) => {
   setTimeout(() => reject(new Error('fixture never became ready')), 20000);
 });
 const serverPub = Uint8Array.from(Buffer.from(info.server_pub, 'hex'));
+// V4-31: the fixture's scratch directory (its store and sockets) is the site
+// socket's directory. It must exist while the fixture runs -- the canary --
+// and be gone once a SIGTERM has stopped it.
+const fxDir = dirname(info.site);
+check(existsSync(fxDir), 'fixture: its scratch directory exists while it runs (the canary)');
 
 // One request line on the site socket, one reply line back -- the site's view.
 function site(line) {
@@ -58,7 +65,16 @@ function site(line) {
 // The public key is the tail of an MLDSAPK1 image: "MLDSAPK1" || id_len || id || pk.
 const pkOf = (img) => img.slice(9 + img[8]);
 
-const done = async () => { fx.kill(); await new Promise((r) => fx.once('exit', r)); };
+// Stops the fixture and waits for it -- but not for its 60 s deadline: a
+// fixture that caught SIGTERM and served on would clean up at the deadline
+// and look tidy, so it must be gone within 3 s (V4-31).
+let fxQuick = false;
+const done = async () => {
+  const exited = new Promise((r) => fx.once('exit', () => r(true)));
+  fx.kill();
+  fxQuick = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000))]);
+  if (!fxQuick) { fx.kill('SIGKILL'); await exited; }
+};
 try {
   const { default: createMldsaClient } = await import(pathToFileURL(modulePath).href);
   const { AuthdClient, AuthdError } = await import(pathToFileURL(clientPath).href);
@@ -132,5 +148,7 @@ try {
 } finally {
   await done();
 }
+check(fxQuick, 'fixture: it exits within 3 s of SIGTERM, not at its deadline (V4-31)');
+check(!existsSync(fxDir), 'fixture: stopped with SIGTERM, it removed its scratch directory (V4-31)');
 console.log(fail ? '\nFAILED' : '\nAll checks passed');
 process.exit(fail);
