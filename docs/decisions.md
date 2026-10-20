@@ -8704,3 +8704,86 @@ changed included.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with V4-29.
+## V4-29 — D13: the journal scans read the escaped id= field (campaign v71)
+
+Loop iteration 4. CLAIMS D13's own limits named the gap:
+"`authd_log_slot_id` prints bytes as escaped printable text, which these
+scans do not decode".
+- **How the field is written.** With `log_ids = full`, the default, an
+  identifier is printed as `id=<field>`. Each byte from 0x20 to 0x7e stands
+  as itself and every other byte becomes `.`, truncated at 64 with `~`.
+- **Why nothing saw it.** The journal scans looked for hex in either case
+  and both base64 alphabets. A secret printed through that field matched
+  none of those forms.
+
+### The scan
+
+The form is lossy, so it cannot be decoded back to bytes. The scan runs the
+other way instead:
+- **The match.** It applies the same transform to the secret and matches
+  every 16-character window of every `id=` field against the secret's
+  escaped image, one `memmem` per window. A window counts only with at least
+  two printable characters, so a run of dots is never evidence.
+- **Only `id=` fields are read**, because that is the only place the logger
+  escapes.
+- **No legitimate identifier can match by chance.** Handles and user names
+  are all printable, so a match needs all 16 secret bytes equal to them,
+  which is impossible in practice. The clean suites confirm it.
+- **One shared copy.** The scan lives in `tests/journal_scan.h`, moved out of
+  `test_authd_conn.c` with its hex and base64 forms. `test_authd_localapi`,
+  whose code, token and ticket checks were a single hex `strstr` each, now
+  uses it too: three new checks.
+
+### Campaign v71 (EI1–EI5)
+
+Each mutation hands `authd_log_slot_id` a secret under an event name it
+already logs, so only the field's content changes.
+
+| | The secret logged as `id=` | Killed by |
+|---|---|---|
+| EI1 | the login code, before it is wiped | `journal: no window of any decrypted payload` |
+| EI2 | the ClientHello's nonce | `…either signature or of the ClientHello's nonce`, `…any raw frame` |
+| EI3 | ROTATE's `sig_new` | `…the ROTATE's own signatures`, `…any decrypted payload` |
+| EI4 | the EXCHANGE token, before it is wiped | `log: no window of the issued token in any form …` |
+| EI5 | the RECOVERY-USE ticket | `recovery: no window of the enrollment TICKET in any form …` |
+
+- **The gap, shown first.** Each mutant was built against V4-28's two
+  scanning tests (`test_authd_conn` and `test_authd_localapi`) and passed
+  them, then failed V4-29's at the predicted names. Every source was
+  restored byte-exactly. Only those two tests were run against the old
+  code, not the whole suite.
+- **The campaign, on the ASan tree:**
+  - preflight: 137 sources snapshotted, 113 objects and 43 executables
+    fingerprinted, the clean suite passing;
+  - 5 of 5 KILLED by name, each restored clean with a passing clean suite
+    and no residue;
+  - every artifact identical to its clean fingerprint at the end.
+- **Totals:** 41 campaigns and 310 mutations, 347 anchors. v71 is in the
+  nightly matrix.
+
+### Not established (said so in CLAIMS D13)
+
+- **Fewer than two printable characters.** An escaped window with fewer is
+  not counted.
+- **`log_ids = hashed`.** The field is then a keyed pseudonym, and no scan
+  can relate it to a secret. That mode is the one meant for a public
+  deployment.
+- **Other paths.** Only the `id=` fields are read for the escaped form;
+  every other line is still searched in hex and base64.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `c88d3e5`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `6be4f105bebacc98`, 54/54;
+  - `build-bench-p` `c3c041cce8753f96`, 50/50;
+  - ASan `f077bcc55dfbb352`, 54/54, with 0 reports;
+  - UBSan `bcb3b0aa45691e08`, 54/54, with 0 runtime errors;
+  - fuzz `55c4dcbc0c48943c`, 36/36.
+
+  No fixture was left running.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 197 checks, 132 mutations, 17 tools;
+  - anchors: 347 across 41 campaigns;
+  - `git diff --check`.
