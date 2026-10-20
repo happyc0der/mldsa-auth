@@ -79,14 +79,6 @@ typedef struct {
 listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n_allow,
                                      int *out_fd, listener_peer_t *peer_out);
 
-/* Accepts one connection without blocking. On LISTENER_OK *out_fd is a
- * non-blocking CLOEXEC fd. LISTENER_AGAIN means nothing was pending.
- *
- * When `require_uid` is not (uid_t)-1 the peer's uid must equal it, or the
- * connection is closed and LISTENER_ERR_PEER returned -- this is the proxy
- * authentication for the Unix listener. */
-listener_status_t listener_accept(int listen_fd, uid_t require_uid, int *out_fd);
-
 /* Closes and, for a Unix listener, unlinks its path. */
 void listener_close(int *fd, const char *unix_path);
 

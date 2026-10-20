@@ -10,18 +10,6 @@
 #include "transcript.h"
 #include "tokens.h"
 
-const char *authd_conn_stage_name(conn_stage_t s)
-{
-    switch (s) {
-    case CONN_STAGE_FREE:     return "free";
-    case CONN_STAGE_AWAIT_CH: return "await-client-hello";
-    case CONN_STAGE_AWAIT_CA: return "await-client-auth";
-    case CONN_STAGE_SERVING:  return "serving";
-    case CONN_STAGE_CLOSING:  return "closing";
-    default:                  return "unknown";
-    }
-}
-
 uint64_t authd_app_clock(void *ctx)
 {
     const authd_app_t *app = (const authd_app_t *)ctx;

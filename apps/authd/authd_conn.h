@@ -190,8 +190,6 @@ void        authd_conn_on_close(void *user, authd_slot_t *slot);
  * taken the moment the PROXY v2 preamble settles. */
 ev_action_t authd_conn_on_addr(void *user, authd_slot_t *slot);
 
-const char *authd_conn_stage_name(conn_stage_t s);
-
 /* Closes every live protocol connection authenticated as `handle` / belonging
  * to `user`, and returns how many were closed. Req 9's "live connections MUST
  * be closed" half: revoking the row is not enough while a session is open. */

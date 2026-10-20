@@ -181,10 +181,6 @@ void conn_io_consume_line(conn_io_t *c);
  * multi-line list response. */
 conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len);
 
-/* Capacity available to one queued response, so a caller can bound a list
- * before it starts building one. */
-size_t conn_io_out_capacity(void);
-
 /* Bytes still waiting to go out, and a pointer to the first of them. */
 size_t conn_io_pending(const conn_io_t *c);
 const uint8_t *conn_io_pending_ptr(const conn_io_t *c);
