@@ -40,8 +40,12 @@ project(hcprobe C)
 add_library(plib STATIC plib.c)
 add_executable(probe probe.c)
 target_link_libraries(probe PRIVATE plib)
+add_executable(probe_bin probe.c)
+set_target_properties(probe_bin PROPERTIES OUTPUT_NAME probe-renamed)
+target_link_libraries(probe_bin PRIVATE plib)
 enable_testing()
 add_test(NAME probe COMMAND probe)
+add_test(NAME probe_renamed COMMAND probe_bin)
 """
 PLIB = """/* the probe library */
 int answer(void) { return 42; }
@@ -106,6 +110,16 @@ with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     rc, out = hc("return 42;", "return 44;")
     check(rc == 0 and ": KILLED |" in out,
           "with the archive dated ahead, the tool still links the mutant (it deletes the archive), and it is KILLED")
+
+    # A target whose OUTPUT_NAME differs (mldsa_authd_bin builds mldsa-authd):
+    # with --binary the tool finds what it built, and the verdict is real.
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--target", "probe_bin",
+                        "--binary", "probe-renamed", "--ctest", "^probe_renamed$", "--expect", "the answer is 42",
+                        "--mutation", "plib.c", "--old", "return 42;", "--new", "return 46;"],
+                       capture_output=True, text=True)
+    print("  " + r.stdout.strip().replace("\n", "\n  "))
+    check(r.returncode == 0 and ": KILLED |" in r.stdout,
+          "a target whose OUTPUT_NAME differs, named with --binary, is built, hashed and KILLED")
 
     after = subprocess.run(["ctest", "--test-dir", str(b), "-R", "^probe$"], capture_output=True, text=True)
     check((d / "plib.c").read_text() == PLIB and after.returncode == 0,
