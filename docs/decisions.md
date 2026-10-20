@@ -9504,9 +9504,9 @@ anchor line.
 - **Shown red by hand:** with 342 written back in, the gate printed
   `COUNT docs/review/REPRODUCE.md: says 342 where the campaigns say 354` and
   `1 PROBLEM(S)`, exit 1. The file was then restored.
-- **It now prints** "counts: the 13 stated counts in README.md,
+- **It then printed** "counts: the 13 stated counts in README.md,
   tools/README.md and REPRODUCE.md agree (315 mutations, 44 campaigns, 354
-  anchors)".
+  anchors)". The sweep below took it to 16.
 
 CI's spec job already runs the script.
 
@@ -9548,11 +9548,56 @@ separate project this one does not use. Everything else matched the page:
 
 NVD did not yet list CVE-2026-104255.
 
+### The sweep after it: the packet's front page, F120
+
+With REPRODUCE.md fixed, every tracked document was searched for stated
+counts of mutations, campaigns, anchors, tests, findings and errata. Five
+more were stale:
+
+| Where | Said | Is |
+|---|---|---|
+| `docs/review/README.md`, the register | 117 findings (F1–F119) | 119 (F0–F119; no F16 was ever assigned), 120 with F120 |
+| `docs/review/README.md`, the spec | §20 lists 46 errata | 48 |
+| `docs/review/README.md`, tests | 52 with the browser client | 55 |
+| `docs/review/README.md`, mutations | 305 in 40 campaigns | 315 in 44 |
+| `README.md`, the `tools/` row | 305 committed mutations | 315 |
+
+That is F106, F110 and F116's class again, so it is recorded as **F120**
+(Info, fixed). Ten new patterns now read these counts from their sources:
+- **`check_mutation_anchors.py`:** eight. They cover REPRODUCE.md's five,
+  the front page's two and README's one, for 16 stated counts in all.
+- **`check_claim_map.py`:** two, comparing the front page's findings count
+  and range with the register's rows, and its errata count with §20's rows
+  (each must be found, and §20's numbers distinct).
+
+Each was shown red once by a rotted count, and restored byte-exactly:
+
+| Rotted | Gate | Printed |
+|---|---|---|
+| README 315 → 305 | anchors | `COUNT README.md: says 305 where the campaigns say 315` |
+| front page 44 → 40 campaigns | anchors | `COUNT docs/review/README.md: says 40 where the campaigns say 44` |
+| front page 315 → 305 | anchors | `COUNT docs/review/README.md: says 305 where the campaigns say 315` |
+| 119 → 118 findings | claim map | `FAIL the register's stated size and range … page says 118 findings (F0–F119); the register holds 119` |
+| 48 → 47 errata | claim map | `FAIL the spec's stated errata count … page says 47; §20 holds 48 row(s)` |
+
+Before the fix, the claim-map checks failed on the stale page itself (117
+and 46). That is the gap shown on the real defect, not only a planted one.
+
+**The test counts are not gated.** They depend on the configuration (node,
+python3, a wasm tree, a browser), which no static check sees. F107, F116 and
+now F120 are three drifts of them, and a CTest that compares `ctest -N` with
+what the README states for its own configuration is the next fixes-and-cleanup
+iteration's candidate.
+
+The front page's narrative also stopped at V4-36 and never mentioned V4-28,
+so F114 still read as open there. V4-28, V4-37 and V4-38 now have their
+sentences.
+
 ### Verification
 
-- **Gates:** spec constants and vocabularies, the claim map, anchors (354,
-  with the 13 counts agreeing), the audit table's separators, and `git diff
-  --check`.
-- **The one code change** is the gate's pattern list. It ran green, and red
-  under the hand control above.
+- **Gates:** spec constants and vocabularies, the claim map (with its two
+  new count checks), anchors (354, with the 16 counts agreeing), the audit
+  table's separators, and `git diff --check`.
+- **The code changes** are the two gates' checks. Each ran green, and red
+  under the hand controls above.
 - **No source or test file changed,** so no campaign is affected.
