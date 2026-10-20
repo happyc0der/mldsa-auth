@@ -504,5 +504,37 @@ add_test(NAME session_no_alloc_scan
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_session_no_alloc.cmake
 )
 
+# V4-41 (audit F107, F116, F120): the test counts README.md, REPRODUCE.md and
+# the review packet state, checked in the tree they describe. Each optional
+# test's condition is passed as 0 or 1, exactly as it is registered above.
+set(_c_node 0)
+set(_c_py 0)
+set(_c_nmfile 0)
+set(_c_wasm 0)
+set(_c_browser 0)
+set(_c_fuzz 0)
+if(MLDSA_NODE)
+  set(_c_node 1)
+endif()
+if(MLDSA_PYTHON3)
+  set(_c_py 1)
+endif()
+if(MLDSA_NM AND MLDSA_FILE AND MLDSA_EXPECT_BACKEND)
+  set(_c_nmfile 1)
+endif()
+if(MLDSA_WASM_DIR)
+  set(_c_wasm 1)
+  if(MLDSA_BROWSER)
+    set(_c_browser 1)
+  endif()
+endif()
+if(MLDSA_FUZZ)
+  set(_c_fuzz 1)
+endif()
+add_test(NAME doc_test_counts
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/doc_test_counts.sh ${PROJECT_SOURCE_DIR}
+                 ${CMAKE_CTEST_COMMAND} ${PROJECT_BINARY_DIR}
+                 ${_c_node} ${_c_py} ${_c_nmfile} ${_c_wasm} ${_c_browser} ${_c_fuzz})
+
 # Step 7 fuzz targets (portable replay driver + libFuzzer binaries)
 add_subdirectory(fuzz)
