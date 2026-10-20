@@ -9593,6 +9593,19 @@ The front page's narrative also stopped at V4-36 and never mentioned V4-28,
 so F114 still read as open there. V4-28, V4-37 and V4-38 now have their
 sentences.
 
+**"F91 is the only open finding" was not true.** The page said it in
+V4-24a's paragraph, and this step's first draft of V4-28's repeated it. Then
+every row's disposition was read: three rows older than the packet stay
+open by their own account.
+- **F5 (Med):** no coverage figure for anything under `apps/authd/`.
+- **F15 (Info):** v1's x86_64 target can no longer be measured.
+- **F17 (Med):** Req 4.9's timing is unmeasured.
+
+The page's "Still open" table listed only F91 because it covers the seven
+findings the packet itself found. The three older rows are now listed beside
+it, both sentences say "since the packet was built", and F120 records it.
+Which rows are open is prose, so no gate reads it.
+
 ### Verification
 
 - **Gates:** spec constants and vocabularies, the claim map (with its two
