@@ -27,6 +27,7 @@
 #include "authd_config.h"
 #include "authd_harness.h"
 #include "authd_secret.h"
+#include "key_windows.h"
 #include "keyfile.h"
 #include "localcli.h"
 
@@ -149,18 +150,8 @@ static int any_file_starts_with(const char *dir, const char *magic)
     return found;
 }
 
-/* 1 if sk[w..w+len) is made wholly of SECRET bytes of an ML-DSA-65 secret key:
- * inside K = [32,64), or in s1|s2|t0 = [128,4032). rho = [0,32) IS pk[0..32)
- * and tr = [64,128) is SHAKE256(pk, 64), so a window touching either is partly
- * public -- and a mostly public one is no evidence: rho[17..32) || K[0] is in
- * every file holding the public key whenever K[0] happens to equal pk[32], one
- * key in 256. Keeping the windows that straddle (fuzz_keys's rule until V4-16,
- * F105) failed this test at that rate. Every secret byte is still inside some
- * window that is looked for. */
-static int sk_window_is_secret(size_t w, size_t len)
-{
-    return (w >= 32u && w + len <= 64u) || w >= 128u;
-}
+/* sk_window_is_secret, F105's rule for which key windows count, is in
+ * key_windows.h, shared with test_authd_conn and envelope_key_scan (V4-27). */
 
 /* Recursively: does any regular file under `dir`, other than `exempt` (may be
  * NULL), hold a 16-byte window of the ML-DSA-65 secret key `sk` made wholly of
