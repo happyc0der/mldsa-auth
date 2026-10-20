@@ -495,9 +495,11 @@ int main(void)
         printf("FAIL: sodium_init\n");
         return 1;
     }
-    snprintf(g_dir, sizeof g_dir, "store-test-%ld", (long)getpid());
-    if (mkdir(g_dir, 0700) != 0) {
-        printf("FAIL: mkdir scratch\n");
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    snprintf(g_dir, sizeof g_dir, "store-test-XXXXXX");
+    if (mkdtemp(g_dir) == NULL) {
+        printf("FAIL: mkdtemp scratch\n");
         return 1;
     }
 

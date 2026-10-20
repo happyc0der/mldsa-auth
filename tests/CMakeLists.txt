@@ -167,6 +167,10 @@ add_test(NAME secure_mem_sites
 # sanctioned file, apps/authd/sha1.c, and sha1() called by ws.c alone.
 add_test(NAME no_hand_rolled_primitives
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/no_hand_rolled_primitives.sh ${PROJECT_SOURCE_DIR})
+# V4-28 (audit F114): no test names its scratch directory after its pid; the
+# seven F114 named make theirs with mkdtemp.
+add_test(NAME scratch_dirs
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/scratch_dirs.sh ${PROJECT_SOURCE_DIR})
 # V4-15c (CLAIMS P8): the build flags as evidence -- what compile_commands.json
 # says every project translation unit was told, and a stack canary in the
 # project's OWN archives, which vendored code cannot satisfy (audit F104).
@@ -370,6 +374,14 @@ target_link_libraries(authd_wasm_fixture PRIVATE mldsa_authd)
 target_compile_options(authd_wasm_fixture PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(authd_wasm_fixture PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
 target_link_options(authd_wasm_fixture PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+# V4-27 (CLAIMS D10): browser_e2e's look at a browser profile for the identity
+# key in the clear. It opens an envelope read back from IndexedDB, with the
+# test's passphrase, and scans the profile; it prints positions, never bytes.
+add_executable(envelope_key_scan envelope_key_scan.c)
+target_link_libraries(envelope_key_scan PRIVATE mldsa_client)
+target_compile_options(envelope_key_scan PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(envelope_key_scan PRIVATE ${MLDSA_HARDENING_DEFS})
+target_link_options(envelope_key_scan PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 if(MLDSA_NODE)
   # Spec 14's "no cryptography in JavaScript", as a check on web/client/.
   add_test(NAME web_no_crypto COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_no_crypto.mjs
@@ -413,7 +425,10 @@ if(MLDSA_WASM_DIR)
       COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/browser_e2e.mjs
               $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web "${MLDSA_BROWSER}"
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-    set_tests_properties(browser_e2e PROPERTIES TIMEOUT 600)
+    # MLDSA_KEY_SCAN: the profile scan's helper (V4-27). browser_e2e fails,
+    # rather than skips, without it.
+    set_tests_properties(browser_e2e PROPERTIES TIMEOUT 600
+                         ENVIRONMENT "MLDSA_KEY_SCAN=$<TARGET_FILE:envelope_key_scan>")
     # V4-26 (F119): tools/phone_timing.mjs and web/pages/timing.html, the real
     # tool driven through a secure and a non-secure origin; every row must say
     # which it was.

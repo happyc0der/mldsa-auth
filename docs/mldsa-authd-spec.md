@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.12, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25 errata)
+# mldsa-authd — deployment specification (v1.13, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -852,11 +852,20 @@ login in 85–153 ms. **On a phone** (V4-25, erratum 47), measured with
 identity (keygen + Argon2id 3/64 MiB + sealing) in 255–393 ms on either
 network, and a whole login (Argon2id to open the key, then the handshake) in
 301–719 ms over Wi-Fi and 512–645 ms over mobile data. On the development Mac,
-Edge 155 took 109 ms and 104–110 ms, and **Safari 27.0.1 took 2,303 ms and
-2,290–2,443 ms -- about 21× slower, for a cause not yet known** (audit F119).
-So the phone keeps Argon2id far inside V4-2's 2,000 ms and Safari does not; no
-iPhone has been measured, and every iPhone browser is WebKit. The rows, and
-what they do not establish, are in `bench/results.md`.
+Edge 155 took 109 ms and 104–110 ms. **Which origin serves the page matters**
+(V4-26, erratum 48). Safari 27.0.1 runs a page from a non-secure origin --
+plain http on any name but `localhost` and the loopback addresses -- without
+its JIT, JavaScript and wasm alike, and the tool serves exactly such an
+origin. There Safari took 2,138–2,303 ms for a new identity and 2,168–2,443 ms
+per login: V4-25's ~21×, reproduced. On a secure origin (`http://127.0.0.1`)
+the same Safari took 94 ms and 85–100 ms, Edge's figures (audit F119,
+closed). Edge showed no such effect on either kind of origin. A deployment is
+HTTPS behind the site's TLS proxy (§7.1), a secure context. So the phone
+keeps Argon2id far inside V4-2's 2,000 ms, and so does Safari on a secure
+origin. Not yet measured: Safari on a non-local HTTPS origin, and any iPhone
+(every iPhone browser is WebKit). Every timing row now records whether its
+page was a secure context. The rows, and what they do not establish, are in
+`bench/results.md`.
 
 **The login code's way to the site** (erratum 34). The page POSTs the code in a
 request **body** to the site's own endpoint, on the same origin, carrying the
@@ -1319,3 +1328,11 @@ A measurement the section had been waiting for:
 | # | § | Change | Why |
 |---|---|---|---|
 | 47 | 14 | phones measured -- a Xiaomi 12 Pro in Chrome and Edge, over Wi-Fi and over mobile data -- with Edge and Safari on the development Mac; Safari's ~21× slowdown stated as open (audit F119); "Phones are not yet measured" removed | erratum 40 kept the sentence until "someone runs it with a phone in hand". V4-25 did: the phone keeps Argon2id far inside V4-2's 2,000 ms budget, Safari on a Mac does not, and the iPhone -- whose browsers are all WebKit -- is still unmeasured |
+
+### Revision v1.13 (V4-26)
+
+A correction to erratum 47, from finding the cause of F119:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 48 | 14 | Safari's ~21× slowdown attributed to the origin: Safari 27.0.1 runs a non-secure origin's pages without its JIT, and the tool served one. Safari's secure-origin figures added; "Safari does not" keep Argon2id inside the budget removed; non-local HTTPS and the iPhone stated as unmeasured; every timing row now records `secure` | erratum 47 published V4-25's Safari row as the browser's speed. V4-26 measured it on seven origins: it is 8–30× slow exactly where `isSecureContext` is false, including a non-localhost name that resolves to 127.0.0.1, and at Edge's speed where it is true. A deployment is HTTPS |

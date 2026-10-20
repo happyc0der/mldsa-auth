@@ -256,6 +256,23 @@ its 2 s budget, over Wi-Fi and over mobile data. It also found **F119**, open:
 Safari on a Mac runs the client about 21× slower than Edge on the same machine,
 and every iPhone browser shares Safari's engine.
 
+V4-26 found F119's cause, and it was the measurement, not the client. Safari
+runs a page from a non-secure origin -- plain http on any name but `localhost`
+-- without its JIT, and the timing tool served such an origin. On a secure
+origin Safari runs the client at Edge's speed (spec §14, erratum 48). Every
+timing row now records whether its page was a secure context, and
+`phone_timing_tool` runs the real tool through both kinds of origin to pin
+that. Safari on a non-local HTTPS origin, which is what a deployment is, and
+any iPhone are still unmeasured.
+
+V4-27 took D10 into the browser. The key never leaves the wasm module except
+sealed, but nothing had looked at what Chromium actually writes to disk.
+`browser_e2e` now opens every envelope its store held, natively, with the
+test's passphrase. It then scans both profiles, about 15 MB each, for the
+key's secret windows and for the passphrase. It trusts a clean result only
+after the same scan finds, whole, a canary written into IndexedDB and the key
+itself planted in the clear. Nothing was found.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles

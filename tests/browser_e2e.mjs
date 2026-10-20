@@ -20,10 +20,16 @@
 //   phishing     a device whose pinned server key is not the daemon's is refused
 //   recovery     a fresh browser profile enrolls with a recovery code
 //   policy       enrollment under a weak passphrase is refused inside wasm
+//   at rest      (V4-27, CLAIMS D10) no key the browser held, and not the
+//                passphrase, is anywhere in either profile on disk -- read
+//                back by $MLDSA_KEY_SCAN (tests/envelope_key_scan.c), after a
+//                canary written into IndexedDB proves the scan sees it
 // and it measures Argon2id and a login IN the browser, next to V4-2 S6.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Browser, findBrowser } from './browser/cdp.mjs';
 
 const [fixturePath, moduleDir, browserArg] = process.argv.slice(2);
@@ -36,6 +42,39 @@ let fail = 0;
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}: ${what}`); if (!ok) fail = 1; };
 const PASS = 'correct horse battery staple';
 const INVITE = 'reference-invite';
+
+// ---- at rest (V4-27): the helper, and what it is handed ----
+// The envelopes, the passphrase and the canary go to a directory of the
+// test's own, never into a profile that is about to be scanned.
+const KEY_SCAN = process.env.MLDSA_KEY_SCAN;
+check(!!KEY_SCAN && existsSync(KEY_SCAN), `at rest: the profile scan's helper is named and exists (MLDSA_KEY_SCAN=${KEY_SCAN})`);
+const work = mkdtempSync(join(tmpdir(), 'mldsa-e2e-'));
+writeFileSync(join(work, 'pass'), PASS);
+let nfile = 0;
+const hexFile = (hex) => { const f = join(work, `n${nfile++}.hex`); writeFileSync(f, hex); return f; };
+// Runs the helper; its last line is "found N of M windows; scanned F files, B bytes; ...".
+function scan(args) {
+  const r = spawnSync(KEY_SCAN, args, { encoding: 'utf8', timeout: 120000 });
+  const m = /found (\d+) of (\d+) windows; scanned (\d+) files, (\d+) bytes/.exec(r.stdout || '');
+  if (r.status !== 0 || !m) { console.log(`  (scan failed: exit ${r.status}; ${(r.stderr || '').trim()})`); return null; }
+  const hits = r.stdout.split('\n').filter((l) => l.startsWith('hit:'));
+  if (hits.length) { console.log(hits.slice(0, 3).map((l) => `  (${l})`).join('\n')); }
+  return { found: +m[1], of: +m[2], files: +m[3], bytes: +m[4] };
+}
+const toHex = (a) => Buffer.from(a).toString('hex');
+// 4,032 random bytes -- an ML-DSA-65 secret key's length -- put into the
+// page origin's IndexedDB the way the store puts an envelope (a Uint8Array
+// value), in a database of its own. Written at a profile's first page, so
+// it is at least as old as anything the scan looks for.
+const writeCanary = (b) => b.eval(`(async () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(4032));
+  const db = await new Promise((res, rej) => { const q = indexedDB.open('mldsa-canary', 1);
+    q.onupgradeneeded = () => q.result.createObjectStore('c'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
+  await new Promise((res, rej) => { const tx = db.transaction('c', 'readwrite'); tx.objectStore('c').put(bytes, 1);
+    tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  db.close();
+  return Array.from(bytes, (x) => x.toString(16).padStart(2, '0')).join('');
+})()`);
 
 const fx = spawn(fixturePath, ['300'], { stdio: ['ignore', 'pipe', 'inherit'] });
 const info = await new Promise((res, rej) => {
@@ -92,9 +131,13 @@ try {
   let r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: 'password1234' });
   check(r.result.startsWith('error') && /refused by the policy/.test(r.status),
         'policy: enrollment under a common passphrase is refused inside wasm');
+  const canary1 = await writeCanary(b);
   r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: PASS });
   check(r.result === 'ok' && /Enrolled alice/.test(r.status), `enroll: a key made in the browser is enrolled (${r.status})`);
   const handle = await inPage(b, 'return (await store.list())[0].handle;');
+  // Every key this profile's store holds, as the test sees each one appear.
+  const envOf = async (br, h) => toHex(await inPage(br, `return Array.from((await store.get(${JSON.stringify(h)})).envelope);`));
+  const held = [['the enrolled key', await envOf(b, handle)]];
 
   // ---- login and the hand-off ----
   requests.length = 0;
@@ -129,7 +172,8 @@ try {
   const stale = await inPage(b, `
     const next = client.newIdentity(${JSON.stringify(PASS)}, ${JSON.stringify(handle)});
     await store.stagePending(${JSON.stringify(handle)}, next.envelope);
-    return true;`);
+    return Array.from(next.envelope);`);
+  held.push(['the stale pending key', toHex(stale)]);
   r = await act(b, 'login.html', { passphrase: PASS });
   const afterStale = await inPage(b, `const r = await store.get(${JSON.stringify(handle)}); return r.pending !== null;`);
   check(stale && r.result === 'ok' && /never committed/.test(r.status) && afterStale,
@@ -144,17 +188,19 @@ try {
     const s = await client.login({ ...params(h), envelope: cur.envelope, keepForRotate: true });
     await s.rotate(next.envelope, ${JSON.stringify(PASS)});
     await s.close();                         // the ACK arrived, but the page "crashed" before promote()
-    return Array.from(next.envelope.slice(-16));`);
+    return Array.from(next.envelope);`);
+  held.push(['the lost-ACK key', toHex(lost)]);
   r = await act(b, 'login.html', { passphrase: PASS });
   const afterLost = await inPage(b, `const r = await store.get(${JSON.stringify(handle)});
     return { pending: r.pending, tail: Array.from(r.envelope.slice(-16)) };`);
   check(r.result === 'ok' && /completed the interrupted rotation/.test(r.status) && afterLost.pending === null &&
-        JSON.stringify(afterLost.tail) === JSON.stringify(lost),
+        JSON.stringify(afterLost.tail) === JSON.stringify(lost.slice(-16)),
         'storage: a lost ACK -- the next login completes the rotation in ONE IndexedDB transaction');
 
   // ---- rotation through the account page ----
   r = await act(b, 'account.html', { passphrase: PASS }, 'rotate');
   check(r.result === 'ok' && /Rotated/.test(r.status), `rotate: ${r.status}`);
+  held.push(['the account page\'s rotated key', await envOf(b, handle)]);
   r = await act(b, 'login.html', { passphrase: PASS });
   check(r.result === 'ok', 'rotate: the rotated key logs in');
 
@@ -194,6 +240,7 @@ try {
   // site's session), so there is no result to wait for on the page itself.
   await b2.navigate(`${origin}/recover.html`);
   await b2.waitFor("document.body.dataset.ready === '1'", 'recover.html ready');
+  const canary2 = await writeCanary(b2);
   await b2.eval(`document.getElementById('user').value = 'alice';
                  document.getElementById('code').value = ${JSON.stringify(codes[0])};
                  document.getElementById('go').click();`);
@@ -203,6 +250,43 @@ try {
   check(r.result === 'ok' && /Enrolled alice/.test(r.status), `recovery: a fresh profile enrolls a new device with a code (${r.status})`);
   r = await act(b2, 'login.html', { passphrase: PASS });
   check(r.result === 'ok' && /Logged in as alice/.test(r.status), 'recovery: and the new device logs in');
+  const handle2 = await inPage(b2, 'return (await store.list())[0].handle;');
+  const held2 = [['the recovered device\'s key', await envOf(b2, handle2)]];
+
+  // ---- at rest: both profiles, while the browsers still run (V4-27) ----
+  // The canary first: unless the scan finds the bytes IndexedDB was given, a
+  // clean result below would mean nothing. Chromium's two backends store them
+  // differently. LevelDB (Edge on macOS) keeps the value whole. SQLite
+  // (Chrome for Testing on Linux) puts a value longer than its in-page share
+  // into overflow pages, each starting with a 4-byte pointer, so the 15
+  // windows straddling a split are not contiguous on disk: 4,002 of 4,017 in
+  // CI 39378680825, one split. A 4,032-byte value crosses at most two on
+  // 4 KiB pages. A key in the clear would still show thousands of windows,
+  // and one is a failure.
+  for (const [br, canary, keys, h, name] of [[b, canary1, held, handle, 'profile 1'], [b2, canary2, held2, handle2, 'profile 2']]) {
+    const c = scan(['--dir', br.profile, '--needle', hexFile(canary)]);
+    check(c !== null && c.of === 4017 && c.found >= c.of - 30 && c.files > 0,
+          `at rest, ${name}: a canary written into IndexedDB is found on disk, every window but at most two page splits' -- ` +
+          `the scan sees what IndexedDB writes (${c ? `${c.found}/${c.of}; ${c.files} files, ${c.bytes} bytes` : 'scan failed'})`);
+    for (const [what, env] of keys) {
+      const k = scan(['--dir', br.profile, '--envelope', hexFile(env), '--pass', join(work, 'pass'), '--handle', h]);
+      check(k !== null && k.of > 3800 && k.found === 0,
+            `at rest, ${name}: no window of ${what} is anywhere in the profile (${k ? `${k.found} of ${k.of}` : 'scan failed'})`);
+    }
+    // And the key path's own proof that it can see: the last key, opened and
+    // written into the profile in the clear by the helper, is found whole.
+    const [lastWhat, lastEnv] = keys[keys.length - 1];
+    const pl = scan(['--dir', br.profile, '--envelope', hexFile(lastEnv), '--pass', join(work, 'pass'), '--handle', h,
+                     '--plant', join(br.profile, 'planted-key.bin')]);
+    check(pl !== null && pl.found === pl.of && pl.of > 3800 && !existsSync(join(br.profile, 'planted-key.bin')),
+          `at rest, ${name}: ${lastWhat}, planted in the profile in the clear, is found by the same scan, every window ` +
+          `(${pl ? `${pl.found} of ${pl.of}` : 'scan failed'})`);
+    const p8 = scan(['--dir', br.profile, '--needle', hexFile(Buffer.from(PASS, 'utf8').toString('hex'))]);
+    const p16 = scan(['--dir', br.profile, '--needle', hexFile(Buffer.from(PASS, 'utf16le').toString('hex'))]);
+    check(p8 !== null && p16 !== null && p8.found === 0 && p16.found === 0,
+          `at rest, ${name}: the passphrase is in no file of the profile, as UTF-8 or UTF-16 ` +
+          `(${p8 && p16 ? `${p8.found} of ${p8.of}, ${p16.found} of ${p16.of}` : 'scan failed'})`);
+  }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
@@ -211,6 +295,7 @@ try {
   site.server.close();
   fx.kill();
   await new Promise((r) => fx.once('exit', r));
+  rmSync(work, { recursive: true, force: true });
 }
 console.log(fail ? '\nFAILED' : '\nAll checks passed');
 process.exit(fail);

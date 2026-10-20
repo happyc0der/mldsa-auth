@@ -8255,3 +8255,452 @@ trees is the owner's decision.
   audit table's separators and `git diff --check` pass.
 - **Scope:** only `docs/`, `bench/results.md` and `deploy/RUNBOOK.md`
   changed; no source or test file did, so no campaign is affected.
+
+## V4-26 — F119's cause: Safari has no JIT on a non-secure origin (spec §14, erratum 48)
+
+The first iteration of the owner's continuous loop (2026-10-20: "plan ->
+execute -> ci/nightly -> continue", with bug fixes and cleanup every third
+iteration). Under that instruction the plan was written down, not held for
+approval. V4-25 had left F119 open: Safari 27.0.1 ran the client about 21×
+slower than Edge on the same Mac, cause unknown.
+
+### Finding the cause
+
+The investigation used throwaway probes. Their sources and every raw row are
+kept beside the repository in `jit-probe-2026-10-20/`, as V4-25's rows were.
+Each probe was a page compiled against `build-wasm-p`'s own libsodium and
+liboqs with the module's link flags, opened in Safari or Edge with
+`open -a … URL`, which POSTed its times to a collector. The steps, in order:
+
+1. **The components, on `http://127.0.0.1`.**
+   - Argon2id(3, 64 MiB) took 77 ms in Safari against Node's 98.6.
+   - ML-DSA-65, ML-KEM-768 and X25519 ran at Node's speed.
+   - SHAKE256 took 1.7× Node's time and BLAKE2b 4.7×.
+
+   No primitive explains 21×.
+2. **The shipped module with the shipped JS client, the same origin.** A new
+   identity took 81 ms and a login's first step 81 ms. Adding the site's
+   exact CSP changed nothing. **Safari was not slow at all**, which is how
+   it became clear that V4-25's origin was the variable.
+3. **The same page from the Mac's LAN address**, which is what the tool
+   serves: 2,133 ms and 2,143 ms. Everything was 8–30× slower, a
+   crypto-free wasm loop included.
+4. **Seven origins, each reporting `isSecureContext`.**
+   - The 20× split follows the secure context exactly, for a plain
+     JavaScript loop as much as for wasm.
+   - `localtest.me` resolves to 127.0.0.1 and is still slow, so the
+     network is not the cause.
+   - `probe.localhost` is fast.
+   - Edge showed no difference.
+
+**Conclusion.** Safari 27.0.1 on this Mac runs a non-secure origin's pages
+without its optimizing JIT. A web search found no WebKit or Apple document
+describing this, and Lockdown Mode's global key is unset. Whether it is
+Safari 27's default or this Mac's configuration is left open: one Mac, one
+Safari.
+
+### What was decided
+
+- **F119 is RESOLVED, not FIXED: there was no defect in the client.** The
+  defect was in the measurement: the tool served an origin no deployment
+  has, and nothing in a row said so. A deployment is HTTPS behind the site's
+  TLS proxy (§7.1), and therefore a secure context.
+- **Record the origin rather than change it.** Serving the tool over HTTPS
+  to a phone needs a certificate the phone trusts for a LAN or tailnet
+  name. Tailscale's HTTPS certificates would do it, but they are a tailnet
+  setting, which is the owner's call. So every row now carries:
+  - `secure`, which is `window.isSecureContext`;
+  - `jsLoopMs`, a fixed 10⁷-step xorshift loop, best of three, timed before
+    any cryptography: a JIT indicator that does not depend on the module.
+    It measured 13–14 ms in Edge, 62 ms in Safari on a secure origin and
+    361 ms on a non-secure one.
+- **The page shows a note on a non-secure origin.**
+- **The site's route requires both fields.** A row without them is exactly
+  the ambiguous kind V4-25 published.
+- **`--auto`** starts the page from its fragment, so a desktop browser opened
+  by a script, and the test, need no click.
+- **The tool exits 1 when `--minutes` run out before `--count` results.** It
+  exited 0 before, so a run that measured nothing looked like success.
+- **On SIGTERM or SIGINT the tool takes the daemon fixture down with it.**
+  Before, a killed tool left the fixture serving for its whole lifetime.
+- **The tool notes a non-loopback `--host`** and names `--host 127.0.0.1` for
+  same-machine browsers. The note says "Safari on a Mac" and that iPhones are
+  unmeasured: it claims nothing about a device that was never timed.
+
+### The test, and its controls
+
+`phone_timing_tool` runs the real tool as a process and drives headless
+Chromium through two origins of one server:
+- `http://127.0.0.1:P`;
+- `http://timing.test:P`, mapped to loopback by `--host-resolver-rules`, so
+  it is a non-secure origin in CI without DNS or a second interface.
+
+It makes 20 checks, listed in the `test:` commit. It is registered beside
+`browser_e2e`, because it needs a browser and the wasm tree. CI's wasm job
+runs it and asserts that both are registered. That loop runs outside CTest,
+so it was executed under bash against `build-p`, both ways.
+
+The nightly campaign tree has no wasm and no browser, so the controls were
+run by hand, as V4-13c's were. Eight mutations, each restored byte-exactly,
+with sha256 compared before and after and a residue grep for the marker:
+
+| | Mutation | Red at |
+|---|---|---|
+| K1 | the page reports `secure: true` always | row 2 records secure: false |
+| K2 | the route drops `secure` | row 1 records secure: true |
+| K3 | the JS loop reports 0 | each row has … a JS loop time, all positive |
+| K4 | `auto=1` ignored | the run completed (timed out waiting for leg 1's result) |
+| K5 | the tool prints "yes" always | the tool printed "secure context: yes" … and "no" |
+| K6 | the tool exits 0 on timeout | … the tool says "time is up" and exits 1 |
+| K7 | the route accepts any `secure` | a row with secure "yes" or missing … is refused 400 |
+| K8 | no note on a non-secure origin | leg 2: and shows the insecure-origin note |
+
+**K7 first went red at the wrong check, which was the test's fault.**
+Accepting `secure: "yes"` made that malformed row the tool's second result,
+so the tool exited. The next probe's fetch then threw, and the run died
+before reaching the 400 check. The probe now records a failed fetch as "no
+response", and K7 goes red where predicted. All eight were then re-run
+against the final test, and all eight were killed at their named checks.
+
+Not gated: the tool's note for a non-loopback `--host`, since CI has no
+second address to bind. It was checked by running the tool on
+192.168.12.123; its output is saved in
+`jit-probe-2026-10-20/tool-192.168.12.123.log`.
+
+### The measurements
+
+Recorded in `bench/results.md`: the seven-origin table, the component table,
+the module table and the tool's own four rows. In the tool's rows:
+- Safari on `127.0.0.1`: a new identity in 94 ms and logins in 85–100 ms.
+- Edge on the same origin: 88.4 ms and 84.6–91.9 ms.
+- Safari on the LAN address: 2,138 ms and 2,168–2,191 ms, V4-25's figure
+  reproduced.
+
+Every number in the new tables was checked by script against the raw logs:
+33 rows, 0 missing. The Node baseline existed only in this session's
+command output, so it was saved verbatim and also rerun. The rerun
+reproduced it to within run-to-run spread; Argon2id 3/64 MiB was 81.8 ms
+against 98.6 and 81.9 before.
+
+### Still open (and said so in §14, the runbook and F119)
+
+- **Safari on a non-local HTTPS origin.** That is a deployment's shape, and
+  it needs a trusted certificate for a non-local name. Offered to the owner:
+  Tailscale HTTPS for the Mac's tailnet name.
+- **An iPhone.**
+- **Chrome on Android on a secure origin.** V4-25's phone rows were taken
+  on non-secure origins; Edge on the Mac shows Chromium unaffected.
+
+### The fresh trees
+
+`~/.cache/mldsa-tmp` had been emptied (V4-25), so the sanitizer and fuzz
+trees were rebuilt beside the broken old ones, with the old trees' exact
+configurations:
+- `build-asan-p`: Debug, `/usr/bin/cc`, ASan, the wasm dir, Node and Edge;
+- `build-ubsan-p`: the same with UBSan;
+- `build-fuzz-p`: Homebrew clang, the Xcode SDK as sysroot, `MLDSA_FUZZ`.
+
+Built from main `6008d70`'s C sources, which this step leaves unchanged:
+ASan `88d7912493793fcf` 52/52 and UBSan `55d7cb28ec5c6421` 52/52, with 0
+sanitizer reports. Fuzz `4ac22c8dbe47e497` 36/36 fuzz-labelled.
+Its first currency check came back VOID: one object, CMake's compiler-ID
+probe, differed, because `tests/CMakeLists.txt` was edited while the check
+ran. The re-check was clean.
+
+### Verification
+
+- **Every tree proven current by the from-scratch gate**, with the
+  sanitizer link proven, then its whole suite, at the branch's code head
+  `c40213f`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `6256693b772a00b0`, 53/53;
+  - ASan `88d7912493793fcf`, 53/53, with 0 reports;
+  - UBSan `55d7cb28ec5c6421`, 53/53, with 0 runtime errors;
+  - fuzz `4ac22c8dbe47e497`, 36/36 fuzz-labelled.
+
+  `phone_timing_tool` passed in all three native trees. No fixture process
+  was left running afterwards.
+- **Controls K1–K8:** each killed by name, each restored byte-exactly, and
+  no marker left behind.
+- **Gates:**
+  - spec constants and vocabularies, the claim map (190 checks), the anchors
+    (342 across 40 campaigns), every audit row at 8 unescaped separators,
+    and `git diff --check`;
+  - `web_no_crypto` on `web/client` (the gate) and on `web/pages`, which
+    shows the calibration loop trips nothing.
+- **Branch CI** 39371836902 on `c40213f`: 14/14. In the wasm job,
+  `phone_timing_tool` passed on Linux with Chrome for Testing 154 (7/7
+  selected).
+- **Scope:**
+  - The page, the site's timing route, the tool, one new test and its
+    registration, CI's wasm step, and the records.
+  - No C file changed. So no campaign's code changed, and the nightly's
+    campaigns are unaffected except as the bring-up's control.
+
+## V4-27 — D10 in the browser: both profiles scanned for every key, and the passphrase
+
+Loop iteration 2. CLAIMS D10 listed "the browser's IndexedDB" among what its
+window scans did not reach.
+- **The mechanism was argued, not observed.** The key is made, sealed and
+  opened inside the wasm module, so IndexedDB is only ever handed the sealed
+  envelope. Nothing had looked at what Chromium actually writes to disk.
+- **Why it matters:** the browser is milestone B's client.
+
+### What was built
+
+- **`tests/envelope_key_scan.c`**, a native test helper. It takes an
+  envelope read back from IndexedDB, opens it with the test's passphrase
+  through the same `keyfile_open_buf` the module runs, and scans a directory
+  for every 16-byte window of the secret key made wholly of secret bytes.
+  - **Speed.** The windows are indexed by their first 8 bytes, so each file
+    position costs a binary search. `test_authd_cli`'s `memmem` per window
+    would be about 3,900 passes over a 15 MB profile.
+  - **What it reads.** Every regular file, whatever its size; the CLI scan
+    skips files over 1 MiB, and a profile has bigger ones. Symlinks and
+    sockets are counted, not followed; a profile has a dangling lock
+    symlink and a socket. A regular file it cannot read is an error.
+  - **What it prints.** Positions and counts only.
+  - **Two more modes.** `--needle` looks for arbitrary bytes, for the
+    canary and the passphrase. `--plant` writes the opened key into the
+    scanned directory in the clear, scans, and removes it again.
+- **`browser_e2e` collects every envelope its store held**, as the flows
+  create them:
+  - the enrolled key;
+  - the stale pending key;
+  - the lost-ACK rotation's key;
+  - the account page's rotation;
+  - in the second profile, the recovered device's key.
+
+  Before the browsers close, both profiles are scanned.
+- **The canary is the precondition.** Each profile's first page writes 4,032
+  random bytes into IndexedDB as a `Uint8Array` value, the way the store
+  writes an envelope, so the canary is at least as old as any key. All 4,017
+  of its windows must be found. They were, in the origin's LevelDB
+  `000003.log`.
+- **The key path proves itself the same way:** the last key, planted by the
+  helper, must be found whole (3,906 of 3,906).
+- **The passphrase is looked for as UTF-8 and UTF-16LE.** Chromium could keep
+  form data, or a page could store it.
+- **`MLDSA_KEY_SCAN` names the helper** through CTest's environment. Unset is
+  a FAIL, not a skip.
+- **F105's window rule moves to `tests/key_windows.h`.** `test_authd_cli` and
+  `test_authd_conn` each had a copy; the helper is the third user. The check
+  strings, and every campaign's anchors, are unchanged (0 campaigns anchor in
+  those files).
+
+### What the scan found
+
+Nothing:
+- every key, 0 of 3,906 windows;
+- the passphrase, 0 of 13 (UTF-8) and 0 of 41 (UTF-16);
+- profile 1 ran to 339 files and 15.0 MB, profile 2 to 307 files and
+  14.3 MB.
+
+The claim now has an observation behind it for headless Chromium at the
+moment of the scan.
+
+### Controls, by hand (the nightly tree has no browser)
+
+| | Mutation | Red at |
+|---|---|---|
+| C1 | the helper ignores its hits | the canary, and the planted key, in both profiles |
+| C2 | the helper indexes the public key instead | every key check (1,937 windows, not > 3,800), and the planted key (17 of 1,937 found: `rho`, which is `pk[0..32)` and `sk[0..32)`) |
+| C3 | the canary is not written | the canary, in both profiles |
+| C4 | the enroll page keeps the passphrase in `localStorage` | the passphrase, profile 1 (13 of 13 UTF-8 windows) |
+| C5 | the helper skips `.log` files | the canary, in both profiles |
+
+C4 shows the passphrase scan reaching a second storage area:
+`localStorage`, flushed within the test's run.
+
+**C2 first SURVIVED, and that was the stale-object trap again.** The
+control script restored C1 and rebuilt the helper, then wrote C2's mutation
+within the same second. `make`'s mtime test saw nothing to do, so C2 ran
+the unmutated binary. The script now deletes the object and the executable
+before every build and prints the resulting binary's sha256:
+- baseline `d965b685`;
+- C1 `9cbeb589`;
+- C2 `e8be3b42`;
+- C5 `06b103bc`;
+- every restore different again, since macOS links are not byte-stable.
+
+Re-run that way, C1, C2 and C5 were all killed. C3 and C4 change no binary.
+
+### Still not established (said so in CLAIMS D10)
+
+- **A later compaction.** LevelDB compacts its log into Snappy-compressed
+  tables later. The canary shows what the scan sees in the state it
+  scanned, and nothing after.
+- **Memory, swap, Safari and Firefox.**
+- **A CLI rotation whose session opens but whose reply is lost or refused.**
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `f29536f`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `65f2c1930ba2bf36`, 53/53;
+  - ASan `d5adbb8aaf8ec45d`, 53/53, with 0 reports;
+  - UBSan `56ecbea2b1433346`, 53/53, with 0 runtime errors;
+  - fuzz `8e1a2f5379f53c6e`, 36/36.
+
+  `browser_e2e`, with its at-rest checks, passed in all three native
+  trees: the helper ran under ASan and UBSan. No fixture was left running.
+- **Controls C1–C5:** all killed by name, each restored byte-exactly, with
+  no marker left behind.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 194 checks and 16 tools, every cited check string found
+    verbatim in its test;
+  - anchors: 342 across 40 campaigns, unchanged;
+  - audit separators and `git diff --check`.
+
+### CI: on Linux, Chromium's IndexedDB is SQLite
+
+CI 39378680825 failed one check in the wasm job: "every window of a
+canary", with 4,002 of 4,017 found, in both profiles.
+- **Two backends.** Chrome for Testing 154 on Linux keeps IndexedDB in
+  SQLite: a database file and its `-wal`, where the canary was found. Edge
+  155 on macOS keeps it in LevelDB, where the canary sat whole in the log.
+- **Why 15 are missing.** SQLite stores a value longer than its in-page
+  share in overflow pages, each of which begins with a 4-byte pointer. So
+  the bytes are split once, and the 15 windows straddling the split are not
+  contiguous on disk: 4,017 − 4,002 = 15.
+- **No leak was found.** Every key check passed there too (0 of 3,906), and
+  the planted key was found whole.
+- **The canary was too strict for SQLite.** It now needs every window but
+  at most two page splits, at least 3,987 of 4,017. A 4,032-byte value
+  crosses at most two splits on 4 KiB pages.
+- **The key checks are unchanged.** One window is a failure, and a key in
+  the clear in SQLite would still show thousands.
+- **The controls under the new condition.** C1, C3 and C5 were re-run and
+  are killed by name (0 of 4,017 each). CLAIMS D10 cites the new check
+  text.
+
+Both of Chromium's IndexedDB backends are now scanned: LevelDB locally,
+SQLite in CI.
+## V4-28 — F114 fixed, and the working copy cleaned (the loop's third iteration)
+
+Every third iteration of the owner's loop is bug fixes and repo cleanup.
+This is the first.
+
+### F114: scratch directories named after the pid
+
+F114 was recorded in V4-24a and left "for the owner's word". The owner's
+standing instruction to fix bugs every third iteration is that word.
+
+- **The bug.** Seven tests made `/tmp/<name>-<pid>` (two of them relative to
+  the build tree) with `mkdir`, and stopped if it existed. A run that crashes
+  never reaches the cleanup at the end of `main`, so a later run that drew
+  the same pid failed before its first check.
+- **The fix.** Each now uses `mkdtemp`, which is unique by construction, as
+  `authd_node_fixture` and `authd_wasm_fixture` already did.
+- **The row was wrong in one detail.** It said `test_authd_cli` ignored the
+  error, but that test had stopped on a failed `mkdir` since V4-9b
+  (`cd85092`), before F114 was written. It is fixed with the others.
+- **A gate keeps it fixed.** `scratch_dirs`, a new CTest in every native tree,
+  fails if any line under `tests/` or `bench/` formats `getpid()` into a
+  string. Its canary requires `mkdtemp(g_dir)` in each of the seven, so the
+  gate cannot pass because a test stopped making its directory. It was shown
+  red both ways by hand, each control restored byte-exactly (`cmp`):
+  - **A pid name put back** in `test_authd_ws.c`: "a pid formatted into a
+    string", naming the line.
+  - **`mkdtemp` taken out** of `test_client_core.c`: "no longer makes its
+    scratch directory with mkdtemp(g_dir)".
+- **The counts.** Every native tree runs one test more: 50 (48 without
+  node), 52 with a wasm tree, 54 with a browser. The README and REPRODUCE.md
+  say so, and the README's table has the row.
+
+### Three stray fuzz inputs, moved rather than deleted
+
+The repository root held three untracked, gitignored files:
+- `crash-45895c33…`, 132 bytes, from 2026-09-26;
+- `crash-localapi-replay-input`, 4,021 bytes;
+- `crash-keys-replay-input`, empty.
+
+No record says where they came from.
+- **Replayed today**, against all 12 libFuzzer targets and their 12 replay
+  drivers in the fresh fuzz tree: every run exited 0, so neither non-empty
+  input reproduces anything.
+- **Never a committed regression:** `tests/fuzz/regressions/` holds only
+  `.gitkeep` files.
+- **Moved, with a note and their checksums,** to
+  `stray-fuzz-inputs-2026-10-20/` beside the repository. Their contents
+  cannot be recreated, so deleting them is not this loop's call.
+
+### The old build trees
+
+On 2026-10-19 `~/.cache/mldsa-tmp` was emptied, and six trees lost
+libsodium's headers. None of them can build:
+- `build-v413d`;
+- `build-asan-v413d`;
+- `build-ubsan-v413d`;
+- `build-fuzz-v415`;
+- `build-wasm-d`;
+- `build-bench-v412`.
+
+**Each has a proven replacement with the same configuration**, read from
+its `CMakeCache.txt`:
+- `build-p`, `build-asan-p`, `build-ubsan-p`, `build-fuzz-p` and
+  `build-wasm-p`, all current and green since V4-26;
+- for the Release bench tree (`/usr/bin/cc`, `auto`), a fresh
+  `build-bench-p`, built here and run.
+
+A build tree holds only what configure and build regenerate from the
+source, so the old ones are deleted.
+
+**Two directories are not build trees and stay:**
+- `build-bench` holds `bench-results`;
+- `build-fuzz` holds a 28 MB fuzz corpus and its logs.
+
+Both are data, and both are the default paths the README and the workflows
+name.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `85a1571`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `40b2e8bdfb822f12`, 54/54;
+  - `build-bench-p` `6a19208817413ae5`, 50/50, `bench_smoke` included;
+  - ASan `5595425cba5517b4`, 54/54, with 0 reports;
+  - UBSan `a0eea500676dd628`, 54/54, with 0 runtime errors;
+  - fuzz `674ded0df9b85b76`, 36/36.
+
+  `scratch_dirs` passed in all four native trees.
+- **Nothing left behind.** After every suite, `find` showed no scratch
+  directory in `/tmp` or in any build tree, and no fixture process.
+- **Gates:** spec constants and vocabularies, the claim map, the anchors
+  (342 across 40 campaigns: no campaign anchors in the seven tests), the
+  audit separators, and `git diff --check`.
+
+## V4-26, V4-27 and V4-28 — CI on the branch and the nightly bring-up
+
+**One bring-up for three steps.** V4-24a and V4-24b set the precedent. The
+three steps land in order on one line, and none changes a campaign's code:
+- V4-26 and V4-27 change pages, a tool, tests and documents.
+- V4-28 changes seven tests' scratch directories and adds a gate.
+
+So one control nightly shows the nightly can still go red. One final
+nightly then runs every campaign against the final tree, the tests V4-28
+changed included.
+
+### CI on the branches (14 jobs each)
+
+| Head | Step | Run | Result |
+|---|---|---|---|
+| `c40213f` | V4-26, the code | 39371836902 | 14/14; `phone_timing_tool` passed on Linux with Chrome for Testing 154 |
+| `5a0fdc1` | V4-26, with its docs | 39374788675 | 14/14 |
+| `45d24a3` | V4-27 | 39378680825 | **13/14**: the wasm job's IndexedDB canary on SQLite (V4-27's section above) |
+| `19fce3a` | V4-27, the canary fixed | 39380060622 | 14/14 |
+| `c906687` | V4-28 | 39383763957 | 14/14 |
+
+### The control nightly
+
+- **The control.** `9832761` rotted v70 RK6's expectation, appending
+  "CONTROL -- a check no test prints (V4-26)", on V4-26's code. spec_v70's
+  sha256 before was `478757c2c9f3dd15`.
+- **The run.** 39373351325 was red on exactly `mutations · v70`, 54/55:
+  - RK1–RK5 were killed by name;
+  - RK6 was **SURVIVED(BAD)**, naming the rotted text;
+  - every mutant restored clean, with a passing clean suite and residue 0.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with V4-29.

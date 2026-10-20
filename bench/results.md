@@ -669,7 +669,8 @@ Safari's figures are whole milliseconds, because Safari coarsens
   - The new identity reaches or passes the Argon2id budget.
   - Lockdown Mode, which turns WebKit's JIT off, does not appear to be on: its
     global setting is unset.
-  - The cause is unknown: audit **F119**.
+  - The cause is unknown: audit **F119**. *(V4-26 found it: the origin, not
+    the engine's speed. See the next section.)*
 
 ### What these numbers do not establish
 
@@ -684,3 +685,144 @@ Safari's figures are whole milliseconds, because Safari coarsens
 - **Device memory.** `navigator.deviceMemory` is only exposed to secure
   (https) pages, and the tool serves plain http by design, so memory is
   unknown for every row.
+
+## Safari and the page's origin (V4-26)
+
+V4-25's Safari row was about 21× Edge's on the same Mac, with the cause
+unknown (F119). V4-26 found it: **Safari 27.0.1 runs a page from a
+non-secure origin without its JIT**, for JavaScript and wasm alike.
+`tools/phone_timing.mjs` serves plain http on an address a phone can reach,
+which is such an origin. On a secure origin the same Safari runs the client
+at Edge's speed.
+
+The measurements below were run on 2026-10-20, from 04:14 to 04:26 UTC for
+the probes and at 04:50 UTC for the tool.
+
+### Environment
+
+- **The Mac** is the same as in V4-25: Apple M4 Pro, macOS 27.0.1, Safari
+  27.0.1 and Edge 155. Lockdown Mode's global key is unset.
+- **The trees:**
+  - `build-p` (native) and `build-wasm-p` (Release, Emscripten 6.0.9). The
+    module is byte-identical to the one V4-25 measured: sha256
+    `eb52f8f0d352d278…`.
+  - The tool runs used the V4-26 branch: the page, site route and tool
+    changes, with no C change.
+
+### Method
+
+- **Probes, throwaway.** Three probe pages were compiled with `emcc -O3` and
+  the module's own link flags (`-sSTACK_SIZE=8MB -sALLOW_MEMORY_GROWTH=1
+  -sMODULARIZE -sEXPORT_ES6 -sFILESYSTEM=0 -sDYNAMIC_EXECUTION=0`), against
+  `build-wasm-p`'s libsodium and liboqs:
+  - integer loops, BLAKE2b and Argon2id;
+  - SHAKE256, ML-DSA-65, ML-KEM-768 and X25519;
+  - the shipped `mldsa_client.wasm` with the shipped
+    `web/client/authd-client.mjs`.
+
+  A fourth page timed a pure-JavaScript loop next to a wasm loop and
+  Argon2id.
+- **How they were run.** Each page timed every operation with
+  `performance.now()`, 3–5 times, and POSTed the times, with
+  `isSecureContext`, to a collector. Safari and Edge opened it with
+  `open -a … URL`.
+- **Where the files are.** The sources and every raw row are kept outside
+  the repository, in `jit-probe-2026-10-20/` beside it, as V4-25's rows were.
+- **The tool, after V4-26.** `tools/phone_timing.mjs --auto` was run on
+  `--host 127.0.0.1` and on `--host 192.168.12.123`, opened in Safari and
+  then Edge. Each row now records `secure` and `jsLoopMs`.
+
+Safari's times are whole milliseconds; it coarsens `performance.now()`. Rows
+of 1–2 ms are therefore too coarse for a ratio.
+
+### The split is the secure context (medians, ms)
+
+| Browser | Origin | `isSecureContext` | JS loop, 10⁸ steps | wasm loop, 10⁸ steps | Argon2id 3/64 MiB |
+|---|---|---|---|---|---|
+| Safari | `127.0.0.1` | yes | 180 | 135 | 81 |
+| Safari | `localhost` | yes | 183 | 135 | 80 |
+| Safari | `probe.localhost` | yes | 180 | 136 | 86 |
+| Safari | `localtest.me` (public DNS → 127.0.0.1) | **no** | 3,622 | 1,110 | 2,159 |
+| Safari | `192.168.12.123` (Wi-Fi LAN) | **no** | 3,660 | 1,123 | 2,200 |
+| Safari | `keshavs-macbook-pro.local` (mDNS) | **no** | 3,714 | 1,167 | 2,194 |
+| Safari | `100.68.182.21` (Tailscale) | **no** | 3,656 | 1,145 | 2,195 |
+| Edge | `127.0.0.1` | yes | 143.2 | 140.2 | 76.6 |
+| Edge | `192.168.12.123` | no | 137.3 | 137.9 | 80.1 |
+
+`localtest.me` is served from 127.0.0.1 and is still slow. So the network
+path does not decide it; the origin's security does.
+
+### Where the time goes in Safari, by component (medians, ms)
+
+| Operation | Node 24 | Safari, `127.0.0.1` | Safari, LAN | LAN ÷ loopback |
+|---|---|---|---|---|
+| wasm integer loop, 10⁸ steps | 144.1 | 150 | 1,242 | 8.3× |
+| wasm 64-bit loop, 5×10⁷ steps | 81.2 | 68 | 632 | 9.3× |
+| BLAKE2b, 16 MiB | 13.4 | 63 | 278 | 4.4× |
+| Argon2id 1/8 MiB | 3.3 | 3 | 87 | 29× |
+| Argon2id 3/64 MiB | 98.6 | 77 | 2,238 | 29× |
+| SHAKE256, 10 × 1 MiB | 12.6 | 21 | 311 | 15× |
+| ML-DSA-65 sign, ×20 | 5.0 | 5 | 134 | 27× |
+| ML-DSA-65 keygen, ×20 | 1.9 | 2 | 33 | — |
+| ML-DSA-65 verify, ×20 | 1.2 | 1 | 34 | — |
+| ML-KEM-768 keygen / encaps / decaps, ×20 | 1.4 / 0.9 / 0.5 | 1 / 1 / 1 | 11 / 14 / 16 | — |
+| X25519, ×20 | 0.8 | 1 | 23 | — |
+
+The shipped module and JS client, timed directly (median of 3):
+
+| Where | new identity | login's first step (Argon2id open + ClientHello) |
+|---|---|---|
+| Node 24 | 83.2 | 83.9 |
+| Safari, `127.0.0.1` | 81 | 81 |
+| Safari, `127.0.0.1`, the site's CSP | 81 | 81 |
+| Safari, LAN | 2,133 | 2,143 |
+| Safari, LAN, the site's CSP | 2,271 | 2,253 |
+
+### The tool itself, after V4-26
+
+| Browser | `--host` | secure | JS loop, 10⁷ (ms) | Seal (ms) | Logins, in order (ms) | Median login (ms) |
+|---|---|---|---|---|---|---|
+| Safari 27.0.1 | 127.0.0.1 | yes | 62 | 94 | 100, 90, 85, 85, 86 | 86 |
+| Edge 155 | 127.0.0.1 | yes | 13.3 | 88.4 | 86.0, 91.9, 84.6, 87.9, 85.4 | 86.0 |
+| Safari 27.0.1 | 192.168.12.123 | **no** | 361 | 2,138 | 2,168, 2,187, 2,179, 2,191, 2,191 | 2,187 |
+| Edge 155 | 192.168.12.123 | no | 13.6 | 84.4 | 91.4, 87.8, 85.9, 84.8, 84.2 | 85.9 |
+
+Edge on `127.0.0.1` reported 16 GiB of device memory. Every non-secure row
+reports none, because browsers expose `navigator.deviceMemory` only to
+secure pages.
+
+### Reading these numbers
+
+- **Nothing in the client is slow in Safari.** On a secure origin, every
+  component runs within a few percent of Node or faster, except BLAKE2b
+  (4.7× Node's time) and SHAKE256 (1.7×). The whole client runs at Edge's speed: a new identity in
+  94 ms against 88.4 ms, and a median login of 86 ms against 86.0 ms.
+- **On a non-secure origin, everything is slow, plain JavaScript included.**
+  - Integer loops are 8–9× slower.
+  - Argon2id, SHAKE256 and ML-DSA signing are 15–29× slower, and BLAKE2b
+    4.4×.
+  - A pure-JavaScript loop is 20× slower (3,622 ms against 180 ms), and the
+    page's own JS loop takes 361 ms against 62 ms.
+
+  That is the shape of an engine running without its optimizing JIT, not of
+  one slow primitive. The CSP changes nothing.
+- **Edge shows no such effect.**
+- **A deployment is a secure context.** Spec §7.1 puts the site behind a
+  TLS proxy, so its pages are HTTPS.
+- **V4-25's Safari row measured the origin, not the client.** The row
+  stands as a measurement of that origin.
+
+### What these numbers do not establish
+
+- **Safari on a non-local HTTPS origin.** That is what a deployment is, and
+  it was not measured: it needs a certificate the Mac trusts for a non-local
+  name. These rows show only that the split follows `isSecureContext`, and
+  such an origin is a secure context.
+- **Why Safari does this.** No WebKit or Apple document describing it was
+  found. Whether it is Safari 27's default or something about this Mac's
+  configuration is open: this is one Mac and one Safari. Which tier still
+  runs (an interpreter or a baseline compiler) cannot be seen from a page.
+- **An iPhone.** Every iPhone browser is WebKit, and none was measured.
+- **The phone's own origin effect.** V4-25's phone rows were taken on
+  non-secure origins in Chromium. Edge on the Mac shows Chromium unaffected,
+  but Chrome on Android was not timed on a secure origin.

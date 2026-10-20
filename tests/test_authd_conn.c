@@ -31,6 +31,7 @@
 #include "authmsg.h"
 #include "conn_io.h"
 #include "evloop.h"
+#include "key_windows.h"
 #include "listener.h"
 #include "store.h"
 #include "handshake.h"
@@ -1070,14 +1071,8 @@ static void test_rotate(void)
 
 /* ---------------------------------------------- the journal holds no key */
 
-/* 1 if sk[w..w+len) is made wholly of SECRET bytes of an ML-DSA-65 secret key:
- * inside K = [32,64), or in s1|s2|t0 = [128,4032). rho = [0,32) and
- * tr = [64,128) are derivable from the public key, and a window that touches
- * them is partly public -- no evidence (test_authd_cli.c says why, F105). */
-static int sk_window_is_secret(size_t w, size_t len)
-{
-    return (w >= 32u && w + len <= 64u) || w >= 128u;
-}
+/* sk_window_is_secret: F105's rule for which key windows count, in
+ * key_windows.h (shared with test_authd_cli and envelope_key_scan, V4-27). */
 
 static int scan_hit(const char *what, size_t w, size_t len, const char *how)
 {
@@ -1379,8 +1374,10 @@ int main(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
     authd_log_init(stderr, AUTHD_LOG_ERROR);   /* keep daemon chatter out of the output */
-    snprintf(g_dir, sizeof g_dir, "authd-conn-%ld", (long)getpid());
-    if (mkdir(g_dir, 0700) != 0) { printf("FAIL: mkdir\n"); return 1; }
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    snprintf(g_dir, sizeof g_dir, "authd-conn-XXXXXX");
+    if (mkdtemp(g_dir) == NULL) { printf("FAIL: mkdtemp\n"); return 1; }
 
     test_login();
     test_uniform_responder();

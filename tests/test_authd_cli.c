@@ -27,6 +27,7 @@
 #include "authd_config.h"
 #include "authd_harness.h"
 #include "authd_secret.h"
+#include "key_windows.h"
 #include "keyfile.h"
 #include "localcli.h"
 
@@ -149,18 +150,8 @@ static int any_file_starts_with(const char *dir, const char *magic)
     return found;
 }
 
-/* 1 if sk[w..w+len) is made wholly of SECRET bytes of an ML-DSA-65 secret key:
- * inside K = [32,64), or in s1|s2|t0 = [128,4032). rho = [0,32) IS pk[0..32)
- * and tr = [64,128) is SHAKE256(pk, 64), so a window touching either is partly
- * public -- and a mostly public one is no evidence: rho[17..32) || K[0] is in
- * every file holding the public key whenever K[0] happens to equal pk[32], one
- * key in 256. Keeping the windows that straddle (fuzz_keys's rule until V4-16,
- * F105) failed this test at that rate. Every secret byte is still inside some
- * window that is looked for. */
-static int sk_window_is_secret(size_t w, size_t len)
-{
-    return (w >= 32u && w + len <= 64u) || w >= 128u;
-}
+/* sk_window_is_secret, F105's rule for which key windows count, is in
+ * key_windows.h, shared with test_authd_conn and envelope_key_scan (V4-27). */
 
 /* Recursively: does any regular file under `dir`, other than `exempt` (may be
  * NULL), hold a 16-byte window of the ML-DSA-65 secret key `sk` made wholly of
@@ -981,8 +972,10 @@ int main(void)
      * named failure that way on the nightly while macOS kept it. */
     setvbuf(stdout, NULL, _IONBF, 0);
     if (sodium_init() < 0) { printf("FAIL: sodium_init\n"); return 1; }
-    (void)snprintf(g_dir, sizeof g_dir, "/tmp/authd-cli-%ld", (long)getpid());
-    if (mkdir(g_dir, 0700) != 0) { printf("FAIL: mkdir %s\n", g_dir); return 1; }
+    /* mkdtemp, not a pid-keyed name (audit F114): a run that crashes leaves its
+     * directory behind, and a later run that drew the same pid stopped at once. */
+    (void)snprintf(g_dir, sizeof g_dir, "/tmp/authd-cli-XXXXXX");
+    if (mkdtemp(g_dir) == NULL) { printf("FAIL: mkdtemp %s\n", g_dir); return 1; }
 
     test_init();
     test_keys();
