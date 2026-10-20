@@ -102,6 +102,7 @@ Two constraints that will otherwise cost you an afternoon:
 | UndefinedBehaviorSanitizer | `-DENABLE_UBSAN=ON` | UB runs of the whole suite |
 | libFuzzer | `-DMLDSA_FUZZ=ON` + a libFuzzer-capable clang | Coverage-guided fuzzing |
 | Portable binaries | `-DMLDSA_OQS_OPT_TARGET=generic` | Anything you distribute (see below) |
+| Coverage | `-DMLDSA_COVERAGE=ON` + clang, in a tree of its own | `tools/audit/coverage.sh <tree>`: line, region and branch coverage of the project's own code ([docs/v4/coverage.md](docs/v4/coverage.md)); never a campaign or currency tree |
 
 Project sources are compiled with `-Wall -Wextra -Werror
 -fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8), and linked

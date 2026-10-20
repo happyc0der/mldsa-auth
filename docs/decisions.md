@@ -9741,3 +9741,146 @@ The branch was then deleted.
 - **CI:** 39485765975, 14/14.
 - **Gates:** anchors and counts, the claim map, the spec checks, `git diff
   --check`, and the workflow YAML parsed.
+
+## V4-40 — the daemon's coverage, measured for the first time (loop iteration 15: coverage; F5)
+
+### Why
+
+F5 (Med) was open by its own account: coverage had been measured once, in
+V4-1, before the daemon existed. Nothing under `apps/authd/` had a figure.
+Coverage is deliberately not a gate here; the campaigns are. But an
+uncovered region is one no mutation can be killed in, so a figure finds
+gaps that the claim map's "not established" entries can only name by
+reading.
+
+### What measuring it found first
+
+**Forked test children were never counted.** A child leaves with `_exit()`,
+which skips the hook the profile runtime writes from. The first run (via
+`CMAKE_C_FLAGS`) put `cli_prompt.c` at 4.5% of lines, though
+`test_client_prompt` drives the prompt through every path under `forkpty`.
+Three tests fork such children:
+- `test_client_prompt`: the prompt;
+- `test_authd_cli`: the client CLI, run pumped;
+- `test_net`: the demo server and proxy.
+
+Their twelve `_exit()` calls now go through `tests/child_exit.h`. Under
+`MLDSA_COVERAGE` it writes the profile first. In every other build it calls
+`_exit()` and nothing else. It is not the same machine code: at `-O0` the
+inline function is a real call, and the added `#include` shifts line
+numbers. So the three tests' objects differ from V4-39's, and the plain
+trees' fingerprints changed. No other source changed, and no plain tree's
+compile commands carry a coverage flag (below). With the children counted:
+- `cli_prompt.c` reads 67.2% of lines;
+- `client_cli.c` reads 75.7%, up from 71.0%;
+- `apps/authd/` as a whole reads 81.30%, up from 79.80%.
+
+The profile count did not change (137), because `%m` in the profile name
+makes a child merge into its parent's file.
+
+**The tool had three defects of its own:**
+- **An empty list, silently.** Its "uncovered regions by function (top
+  25)" came out empty without saying so: the text report cannot be parsed
+  under a path with spaces, and the source filter was relative.
+- **CMake's probes in the totals.** Its totals counted CMake's
+  compiler-identification programs.
+- **Unscoped flags.** Instrumenting through `CMAKE_C_FLAGS` reached the
+  dependencies too, and something run during that build wrote a stray
+  `default.profraw` into the repository root (removed). With the new option
+  it did not recur.
+
+### The change
+
+- **`-DMLDSA_COVERAGE=ON`** (clang only) adds the instrumentation after the
+  dependencies are created: 112 project sources instrumented, 105 liboqs
+  sources not. It also defines `MLDSA_COVERAGE` for `child_exit.h`.
+- **`tools/audit/coverage.sh`:**
+  - it refuses a tree without the option;
+  - it finds the source tree from the cache;
+  - it skips `CMakeFiles`;
+  - it computes the totals by area and the functions under 80% from `llvm-cov
+    export`, counting code regions only, as llvm-cov does. Its first count,
+    of all region records, gave a one-line function 56 regions.
+- **The record:** `docs/v4/coverage.md` holds the method, the figures by
+  area and by file, and the triage.
+
+### The figures
+
+`build-cov-p`, all 56 tests, macOS, Apple clang 21:
+
+| Area | Lines | Regions | Branches | Functions |
+|---|---|---|---|---|
+| `src/` | 83.67% | 92.02% | 73.37% | 100% |
+| `apps/authd/` | 81.30% | 87.51% | 69.05% | 97.45% |
+| all | 80.20% | 87.66% | 67.89% | 97.44% |
+
+### The triage, and three findings
+
+Most of what is uncovered is of three kinds:
+- the failure of a primitive or an allocation, which needs fault injection;
+- `EINTR` and `EAGAIN` retries;
+- name tables.
+
+Beyond those, three findings:
+- **F121 (Info):** `conn_io_out_capacity`, `authd_conn_stage_name` and
+  `listener_accept` have no caller. `listener_accept`'s `(uid_t)-1`
+  sentinel becomes an empty allowlist, which means no credential check:
+  F92's shape, unreachable. Their removal is the next fixes-and-cleanup
+  iteration's.
+- **F122 (Low):** five security checks no test drives to their refusal:
+  - key-file custody (`keyfile_open`, `keyfile_promote`): the refusal ran 0
+    times against 174 and 4 runs of the condition;
+  - the CLI client's WebSocket frame reader, including its frame-versus-buffer
+    bound;
+  - `REVOKE-TOKENS handle=`;
+  - `store_open`'s refusal of a damaged store;
+  - the daemon's oversized-record, BYE-length and post-rotation drop paths.
+  The code reads correctly; the evidence is what is missing. They are the
+  next coverage iterations' work.
+- **F123 (Low, for the owner):** with `handle=`, `REVOKE-TOKENS` validates
+  `user=` and then ignores it. Nothing sends that form today, so nothing
+  ever showed it. Its scope is a decision about the interface's meaning,
+  so it is parked with a proposed fix: `AND user_id=?2`, answering `OK
+  count=0` for a mismatched pair (no new error code), plus an erratum and a
+  test.
+
+F5 stays open: it has a figure, and the figure names F122.
+
+### The controls
+
+- **`coverage.sh build-p`**, a tree without the option, prints "FAIL: …
+  was not configured with -DMLDSA_COVERAGE=ON", exits 2 and writes nothing.
+- **The coverage tree's `test_client_prompt`** references
+  `__llvm_profile_write_file`. Every plain tree's does not (below).
+- **The flush itself** is shown by the before/after figures above, on the
+  same tests: 8 of `cli_prompt.c`'s 177 lines before, 119 after.
+
+### Verification
+
+- **Every plain tree rebuilt, proven current and run in full,** with
+  `MLDSA_COVERAGE=OFF` and no coverage flag in its compile commands:
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-wasm-p` | `2c39f8ab7908049c` | 3/3 |
+  | `build-p` | `8133e8e65c9f728f` | 56/56 |
+  | `build-bench-p` | `c36e71ec4d73e2db` | 52/52 |
+  | ASan | `1c26ca6470293b67` | 56/56, instrumentation in all 43 |
+  | UBSan | `4edf84ad150b8bfc` | 56/56, instrumentation in all 44; one runtime error, the planted canary |
+  | fuzz | `bc023da52c87bbe5` | 36/36, `backend_symbols` 1/1 |
+
+  In each, `test_client_prompt` references no `__llvm_profile_write_file`.
+- **The coverage tree** `build-cov-p` (`5b44c662708d4ac3`): 56/56, 137
+  profiles. The final `coverage.sh` was run end to end once more, since a
+  script outside CTest is believed only when run. It matched the figures
+  above, except for one branch fewer (a timing-dependent retry); the
+  function list was the same apart from call counts.
+- **Campaign v73 on ASan.** Its two mutations are killed through
+  `test_authd_cli`'s pumped children, the path this step changed: RL1 and
+  RL2 each `KILLED(1 named)`, `residue: none`, all sources restored.
+- **Gates:**
+  - anchors (354; 16 counts agreeing);
+  - the claim map, including the register's size (123, F0–F123);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.

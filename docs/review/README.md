@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 120 findings (F0–F120), with severity, evidence and
+   register](../v4/audit.md). 123 findings (F0–F123), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -91,7 +91,7 @@ page said only F91 until V4-38, F120):
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F5 | Med | Coverage was measured once, before the daemon existed: nothing under `apps/authd/` has a coverage figure. The gaps it meant became the claim map's "not established" entries, closed by checks shown able to fail rather than by a percentage |
+| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure (81.3% of lines, 87.5% of regions; [coverage.md](../v4/coverage.md)), and it names the security checks no test reaches (F122); it stays open until those are covered |
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
 
@@ -332,6 +332,24 @@ load they had never flaked here, so it is insurance. V4-38 re-ran
 worked, but that page and this one had stale counts (**F120**). The counts
 that can be read from the tree are gated now. A second liboqs advisory in
 LMS, which is not compiled, joined F91.
+
+V4-39 took P10's backend check into every native tree. The CTest
+`backend_symbols` needs each executable to link the one intended
+ML-DSA/ML-KEM family. It is shown failing on three real builds: each
+aarch64 backend turned off, and liboqs's runtime dispatch. In CI it failed
+exactly the Linux jobs when the x86_64 ML-KEM backend was forced off. That
+checked a claim ci.yml had only asserted: `generic` on the macOS runners
+keeps the aarch64 backends.
+
+V4-40 measured the daemon's coverage for the first time (F5;
+[coverage.md](../v4/coverage.md)). Forked test children had never been
+counted, and are now. Three findings are open from it:
+- **F121:** three functions nothing calls, one of them a wrapper whose
+  sentinel would skip the peer-credential check.
+- **F122:** five security checks no test drives to their refusal, among
+  them key-file custody and the CLI's WebSocket frame bounds.
+- **F123:** `REVOKE-TOKENS user= handle=` ignores `user=`. Its scope is the
+  owner's decision.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
