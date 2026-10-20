@@ -414,6 +414,14 @@ if(MLDSA_WASM_DIR)
               $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web "${MLDSA_BROWSER}"
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     set_tests_properties(browser_e2e PROPERTIES TIMEOUT 600)
+    # V4-26 (F119): tools/phone_timing.mjs and web/pages/timing.html, the real
+    # tool driven through a secure and a non-secure origin; every row must say
+    # which it was.
+    add_test(NAME phone_timing_tool
+      COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/phone_timing_tool.mjs
+              $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web "${MLDSA_BROWSER}"
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+    set_tests_properties(phone_timing_tool PROPERTIES TIMEOUT 300)
   endif()
 endif()
 

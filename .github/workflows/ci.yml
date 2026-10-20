@@ -316,20 +316,22 @@ jobs:
           "$RUNNER_TEMP/chrome-linux64/chrome" --version
 
       # A separate step, so the native tree is configured without emsdk's
-      # environment (its CC, its node) in the way. browser_e2e exists only
-      # when a browser is named, so its presence is asserted: a gate that can
-      # pass by not having the test is not a gate.
+      # environment (its CC, its node) in the way. browser_e2e and
+      # phone_timing_tool exist only when a browser is named, so their presence
+      # is asserted: a gate that can pass by not having the test is not a gate.
       - name: The native daemon fixture, the wasm client logging in to it, and the browser
         run: |
           cmake -S . -B build-native -DMLDSA_WASM_DIR="$PWD/build-wasm" \
             -DMLDSA_NODE="$RUNNER_TEMP/node/bin/node" \
             -DMLDSA_BROWSER="$RUNNER_TEMP/chrome-linux64/chrome"
           cmake --build build-native -j4
-          ctest --test-dir build-native -N -R '^browser_e2e$' | grep -q 'Total Tests: 1' || \
-            { echo "::error::browser_e2e is not registered"; exit 1; }
+          for t in browser_e2e phone_timing_tool; do
+            ctest --test-dir build-native -N -R "^$t\$" | grep -q 'Total Tests: 1' || \
+              { echo "::error::$t is not registered"; exit 1; }
+          done
           tools/check_build_current.sh build-native && \
             ctest --test-dir build-native --output-on-failure \
-              -R '^(wasm_interop|web_no_crypto|test_client_wasm|test_passphrase|web_flows|browser_e2e)$'
+              -R '^(wasm_interop|web_no_crypto|test_client_wasm|test_passphrase|web_flows|browser_e2e|phone_timing_tool)$'
 
   deploy:
     name: unit + offline build (Linux)
