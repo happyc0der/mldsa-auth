@@ -288,6 +288,13 @@ new device's label when ENROLL spends it, with enrollment still working,
 passed every check. The store and a backup are now scanned after the spend
 too, and campaign v72 shows both scans catching a leak by name.
 
+V4-31 fixed the test fixtures' leak: they were always stopped before their
+deadline, the only point where they cleaned up, so every run left a test
+store behind (411 of them). V4-32 moved one of D9's checks out of process.
+The wasm client in Node holds live sessions for two devices against the
+real daemon process. After the site revokes one, that device's WebSocket
+closes and the other's stays open.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles

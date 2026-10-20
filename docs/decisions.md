@@ -8914,3 +8914,61 @@ source restored byte-exactly:
   running.
 - **Gates:** spec constants and vocabularies, the claim map, anchors (349
   across 42 campaigns), and `git diff --check`.
+
+## V4-32 — D9: revocation closes a live session, seen from another process
+
+Loop iteration 7.
+- **The gap.** CLAIMS D9 said closing a revoked device's live sessions "is
+  checked in-process only". `test_authd_localapi` reads the daemon's own
+  slot table, and `authd_e2e` checks only that a revoked device is refused
+  at its next login.
+- **What was missing.** No check stood where a real client stands: outside
+  the daemon's process, holding a socket.
+
+### The check
+
+`wasm_interop` already runs the wasm client in Node against the fixture
+daemon, a separate process.
+1. It enrolls two more devices for the same user.
+2. It logs each one in and keeps the session: the daemon serves on after
+   issuing the code.
+3. It has the site send `REVOKE-DEVICE` for the first.
+4. The first device's WebSocket must be closed by the daemon within 3 s,
+   observed as a `close` event in Node. The second's must still be open:
+   the canary that the close was the revoked device's and not everyone's.
+
+### Controls, by hand
+
+`wasm_interop` runs only in trees with a wasm module, so the nightly
+campaign tree cannot run it. Each control rebuilt the fixture and restored
+its source byte-exactly:
+
+| | Mutation | Red at |
+|---|---|---|
+| D1 | v49a's V1: REVOKE-DEVICE closes no live session | "revoke: the daemon closes the revoked device's live WebSocket, seen from the client's process (Req 9, D9)" |
+| D2 | `close_matching` matches every live session | "revoke: the other device's live session stays open (the canary)" |
+
+D2's first form was `if (0)`. It left `have` unused, `-Werror` refused to
+compile it, and no test ran, which is not a kill. It was rewritten as
+`if ((…) && 0)` so every variable stays used, and was then killed by name.
+
+### Not established
+
+- **`revoke=all` and DISABLE-USER.** Their closing is still observed in
+  process only.
+- **Raw-listener sessions.** Only WebSocket sessions were observed.
+
+### Verification
+
+- **Every tree proven current and run in full** at `808509b`. The
+  fingerprints equal V4-31's, as they must: no C file changed.
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `db37a89be25f62ac`, 54/54;
+  - `build-bench-p` `10aa86de66fb7eca`, 50/50;
+  - ASan `c0b0ed54b1fb3a83`, 54/54, with 0 reports;
+  - UBSan `8c113229b9d2cb35`, 54/54, with 0 runtime errors;
+  - fuzz `df58d74c967b911c`, 36/36.
+
+  Fixture directories in `$TMPDIR` stayed at 0.
+- **Gates:** spec constants and vocabularies, the claim map (202 checks),
+  anchors (349 across 42 campaigns), and `git diff --check`.

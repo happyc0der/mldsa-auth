@@ -358,7 +358,9 @@ the most important thing on this page.
 - mutation `v64 TG1` — the lookup's key clause excludes only superseded keys
 - check `authd_e2e` "PASS: E2E: RECOVERY-USE with revoke=all over site.sock refuses every device of the user at its next login"
 - mutation `v64 TG2` — revoke=all's in-transaction device search matches nothing (v49d G14's shape, named against `authd_e2e`)
-**Not established:** the device clause and, since V4-22a, the key clause are each shown to hold on their own only for a state an attacker with the database file creates (no API path revokes one without the other). `authd_e2e` drives `revoke=all` through the site's own library and checks that both of the user's devices are refused at their next login; that it closes their live sessions is checked in-process only.
+- check `wasm_interop` "revoke: the daemon closes the revoked device's live WebSocket, seen from the client's process (Req 9, D9)"
+- check `wasm_interop` "revoke: the other device's live session stays open (the canary)"
+**Not established:** the device clause and, since V4-22a, the key clause are each shown to hold on their own only for a state an attacker with the database file creates (no API path revokes one without the other). `authd_e2e` drives `revoke=all` through the site's own library and checks that both of the user's devices are refused at their next login; that revoke=all closes their live sessions is checked in-process only. REVOKE-DEVICE's closing is also seen from outside since V4-32: `wasm_interop`'s client, in Node, holds live WebSocket sessions for two devices against the separate daemon process; the site revokes one, its socket is closed by the daemon within 3 s, and the other stays open. That runs only in trees with a wasm module, so the nightly's campaigns do not reach it; it was shown red by hand with v49a's V1 and with a close that matched every session (V4-32's decisions entry).
 
 ### D10 — Identity keys are encrypted at rest
 - check `test_authd_cli` "keygen-server: no plaintext MLDSASK file was written anywhere (Req 10)"
