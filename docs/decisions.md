@@ -8787,3 +8787,56 @@ already logs, so only the field's content changes.
   - the claim map: 197 checks, 132 mutations, 17 tools;
   - anchors: 347 across 41 campaigns;
   - `git diff --check`.
+
+## V4-30 — D4: the enrollment ticket, scanned after it is spent (campaign v72)
+
+Loop iteration 5. CLAIMS D4's limits said: "No mutation leaks the ticket
+past its round trip, so the ticket's scan shares the code's and token's
+proof of liveness."
+- **When the scans ran.** `test_authd_localapi` scanned the store and a
+  backup for the ticket only when RECOVERY-USE issued it.
+- **What they never covered.** ENROLL via=recovery receives the plaintext
+  ticket, holds it until it hashes it, and keeps a free-form label in the
+  store. No check looked at the store after the ticket was spent there.
+
+### The scan
+
+The ticket is now also scanned once it is spent, right after "enroll: the
+recovered device is active with the NEW key":
+- **The canary.** The store read must contain the recovered device's new
+  key, which shows the read sees what that enrollment wrote.
+- **The scan.** `secret_absent` runs over the store with its WAL, and over
+  a fresh backup.
+
+### Campaign v72 (TK1, TK2)
+
+| | Mutation | V4-29's tests | V4-30's |
+|---|---|---|---|
+| TK1 | ENROLL via=recovery with no label stores the raw ticket as the device's label, before wiping it | **pass** | killed by both after-spend checks, by name |
+| TK2 | RECOVERY-USE stores the raw ticket where its SHA-256 belongs | killed by "the plaintext ticket is NOT in the store" (and the canaries, and the enrollments that can no longer spend it) | the same, plus the after-spend checks |
+
+- **TK1 is the gap.** Enrollment works, so only a scan after the spend can
+  see it.
+- **TK2 is the at-issue scan's first mutation kill.** Until now that scan's
+  only evidence of liveness was the login code's and the token's.
+- **How the gap was shown.** As for v71: each mutant was built against
+  V4-29's `test_authd_localapi` and V4-30's, with every restore
+  byte-exact.
+- **Campaign v72 on the ASan tree:** 2 of 2 KILLED by name, each restored
+  clean with a passing clean suite. Every artifact was identical to its
+  clean fingerprint.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `34a8c8f`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `2e531641e5674504`, 54/54;
+  - `build-bench-p` `278ef1ca056141be`, 50/50;
+  - ASan `9f97699b777647ca`, 54/54, with 0 reports;
+  - UBSan `94c4b1aa63af2ae7`, 54/54, with 0 runtime errors;
+  - fuzz `bae3f1bf3b163c6a`, 36/36.
+- **Gates:**
+  - spec constants and vocabularies;
+  - the claim map: 200 checks, 134 mutations;
+  - anchors: 349 across 42 campaigns, 312 mutations;
+  - `git diff --check`.

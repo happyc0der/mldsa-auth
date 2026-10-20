@@ -282,6 +282,12 @@ secret's escaped image, in one shared header. Campaign v71 passes five
 secrets where identifiers belong: the login code, a nonce, a signature, a
 token and a ticket. Each passed V4-28's scans and is caught by name now.
 
+V4-30 did the same for D4's enrollment ticket. The ticket was scanned only
+when it was issued, and no mutation had ever leaked it. A ticket kept as the
+new device's label when ENROLL spends it, with enrollment still working,
+passed every check. The store and a backup are now scanned after the spend
+too, and campaign v72 shows both scans catching a leak by name.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles

@@ -258,7 +258,12 @@ the most important thing on this page.
 - mutation `v64 TG4` — the token's base64 parked in its row's `handshake_id` column, where the raw and lower-case hex scans cannot see it
 - check `test_authd_localapi` "recovery: all three issued codes were extracted and are distinct (the canary)"
 - mutation `v70 RK5` — every recovery code from the third on stored as itself instead of its Argon2id hash
-**Not established:** the scans read the database and its WAL at two moments, and a backup (`VACUUM INTO`) taken at each, for 16-byte windows of the raw secret, 32-character windows of its hex in either case, and 12-byte windows in standard and URL-safe base64 (since V4-22a, the journal scans' encodings). Other encodings, a secret split into pieces shorter than a window, and memory are not scanned, and the recovery codes -- since V4-24c every code issued, not only the first (F117) -- are looked for only in their canonical base32 form. No mutation leaks the ticket past its round trip, so the ticket's scan shares the code's and token's proof of liveness.
+- check `test_authd_localapi` "recovery: after the ticket is spent, the plaintext ticket is NOT in the store (Req 4)"
+- check `test_authd_localapi` "recovery: after the ticket is spent, it is NOT in a backup of the store (Req 4)"
+- check `test_authd_localapi` "recovery: the store read after the spend holds the recovered device's key (the present canary)"
+- mutation `v72 TK1` — ENROLL via=recovery stores the raw ticket as the new device's label, every round trip intact
+- mutation `v72 TK2` — RECOVERY-USE stores the raw ticket where its SHA-256 belongs
+**Not established:** the scans read the database and its WAL at two moments, and a backup (`VACUUM INTO`) taken at each, for 16-byte windows of the raw secret, 32-character windows of its hex in either case, and 12-byte windows in standard and URL-safe base64 (since V4-22a, the journal scans' encodings). Other encodings, a secret split into pieces shorter than a window, and memory are not scanned, and the recovery codes -- since V4-24c every code issued, not only the first (F117) -- are looked for only in their canonical base32 form. Since V4-30 the ticket is scanned twice: when RECOVERY-USE issues it, and again once ENROLL has spent it. The second scan is the only one that sees campaign v72's TK1, a ticket kept as the new device's label with every round trip intact, which passed V4-29's checks. TK2 is the at-issue scan's first mutation kill.
 
 ### D5 — A login code is single-use, expires in ≤ 60 s, and is bound
 - check `test_authd_conn` "login: the code expires in at most 60 s (Req 5)"
