@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 123 findings (F0–F123), with severity, evidence and
+   register](../v4/audit.md). 124 findings (F0–F124), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -58,7 +58,7 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 55 tests with the
+- **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
 - **Mutations**: 315 committed defects in 44 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
@@ -350,6 +350,12 @@ counted, and are now. Three findings are open from it:
   them key-file custody and the CLI's WebSocket frame bounds.
 - **F123:** `REVOKE-TOKENS user= handle=` ignores `user=`. Its scope is the
   owner's decision.
+
+V4-41 removed F121's dead code and gated the test counts. The CTest
+`doc_test_counts` needs the README's count for each tree's configuration to
+equal what ctest registers there, and this page's and REPRODUCE.md's counts to
+repeat the README's. On its first run it found this page still saying 55 tests
+where V4-39 had made it 56 (**F124**).
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
