@@ -9884,3 +9884,47 @@ F5 stays open: it has a figure, and the figure names F122.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-36 to V4-40 — CI on the branches and the nightly bring-up
+
+**One bring-up for five steps.** Only V4-36 adds a campaign (v74). So the
+control nightly ran on V4-36..37's code and rotted v74 CK1's expectation.
+The final nightly runs every campaign against the final tree, with V4-38's
+gates, V4-39's `backend_symbols` and V4-40's `child_exit.h` in it.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-36 | `b17d4f5` | 39458988769 |
+| V4-37 | `b05ed0b` | 39466279083 |
+| V4-38 | `fa074df`, then `322b2f4` | 39482219983, 39485600435 |
+| V4-39 | `376ae3a` (`df2172e` adds only its decisions entry) | 39485765975 |
+| V4-40 | `6b2635a` | 39507356666 |
+
+**Superseded and control runs:**
+- **39481080552,** V4-38's first head, was cancelled by CI's concurrency
+  group when the second dispatch on the same branch went in. That is its
+  design, not a failure.
+- **39485860730,** V4-39's CI control on `v4-39-ctl`, was red on exactly the
+  six Linux suite and Release jobs, as recorded in V4-39.
+
+### The control nightly
+
+- **How the control was built.** `20fa4ec` is `nightly-bringup`'s previous
+  head `6649e49` with V4-36 and V4-37 cherry-picked; its parent's tree
+  equals V4-37's `b05ed0b`. On top, v74 CK1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-36..37)"). spec_v74's sha256 before
+  was `1eddf58883c83ac5`.
+- **The result.** Run 39474217806 was red on exactly `mutations · v74`,
+  58/59:
+  - CK1 **SURVIVED(BAD)**, naming the rotted text;
+  - `residue: none`, all sources restored;
+  - across the 44 campaign jobs, 315 rows: 314 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+  It was v74's first run on Linux.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
