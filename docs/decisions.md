@@ -9361,3 +9361,82 @@ from whole-file hashes.
   - the claim map: 208 checks, 137 mutations;
   - anchors: 354 across 44 campaigns, the counts agreeing at 315 and 44;
   - `git diff --check`.
+
+## V4-37 — the event-loop tests wait for conditions, not counts (loop iteration 12: fixes and cleanup)
+
+### The risk
+
+`test_authd_evloop`'s `pump(ev, now, iters)` ran a fixed 3 to 6 loop turns
+at ten call sites. Its comment promised "until `pred` holds", a predicate
+it never took. `test_authd_ws` pumped a fixed 50 ticks to "let the daemon
+reap the slot".
+- **Why it matters.** A machine under load (a busy runner, a sanitizer, a
+  parallel ctest) can need more turns than a count allows. The test then
+  fails for a reason that is not a defect, and that looks like a
+  regression.
+- **Its history.** The project's notes had carried it as a known risk since
+  V4-24.
+
+### The change
+
+- **Every positive wait is `PUMP_UNTIL(predicate)`,** at ten sites: a
+  connection held, a frame delivered, slots released, a partial frame
+  buffered, a drain finished. Its ceiling is 2,000 turns.
+- **The echo wait now covers the flush.** It waits for the reply to be
+  written too, because the next line is a blocking `read`; an unflushed
+  reply would have hung the test rather than failed it.
+- **The one place nothing is awaited** (after the synchronous
+  `evloop_close_all`) keeps a fixed `pump_n`, saying so.
+- **A ceiling hit is a failed check** named by its predicate. The first
+  control (P1 below) is why.
+- **`test_authd_ws`'s reap** is `CHECK(H_PUMP_UNTIL(...), "ws: the daemon
+  reaps a raw probe's slot once it closes")`.
+
+All check names are unchanged. The tests now have 133 and 129 checks.
+
+### The controls, and what the first one taught
+
+They used `tools/hand_control.py`.
+- **P1, a predicate that never holds:**
+  `PUMP_UNTIL(… evloop_active(&ev) == 99u)`. It first **SURVIVED.** The
+  pump ran out its 2,000 turns, the connection was accepted during them
+  anyway, and the check after the wait passed. A wait that never ended as
+  intended was invisible.
+  - So a ceiling hit became a failed check, "ev: the loop reached, within
+    2,000 turns: <predicate>", and P1 is now KILLED by exactly that name.
+- **P2, a reap wait that never holds:** KILLED by "ws: the daemon reaps a
+  raw probe's slot once it closes", once for each of the four probes.
+
+### Whether the old tests ever flaked here: no
+
+| Binary | Load | Runs | Failed |
+|---|---|---|---|
+| old `test_authd_evloop` (V4-36's) | 14 busy loops, 16 in parallel | 300 | 0 |
+| old `test_authd_evloop`, ASan | 14 busy loops, 32 in parallel | 300 | 0 |
+| new `test_authd_evloop` | 14 busy loops, 16 in parallel | 300 | 0 |
+| new `test_authd_evloop`, ASan | 14 busy loops, 32 in parallel | 300 | 0 |
+| new `test_authd_ws` | 14 busy loops, 16 in parallel | 150 | 0 |
+
+So the fixed counts were enough on this machine, even under ASan, and this
+change is **insurance, not a fix for an observed failure**. What it removes
+for certain:
+- a comment contradicting its code;
+- a possible hang;
+- ten waits tuned to one machine's speed.
+
+The new named checks did not fail falsely under the same load.
+
+### Verification
+
+- **Every tree rebuilt, proven current, and run in full** at `c9c1cd7`:
+  - `build-wasm-p` `2c39f8ab7908049c`, 3/3;
+  - `build-p` `33e75f1ea4f5b73b`, 55/55;
+  - `build-bench-p` `84c658426e8025f9`, 51/51;
+  - ASan `812bba1fc6bf2bbe`, 55/55, with 0 reports;
+  - UBSan `196284b3c0dd6d71`, 55/55, with 0 runtime errors;
+  - fuzz `c7dcfc497f0ab0c5`, 36/36.
+
+  No fixture was left.
+- **Gates:** spec constants and vocabularies, the claim map, anchors (354
+  across 44 campaigns, the counts agreeing), and `git diff --check`. No
+  campaign anchors in either test, and every check name is unchanged.
