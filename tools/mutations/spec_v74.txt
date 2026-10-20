@@ -1,1 +1,1 @@
-CK1|^authd_e2e$|the daemon's clock did not advance
+CK1|^authd_e2e$|the daemon's clock did not advance CONTROL -- a check no test prints (V4-36..37)
