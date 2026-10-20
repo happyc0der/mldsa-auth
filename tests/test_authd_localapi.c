@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include "authd_harness.h"
+#include "journal_scan.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -683,7 +684,16 @@ static void test_log_hygiene(void)
       char token_hex[80] = {0};
       if (tk != NULL) { sscanf(tk + 6, "%79[0-9a-f]", token_hex); }
       CHECK(strlen(token_hex) == 64u && strstr(buf, token_hex) == NULL,
-            "log: the issued token never appears in the log"); }
+            "log: the issued token never appears in the log");
+      /* V4-29: and in no other form either -- base64, or printed as the
+       * escaped id= field authd_log_slot_id writes (tests/journal_scan.h). */
+      uint8_t tok[32];
+      size_t tokn = 0;
+      CHECK(sodium_hex2bin(tok, sizeof tok, token_hex, strlen(token_hex), NULL, &tokn, NULL) == 0 &&
+                tokn == sizeof tok && !log_holds_window(buf, "the token", tok, sizeof tok, 0),
+            "log: no window of the issued token in any form -- hex, base64, an escaped id= field (V4-29)"); }
+    CHECK(!log_holds_window(buf, "the login code", code, sizeof code, 0),
+          "log: no window of the login code in any form -- hex, base64, an escaped id= field (V4-29)");
 
     authd_log_init(stderr, AUTHD_LOG_ERROR);
     (void)close(fd);
@@ -1027,6 +1037,11 @@ static void test_recovery(void)
                 "recovery: the recovery CODE never appears in the log (§15)");
           CHECK(buf != NULL && strlen(t2) == 64u && strstr(buf, t2) == NULL,
                 "recovery: the enrollment TICKET never appears in the log (§15)");
+          { uint8_t tk[32];
+            size_t tkn = 0;
+            CHECK(buf != NULL && sodium_hex2bin(tk, sizeof tk, t2, strlen(t2), NULL, &tkn, NULL) == 0 &&
+                      tkn == sizeof tk && !log_holds_window(buf, "the ticket", tk, sizeof tk, 0),
+                  "recovery: no window of the enrollment TICKET in any form -- hex, base64, an escaped id= field (V4-29)"); }
           free(buf); fclose(lf); } }
 
     /* single use */
