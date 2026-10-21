@@ -1,0 +1,7 @@
+PF1|^test_authd_cli$|passphrase custody: a symlink to a good passphrase file is refused (O_NOFOLLOW)
+PF2|^test_authd_cli$|passphrase custody: a directory is refused as not-a-regular-file
+PF3|^test_authd_cli$|passphrase custody: a file with any one group or other bit set is refused as unsafe-permissions
+PF4|^test_authd_cli$|passphrase custody: a file one byte over AUTHD_PASSPHRASE_MAX is refused as empty-or-too-large
+PF5|^test_authd_cli$|passphrase custody: only ONE trailing newline is stripped; a second is part of the passphrase
+PF6|^authd_e2e$|a passphrase file owned by another user
+PF7|^test_authd_cli$|passphrase custody: a file holding only a newline is refused as empty

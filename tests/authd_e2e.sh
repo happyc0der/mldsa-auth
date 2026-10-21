@@ -958,6 +958,23 @@ if [ "$RU_OK" -eq 1 ]; then
         > /dev/null 2> "$TMP/ck-own.err" || true
     grep -q 'unsafe-permissions' "$TMP/ck-own.err" && fail "root's own 0600 key copy was refused as unsafe-permissions (the canary)"
     echo "PASS: E2E: a device key owned by another user is refused as unsafe-permissions though its mode is 0600; the owner's own copy is not (spec 12)"
+    # V4-48: the passphrase file is held to the same rule (authd_secret.c's
+    # owner check), and CI's first run of the leg above hit it by accident.
+    # A 0600 copy that nobody owns must be refused before any key is opened;
+    # root's own copy, used above, is the canary.
+    cp "$TMP/opass" "$RU/ck/foreign.pass" && chmod 0600 "$RU/ck/foreign.pass" \
+        || fail "could not copy the passphrase file for the custody leg"
+    # shellcheck disable=SC2086
+    $AS chown "$NB_UID" "$RU/ck/foreign.pass" || fail "could not hand the passphrase copy to nobody"
+    # shellcheck disable=SC2086
+    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/own.ek" --passphrase-file "$RU/ck/foreign.pass" \
+        --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
+        > /dev/null 2> "$TMP/ck-pass.err" && fail "the client used a passphrase file owned by another user (spec 12)"
+    grep -q 'not-owned-by-this-user' "$TMP/ck-pass.err" \
+        || fail "a passphrase file owned by another user was refused for another reason: $(cat "$TMP/ck-pass.err")"
+    grep -q 'not-owned-by-this-user' "$TMP/ck-own.err" \
+        && fail "root's own passphrase copy was refused as not-owned-by-this-user (the canary)"
+    echo "PASS: E2E: a passphrase file owned by another user is refused as not-owned-by-this-user; the owner's own copy is not"
     kill -TERM "$DPID"
     i=0
     while kill -0 "$DPID" 2>/dev/null; do
