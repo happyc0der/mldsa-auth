@@ -1,0 +1,5 @@
+LP1|^test_authd_ws$|paths: a socket path one byte over sun_path's capacity is refused, and no socket is created at it or at its truncation
+LP2|^test_authd_ws$|paths: a regular file at the socket path is refused, and left exactly as it was
+LP3|^test_authd_ws$|paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched
+LP4|^test_authd_ws$|paths: a stale socket left by a crash is replaced, so it cannot wedge the service -- the canary
+LP5|^test_authd_ws$|paths: an allowlist longer than LISTENER_MAX_ALLOW is refused as a bad argument
