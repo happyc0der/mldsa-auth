@@ -934,14 +934,18 @@ if [ "$RU_OK" -eq 1 ]; then
     # but its owner and root, so root runs the client: with mode 0600 passing
     # the custody check's other half, the owner comparison is the only barrier.
     # The canary is a root-owned copy, which root may open: the refusal is
-    # about whose file it is, not about root.
+    # about whose file it is, not about root. Root needs a passphrase file of
+    # its own too: the client holds that file to the same custody rule, and
+    # CI's first run of this leg stopped there, at not-owned-by-this-user.
     mkdir "$RU/ck" && cp "$TMP/dev/$HANDLE.ek" "$RU/ck/foreign.ek" && chmod 0600 "$RU/ck/foreign.ek" \
         || fail "could not copy the device key for the custody leg"
+    # shellcheck disable=SC2086
+    $AS install -m 0600 "$TMP/opass" "$RU/ck/opass" || fail "could not make root's own passphrase file"
     # shellcheck disable=SC2086
     $AS chown "$NB_UID" "$RU/ck/foreign.ek" || fail "could not hand the key copy to nobody"
     [ "$(stat -c %u:%a "$RU/ck/foreign.ek")" = "$NB_UID:600" ] || fail "the foreign key copy is not nobody's, mode 0600"
     # shellcheck disable=SC2086
-    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/foreign.ek" --passphrase-file "$TMP/opass" \
+    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/foreign.ek" --passphrase-file "$RU/ck/opass" \
         --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
         > /dev/null 2> "$TMP/ck-foreign.err" && fail "the client opened a device key owned by another user (spec 12)"
     grep -q 'unsafe-permissions' "$TMP/ck-foreign.err" \
@@ -949,7 +953,7 @@ if [ "$RU_OK" -eq 1 ]; then
     # shellcheck disable=SC2086
     $AS install -m 0600 "$TMP/dev/$HANDLE.ek" "$RU/ck/own.ek" || fail "could not make root's own key copy"
     # shellcheck disable=SC2086
-    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/own.ek" --passphrase-file "$TMP/opass" \
+    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/own.ek" --passphrase-file "$RU/ck/opass" \
         --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
         > /dev/null 2> "$TMP/ck-own.err" || true
     grep -q 'unsafe-permissions' "$TMP/ck-own.err" && fail "root's own 0600 key copy was refused as unsafe-permissions (the canary)"

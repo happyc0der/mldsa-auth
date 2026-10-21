@@ -10115,8 +10115,15 @@ nightly.yml's matrix.
 
   The four custody checks pass. The e2e's privileged leg printed its SKIP
   line here (macOS).
-- **The owner leg's first real run** is CI's Linux jobs; it is recorded with
-  the bring-up.
+- **The owner leg's first CI run failed** (39526288606, on `67a3132`): all
+  four Linux suite jobs and both Release jobs failed it, with the macOS jobs
+  green, where it is skipped. Root's client never reached the key. It
+  refused the passphrase file first, because the runner user owned it:
+  "passphrase file …: not-owned-by-this-user". The client holds its
+  passphrase file to the same custody rule (`authd_secret.c`'s owner
+  check), so the failure was the leg's own bug, though it did show that
+  check refusing on Linux. Root now gets its own 0600 copy of the
+  passphrase file for both runs.
 - **Gates:**
   - anchors (359; 16 counts agreeing);
   - the claim map;
