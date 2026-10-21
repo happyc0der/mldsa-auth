@@ -10264,3 +10264,45 @@ The same tree and command as V4-40, after V4-41..43 (`docs/v4/coverage.md`,
   coverage tree was rebuilt and proven current (`0ef7effc6e611498`), 57/57.
 - **Gates:** anchors (368; 16 counts agreeing), the claim map, the spec
   checks, the audit table's separators, `git diff --check`.
+
+## V4-41 to V4-44 — CI on the branches and the nightly bring-up
+
+**One bring-up for four steps.** V4-42 adds campaign v75 and V4-43 adds v76.
+So the control nightly ran on V4-41..42's code and rotted one v75
+expectation. The final nightly runs every campaign against the final tree,
+with v76 there for the first time on Linux.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-41 | `bf60282` | 39515393093 (`doc_test_counts` passed in all nine suite jobs, 53 tests each) |
+| V4-42 | `793e7aa` | 39527621667 |
+| V4-43 | `7ce79e7` | 39544987452 |
+| V4-44 | `283df66` | 39547042130 |
+
+V4-42's first run (39526288606, `67a3132`) failed in its own new leg. That
+failure is recorded in V4-42's entry.
+
+### The control nightly
+
+- **How the control was built.** `719ff95` is `nightly-bringup`'s previous
+  head `75a3c82` with V4-41 and V4-42 cherry-picked; its parent's tree
+  equals V4-42's `793e7aa`. On top, v75 KC1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-41..42)"). spec_v75's sha256
+  before was `af3f4f6ecdb376d1`.
+- **The result.** Run 39531728085 was red on exactly `mutations · v75`,
+  59/60:
+  - KC1 **SURVIVED(BAD)**, naming the rotted text;
+  - KC2–KC4 killed by name;
+  - **KC5 KILLED(1 named) on Linux.** This is the owner check removed,
+    which survives on macOS. It shows `authd_e2e`'s privileged leg runs on
+    the nightly's runners and catches it. CI's own logs cannot show that,
+    because ctest prints a passing test's output only on failure;
+  - every mutant restored clean;
+  - across the 45 campaign jobs, 320 rows: 319 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
