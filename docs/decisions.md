@@ -11149,3 +11149,101 @@ it. The register is 127 findings, F0–F127.
   - the audit table's separators;
   - `git diff --check`;
   - nightly.yml's matrix against the spec files (53 and 53).
+
+## V4-55 — campaign v82's LC1 re-authored as a memory-safe mutant, and both sides of the line cap tested (loop iteration 30: F128)
+
+### What the control nightly found
+
+The V4-50..53 control nightly (39646314151) was red on v79, as intended:
+PF6's rotted expectation scored `SURVIVED(BAD)` on Linux although
+`linux_only_kills.txt` lists PF6. That is the evidence V4-53 asked for: on
+Linux the list changes nothing.
+
+It was also red on v82, which nobody intended. LC1 scored `SURVIVED(BAD)`.
+The run's `mutations-v82` artifact holds `LC1.test`, which shows ASan
+aborting the test:
+
+```
+ERROR: AddressSanitizer: stack-buffer-overflow ... in send
+  #1 net_write_all apps/net_io.c:331
+  #2 localcli_call apps/authd/localcli.c:121
+  #3 test_localcli_robustness tests/test_authd_cli.c:840
+```
+
+LC1 removed `localcli_call`'s line-cap check outright. The test's request was
+8197 bytes, and the client builds it in an 8194-byte buffer
+(`AUTHD_LINE_MAX + 2`), so the mutant sent 8197 bytes out of 8194.
+
+- **On macOS** the 8192-byte Unix socket short-wrote. ASan checks only the
+  bytes actually sent, so it saw nothing. The call then timed out, and the
+  named check failed: KILLED(1 named) in V4-52.
+- **On Linux** the socket took everything. ASan aborted inside `send`, before
+  the named check could print.
+
+**F128 (Info).** The mutant was caught on both systems. What was wrong was
+the campaign's claim that this check is what catches it.
+
+### The change
+
+- **LC1 is the cap applied one byte late**, `(size_t)rn > AUTHD_LINE_MAX + 1u`.
+  A request one byte over the cap, 8193 bytes, fits the 8194-byte buffer with
+  its NUL. So the mutant is memory-safe by construction, and the named check
+  decides on every system.
+- **The test's over-cap request is exactly one byte over:** "PING ", 8187
+  bytes of arguments and the LF. A check states the length, so the request
+  cannot drift away from the boundary unnoticed.
+- **A new case sends exactly 8192 bytes,** which spec 8 allows. It must not be
+  refused: the fake daemon must see the client connect.
+- **New LC6,** the cap one byte early (`>=`), is killed by that at-cap case.
+  Until now nothing tested the cap's other side.
+
+`test_authd_cli` has 178 checks (175 before).
+
+### Why the test had to change, not only the mutation
+
+A hand control ran V4-54's `test_authd_cli.c` against the re-authored LC1. It
+passed with 175 checks and exit 0: an 8197-byte request is refused by a cap
+one byte late as well, so the old test could not see that mutant. Both files
+were restored and their hashes checked; the new test then passed (178).
+
+### The controls: campaign v82 (LC1–LC6), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| LC1 | the line cap one byte late (re-authored) | KILLED (1 named): the over-cap check; no ASan report in its log |
+| LC2 | `recv` may fill the NUL's byte | KILLED (1 named) |
+| LC3 | a truncated list accepted | KILLED (1 named) |
+| LC4 | a timeout called an I/O error | KILLED (1 named) |
+| LC5 | every connect failure a timeout | KILLED (1 named) |
+| LC6 | the line cap one byte early (new) | KILLED (1 named): the at-cap check |
+
+Every source was restored clean, with no residue. The Linux verdicts come from
+this group's next nightly. LC1 must be a named kill there: the mutant now
+sends only bytes inside its buffer.
+
+### The counts
+
+366 mutations in 53 campaigns, 405 anchors; all 16 stated counts restated.
+tools/README.md's campaign list says LC1–LC6. The register is 128 findings,
+F0–F128.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `927c34930d81b278` | 57/57 |
+  | `build-bench-p` | `b86675a1ea28429f` | 53/53 |
+  | ASan | `ca3a08cb23f93d6b` | 57/57, instrumentation in all 43 |
+  | UBSan | `4a79053bf88e9ba6` | 57/57; one runtime error, the planted canary |
+  | fuzz | `588001abf096f6c0` | 36/36, and `test_authd_cli`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`:
+  `test_authd_cli.c` is clean.
+- **Gates:**
+  - anchors (405; 16 counts agreeing);
+  - the claim map (128 findings);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
