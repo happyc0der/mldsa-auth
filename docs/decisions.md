@@ -10942,3 +10942,60 @@ v82 is in nightly.yml's matrix.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-53 — the mutations only Linux can kill, listed, so a local campaign can end clean (loop iteration 28: fixes and cleanup)
+
+### The problem
+
+Three mutations are killed only by `authd_e2e`'s privileged leg, which needs
+Linux's `setpriv` and root or passwordless sudo:
+- v65 RU1 (the peer check against a real second user);
+- v75 KC5 (the key file's owner);
+- v79 PF6 (the passphrase file's owner).
+
+CI's and the nightly's Linux jobs run that leg. Off Linux each of the three
+scored `SURVIVED(BAD)`, so its campaign exited 1 on every local run. V4-42
+and V4-48 explained the red survivor by hand, as predicted. A red result
+that is always expected teaches the reader to ignore red.
+
+### The change
+
+- **`tools/mutations/linux_only_kills.txt`:** `campaign ID reason`, one line
+  for each of the three, with the reason only Linux can tell.
+- **`tools/run_mutations_v2.sh`:** off Linux, a listed mutation that survives
+  is scored `SURVIVED(EXPECTED off Linux: linux_only_kills.txt; the nightly
+  must kill it)`, and the campaign's exit stays 0. On Linux the list is
+  never consulted, so a listed survivor there is still `SURVIVED(BAD)`. A
+  listed mutation that is killed is scored `KILLED` everywhere.
+- **`tools/audit/check_mutation_anchors.py`:** both lists the runner reads
+  beside the campaigns are checked: this one and `compile_kills_allowed.txt`
+  (F79). Each entry must have a reason and must name a mutation of that
+  campaign's spec. A stale exception is otherwise one nothing would notice.
+- **`tools/README.md`, `docs/review/REPRODUCE.md`:** what the list is. Neither
+  states how many entries it has, since an ungated count drifts (F120); both
+  point at the file.
+
+### The controls (local, macOS ASan)
+
+| Control | Expected | Seen |
+|---|---|---|
+| KC5 alone, listed | `SURVIVED(EXPECTED off Linux)`, exit 0 | as expected; restored clean, residue none |
+| KC5 alone, its line removed | `SURVIVED(BAD: [a device key owned by another user])`, exit 1 | as expected; restored clean, residue none |
+| a stale entry `v75 KC9` | the anchors gate refuses it | `ALLOWLIST linux_only_kills.txt:17: v75 KC9 is not a mutation of that campaign`, exit 1 |
+| a compile-kill entry with no ID or reason | the anchors gate refuses it | `ALLOWLIST compile_kills_allowed.txt:12: needs 'campaign ID reason'`, exit 1 |
+
+The list was restored from a copy after each control, and it was compared
+byte for byte (`cmp`). The gate was green again afterwards: 398 anchors,
+359 mutations, 52 campaigns.
+
+**What a local run cannot show:** that the list changes nothing on Linux.
+The platform guard comes before the list is read. The nightly is the
+evidence: final nightly 39610024274 (V4-45..49) killed all three, v65 RU1,
+v75 KC5 and v79 PF6, each `KILLED(1 named)`. This step's bring-up nightly
+must do the same with the runner change in place.
+
+### Verification
+
+- Gates: anchors (398; 16 counts agreeing; both lists valid), the claim map,
+  `doc_test_counts`, `git diff --check`, `bash -n` on the runner.
+- No source, test or spec file changes, so no campaign's anchors move.

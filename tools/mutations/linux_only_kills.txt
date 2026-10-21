@@ -1,0 +1,16 @@
+# Mutations only Linux can kill (V4-53).
+#
+# Each is caught by authd_e2e's privileged leg: a real second user, or a file
+# another user owns that the client can still read. That leg needs Linux's
+# setpriv and root or passwordless sudo -- CI's and the nightly's Linux jobs
+# have both -- and is skipped elsewhere. Off Linux the runner scores a listed
+# mutation that survives as SURVIVED(EXPECTED off Linux), not BAD, so a local
+# campaign can finish clean; ON Linux the list changes nothing, and a listed
+# mutation must still be killed. The nightly, which runs on Linux, is the
+# authority for these. check_mutation_anchors.py refuses an entry that names
+# no mutation.
+#
+# campaign ID  reason
+v65 RU1 the peer check compares the daemon's own uid: only a real second user (nobody, via setpriv) can tell
+v75 KC5 keyfile_open ignores the owner: only root can make another user's key file readable to the client
+v79 PF6 authd_secret_read ignores the owner: only root can make another user's passphrase file readable to the client
