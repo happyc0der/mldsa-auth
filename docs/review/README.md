@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 339 committed defects in 48 campaigns, each of which must be
+- **Mutations**: 346 committed defects in 49 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -387,6 +387,11 @@ V4-47 fixed a false failure seen three times on a loaded macOS runner:
 signalling process was sometimes not scheduled in time (**F125**). An attempt
 in which no call was interrupted is now retried, up to five times, rather
 than counted as a failure. A real failure is still immediate.
+
+V4-48 held the passphrase file to the key file's custody, in tests: a
+symlink, a directory, a loose mode, an empty or oversized file and another
+user's file are each refused with their own status. Campaign v79 shows
+each check caught, the owner half on Linux.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

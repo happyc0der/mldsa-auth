@@ -10521,3 +10521,90 @@ needed.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-48 — the passphrase file's custody, driven to its refusals (loop iteration 23: coverage)
+
+### The gap
+
+`authd_secret_read` is how the daemon and both CLIs read a passphrase file.
+V4-44's re-measurement put `authd_secret.c` at 56.6% of lines, and only its
+mode refusal had ever run. Never run:
+- the symlink refusal (`O_NOFOLLOW`);
+- the file-type refusal;
+- the owner refusal;
+- the size limits;
+- the rule that an empty passphrase, after its one trailing newline is
+  stripped, is refused.
+
+The owner refusal was seen once, by accident, when V4-42's leg first ran in
+CI.
+
+### The tests
+
+- **`test_authd_cli`'s `test_passphrase_custody`:** each case needs its own
+  status and no buffer back.
+
+  | Case | Status |
+  |---|---|
+  | a symlink to a good file | cannot-open |
+  | a missing file | cannot-open |
+  | a directory | not-a-regular-file |
+  | each group and other bit on its own | unsafe-permissions |
+  | an empty file | empty-or-too-large |
+  | a file holding only a newline | empty-or-too-large |
+  | one byte over `AUTHD_PASSPHRASE_MAX` | empty-or-too-large |
+
+  The canaries:
+  - the good file reads back without its one trailing newline;
+  - a file of exactly the limit reads whole;
+  - only one trailing newline is stripped, so `pw\n\n` reads as `pw\n`.
+- **`authd_e2e`, the owner half.** In the privileged Linux leg, root's client
+  is given a 0600 copy of the passphrase file that `nobody` owns. It must
+  refuse it as not-owned-by-this-user before opening any key. Root's own
+  copy, used by the leg before it, is the canary.
+
+  The leg uses a copy, not the runner's own file. As root in a container,
+  root owns that file, and nothing would be foreign.
+
+### The controls: campaign v79 (PF1–PF7), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| PF1 | a symlink is followed | KILLED(1 named) |
+| PF2 | any file type is read: a directory fails later, as short-read | KILLED(1 named) |
+| PF3 | group and other bits ignored | KILLED(10 named) |
+| PF4 | off by one: one byte over the limit is read | KILLED(1 named) |
+| PF5 | every trailing newline stripped | KILLED(1 named) |
+| PF6 | the owner ignored | SURVIVED, as predicted: the owner leg does not run on macOS |
+| PF7 | a file holding only a newline gives an empty passphrase | KILLED(1 named) |
+
+**PF4 is an off-by-one, not "an empty file accepted".** A zero-length
+passphrase is refused again after the read, so dropping only the empty-file
+check would leave a second check standing. Moving the upper bound has no
+such backstop.
+
+### The counts
+
+346 mutations in 49 campaigns, 385 anchors; all 16 stated counts restated.
+v79 is in nightly.yml's matrix. CLAIMS D10 cites PF1, PF3 and PF6 with
+their checks, and its custody bullet covers the passphrase file.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `07a2e7d6ae0bce4c` | 57/57 |
+  | `build-bench-p` | `466268021d41f845` | 53/53 |
+  | ASan | `dd3764245fb47625` | 57/57, instrumentation in all 43 |
+  | UBSan | `e71dc7f42881a5af` | 57/57; one runtime error, the planted canary |
+  | fuzz | `3e7776254a79f056` | 36/36, and `test_authd_cli`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_cli` has 169 checks, 12 of them new.
+- **Gates:**
+  - anchors (385; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
