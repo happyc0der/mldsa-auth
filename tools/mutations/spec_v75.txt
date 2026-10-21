@@ -1,4 +1,4 @@
-KC1|^test_authd_keyfile$|custody: a key file with any one group or other bit set is refused as unsafe-permissions, and yields no key CONTROL -- a check no test prints (V4-41..42)
+KC1|^test_authd_keyfile$|custody: a key file with any one group or other bit set is refused as unsafe-permissions, and yields no key
 KC2|^test_authd_keyfile$|custody: a key file with any one group or other bit set is refused as unsafe-permissions, and yields no key
 KC3|^test_authd_keyfile$|custody: a key file with any one group or other bit set is refused as unsafe-permissions, and yields no key
 KC4|^test_authd_keyfile$|custody: promote refuses a group-readable candidate, and leaves both files as they were

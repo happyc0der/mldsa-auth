@@ -1001,6 +1001,135 @@ static void test_listener_modes(void)
     CHECK(all_exact, "modes: 0660 and 0600 each open, as exactly that mode (the canary)");
 }
 
+/* -------------------------------------- the CLI client's frame reader */
+
+/* V4-43 (audit F122 item 2): ws_client_read_message parses what a SERVER
+ * sends the CLI. V4-40's coverage run found none of its refusals had ever
+ * run, the bound of a frame against the caller's buffer included -- the one
+ * check between a hostile server and a write past `out`. The daemon's side
+ * of the framing is fuzzed (fuzz_ws); this side is driven here, frame by
+ * frame, from a byte array. */
+typedef struct { const uint8_t *p; size_t n, off; } cr_src_t;
+static int cr_read(void *ctx, uint8_t *buf, size_t want)
+{
+    cr_src_t *s = (cr_src_t *)ctx;
+    if (s->off == s->n) { return 1; }              /* clean EOF at a boundary */
+    if (s->n - s->off < want) { s->off = s->n; return -1; }
+    memcpy(buf, s->p + s->off, want);
+    s->off += want;
+    return 0;
+}
+
+/* One server frame: FIN|op (plus `extra` header bits), unmasked unless
+ * `mask_bit`, with the shortest length encoding unless `force64`. */
+static size_t cr_frame(uint8_t *out, uint8_t b0, int mask_bit, int force64, const uint8_t *pl, size_t n)
+{
+    size_t h = 0;
+    out[h++] = b0;
+    const uint8_t m = mask_bit ? 0x80u : 0x00u;
+    if (force64 || n > 0xffffu) {
+        out[h++] = (uint8_t)(m | 127u);
+        for (int i = 7; i >= 0; i--) { out[h++] = (uint8_t)((uint64_t)n >> (8 * i)); }
+    } else if (n > 125u) {
+        out[h++] = (uint8_t)(m | 126u); out[h++] = (uint8_t)(n >> 8); out[h++] = (uint8_t)n;
+    } else {
+        out[h++] = (uint8_t)(m | n);
+    }
+    if (n > 0u) { memcpy(out + h, pl, n); }
+    return h + n;
+}
+
+static ws_client_status_t cr_run(const uint8_t *wire, size_t wn, uint8_t *out, size_t cap, size_t *len)
+{
+    cr_src_t s = { wire, wn, 0u };
+    return ws_client_read_message(cr_read, &s, out, cap, len);
+}
+
+static void test_client_reader(void)
+{
+    static uint8_t wire[80000], out[72000], big[70000];
+    uint8_t pl[300];
+    for (size_t i = 0; i < sizeof pl; i++) { pl[i] = (uint8_t)(i * 7u + 1u); }
+    for (size_t i = 0; i < sizeof big; i++) { big[i] = (uint8_t)(i * 13u + 5u); }
+    const uint8_t BIN = (uint8_t)(0x80u | WS_OP_BINARY);
+    size_t n, len;
+
+    /* The canaries: each length encoding delivers its payload whole. */
+    n = cr_frame(wire, BIN, 0, 0, pl, 5);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_OK && len == 5u && memcmp(out, pl, 5) == 0,
+          "client reader: a 7-bit-length binary frame is delivered whole");
+    n = cr_frame(wire, BIN, 0, 0, pl, 300);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_OK && len == 300u && memcmp(out, pl, 300) == 0,
+          "client reader: a 16-bit-length binary frame is delivered whole");
+    n = cr_frame(wire, BIN, 0, 0, big, sizeof big);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_OK && len == sizeof big && memcmp(out, big, sizeof big) == 0,
+          "client reader: a 64-bit-length binary frame is delivered whole");
+
+    /* The bound against the caller's buffer. Guard bytes past `cap` must be
+     * untouched: without the bound, the payload is read straight past it. */
+    { uint8_t g[40]; memset(g, 0xa5, sizeof g);
+      n = cr_frame(wire, BIN, 0, 0, pl, 17);
+      const ws_client_status_t st = cr_run(wire, n, g, 16u, &len);
+      int intact = 1; for (size_t i = 16; i < sizeof g; i++) { if (g[i] != 0xa5u) { intact = 0; } }
+      CHECK(st == WS_CLIENT_PROTOCOL && intact,
+            "client reader: a frame one byte longer than the buffer is refused, and nothing is written past it");
+      n = cr_frame(wire, BIN, 0, 0, pl, 16);
+      CHECK(cr_run(wire, n, g, 16u, &len) == WS_CLIENT_OK && len == 16u && g[16] == 0xa5u,
+            "client reader: a frame exactly the buffer's size is delivered -- the canary"); }
+
+    /* RFC 6455 §5.1-§5.2 refusals. */
+    { int all = 1;
+      const uint8_t rsv[] = { 0x10u, 0x20u, 0x40u };
+      for (size_t i = 0; i < sizeof rsv; i++) {
+          n = cr_frame(wire, (uint8_t)(BIN | rsv[i]), 0, 0, pl, 5);
+          if (cr_run(wire, n, out, sizeof out, &len) != WS_CLIENT_PROTOCOL) { all = 0; }
+      }
+      CHECK(all, "client reader: a frame with any RSV bit set is refused (no extension was negotiated)"); }
+    n = cr_frame(wire, BIN, 1, 0, pl, 5);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+          "client reader: a masked frame from the server is refused (RFC 6455 5.1)");
+    /* On a binary frame the buffer's bound would refuse such a length anyway;
+     * on a Close, only the top-bit rule stands between it and CLOSED. */
+    { n = cr_frame(wire, BIN, 0, 1, pl, 5);
+      wire[2] |= 0x80u;                              /* the 64-bit length's top bit */
+      const ws_client_status_t b = cr_run(wire, n, out, sizeof out, &len);
+      n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_CLOSE), 0, 1, NULL, 0);
+      wire[2] |= 0x80u;
+      CHECK(b == WS_CLIENT_PROTOCOL && cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+            "client reader: a 64-bit length with its top bit set is refused, on a Close as on a binary frame"); }
+    n = cr_frame(wire, (uint8_t)(0x80u | 0x1u), 0, 0, pl, 5);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+          "client reader: a text frame is refused");
+    n = cr_frame(wire, (uint8_t)WS_OP_BINARY, 0, 0, pl, 5);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+          "client reader: a binary frame without FIN (a fragment) is refused");
+    n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_CONT), 0, 0, pl, 5);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+          "client reader: a continuation frame is refused");
+
+    /* Control frames: a ping or pong is drained and skipped, so the message
+     * after it is the one delivered; one over 125 bytes is refused. */
+    { size_t w = cr_frame(wire, (uint8_t)(0x80u | WS_OP_PING), 0, 0, NULL, 0);
+      w += cr_frame(wire + w, (uint8_t)(0x80u | WS_OP_PONG), 0, 0, pl + 100, 4);
+      w += cr_frame(wire + w, BIN, 0, 0, pl, 9);
+      CHECK(cr_run(wire, w, out, sizeof out, &len) == WS_CLIENT_OK && len == 9u && memcmp(out, pl, 9) == 0,
+            "client reader: a ping and a pong are skipped, and the binary frame after them is delivered"); }
+    n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_PING), 0, 0, pl, 126);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+          "client reader: a control frame over 125 bytes is refused");
+    n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_CLOSE), 0, 0, NULL, 0);
+    CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_CLOSED,
+          "client reader: a Close frame reports CLOSED");
+
+    /* EOF: clean at a boundary, an I/O error inside a frame. */
+    CHECK(cr_run(wire, 0u, out, sizeof out, &len) == WS_CLIENT_CLOSED,
+          "client reader: end of stream at a frame boundary reports CLOSED");
+    n = cr_frame(wire, BIN, 0, 0, pl, 300);
+    CHECK(cr_run(wire, 3u, out, sizeof out, &len) == WS_CLIENT_IO &&
+          cr_run(wire, n - 1u, out, sizeof out, &len) == WS_CLIENT_IO,
+          "client reader: a stream that ends inside a header or a payload reports IO");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1026,6 +1155,7 @@ int main(void)
     test_proxy_through_loop();
     test_proxy_uid_allowlist();
     test_listener_modes();
+    test_client_reader();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

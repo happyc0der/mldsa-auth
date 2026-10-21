@@ -10130,3 +10130,179 @@ nightly.yml's matrix.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-43 — the CLI client's WebSocket frame reader, driven to its refusals (loop iteration 18: coverage; F122 item 2)
+
+### The gap
+
+`ws_client_read_message` parses every frame a server sends the CLI. V4-40's
+coverage run found none of its refusals had ever run, among them the one
+check between a hostile server and a write past the caller's buffer:
+`ws.c:544`, `len > cap`. The daemon's side of the same framing is fuzzed
+(`fuzz_ws`); this side was reached only by well-formed frames from the
+daemon itself.
+
+### The tests
+
+`test_authd_ws` gains `test_client_reader`, 16 checks. A byte-array reader
+feeds frames built to the RFC's layout.
+- **Canaries:**
+  - a 7-bit, a 16-bit and a 64-bit length frame (70,000 bytes), each
+    delivered whole;
+  - a frame exactly the buffer's size.
+- **The buffer's bound.** A frame one byte longer than a 16-byte buffer is
+  refused, and the guard bytes after the buffer are untouched.
+- **RFC 6455 §5 refusals:**
+  - each RSV bit on its own;
+  - a masked server frame;
+  - text, continuation and unfinished (no FIN) frames;
+  - a control frame over 125 bytes.
+- **Control frames and end of stream:**
+  - a ping and a pong are skipped, and the binary frame after them is the
+    one delivered;
+  - Close reports CLOSED;
+  - a stream that ends at a boundary is CLOSED, inside a header or a
+    payload IO.
+- **The top bit of a 64-bit length.** It is checked on a Close as well as
+  on a binary frame. On a binary frame the buffer's bound refuses such a
+  length anyway, and on a ping the control bound does. So only on a Close
+  does the top-bit rule alone decide, between PROTOCOL and CLOSED. Written
+  on a binary frame alone, the check would not have pinned the rule.
+
+### The controls: campaign v76 (WC1–WC9), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| WC1 | RSV bits ignored | KILLED(2 named) |
+| WC2 | masked server frames accepted | KILLED(2 named) |
+| WC3 | the 64-bit length's top bit allowed | KILLED(2 named) |
+| WC4 | a control frame's length unbounded: a 126-byte ping read into the 125-byte drain | KILLED(0 named + ASAN), expected as `ASAN in ws_client_read_message` |
+| WC5 | any data opcode accepted | KILLED(3 named) |
+| WC6 | fragments accepted | KILLED(2 named) |
+| WC7 | no bound against the buffer | KILLED(3 named), re-authored (below) |
+| WC8 | a ping returned as an empty message | KILLED(2 named) |
+| WC9 | a clean EOF reported as IO | KILLED(2 named) |
+
+**WC7, first written as `if (0)`,** was refused by the compiler: "unused
+parameter 'cap' [-Werror,-Wunused-parameter]", since that comparison was
+`cap`'s only use. The runner scored it `KILLED(compile)-NOT-ALLOWED(BAD)`.
+F79's rule is to re-author, not allowlist: `if (len > cap && 0)` keeps the
+use, and it is killed by three named checks.
+
+### The counts
+
+329 mutations in 46 campaigns, 368 anchors; all 16 stated counts restated.
+v76 is in nightly.yml's matrix.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `2060d47d6e17ff96` | 57/57 |
+  | `build-bench-p` | `e29413bf4ef36ec2` | 53/53 |
+  | ASan | `245118ef23ef6d34` | 57/57, instrumentation in all 43 |
+  | UBSan | `7f1becb08d49e658` | 57/57; one runtime error, the planted canary |
+  | fuzz | `982982e65f843a73` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_ws` has 145 checks, up from 129.
+- **Gates:**
+  - anchors (368; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-44 — the gates' inventory counts gated, and coverage re-measured (loop iteration 19: fixes and cleanup)
+
+### The inventory counts
+
+Two gates pin a list of sites, and four sentences say how many:
+- CLAIMS: "at 25 sites" (constant-time comparisons) and "35 of them"
+  (secure-memory allocations);
+- the review page: 35;
+- the README: 35.
+
+All four were right, but nothing compared them: F17's row still said "the 24
+sites" from V4-15b, before V4-20 added F48's owner comparison. That is the
+class of F106, F110, F116, F120 and F124 again.
+
+**The change.** `check_claim_map.py` counts the entries of
+`tests/constant_time_sites.txt` (25) and `tests/secure_mem_sites.txt` (35).
+It needs each sentence found and its number equal to its list's. F17's row
+now gives the current count beside its dated one. The audit table's 4.3
+row already recorded 24 becoming 25 in V4-20.
+
+**The controls**, each restored byte-exactly, each failing "the stated
+inventory counts" by name:
+
+| Rot | Printed |
+|---|---|
+| CLAIMS 25 → 24 | "docs/review/CLAIMS.md says 24 constant-time sites; the list holds 25" |
+| CLAIMS 35 → 34 | "… says 34 secure-memory sites; the list holds 35" |
+| review page 35 → 36 | "docs/review/README.md says 36 …" |
+| README's backticks removed | "README.md: no sentence matching …" |
+| one line added to `constant_time_sites.txt` | "docs/review/CLAIMS.md says 25 constant-time sites; the list holds 26" |
+
+### Coverage, re-measured
+
+The same tree and command as V4-40, after V4-41..43 (`docs/v4/coverage.md`,
+"Re-measured in V4-44"):
+- **`apps/authd/`:** 81.64% of lines (from 81.30), 88.11% of regions (from
+  87.51), 69.62% of branches (from 69.05), 98.14% of functions (from
+  97.45).
+- **`ws_client_read_message`:** 75 of 78 code regions, from 49. The three
+  left are its null-argument guard and two I/O failures.
+- **Functions under 80%:** 72, from 76.
+
+### Verification
+
+- **The changed script** (`check_claim_map.py`) was run green and under the
+  five controls above; it runs in CI's spec job.
+- **No source or test changed,** so no tree or campaign is affected. The
+  coverage tree was rebuilt and proven current (`0ef7effc6e611498`), 57/57.
+- **Gates:** anchors (368; 16 counts agreeing), the claim map, the spec
+  checks, the audit table's separators, `git diff --check`.
+
+## V4-41 to V4-44 — CI on the branches and the nightly bring-up
+
+**One bring-up for four steps.** V4-42 adds campaign v75 and V4-43 adds v76.
+So the control nightly ran on V4-41..42's code and rotted one v75
+expectation. The final nightly runs every campaign against the final tree,
+with v76 there for the first time on Linux.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-41 | `bf60282` | 39515393093 (`doc_test_counts` passed in all nine suite jobs, 53 tests each) |
+| V4-42 | `793e7aa` | 39527621667 |
+| V4-43 | `7ce79e7` | 39544987452 |
+| V4-44 | `283df66` | 39547042130 |
+
+V4-42's first run (39526288606, `67a3132`) failed in its own new leg. That
+failure is recorded in V4-42's entry.
+
+### The control nightly
+
+- **How the control was built.** `719ff95` is `nightly-bringup`'s previous
+  head `75a3c82` with V4-41 and V4-42 cherry-picked; its parent's tree
+  equals V4-42's `793e7aa`. On top, v75 KC1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-41..42)"). spec_v75's sha256
+  before was `af3f4f6ecdb376d1`.
+- **The result.** Run 39531728085 was red on exactly `mutations · v75`,
+  59/60:
+  - KC1 **SURVIVED(BAD)**, naming the rotted text;
+  - KC2–KC4 killed by name;
+  - **KC5 KILLED(1 named) on Linux.** This is the owner check removed,
+    which survives on macOS. It shows `authd_e2e`'s privileged leg runs on
+    the nightly's runners and catches it. CI's own logs cannot show that,
+    because ctest prints a passing test's output only on failure;
+  - every mutant restored clean;
+  - across the 45 campaign jobs, 320 rows: 319 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.

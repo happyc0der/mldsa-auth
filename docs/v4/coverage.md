@@ -152,7 +152,8 @@ to its refusal, so a mutation deleting it would survive every campaign.
 
   Without that last one, a server's frame would be read past the buffer.
   The daemon's side of the same framing is fuzzed (`fuzz_ws`); this reader
-  is not.
+  is not. **Tested since V4-43** (campaign v76), frame by frame; still not
+  fuzzed.
 - **`REVOKE-TOKENS handle=`,** `localapi.c:667-676`. Revoking the tokens of
   one device never ran; only the per-user form is tested.
 - **`store_open`'s refusal of a damaged store,** `store.c:492-528`:
@@ -164,6 +165,28 @@ to its refusal, so a mutation deleting it would survive every campaign.
   - a BYE of the wrong length;
   - after a rotation, the closing of the old key's other live sessions
     (`dropped > 0`, line 546).
+
+## Re-measured in V4-44, after V4-41 to V4-43
+
+The same command on the same machine (`build-cov-p` `0ef7effc6e611498`,
+57/57, 137 profiles), after:
+- V4-41 removed F121's three dead functions;
+- V4-42 tested key-file custody;
+- V4-43 tested the CLI's frame reader.
+
+| Area | Lines | Regions | Branches | Functions |
+|---|---|---|---|---|
+| `src/` | 83.67% (unchanged) | 92.02% | 73.37% | 100% |
+| `apps/authd/` | 81.64% (7606/9316) | 88.11% (10045/11401) | 69.62% (4324/6211) | 98.14% (421/429) |
+| all | 80.45% | 88.08% | 68.30% | 97.91% |
+
+- **`ws_client_read_message`:** 75 of its 78 code regions now run, up from
+  49. The three left are its null-argument guard and two I/O failures
+  inside a 64-bit length and a control payload.
+- **`keyfile_open` and `keyfile_promote`:** each gained its refusal region
+  (70 of 82 and 27 of 31).
+- **Functions under 80%:** 72, down from 76. Three of the four are gone with
+  F121's dead code, and the frame reader is now above the line.
 
 ## What these figures do not establish
 

@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 320 committed defects in 45 campaigns, each of which must be
+- **Mutations**: 329 committed defects in 46 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -361,6 +361,12 @@ V4-42 took F122's first item, key-file custody. A key file that anyone but its
 owner can read or write is refused, and so is one another user owns. Neither
 refusal had ever run until V4-42. Campaign v75 shows each half caught: the mode
 half everywhere, the owner half by `authd_e2e`'s privileged leg on Linux.
+
+V4-43 took the second item, the CLI client's WebSocket frame reader, which
+parses what a server sends. Each of its refusals is now driven from a byte
+array, among them the bound of a frame against the caller's buffer, with
+guard bytes after it. Campaign v76 removes each refusal in turn and is caught
+by name, or by ASan for the control frame read onto the stack.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

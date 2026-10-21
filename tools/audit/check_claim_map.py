@@ -22,7 +22,9 @@ does, in both directions:
       ci `job`            some workflow names that job
   - and (V4-38) the packet's front page states the audit register's size
     and range, and the deployment spec's errata count, as those documents
-    hold them.
+    hold them;
+  - and (V4-44) the documents state the constant-time and secure-memory
+    site counts their gates' lists hold.
 
 Usage: check_claim_map.py <repo>
 """
@@ -86,6 +88,33 @@ def packet_counts():
     report("the spec's stated errata count", bool(errata) and bool(m) and
            int(m.group(1)) == len(errata) and len(set(errata)) == len(errata),
            "page says %s; \u00a720 holds %d row(s)" % (m.group(1) if m else "nothing", len(errata)))
+
+
+def inventory_counts():
+    """Two gates pin a list of sites, and the documents say how many: the
+    constant-time comparisons (tests/constant_time_sites.txt) and the
+    secure-memory allocations (tests/secure_mem_sites.txt). A list grows when
+    the code does (the 24 comparisons of V4-15b were 25 by V4-20), and the
+    prose has to follow; until V4-44 nothing compared them. Each sentence must
+    be found, so rewording one fails here rather than retiring its check."""
+    def entries(path):
+        return sum(1 for l in open(path, encoding="utf-8") if l.strip() and not l.lstrip().startswith("#"))
+    ct, sm = entries("tests/constant_time_sites.txt"), entries("tests/secure_mem_sites.txt")
+    stated = [
+        ("docs/review/CLAIMS.md", r"the gate pins WHICH function compares, at (\d+) sites", ct, "constant-time sites"),
+        ("docs/review/CLAIMS.md", r"`secure_mem_alloc` site in `src/` and `apps/` -- (\d+) of them", sm, "secure-memory sites"),
+        ("docs/review/README.md", r"every heap secret's allocation site, (\d+) of them", sm, "secure-memory sites"),
+        ("README.md", r"the (\d+) `secure_mem_alloc` sites checked both ways", sm, "secure-memory sites"),
+    ]
+    bad = []
+    for doc, pat, want, what in stated:
+        m = re.search(pat, open(doc, encoding="utf-8").read())
+        if not m:
+            bad.append("%s: no sentence matching /%s/" % (doc, pat))
+        elif int(m.group(1)) != want:
+            bad.append("%s says %s %s; the list holds %d" % (doc, m.group(1), what, want))
+    report("the stated inventory counts", not bad,
+           "; ".join(bad) or "%d constant-time and %d secure-memory sites, as the lists hold" % (ct, sm))
 
 
 def main(repo):
@@ -196,6 +225,7 @@ def main(repo):
     print("  ---   " + ", ".join("%d %s" % (v, k) for k, v in counts.items()))
 
     packet_counts()
+    inventory_counts()
     if ok:
         print("OK: every requirement is mapped, and everything the map cites exists")
         return 0
