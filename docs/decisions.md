@@ -10999,3 +10999,153 @@ must do the same with the runner change in place.
 - Gates: anchors (398; 16 counts agreeing; both lists valid), the claim map,
   `doc_test_counts`, `git diff --check`, `bash -n` on the runner.
 - No source, test or spec file changes, so no campaign's anchors move.
+
+## V4-54 — the event loop against peers that pipeline or never read, and F127 (loop iteration 29: coverage)
+
+### The gap
+
+A coverage run on V4-53's tree put `slot_writable` at 13 of 32 regions, and
+no test had ever filled a socket the daemon writes to. So a reply written in
+parts had never been checked, and neither had a peer that reads nothing.
+
+The loop is half-duplex. Once a served frame's reply is queued, it neither
+polls for input nor consumes it until that reply has gone out, and `conn_io`
+holds one reply at a time. That is what bounds a peer that sends and never
+reads. Nothing had driven it.
+
+The same run put `handshake_initiator_finish` at 34 of 54 regions. Every
+missed region there is a local allocation failure or a defensive
+re-validation, and no peer can reach any of them. So that function was not
+this step's.
+
+### What the tests found: F127 (Low)
+
+Written against the loop as it was, the new tests failed in two ways:
+
+- **Two frames in one write: only the first was served** (served 1, 9 of 18
+  bytes back). Frames were served only after a read. When the first reply
+  had gone out, the second frame was already in the buffer, but it waited
+  for the peer to send something more. A peer that pipelines and then waits
+  for both replies waits until its idle deadline.
+- **Two back-to-back maximum-size frames: neither was served.** Every read
+  took a whole 4096-byte chunk. Pushed into a buffer with less room than
+  that, it was refused as an overflow, and the connection was closed.
+
+Every client in the repository is lock-step and never pipelines, and a peer
+that does harms only itself. So F127 is Low with no security impact. F51
+(V4-10a) was the same class of fault: a proxy that coalesces, or a peer
+that writes ahead, is what real networks do.
+
+### The fix
+
+- **`serve_buffered`:** the frame-serving loop, moved out of `slot_readable`.
+  It runs after a read, as before, and now also when a reply finishes going
+  out (the POLLOUT dispatch), so whatever was pipelined behind the reply is
+  served at once.
+- **`conn_io_in_room`:** a read takes at most the input buffer's free space.
+  Each pushed byte adds at most one byte to that buffer (a WebSocket's
+  framing is consumed, never stored), so a bounded read cannot overflow in
+  any mode.
+- **No room at all** cannot happen while input is being polled: a full
+  buffer holds a complete frame, which is served before input is polled
+  again. If it ever does happen, it is refused exactly as an overflow was
+  before.
+
+### The tests (`test_authd_evloop`, 171 checks)
+
+- **`test_pipelined`**, over loopback TCP:
+  - two small frames in one write, then two maximum-size frames;
+  - both must be served without the peer sending more, and both replies
+    must come back byte for byte;
+  - a probe in the harness proves the second small frame was already
+    buffered when the first was served, so that check is not vacuous.
+- **`test_backpressure`**, over a Unix socket. Loopback TCP autotunes: macOS
+  gave a 4096-byte `SO_RCVBUF` 326,640 bytes and absorbed every reply. Unix
+  socket buffers hold what they are set to.
+  - The peer sends 64 frames of 10,000 bytes and reads nothing. It stops
+    being served, stays unserved for 200 more turns, holds at most one
+    unsent reply, and is still connected.
+  - Then it reads. All 64 frames are served and the 640,256 bytes come back
+    byte for byte. A reply was seen part-sent, so the resumed-write path
+    ran.
+  - A second peer stalls the same way. It is open one millisecond before its
+    deadline and closed at it, with its reply still unsent.
+- **The reply size is a measured choice.** On Linux (WSL 2, kernel 6.18) a
+  4096-byte `SO_SNDBUF` becomes 8192, and a 6004-byte reply went out whole
+  in 64 of 64 writes. So the part-sent check would have had nothing to see
+  in CI. With 10,004-byte replies, every one of 64 needed more than one write
+  on both systems. These figures come from a standalone probe of the same
+  socket set-up: a poll-driven writer, and a reader taking 4096 bytes at a
+  time.
+
+**Shown against the old loop:** with only the three daemon files
+(`evloop.c`, `conn_io.c`, `conn_io.h`) checked out at HEAD, the four
+pipelining checks failed by name. The fixed files were then restored and
+compared by hash. The backpressure checks pass on both versions, because
+frames that large never leave two complete frames buffered. They pin the
+half-duplex behaviour, and campaign v83 shows each one can fail.
+
+### The controls: campaign v83 (BP1–BP6), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| BP1 | the half-duplex stop removed | KILLED (3 named) |
+| BP2 | input polled while a reply waits | KILLED (4 named) |
+| BP3 | a partial write counted as whole | KILLED (4 named) |
+| BP4 | the deadline skipped while a reply is pending | KILLED (2 named) |
+| BP5 | F127 undone: a pipelined frame waits for more input | KILLED (3 named) |
+| BP6 | F127 undone: a read past the buffer's room | KILLED (3 named) |
+
+Every source was restored clean, with no residue. That run used 6,000-byte
+replies. After the change to 10,000, BP2–BP4, the mutants the backpressure
+test kills, were run again. All three were KILLED again, with the same
+counts (4, 4 and 2 named), restored clean, with no residue.
+
+**`slot_writable` is still 13 of 32 regions after this step,** re-measured
+on the final tree. A partial write is not a region of its own: these tests
+drive it, and BP3's kill shows it, but the count does not move. The
+uncovered regions are three:
+- **the nothing-pending guard.** Unreachable from the loop: POLLOUT is
+  requested only while a reply is pending.
+- **EAGAIN after POLLOUT.** Unreachable in practice: `poll` reports a
+  socket writable only when there is room, and the probe saw 0 of them on
+  either system.
+- **any other write error,** such as a peer that resets mid-reply.
+  Reachable, and still untested. Whether the poll loop's POLLERR branch
+  would close such a slot first differs by platform. So a mutation there
+  could be a kill on one system and a survivor on the other, which is what
+  the V4-50..53 control nightly found v82 LC1 to be. It is left for a step
+  that can show both.
+
+### The counts
+
+365 mutations in 53 campaigns, 404 anchors; all 16 stated counts restated.
+v83 is in nightly.yml's matrix, and tools/README.md's campaign list names
+it. The register is 127 findings, F0–F127.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `3d009d6164c59b24` | 57/57 |
+  | `build-bench-p` | `6519982c6a31111d` | 53/53 |
+  | ASan | `5ee08ea4c35ab599` | 57/57, instrumentation in all 43 |
+  | UBSan | `f8c048e8466005b8` | 57/57; one runtime error, the planted canary |
+  | fuzz | `1ee6c3035f23a605` | 36/36, and `test_authd_evloop`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_evloop` has 171 checks and runs in about 3 s.
+- **Coverage re-measured on the final tree:** `apps/authd/` 82.41% of lines
+  and 88.49% of regions (82.44% and 88.48% before; the files grew).
+- **The gcc 16 check** (V4-49's lesson), as a full compile at `-O0` and `-O2`:
+  `test_authd_evloop.c`, `evloop.c` and `conn_io.c` are clean.
+  `-fsyntax-only` was tried first and is not enough: it skips the middle end,
+  where `-Wformat-truncation` runs.
+- **Gates:**
+  - anchors (404; 16 counts agreeing; both allowlists valid);
+  - the claim map (127 findings);
+  - the spec checks (vocabularies and constants);
+  - the audit table's separators;
+  - `git diff --check`;
+  - nightly.yml's matrix against the spec files (53 and 53).
