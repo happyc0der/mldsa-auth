@@ -12,6 +12,7 @@
  * this command's reply end with END?".
  */
 #include <dirent.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,7 @@
 #include "key_windows.h"
 #include "keyfile.h"
 #include "localcli.h"
+#include "net_io.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -740,6 +742,116 @@ static void test_localcli_split_list(void)
           "split: a list that arrives in two writes is read to its END, rows included");
 }
 
+/* V4-52: localcli_call against a daemon that misbehaves. It is the local-API
+ * client authd_admin uses, and V4-44's coverage showed none of its refusals had
+ * run: a reply larger than the caller's buffer, a reply cut off before it is
+ * complete, a daemon that never answers, a request over spec 8's line cap.
+ * Each fake daemon is a forked child that accepts once and plays a script. */
+static int lc_listen(const char *path)
+{
+    (void)unlink(path);
+    const int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    const int sn = snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+    if (lfd < 0 || sn <= 0 || (size_t)sn >= sizeof sa.sun_path ||
+        bind(lfd, (struct sockaddr *)&sa, sizeof sa) != 0 || listen(lfd, 1) != 0) {
+        if (lfd >= 0) { (void)close(lfd); }
+        return -1;
+    }
+    return lfd;
+}
+
+/* The child: accept, read the request, write `reply`, then wait `hold_us`
+ * before closing (a long hold is a daemon that never finishes). */
+static pid_t lc_daemon(int lfd, const char *reply, size_t n, useconds_t hold_us)
+{
+    const pid_t pid = fork();
+    if (pid == 0) {
+        const int c = accept(lfd, NULL, NULL);
+        char req[512];
+        (void)!read(c, req, sizeof req);
+        if (n > 0u) { (void)!write(c, reply, n); }
+        usleep(hold_us);
+        (void)close(c);
+        child_exit(0);
+    }
+    return pid;
+}
+
+static void test_localcli_robustness(void)
+{
+    char path[400];
+    (void)snprintf(path, sizeof path, "%s/lc.sock", g_dir);
+    int ws = 0;
+
+    /* the canary: a one-line reply is OK */
+    { const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, "OK\n", 3u, 50000);
+      char out[256]; size_t n = 0;
+      const localcli_status_t st = localcli_call(path, "PING", NULL, 5000u, out, sizeof out, &n);
+      (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      CHECK(lfd >= 0 && st == LOCALCLI_OK && strcmp(out, "OK\n") == 0,
+            "localcli: a one-line reply is OK -- the canary"); }
+
+    /* a reply larger than the buffer, never complete: refused, and nothing is
+     * written past the buffer (guard bytes after it) */
+    { static char big[600];
+      memcpy(big, "OK count=9\n", 11u);
+      for (size_t i = 11; i < sizeof big; i++) { big[i] = (i % 40u == 39u) ? '\n' : 'r'; }
+      const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, big, sizeof big, 300000);
+      char out[64 + 16]; memset(out, 0x5a, sizeof out);
+      size_t n = 0;
+      const localcli_status_t st = localcli_call(path, "LIST-USERS", NULL, 5000u, out, 64u, &n);
+      (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      int intact = 1; for (size_t i = 64; i < sizeof out; i++) { if ((unsigned char)out[i] != 0x5au) { intact = 0; } }
+      CHECK(st == LOCALCLI_ERR_RESPONSE && n < 64u && memchr(out, '\0', 64u) != NULL && intact,
+            "localcli: a reply larger than the caller's buffer is refused, NUL-terminated inside it, and nothing is written past it"); }
+
+    /* half a list, then the daemon closes: a truncation, not a list */
+    { static const char half[] = "OK count=2\nUSER user=75 role=user\n";
+      const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, half, sizeof half - 1u, 0);
+      char out[512]; size_t n = 0;
+      const localcli_status_t st = localcli_call(path, "LIST-USERS", NULL, 5000u, out, sizeof out, &n);
+      (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      CHECK(st == LOCALCLI_ERR_RESPONSE,
+            "localcli: a list the daemon closes before its END is refused as a truncation, not returned"); }
+
+    /* a daemon that never answers: TIMEOUT, at the deadline */
+    { const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, NULL, 0u, 2000000);
+      char out[256]; size_t n = 0;
+      const uint64_t t0 = net_now_ms();
+      const localcli_status_t st = localcli_call(path, "PING", NULL, 300u, out, sizeof out, &n);
+      const uint64_t took = net_now_ms() - t0;
+      (void)kill(pid, SIGKILL); (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      CHECK(st == LOCALCLI_ERR_TIMEOUT && took >= 250u && took < 1500u,
+            "localcli: a daemon that never answers is a TIMEOUT at the deadline"); }
+
+    /* a request over spec 8's 8192-byte line cap is refused before any byte
+     * is sent: the fake daemon sees no connection */
+    { const int lfd = lc_listen(path);
+      static char args[AUTHD_LINE_MAX];
+      memset(args, 'a', sizeof args - 1u); args[sizeof args - 1u] = '\0';
+      char out[256]; size_t n = 0;
+      const localcli_status_t st = localcli_call(path, "PING", args, 1000u, out, sizeof out, &n);
+      struct pollfd pf = { lfd, POLLIN, 0 };
+      const int pending = poll(&pf, 1, 100);
+      (void)close(lfd);
+      CHECK(lfd >= 0 && st == LOCALCLI_ERR_TOO_LONG && pending == 0,
+            "localcli: a request over the 8192-byte line cap is refused before it connects"); }
+
+    /* no daemon at all */
+    { (void)unlink(path);
+      char out[256]; size_t n = 0;
+      CHECK(localcli_call(path, "PING", NULL, 1000u, out, sizeof out, &n) == LOCALCLI_ERR_CONNECT,
+            "localcli: a socket path with no daemon is cannot-connect"); }
+    (void)unlink(path);
+}
+
 static void test_key_plan(void)
 {
     CHECK(client_key_plan(1, 0, 0) == KEY_PLAN_USE_EK,
@@ -1225,6 +1337,7 @@ int main(void)
     test_check_config();
     test_framing_rule();
     test_localcli_split_list();
+    test_localcli_robustness();
     test_key_plan();
     test_rotate_on_disk();
     test_rotate_reply_refused_or_lost();
