@@ -929,6 +929,31 @@ if [ "$RU_OK" -eq 1 ]; then
     [ "$(rej)" -eq "$n" ] || fail "a connect() refused by file permission was counted as a peer rejection"
     kill -0 "$DPID" 2>/dev/null || fail "the real-user daemon died refusing a peer"
     echo "PASS: E2E: a real second user (nobody, uid $NB_UID) is served where its uid is listed and refused at accept where it is not; without the group it never reaches the check"
+    # V4-42 (audit F122, spec 12): a device key owned by another user is
+    # refused even when its mode is right. Such a file is unreadable to anyone
+    # but its owner and root, so root runs the client: with mode 0600 passing
+    # the custody check's other half, the owner comparison is the only barrier.
+    # The canary is a root-owned copy, which root may open: the refusal is
+    # about whose file it is, not about root.
+    mkdir "$RU/ck" && cp "$TMP/dev/$HANDLE.ek" "$RU/ck/foreign.ek" && chmod 0600 "$RU/ck/foreign.ek" \
+        || fail "could not copy the device key for the custody leg"
+    # shellcheck disable=SC2086
+    $AS chown "$NB_UID" "$RU/ck/foreign.ek" || fail "could not hand the key copy to nobody"
+    [ "$(stat -c %u:%a "$RU/ck/foreign.ek")" = "$NB_UID:600" ] || fail "the foreign key copy is not nobody's, mode 0600"
+    # shellcheck disable=SC2086
+    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/foreign.ek" --passphrase-file "$TMP/opass" \
+        --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
+        > /dev/null 2> "$TMP/ck-foreign.err" && fail "the client opened a device key owned by another user (spec 12)"
+    grep -q 'unsafe-permissions' "$TMP/ck-foreign.err" \
+        || fail "a device key owned by another user was refused for another reason: $(cat "$TMP/ck-foreign.err")"
+    # shellcheck disable=SC2086
+    $AS install -m 0600 "$TMP/dev/$HANDLE.ek" "$RU/ck/own.ek" || fail "could not make root's own key copy"
+    # shellcheck disable=SC2086
+    $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/own.ek" --passphrase-file "$TMP/opass" \
+        --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
+        > /dev/null 2> "$TMP/ck-own.err" || true
+    grep -q 'unsafe-permissions' "$TMP/ck-own.err" && fail "root's own 0600 key copy was refused as unsafe-permissions (the canary)"
+    echo "PASS: E2E: a device key owned by another user is refused as unsafe-permissions though its mode is 0600; the owner's own copy is not (spec 12)"
     kill -TERM "$DPID"
     i=0
     while kill -0 "$DPID" 2>/dev/null; do
