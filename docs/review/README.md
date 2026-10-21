@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 125 findings (F0–F125), with severity, evidence and
+   register](../v4/audit.md). 126 findings (F0–F126), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 351 committed defects in 50 campaigns, each of which must be
+- **Mutations**: 354 committed defects in 51 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -402,6 +402,14 @@ including the `stat`-for-`lstat` slip that would follow a symlink.
 V4-50 re-checked that the test fixtures clean up after themselves (they do)
 and removed the leak's old leftovers. F5's row now says plainly that only
 `REVOKE-TOKENS handle=` and the unmeasured wasm build keep it open.
+
+V4-51 drove the shipped daemon's start-up refusals. It refuses to start on
+a group-readable passphrase file or server key, on the wrong passphrase, and
+on a store file that is not a database. Each time it names the file and the
+status and leaves no socket behind. With any of those refusals removed,
+campaign v81 shows the daemon starting anyway, and caught. Writing the tests
+found three diagnostics that disagree with each other (**F126**, the owner's
+call): exit codes, status names, and a misleading "audit-chain-corrupt".
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
