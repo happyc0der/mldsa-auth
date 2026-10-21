@@ -25,6 +25,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <poll.h>
+#include <signal.h>
 
 #include <sodium.h>
 
@@ -746,6 +747,63 @@ static void test_backpressure(void)
               "bp: a peer that never reads is closed at its deadline, its reply unsent");
     }
     (void)close(d);
+
+    /* 4. A peer that vanishes with a reply still unsent (V4-56). Nothing can
+     * reach it any more, so the slot must go at once -- not be polled until
+     * its deadline. macOS reports such a socket as POLLHUP alone, with no
+     * POLLOUT and no POLLERR, so a loop that writes only on POLLOUT and closes
+     * on POLLHUP only when nothing is pending kept it, and poll() returned at
+     * once on every turn: a spin until the deadline. */
+    int e = dial_unix_small(path, small);
+    CHECK(e >= 0, "bp: a third stalling client connects");
+    (void)PUMP_UNTIL(&ev, 90000, evloop_active(&ev) == 1u);
+    s = live_slot(slots, NSLOTS);
+    CHECK(s != NULL && setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof small) == 0,
+          "bp: its side gets a small send buffer too");
+    if (s != NULL) {
+        off = 0;
+        bp_stall(&ev, 90000, e, sent, total, &off, &h, s, &partial, &max_pending);
+        CHECK(conn_io_pending(&s->io) > 0u, "bp: the third peer is stalled with a reply unsent");
+        const uint64_t closed0 = ev.closed_deadline;
+        (void)close(e);
+        e = -1;
+        int turns = 0;
+        struct timeval t0, t1;
+        (void)gettimeofday(&t0, NULL);
+        while (turns < 200 && evloop_active(&ev) != 0u) {
+            (void)evloop_run_once(&ev, 10, 90000);
+            turns++;
+        }
+        (void)gettimeofday(&t1, NULL);
+        const long ms = (long)(t1.tv_sec - t0.tv_sec) * 1000L + (long)(t1.tv_usec - t0.tv_usec) / 1000L;
+        char what[200];
+        (void)snprintf(what, sizeof what,
+                       "bp: a peer that vanishes with a reply unsent frees its slot at once (%d turns in %ld ms), not at its deadline",
+                       turns, ms);
+        CHECK(evloop_active(&ev) == 0u && turns <= 3 && ev.closed_deadline == closed0, what);
+    }
+    if (e >= 0) { (void)close(e); }
+
+    /* 5. ...but a peer that only half-closes -- sends its frame, then shuts
+     * down its sending side -- still gets its reply. Closing every slot on
+     * POLLHUP would also have ended 4's spin, and would have broken this. */
+    int f = dial_unix_small(path, small);
+    CHECK(f >= 0, "bp: a half-closing client connects");
+    (void)PUMP_UNTIL(&ev, 90000, evloop_active(&ev) == 1u);
+    {
+        const size_t one = (size_t)BP_FRAME;
+        size_t woff = 0;
+        for (int turn = 0; turn < 2000 && woff < one; turn++) {
+            const ssize_t w = write(f, sent + woff, one - woff);
+            if (w > 0) { woff += (size_t)w; }
+            (void)evloop_run_once(&ev, 1, 90000);
+        }
+        CHECK(woff == one && shutdown(f, SHUT_WR) == 0, "bp: it sends one frame and shuts down its sending side");
+        const size_t got5 = pump_read(&ev, 90000, f, recvd, one);
+        CHECK(got5 == one && memcmp(recvd, sent, one) == 0,
+              "bp: a peer that half-closes after its frame still gets the whole reply");
+    }
+    if (f >= 0) { (void)close(f); }
     evloop_close_all(&ev);
     listener_close(&lfd, path);
     (void)rmdir(dir);
@@ -1014,6 +1072,9 @@ int main(void)
      * buffered, and Linux ASan exits without flushing it: v52's P4 lost its
      * named failure that way on the nightly while macOS kept it. */
     setvbuf(stdout, NULL, _IONBF, 0);
+    /* As mldsa-authd does (authd_main.c): a write to a peer that has gone is
+     * EPIPE, a status the loop handles, not a signal that ends the process. */
+    signal(SIGPIPE, SIG_IGN);
     if (sodium_init() < 0) {
         printf("FAIL: sodium_init\n");
         return 1;

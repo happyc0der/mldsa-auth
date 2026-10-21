@@ -529,7 +529,14 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
         activity++;
         int closed = 0;
 
-        if ((re & POLLOUT) != 0) {
+        /* A hang-up with a reply still pending is a write attempt too (V4-56,
+         * F129). macOS reports a peer that has gone as POLLHUP alone -- no
+         * POLLOUT, no POLLERR -- and the branch below closes on POLLHUP only
+         * when nothing is pending, so such a slot was kept and poll() returned
+         * at once on every turn until its deadline. The write settles it: a
+         * peer that has gone answers EPIPE and the slot closes; one that only
+         * half-closed still gets its reply. */
+        if ((re & POLLOUT) != 0 || ((re & POLLHUP) != 0 && conn_io_pending(&s->io) > 0u)) {
             if (slot_writable(ev, s) < 0) {
                 evloop_close_slot(ev, s);
                 closed = 1;
