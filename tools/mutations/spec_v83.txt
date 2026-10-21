@@ -1,0 +1,6 @@
+BP1|^test_authd_evloop$|pipe: two small frames: both replies arrive in order, byte for byte
+BP2|^test_authd_evloop$|bp: a peer that reads nothing stops being served
+BP3|^test_authd_evloop$|bp: ...in order, byte for byte, however the writes were split
+BP4|^test_authd_evloop$|bp: a peer that never reads is closed at its deadline, its reply unsent
+BP5|^test_authd_evloop$|pipe: two small frames are both served without the peer sending more
+BP6|^test_authd_evloop$|pipe: two maximum-size frames are both served without the peer sending more

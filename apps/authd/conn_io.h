@@ -188,4 +188,9 @@ const uint8_t *conn_io_pending_ptr(const conn_io_t *c);
 /* Records that `n` pending bytes were written. */
 void conn_io_sent(conn_io_t *c, size_t n);
 
+/* How many more input bytes conn_io_push() can take (V4-54, F127). Each byte
+ * pushed adds at most one byte to the input buffer -- a WebSocket's framing is
+ * consumed, never stored -- so a read of at most this many cannot overflow. */
+size_t conn_io_in_room(const conn_io_t *c);
+
 #endif /* MLDSA_AUTHD_CONN_IO_H */

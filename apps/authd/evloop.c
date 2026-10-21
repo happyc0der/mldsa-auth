@@ -307,12 +307,65 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
 
 /* Reads once, feeds the reassembler, dispatches every complete frame.
  * Returns 0 to keep the slot, -1 to close it. */
+/* Serves every complete frame (or line) already in the slot's input buffer,
+ * until one leaves a reply queued. Called after a read, and -- V4-54, F127 --
+ * after a reply finishes going out: a peer that sent two frames in one write
+ * has the second here already and, waiting for its reply, will send nothing
+ * more, so waiting for another read left it unserved until its deadline. */
+static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
+{
+    for (;;) {
+        const uint8_t *payload = NULL;
+        size_t len = 0;
+        const int have = (s->kind == SLOT_KIND_LOCAL)
+                             ? conn_io_next_line(&s->io, &payload, &len)
+                             : conn_io_next_frame(&s->io, &payload, &len);
+        if (!have) {
+            break;
+        }
+        const ev_action_t act = (s->kind == SLOT_KIND_LOCAL)
+                                    ? ev->on_line(ev->user, s, payload, len)
+                                    : ev->on_frame(ev->user, s, payload, len);
+        if (s->kind == SLOT_KIND_LOCAL) {
+            conn_io_consume_line(&s->io);
+        } else {
+            conn_io_consume_frame(&s->io);
+        }
+        /* A frame was served: re-arm the idle deadline. */
+        s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
+        if (act == EV_ACTION_CLOSE) {
+            s->state = SLOT_DRAINING;
+            break;
+        }
+        /* Half-duplex: if a reply is queued, stop consuming input until it has
+         * gone out. Otherwise a peer that pipelines could make us queue over an
+         * unsent reply (conn_io_queue would return BUSY) or buffer unboundedly. */
+        if (conn_io_pending(&s->io) > 0u) {
+            break;
+        }
+    }
+}
+
 static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
 {
     uint8_t buf[READ_CHUNK];
+    /* V4-54 (F127): never more than the input buffer has room for. A peer that
+     * pipelines can have one frame's tail and the next frame's head in a
+     * single read, and a whole chunk pushed into a nearly full buffer was
+     * refused as an overflow: two back-to-back maximum frames closed the
+     * connection. No room at all cannot happen while the loop polls for input
+     * (a full buffer holds a complete frame, served before input is polled
+     * again), and is refused as before if it ever does. */
+    const size_t room = conn_io_in_room(&s->io);
+    if (room == 0u) {
+        ev->closed_protocol++;
+        authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", s->index,
+                              conn_io_status_name(CONN_IO_ERR_OVERFLOW));
+        return -1;
+    }
     ssize_t n;
     do {
-        n = read(s->fd, buf, sizeof buf);
+        n = read(s->fd, buf, (room < sizeof buf) ? room : sizeof buf);
     } while (n < 0 && errno == EINTR);
 
     if (n == 0) {
@@ -347,36 +400,7 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
         }
     }
 
-    for (;;) {
-        const uint8_t *payload = NULL;
-        size_t len = 0;
-        const int have = (s->kind == SLOT_KIND_LOCAL)
-                             ? conn_io_next_line(&s->io, &payload, &len)
-                             : conn_io_next_frame(&s->io, &payload, &len);
-        if (!have) {
-            break;
-        }
-        const ev_action_t act = (s->kind == SLOT_KIND_LOCAL)
-                                    ? ev->on_line(ev->user, s, payload, len)
-                                    : ev->on_frame(ev->user, s, payload, len);
-        if (s->kind == SLOT_KIND_LOCAL) {
-            conn_io_consume_line(&s->io);
-        } else {
-            conn_io_consume_frame(&s->io);
-        }
-        /* A frame was served: re-arm the idle deadline. */
-        s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
-        if (act == EV_ACTION_CLOSE) {
-            s->state = SLOT_DRAINING;
-            break;
-        }
-        /* Half-duplex: if a reply is queued, stop consuming input until it has
-         * gone out. Otherwise a peer that pipelines could make us queue over an
-         * unsent reply (conn_io_queue would return BUSY) or buffer unboundedly. */
-        if (conn_io_pending(&s->io) > 0u) {
-            break;
-        }
-    }
+    serve_buffered(ev, s, now_ms);
     return 0;
 }
 
@@ -509,6 +533,8 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             if (slot_writable(ev, s) < 0) {
                 evloop_close_slot(ev, s);
                 closed = 1;
+            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u) {
+                serve_buffered(ev, s, now_ms);   /* the reply has gone (F127) */
             }
         }
         if (!closed && (re & POLLIN) != 0) {

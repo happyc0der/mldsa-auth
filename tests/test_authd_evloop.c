@@ -21,8 +21,10 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <poll.h>
 
 #include <sodium.h>
 
@@ -287,6 +289,9 @@ typedef struct {
     int close_after;
     const char *canary;       /* if set, on_frame records whether it is in the slot */
     int canary_seen_live;
+    const char *ahead;        /* V4-54: bytes expected BEHIND the frame being served ... */
+    int ahead_at;             /* ... when h->frames reaches this */
+    int ahead_seen;
 } harness_t;
 
 static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *payload, size_t len)
@@ -299,6 +304,11 @@ static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *paylo
         /* observed while the frame is genuinely in the slot's buffer -- this is
          * what stops the post-close absence check below from being vacuous */
         h->canary_seen_live = 1;
+    }
+    if (h->ahead != NULL && h->frames == h->ahead_at &&
+        memmem(payload + len, (size_t)(slot->io.in + slot->io.in_len - (payload + len)),
+               h->ahead, strlen(h->ahead)) != NULL) {
+        h->ahead_seen = 1;
     }
     if (h->echo) {
         (void)conn_io_queue(&slot->io, payload, len);
@@ -495,6 +505,250 @@ static void test_evloop(void)
 
     evloop_close_all(&ev);
     listener_close(&lfd, NULL);
+}
+
+/* ----------------------------------- V4-54: peers that pipeline or never read
+ *
+ * The loop is half-duplex: once a served frame's reply is queued, it neither
+ * polls for nor consumes input until that reply has gone out, and conn_io holds
+ * one reply at a time. Nothing drove either half of that before V4-54: no
+ * test had ever filled a socket the daemon writes to.
+ * What it must give a peer:
+ *  - frames sent back to back are all served, in order, without the peer having
+ *    to send anything more -- a peer that pipelines and then waits must not wait
+ *    for its deadline;
+ *  - a peer that sends and never reads stops being served, holds at most one
+ *    unsent reply, and is still closed at its deadline;
+ *  - when it does read, every reply arrives byte for byte, however the writes
+ *    were split. */
+
+/* A Unix stream socket, not loopback TCP: TCP's buffers autotune (macOS gave a
+ * 4096-byte SO_RCVBUF 326,640 bytes and absorbed every reply), and a Unix
+ * socket's hold what they are set to, so "the peer's buffers are full" is a
+ * state the test can reach on purpose. */
+static int dial_unix_small(const char *path, int bufsz)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { return -1; }
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof bufsz);
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    (void)snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    if (connect(fd, (const struct sockaddr *)&a, sizeof a) != 0) { (void)close(fd); return -1; }
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) != 0) { (void)close(fd); return -1; }
+    return fd;
+}
+
+static authd_slot_t *live_slot(authd_slot_t *slots, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (slots[i].state != SLOT_FREE) { return &slots[i]; }
+    }
+    return NULL;
+}
+
+/* Reads until `want` bytes have arrived, pumping the loop between reads;
+ * returns how many did. */
+static size_t pump_read(evloop_t *ev, uint64_t now, int fd, uint8_t *buf, size_t want)
+{
+    size_t got = 0;
+    for (int turn = 0; turn < 4000 && got < want; turn++) {
+        (void)evloop_run_once(ev, 1, now);
+        struct pollfd pf = { .fd = fd, .events = POLLIN, .revents = 0 };
+        if (poll(&pf, 1, 1) == 1) {
+            const ssize_t r = read(fd, buf + got, want - got);
+            if (r <= 0) { break; }
+            got += (size_t)r;
+        }
+    }
+    return got;
+}
+
+static void test_pipelined(void)
+{
+    static authd_slot_t slots[1];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    h.echo = 1;
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK && port != 0, "pipe: listener binds");
+    CHECK(evloop_init(&ev, slots, 1, 5000u, 20000u, on_frame, on_close, &h) == 0, "pipe: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "pipe: listener registered");
+
+    /* Two small frames in one write, then two maximum-size ones: a maximum
+     * frame fills the input buffer exactly, so the bytes pipelined behind it
+     * must wait for room rather than overflow it. */
+    static uint8_t big[2 * (4 + AUTHD_FRAME_MAX)], back[sizeof big];
+    struct { const char *what; size_t len; } runs[] = {
+        { "two small frames", 5u },
+        { "two maximum-size frames", AUTHD_FRAME_MAX },
+    };
+    for (size_t r = 0; r < sizeof runs / sizeof runs[0]; r++) {
+        const size_t one = 4u + runs[r].len, both = 2u * one;
+        for (int i = 0; i < 2; i++) {
+            put_be32(big + (size_t)i * one, (uint32_t)runs[r].len);
+            memset(big + (size_t)i * one + 4, i ? 'B' : 'A', runs[r].len);
+        }
+        int c = dial(port);
+        CHECK(c >= 0, "pipe: client connects");
+        (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+        const int before = h.frames;
+        /* The small pair fits one read; the probe says it arrived as one, so
+         * the check below is about a frame that was already here. */
+        h.ahead = (r == 0) ? "BBBBB" : NULL;
+        h.ahead_at = before + 1;
+        h.ahead_seen = 0;
+        size_t off = 0;
+        while (off < both) {
+            const ssize_t w = write(c, big + off, both - off);
+            if (w <= 0) { break; }
+            off += (size_t)w;
+        }
+        char what[160];
+        (void)snprintf(what, sizeof what, "pipe: %s written back to back", runs[r].what);
+        CHECK(off == both, what);
+        const size_t got = pump_read(&ev, 1000, c, back, both);
+        (void)snprintf(what, sizeof what,
+                       "pipe: %s are both served without the peer sending more (served %d, %zu of %zu bytes back)",
+                       runs[r].what, h.frames - before, got, both);
+        CHECK(h.frames - before == 2 && got == both, what);
+        (void)snprintf(what, sizeof what, "pipe: %s: both replies arrive in order, byte for byte", runs[r].what);
+        CHECK(got == both && memcmp(back, big, both) == 0, what);
+        if (r == 0) {
+            CHECK(h.ahead_seen, "pipe: the second frame was already buffered when the first was served (not vacuous)");
+        }
+        (void)close(c);
+        (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 0u);
+    }
+    evloop_close_all(&ev);
+    listener_close(&lfd, NULL);
+}
+
+/* Each reply larger than the whole socket buffer, so it cannot go out in one
+ * write: Linux doubles a 4096-byte SO_SNDBUF to 8192, and there a 6004-byte
+ * reply went out whole every time (0 of 64 writes partial, measured on WSL 2's
+ * 6.18 kernel), which would leave the part-sent check below with nothing to see. */
+enum { BP_FRAMES = 64, BP_LEN = 10000, BP_FRAME = 4 + BP_LEN };
+
+/* Writes what the socket takes and pumps, until neither the client's sending
+ * nor the daemon's serving has moved for 300 turns. */
+static void bp_stall(evloop_t *ev, uint64_t now, int c, const uint8_t *sent, size_t total, size_t *off,
+                     const harness_t *h, const authd_slot_t *s, int *partial, size_t *max_pending)
+{
+    int still = 0;
+    for (int turn = 0; turn < 20000 && still < 300; turn++) {
+        const size_t off0 = *off;
+        const int f0 = h->frames;
+        if (*off < total) {
+            const ssize_t w = write(c, sent + *off, total - *off);
+            if (w > 0) { *off += (size_t)w; }
+        }
+        (void)evloop_run_once(ev, 1, now);
+        const size_t p = conn_io_pending(&s->io);
+        if (p > *max_pending) { *max_pending = p; }
+        if (p > 0u && p < (size_t)BP_FRAME) { *partial = 1; }
+        still = (*off == off0 && h->frames == f0) ? still + 1 : 0;
+    }
+}
+
+static void test_backpressure(void)
+{
+    enum { NSLOTS = 2 };
+    static authd_slot_t slots[NSLOTS];
+    static uint8_t sent[BP_FRAMES * BP_FRAME], recvd[BP_FRAMES * BP_FRAME];
+    const size_t total = sizeof sent;
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    memset(&h, 0, sizeof h);
+    h.echo = 1;
+    /* mkdtemp, not a pid-keyed name (audit F114). */
+    char dir[] = "/tmp/authd-evl-XXXXXX", path[64];
+    CHECK(mkdtemp(dir) != NULL, "bp: a scratch directory for the socket");
+    (void)snprintf(path, sizeof path, "%s/bp.sock", dir);
+    CHECK(listener_open_unix(path, 8, LISTENER_MODE_PRIVATE, &lfd) == LISTENER_OK, "bp: a Unix listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 5000u, 20000u, on_frame, on_close, &h) == 0, "bp: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "bp: listener registered");
+    for (int i = 0; i < BP_FRAMES; i++) {
+        uint8_t *f = sent + (size_t)i * BP_FRAME;
+        put_be32(f, BP_LEN);
+        memset(f + 4, 0x21 + (i % 90), BP_LEN);       /* each frame its own bytes */
+        f[4] = (uint8_t)i;
+    }
+
+    /* 1. Everything the socket will take, and nothing read. */
+    const int small = 4096;
+    int c = dial_unix_small(path, small);
+    CHECK(c >= 0, "bp: a non-blocking client connects with a small receive buffer");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+    authd_slot_t *s = live_slot(slots, NSLOTS);
+    CHECK(s != NULL && setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof small) == 0,
+          "bp: the daemon's side gets a small send buffer");
+    if (s == NULL) { (void)close(c); listener_close(&lfd, path); (void)rmdir(dir); return; }
+    size_t off = 0, max_pending = 0;
+    int partial = 0;
+    bp_stall(&ev, 1000, c, sent, total, &off, &h, s, &partial, &max_pending);
+    const int served = h.frames;
+    char what[200];
+    (void)snprintf(what, sizeof what,
+                   "bp: a peer that reads nothing stops being served (%d of %d frames served, %zu of %zu bytes sent)",
+                   served, BP_FRAMES, off, total);
+    CHECK(served < BP_FRAMES && conn_io_pending(&s->io) > 0u, what);
+    pump_n(&ev, 1000, 200);
+    CHECK(h.frames == served, "bp: ...and stays unserved: no frame is consumed while its reply waits");
+    CHECK(max_pending <= (size_t)BP_FRAME, "bp: the daemon never holds more than one unsent reply");
+    CHECK(evloop_active(&ev) == 1u, "bp: the stalled peer is still connected before its deadline");
+
+    /* 2. The peer reads: everything is served and comes back exact. */
+    size_t got = 0;
+    for (int turn = 0; turn < 40000 && got < total; turn++) {
+        const ssize_t r = read(c, recvd + got, total - got);
+        if (r > 0) { got += (size_t)r; }
+        if (off < total) {
+            const ssize_t w = write(c, sent + off, total - off);
+            if (w > 0) { off += (size_t)w; }
+        }
+        (void)evloop_run_once(&ev, 1, 1000);
+        const size_t p = conn_io_pending(&s->io);
+        if (p > 0u && p < (size_t)BP_FRAME) { partial = 1; }
+    }
+    (void)snprintf(what, sizeof what,
+                   "bp: once the peer reads, all %d frames are served and every reply arrives (%d served, %zu of %zu bytes)",
+                   BP_FRAMES, h.frames, got, total);
+    CHECK(h.frames == BP_FRAMES && got == total, what);
+    CHECK(got == total && memcmp(recvd, sent, total) == 0,
+          "bp: ...in order, byte for byte, however the writes were split");
+    CHECK(partial, "bp: a reply was seen part-sent (the resumed-write path ran, so the check above is not vacuous)");
+    (void)close(c);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 0u);
+
+    /* 3. A peer that never reads is still closed at its deadline. */
+    int d = dial_unix_small(path, small);
+    CHECK(d >= 0, "bp: a second stalling client connects");
+    (void)PUMP_UNTIL(&ev, 50000, evloop_active(&ev) == 1u);
+    s = live_slot(slots, NSLOTS);
+    CHECK(s != NULL && setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF, &small, sizeof small) == 0,
+          "bp: its side gets a small send buffer too");
+    if (s != NULL) {
+        off = 0;
+        bp_stall(&ev, 50000, d, sent, total, &off, &h, s, &partial, &max_pending);
+        CHECK(conn_io_pending(&s->io) > 0u, "bp: the second peer is stalled with a reply unsent");
+        const uint64_t dl = s->deadline_ms;
+        CHECK(dl == 50000u + 20000u, "bp: its deadline is the idle timeout from its last served frame");
+        const uint64_t closed0 = ev.closed_deadline;
+        (void)evloop_run_once(&ev, 0, dl - 1u);
+        CHECK(evloop_active(&ev) == 1u, "bp: a stalled peer is still open one ms before its deadline");
+        (void)evloop_run_once(&ev, 0, dl);
+        CHECK(evloop_active(&ev) == 0u && ev.closed_deadline == closed0 + 1u,
+              "bp: a peer that never reads is closed at its deadline, its reply unsent");
+    }
+    (void)close(d);
+    evloop_close_all(&ev);
+    listener_close(&lfd, path);
+    (void)rmdir(dir);
 }
 
 /* ------------------------------------------------------------- log hygiene */
@@ -770,6 +1024,8 @@ int main(void)
     test_config();
     test_conn_io();
     test_evloop();
+    test_pipelined();
+    test_backpressure();
     test_log_hygiene();
     test_poll_fairness();
     test_memlock();
