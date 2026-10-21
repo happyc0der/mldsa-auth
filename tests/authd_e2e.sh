@@ -237,6 +237,71 @@ grep -q 'admin socket' "$TMP/bind.log" || fail "the daemon did not name the admi
 rm -f "$TMP/ba.sock"
 echo "PASS: E2E: a listener failure runs the cleanup epilogue that wipes the server key"
 
+# V4-51: the daemon refuses to START on a file it cannot trust, and says why.
+# V4-44's coverage found its passphrase, key and store refusals had run only
+# through --check-config or not at all. Each case damages ONE copy of the
+# server's files; the daemon must exit nonzero, name the file and the status,
+# and leave no socket behind. The undamaged copies start (the canary).
+mkdir "$TMP/su" && cp "$TMP/d/server.ek" "$TMP/su/server.ek" && cp "$TMP/d/pass" "$TMP/su/pass" \
+    && chmod 0600 "$TMP/su/server.ek" "$TMP/su/pass" || fail "could not copy the server's files for the start-up leg"
+su_conf() {
+    cat > "$TMP/su.conf" <<EOF
+store_path = $1
+key_path = $2
+key_passphrase_file = $3
+server_id = authd
+listen_unix = $TMP/su-p.sock
+site_socket = $TMP/su-s.sock
+admin_socket = $TMP/su-a.sock
+site_uids = $(id -u)
+admin_uids = $(id -u)
+EOF
+}
+su_refused() {
+    # In the background, with a deadline: a daemon that wrongly STARTS would
+    # otherwise run forever, and a campaign would see a timeout, not a check.
+    "$DAEMON" --config "$TMP/su.conf" > "$TMP/su.log" 2>&1 &
+    supid=$!
+    i=0
+    while kill -0 "$supid" 2>/dev/null; do
+        i=$((i + 1))
+        if [ "$i" -gt 400 ]; then
+            kill -TERM "$supid" 2>/dev/null; wait "$supid" 2>/dev/null || true
+            fail "the daemon started with $2, and was still running 20 s later"
+        fi
+        sleep 0.05
+    done
+    rc=0
+    wait "$supid" || rc=$?
+    [ "$rc" -ne 0 ] || fail "the daemon started with $2"
+    grep -qF "$1" "$TMP/su.log" || fail "the daemon refused $2 without saying '$1': $(cat "$TMP/su.log")"
+    for s in su-p su-s su-a; do [ ! -e "$TMP/$s.sock" ] || fail "refusing $2 left $s.sock behind"; done
+}
+chmod 0644 "$TMP/su/pass"
+su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
+su_refused "passphrase file $TMP/su/pass: permissions" "a group-readable passphrase file"
+chmod 0600 "$TMP/su/pass"; chmod 0644 "$TMP/su/server.ek"
+su_refused "$TMP/su/server.ek: unsafe-permissions" "a group-readable server key"
+chmod 0600 "$TMP/su/server.ek"
+printf 'not the passphrase\n' > "$TMP/su/wrongpass" && chmod 0600 "$TMP/su/wrongpass"
+su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/wrongpass"
+su_refused "$TMP/su/server.ek: decryption-failed" "the wrong passphrase"
+printf 'this file is not a database, whatever its name says\n' > "$TMP/su/garbage.sqlite3"
+su_conf "$TMP/su/garbage.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
+su_refused "$TMP/su/garbage.sqlite3: database-error" "a store file that is not a database"
+su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
+"$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/su-ok.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "the undamaged copies did not start (the canary): $(cat "$TMP/su-ok.log")"
+    [ "$i" -gt 400 ] && fail "the undamaged copies never logged event=started (the canary)"
+    sleep 0.05
+done
+kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, and leaving no socket; the undamaged copies start"
+
 # ------------------------------------------------- keygen, enroll, login
 
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TMP/opass"

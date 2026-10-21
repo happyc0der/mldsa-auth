@@ -1,0 +1,3 @@
+SU1|^authd_e2e$|a group-readable passphrase file
+SU2|^authd_e2e$|a group-readable server key
+SU3|^authd_e2e$|a store file that is not a database
