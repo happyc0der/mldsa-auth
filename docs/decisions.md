@@ -10687,3 +10687,46 @@ checks.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-45 to V4-49 — CI on the branches and the nightly bring-up
+
+**One bring-up for five steps.** V4-45, V4-46, V4-48 and V4-49 add
+campaigns v77, v78, v79 and v80. The control nightly ran on V4-45..46's
+code and rotted one v78 expectation. The final nightly runs every campaign
+against the final tree, with v79 and v80 there for the first time on Linux.
+That includes v79's PF6, the passphrase file's owner check, which only
+Linux can kill.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-45 | `557b277` | 39557319345 |
+| V4-46 | `63e8dcd` | 39569010960 |
+| V4-47 | `9a46975` | 39577671001 |
+| V4-48 | `62321f3` | 39593280371 |
+| V4-49 | `a381ffc` | 39608009883 (the first run, on `92bd836`, failed gcc's `-Wformat-truncation`; see V4-49) |
+
+**V4-45's run was 13/14 at first.** `macos-26·clang·ubsan` failed
+`test_net`'s T12 with one alarm and no EINTR retry: the flake V4-47 then
+fixed (F125). Re-running only that job passed, 14/14. V4-45 had not touched
+`test_net`.
+
+### The control nightly
+
+- **How the control was built.** `845f4db` is `nightly-bringup`'s previous
+  head `3fb4ba3` with V4-45 and V4-46 cherry-picked; its parent's tree
+  equals V4-46's `63e8dcd`. On top, v78 RP1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-45..46)"). spec_v78's sha256 before
+  was `b71254f129397e50`.
+- **The result.** Run 39570441920 was red on exactly `mutations · v78`,
+  62/63:
+  - RP1 **SURVIVED(BAD)**, naming the rotted text;
+  - RP2–RP5 killed by name;
+  - v77's first Linux run: SD1–SD5 all killed;
+  - across the 47 campaign jobs, 339 rows: 338 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
