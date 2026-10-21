@@ -1317,24 +1317,43 @@ static void test_t11_timeout(void) {
  * T12 EINTR storm
  * =================================================================== */
 
+/* V4-47: an attempt in which no signal interrupted a blocking call proves
+ * nothing either way -- the retry path never ran -- so it is retried, up to
+ * T12_ATTEMPTS times. Twice before (V3-3, V3-5) the storm's DELIVERY was made
+ * more reliable; the third flake (V4-45's CI, macos-26 UBSan: one alarm, no
+ * EINTR) showed delivery still depends on a loaded runner scheduling the
+ * signalling process. A side failing under the storm is a failure at once;
+ * T12_ATTEMPTS attempts with no EINTR retry at all are a failure too, so a
+ * retry counter that stopped counting (v33 S1) still fails this check. */
+#define T12_ATTEMPTS 5
+
 static void test_t12_eintr(void) {
     const demo_message_t msgs[2] = {{g_kb, 64}, {g_kb, sizeof(g_kb)}};
     scenario_t sc = default_scenario();
     sc.storm = 1;
     sc.msgs = msgs;
     sc.n_msgs = 2;
-    g_alarms = 0;
     outcome_t o;
-    run_scenario(&sc, &o);
-    char name[200];
+    int attempt = 0, ok = 0, retried = 0;
+    for (attempt = 1; attempt <= T12_ATTEMPTS; attempt++) {
+        g_alarms = 0;
+        run_scenario(&sc, &o);
+        ok = o.cli.status == DEMO_OK && server_ok(&o) && g_srv_rep.res.status == DEMO_OK;
+        retried = o.cli.net.eintr_retries + g_srv_rep.res.net.eintr_retries > 0u;
+        if (!ok || retried) {
+            break;                          /* a conclusive result, either way */
+        }
+    }
+    if (attempt > T12_ATTEMPTS) {
+        attempt = T12_ATTEMPTS;
+    }
+    char name[240];
     snprintf(name, sizeof(name),
              "T12: a dedicated process signals both peers without SA_RESTART: both sides succeed (EINTR "
-             "retries: client %llu, server %llu; %d alarms in the client)",
+             "retries: client %llu, server %llu; %d alarms in the client; attempt %d of %d)",
              (unsigned long long)o.cli.net.eintr_retries, (unsigned long long)g_srv_rep.res.net.eintr_retries,
-             (int)g_alarms);
-    CHECK(o.cli.status == DEMO_OK && server_ok(&o) && g_srv_rep.res.status == DEMO_OK &&
-              o.cli.net.eintr_retries + g_srv_rep.res.net.eintr_retries > 0u,
-          name);
+             (int)g_alarms, attempt, T12_ATTEMPTS);
+    CHECK(ok && retried, name);
 }
 
 /* =====================================================================
