@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 315 committed defects in 44 campaigns, each of which must be
+- **Mutations**: 320 committed defects in 45 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -356,6 +356,11 @@ V4-41 removed F121's dead code and gated the test counts. The CTest
 equal what ctest registers there, and this page's and REPRODUCE.md's counts to
 repeat the README's. On its first run it found this page still saying 55 tests
 where V4-39 had made it 56 (**F124**).
+
+V4-42 took F122's first item, key-file custody. A key file that anyone but its
+owner can read or write is refused, and so is one another user owns. Neither
+refusal had ever run until V4-42. Campaign v75 shows each half caught: the mode
+half everywhere, the owner half by `authd_e2e`'s privileged leg on Linux.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
