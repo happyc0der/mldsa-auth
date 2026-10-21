@@ -10458,3 +10458,275 @@ RP5, each with its check. F122's item (5) is closed. Only item (3) is left,
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-47 — T12's false failures, made inconclusive and retried (loop iteration 22: fixes and cleanup; F125)
+
+### The failure
+
+V4-45's CI (39557319345) failed one job, `macos-26·clang·ubsan`, in
+`test_net`'s T12: "EINTR retries: client 0, server 0; 1 alarms in the
+client". V4-45 did not touch `test_net` or the network code, and re-running
+the job passed. It was the third sighting of the same shape on GitHub's
+macOS runners:
+- **V3-3:** a timer-driven storm, replaced by a dedicated signalling process.
+- **V3-5:** the scenario starts only once the first alarm lands.
+- **V4-45:** the signalling process was still not scheduled while the
+  scenario ran.
+
+T12 needs net_io's EINTR retries to have run under a signal storm, so a
+storm that does not land during the scenario fails a correct implementation.
+That is a false failure, never a false pass. It is recorded as **F125**
+(Info); the register had never carried it.
+
+### The fix
+
+An attempt in which no EINTR retry happened is **inconclusive**: the retry
+path never ran, so it says nothing either way. It is run again, up to five
+attempts. The rules:
+- a side failing under the storm fails the check at once;
+- five inconclusive attempts fail it too, so the check still needs evidence;
+- the check's name, which campaign v33 expects, is unchanged, and now ends
+  with "attempt N of 5".
+
+### The controls
+
+| Control | What was changed | Result |
+|---|---|---|
+| C1, recovery | the first attempt runs without the storm | PASS on "attempt 2 of 5" |
+| C2, the bound | the conclusive condition can never hold | FAIL on "attempt 5 of 5" |
+| v33 S1 | the retry counter stops counting | KILLED(1 named): all five attempts inconclusive, "attempt 5 of 5" with 512 alarms delivered |
+| v33 S2b | EINTR is no longer retried | KILLED(1 named): a side fails at once, "attempt 1 of 5" |
+
+C1 and C2 are hand controls, restored byte-exactly; S1 and S2b ran as
+campaign v33, locally on the ASan tree, with `residue: none`.
+
+Locally the storm is strong (about 400 alarms, conclusive on the first
+attempt), so the retry matters on loaded runners only. That is where it was
+needed.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `04ceb46593834fba` | 57/57 |
+  | `build-bench-p` | `730c02008bffe29f` | 53/53 |
+  | ASan | `7d523d72862d0b50` | 57/57, instrumentation in all 43 |
+  | UBSan | `5233949a733b7677` | 57/57; one runtime error, the planted canary |
+  | fuzz | `e24e380c178fa2ca` | 36/36, and `test_net`, `backend_symbols` and `doc_test_counts` 3/3 |
+- **Gates:**
+  - anchors (378; 16 counts agreeing);
+  - the claim map, including the register's size (125, F0–F125);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-48 — the passphrase file's custody, driven to its refusals (loop iteration 23: coverage)
+
+### The gap
+
+`authd_secret_read` is how the daemon and both CLIs read a passphrase file.
+V4-44's re-measurement put `authd_secret.c` at 56.6% of lines, and only its
+mode refusal had ever run. Never run:
+- the symlink refusal (`O_NOFOLLOW`);
+- the file-type refusal;
+- the owner refusal;
+- the size limits;
+- the rule that an empty passphrase, after its one trailing newline is
+  stripped, is refused.
+
+The owner refusal was seen once, by accident, when V4-42's leg first ran in
+CI.
+
+### The tests
+
+- **`test_authd_cli`'s `test_passphrase_custody`:** each case needs its own
+  status and no buffer back.
+
+  | Case | Status |
+  |---|---|
+  | a symlink to a good file | cannot-open |
+  | a missing file | cannot-open |
+  | a directory | not-a-regular-file |
+  | each group and other bit on its own | unsafe-permissions |
+  | an empty file | empty-or-too-large |
+  | a file holding only a newline | empty-or-too-large |
+  | one byte over `AUTHD_PASSPHRASE_MAX` | empty-or-too-large |
+
+  The canaries:
+  - the good file reads back without its one trailing newline;
+  - a file of exactly the limit reads whole;
+  - only one trailing newline is stripped, so `pw\n\n` reads as `pw\n`.
+- **`authd_e2e`, the owner half.** In the privileged Linux leg, root's client
+  is given a 0600 copy of the passphrase file that `nobody` owns. It must
+  refuse it as not-owned-by-this-user before opening any key. Root's own
+  copy, used by the leg before it, is the canary.
+
+  The leg uses a copy, not the runner's own file. As root in a container,
+  root owns that file, and nothing would be foreign.
+
+### The controls: campaign v79 (PF1–PF7), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| PF1 | a symlink is followed | KILLED(1 named) |
+| PF2 | any file type is read: a directory fails later, as short-read | KILLED(1 named) |
+| PF3 | group and other bits ignored | KILLED(10 named) |
+| PF4 | off by one: one byte over the limit is read | KILLED(1 named) |
+| PF5 | every trailing newline stripped | KILLED(1 named) |
+| PF6 | the owner ignored | SURVIVED, as predicted: the owner leg does not run on macOS |
+| PF7 | a file holding only a newline gives an empty passphrase | KILLED(1 named) |
+
+**PF4 is an off-by-one, not "an empty file accepted".** A zero-length
+passphrase is refused again after the read, so dropping only the empty-file
+check would leave a second check standing. Moving the upper bound has no
+such backstop.
+
+### The counts
+
+346 mutations in 49 campaigns, 385 anchors; all 16 stated counts restated.
+v79 is in nightly.yml's matrix. CLAIMS D10 cites PF1, PF3 and PF6 with
+their checks, and its custody bullet covers the passphrase file.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `07a2e7d6ae0bce4c` | 57/57 |
+  | `build-bench-p` | `466268021d41f845` | 53/53 |
+  | ASan | `dd3764245fb47625` | 57/57, instrumentation in all 43 |
+  | UBSan | `e71dc7f42881a5af` | 57/57; one runtime error, the planted canary |
+  | fuzz | `3e7776254a79f056` | 36/36, and `test_authd_cli`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_cli` has 169 checks, 12 of them new.
+- **Gates:**
+  - anchors (385; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-49 — the listener's socket paths and allowlist bound (loop iteration 24: coverage)
+
+### The gap
+
+`listener.c` read 64% of lines in V4-44's re-measurement. Most of what was
+uncovered is the failure of a system call, and lines 71 and 72 are a
+measurement artifact: `htons` and `htonl` expand to byte-swap macros whose
+constant branch never runs, attributed to the source line. Three checks
+that matter had never run, or were named by no test:
+- **`listener_open_unix`'s refusal of a path too long for `sun_path`.** A
+  truncated `sun_path` would bind some OTHER path.
+- **The refusal of anything at the path that is not a socket,** which leaves
+  it in place. It ran, but no test named it.
+- **`listener_accept_ex`'s bound on the allowlist,** `LISTENER_MAX_ALLOW`.
+
+### The tests
+
+`test_authd_ws`'s new `test_listener_paths`, 9 checks, sized from the
+platform's own `sun_path` (104 bytes on macOS, 108 on Linux):
+
+| Case | Expected |
+|---|---|
+| a path of the capacity less one | opens (the canary) |
+| one byte over | refused, and no socket at the path or at its truncation |
+| a regular file at the path | refused, its contents unchanged |
+| a symlink at the path to a live socket | refused, the link still a link, its target still a socket |
+| a stale socket left by a closed listener | replaced (the canary) |
+| an allowlist of `LISTENER_MAX_ALLOW + 1` | `LISTENER_ERR_ARG` |
+| an allowlist of exactly `LISTENER_MAX_ALLOW` | accepted (the canary) |
+
+### The controls: campaign v80 (LP1–LP5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| LP1 | off by one: a path with no room for its NUL is accepted | KILLED(2 named) |
+| LP2 | anything at the path is removed, not only a socket | KILLED(3 named) |
+| LP3 | `stat`, not `lstat`: a planted symlink is followed, removed and bound over | KILLED(2 named) |
+| LP4 | a stale socket is never removed | KILLED(3 named) |
+| LP5 | an allowlist of any length is accepted | KILLED(2 named) |
+
+LP3 is the realistic one: a one-word slip that turns "refuse what is not a
+socket" into "follow the attacker's link, then unlink it".
+
+### The counts
+
+351 mutations in 50 campaigns, 390 anchors; all 16 stated counts restated.
+v80 is in nightly.yml's matrix. CLAIMS D11 cites LP1, LP3 and LP5 with their
+checks.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `8a020cbd559e9378` | 57/57 |
+  | `build-bench-p` | `bf51f472192261da` | 53/53 |
+  | ASan | `8a1690d68afecf34` | 57/57, instrumentation in all 43 |
+  | UBSan | `f157de80154f94a8` | 57/57; one runtime error, the planted canary |
+  | fuzz | `f1358d38239c5860` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_ws` has 154 checks.
+- **CI's first run failed on gcc** (39605350547, on `92bd836`): the gcc debug,
+  gcc Release and wasm jobs. The cause was
+  "'/lp' directive output may be truncated … [-Werror=format-truncation=]":
+  `snprintf(dir, 256, "%s/lp", g_dir)` with `g_dir` itself 256 bytes, F19's
+  class. Clang raises no such warning, so no local tree saw it. The buffers
+  are now sized past `g_dir`, as the file's other paths are.
+  - **The check that would have caught it:** compiling the file with gcc
+    16, using `build-p`'s own compile command, reproduces the exact error on
+    the old file and is clean on the fixed one, at `-O0` and `-O2`. It runs
+    before pushing any new test code from now on.
+- **Gates:**
+  - anchors (390; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-45 to V4-49 — CI on the branches and the nightly bring-up
+
+**One bring-up for five steps.** V4-45, V4-46, V4-48 and V4-49 add
+campaigns v77, v78, v79 and v80. The control nightly ran on V4-45..46's
+code and rotted one v78 expectation. The final nightly runs every campaign
+against the final tree, with v79 and v80 there for the first time on Linux.
+That includes v79's PF6, the passphrase file's owner check, which only
+Linux can kill.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-45 | `557b277` | 39557319345 |
+| V4-46 | `63e8dcd` | 39569010960 |
+| V4-47 | `9a46975` | 39577671001 |
+| V4-48 | `62321f3` | 39593280371 |
+| V4-49 | `a381ffc` | 39608009883 (the first run, on `92bd836`, failed gcc's `-Wformat-truncation`; see V4-49) |
+
+**V4-45's run was 13/14 at first.** `macos-26·clang·ubsan` failed
+`test_net`'s T12 with one alarm and no EINTR retry: the flake V4-47 then
+fixed (F125). Re-running only that job passed, 14/14. V4-45 had not touched
+`test_net`.
+
+### The control nightly
+
+- **How the control was built.** `845f4db` is `nightly-bringup`'s previous
+  head `3fb4ba3` with V4-45 and V4-46 cherry-picked; its parent's tree
+  equals V4-46's `63e8dcd`. On top, v78 RP1's expectation was rotted ("…
+  CONTROL -- a check no test prints (V4-45..46)"). spec_v78's sha256 before
+  was `b71254f129397e50`.
+- **The result.** Run 39570441920 was red on exactly `mutations · v78`,
+  62/63:
+  - RP1 **SURVIVED(BAD)**, naming the rotted text;
+  - RP2–RP5 killed by name;
+  - v77's first Linux run: SD1–SD5 all killed;
+  - across the 47 campaign jobs, 339 rows: 338 killed and 1 survived, the
+    control;
+  - all 12 fuzz jobs green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.

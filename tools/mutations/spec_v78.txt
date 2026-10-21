@@ -1,4 +1,4 @@
-RP1|^test_authd_conn$|rotate-drop: the rotated device's tokens are gone after a rotation with the drop-tokens flag CONTROL -- a check no test prints (V4-45..46)
+RP1|^test_authd_conn$|rotate-drop: the rotated device's tokens are gone after a rotation with the drop-tokens flag
 RP2|^test_authd_conn$|rotate-drop: the journal says the rotation dropped 2 tokens
 RP3|^test_authd_conn$|rotate-drop: the journal says the rotation dropped 2 tokens
 RP4|^test_authd_conn$|rotate-drop: the other device's token survives -- the drop is the rotated device's only

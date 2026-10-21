@@ -1129,6 +1129,82 @@ static void test_rotate_reply_refused_or_lost(void)
     h_stop(&d);
 }
 
+/* V4-48: the passphrase file's custody. authd_secret_read is how the daemon
+ * and both CLIs read a passphrase, and V4-40/44's coverage found that only its
+ * mode refusal had ever run. Each case below needs its own status AND no
+ * buffer back; the canaries are a file of exactly AUTHD_PASSPHRASE_MAX bytes
+ * and the one-trailing-newline rule. The owner refusal needs a file another
+ * user owns that the reader can still open -- only root can arrange that, so
+ * it is authd_e2e's privileged Linux leg. */
+static int pc_write(const char *path, const void *b, size_t n, mode_t mode)
+{
+    (void)unlink(path);
+    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { return -1; }
+    const int ok = (n == 0u || write(fd, b, n) == (ssize_t)n) && fchmod(fd, mode) == 0;
+    (void)close(fd);
+    return ok ? 0 : -1;
+}
+
+static int refused_as(const char *path, authd_secret_status_t want)
+{
+    uint8_t *p = (uint8_t *)1;      /* must come back NULL */
+    size_t n = 99u;
+    const authd_secret_status_t st = authd_secret_read(path, &p, &n);
+    if (st == AUTHD_SECRET_OK) { authd_secret_free(p, n); }
+    return st == want && p == NULL && n == 0u;
+}
+
+static void test_passphrase_custody(void)
+{
+    char d[256], f[300], lnk[300], big[300], nl[300];
+    (void)snprintf(d, sizeof d, "%s/pc", g_dir);
+    CHECK(mkdir(d, 0700) == 0, "passphrase custody: a scratch directory");
+    (void)snprintf(f, sizeof f, "%s/pass", d);
+    (void)snprintf(lnk, sizeof lnk, "%s/pass.lnk", d);
+    (void)snprintf(big, sizeof big, "%s/big", d);
+    (void)snprintf(nl, sizeof nl, "%s/nl", d);
+
+    CHECK(pc_write(f, "correct horse\n", 14u, 0600) == 0 && symlink(f, lnk) == 0,
+          "passphrase custody: a 0600 passphrase file and a symlink to it");
+    { uint8_t *p = NULL; size_t n = 0;
+      CHECK(authd_secret_read(f, &p, &n) == AUTHD_SECRET_OK && n == 13u && p != NULL && memcmp(p, "correct horse", 13u) == 0,
+            "passphrase custody: the 0600 file reads back without its one trailing newline -- the canary");
+      authd_secret_free(p, n); }
+    CHECK(refused_as(lnk, AUTHD_SECRET_ERR_OPEN),
+          "passphrase custody: a symlink to a good passphrase file is refused (O_NOFOLLOW)");
+    { char missing[320]; (void)snprintf(missing, sizeof missing, "%s/absent", d);
+      CHECK(refused_as(missing, AUTHD_SECRET_ERR_OPEN), "passphrase custody: a missing file is refused as cannot-open"); }
+    CHECK(refused_as(d, AUTHD_SECRET_ERR_NOT_REGULAR),
+          "passphrase custody: a directory is refused as not-a-regular-file");
+    { const mode_t bad[] = {0640, 0620, 0610, 0604, 0602, 0601};
+      int all = 1;
+      for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+          if (chmod(f, bad[i]) != 0 || !refused_as(f, AUTHD_SECRET_ERR_PERMISSIONS)) { all = 0; }
+      }
+      (void)chmod(f, 0600);
+      CHECK(all, "passphrase custody: a file with any one group or other bit set is refused as unsafe-permissions"); }
+    CHECK(pc_write(f, "", 0u, 0600) == 0 && refused_as(f, AUTHD_SECRET_ERR_SIZE),
+          "passphrase custody: an empty file is refused as empty-or-too-large");
+    CHECK(pc_write(nl, "\n", 1u, 0600) == 0 && refused_as(nl, AUTHD_SECRET_ERR_SIZE),
+          "passphrase custody: a file holding only a newline is refused as empty");
+    { static uint8_t b[AUTHD_PASSPHRASE_MAX + 1u];
+      memset(b, 'x', sizeof b);
+      CHECK(pc_write(big, b, sizeof b, 0600) == 0 && refused_as(big, AUTHD_SECRET_ERR_SIZE),
+            "passphrase custody: a file one byte over AUTHD_PASSPHRASE_MAX is refused as empty-or-too-large");
+      uint8_t *p = NULL; size_t n = 0;
+      CHECK(pc_write(big, b, AUTHD_PASSPHRASE_MAX, 0600) == 0 &&
+            authd_secret_read(big, &p, &n) == AUTHD_SECRET_OK && n == AUTHD_PASSPHRASE_MAX,
+            "passphrase custody: a file of exactly AUTHD_PASSPHRASE_MAX bytes reads whole -- the canary");
+      authd_secret_free(p, n); }
+    { uint8_t *p = NULL; size_t n = 0;
+      CHECK(pc_write(f, "pw\n\n", 4u, 0600) == 0 && authd_secret_read(f, &p, &n) == AUTHD_SECRET_OK &&
+            n == 3u && memcmp(p, "pw\n", 3u) == 0,
+            "passphrase custody: only ONE trailing newline is stripped; a second is part of the passphrase");
+      authd_secret_free(p, n); }
+    (void)unlink(lnk); (void)unlink(f); (void)unlink(big); (void)unlink(nl); (void)rmdir(d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1152,6 +1228,7 @@ int main(void)
     test_key_plan();
     test_rotate_on_disk();
     test_rotate_reply_refused_or_lost();
+    test_passphrase_custody();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -194,6 +194,29 @@ The same command on the same machine (`build-cov-p` `0ef7effc6e611498`,
 - **Functions under 80%:** 72, down from 76. Three of the four are gone with
   F121's dead code, and the frame reader is now above the line.
 
+## After the re-measurement: the passphrase file (V4-48)
+
+The re-measurement showed `authd_secret.c` at 56.6% of lines. It holds
+`authd_secret_read`, which the daemon and both CLIs use to read a
+passphrase file, and only its mode refusal had ever run. Since V4-48 every
+refusal is driven, with campaign v79 showing each caught: a missing file, a
+symlink, a directory, each group and other bit, an empty file, a file
+holding only a newline, a file one byte over the limit, and another user's
+file (Linux only).
+
+## The listener's paths (V4-49)
+
+`listener.c` read 64% of lines. Most of what was uncovered is the failure of
+a system call (`socket`, `bind`, `listen`, `fcntl`). Lines 71 and 72,
+`htons` and `htonl`, are the byte-swap macros' constant branch, which
+llvm-cov attributes to the source line. Three checks had never run:
+- the refusal of a socket path too long for `sun_path`;
+- the not-a-socket refusal, named by no test;
+- `listener_accept_ex`'s allowlist bound.
+
+Since V4-49 each is driven, with a symlink at the path and a stale socket
+besides; campaign v80 shows each caught.
+
 ## What these figures do not establish
 
 - **Covered is not checked.** A region a test runs can still be wrong with

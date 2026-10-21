@@ -1001,6 +1001,88 @@ static void test_listener_modes(void)
     CHECK(all_exact, "modes: 0660 and 0600 each open, as exactly that mode (the canary)");
 }
 
+/* ------------------------------------------- the listener's socket path */
+
+/* V4-49: listener_open_unix's path rules, and listener_accept_ex's bound.
+ * V4-44's coverage showed the path-length refusal had never run, nor the
+ * allowlist bound, and no test named the not-a-socket refusal. A path one byte
+ * too long must be refused rather than truncated (a truncated sun_path binds
+ * some OTHER path); anything at the path that is not a socket -- a file an
+ * operator owns, a symlink an attacker planted -- is refused and left alone;
+ * a stale socket from a crash is replaced, so a crash cannot wedge the
+ * service (the canary). */
+static int lp_count(const char *path)
+{
+    struct stat st;
+    return lstat(path, &st) == 0;
+}
+
+static void test_listener_paths(void)
+{
+    struct sockaddr_un probe;
+    const size_t cap = sizeof probe.sun_path;
+    char dir[272];                 /* g_dir is 256: room for "/lp" (gcc -Wformat-truncation, F19) */
+    snprintf(dir, sizeof dir, "%s/lp", g_dir);
+    CHECK(mkdir(dir, 0700) == 0 && strlen(dir) + 2u < cap, "paths: a short scratch directory");
+
+    /* the length rule: cap-1 characters fit (with the NUL), cap do not */
+    char fits[512], over[512];
+    { size_t l = strlen(dir);
+      memcpy(fits, dir, l); fits[l++] = '/';
+      while (l < cap - 1u) { fits[l++] = 'a'; }
+      fits[l] = '\0';
+      memcpy(over, fits, l); over[l] = 'b'; over[l + 1u] = '\0'; }
+    int fd = -1;
+    CHECK(strlen(fits) == cap - 1u && listener_open_unix(fits, 4, LISTENER_MODE_PRIVATE, &fd) == LISTENER_OK && fd >= 0,
+          "paths: a socket path of sun_path's capacity less one opens -- the canary");
+    if (fd >= 0) { listener_close(&fd, fits); }
+    fd = -1;
+    const listener_status_t lr = listener_open_unix(over, 4, LISTENER_MODE_PRIVATE, &fd);
+    { char trunc[512]; memcpy(trunc, over, cap - 1u); trunc[cap - 1u] = '\0';
+      CHECK(strlen(over) == cap && lr == LISTENER_ERR_PATH && fd == -1 && !lp_count(over) && !lp_count(trunc),
+            "paths: a socket path one byte over sun_path's capacity is refused, and no socket is created at it or at its truncation"); }
+
+    /* something that is not a socket at the path is refused, and untouched */
+    char file[320], lnk[320], live[320];
+    snprintf(file, sizeof file, "%s/file.sock", dir);
+    snprintf(lnk, sizeof lnk, "%s/link.sock", dir);
+    snprintf(live, sizeof live, "%s/live.sock", dir);
+    { FILE *f = fopen(file, "w"); if (f) { fputs("operator data", f); fclose(f); } }
+    fd = -1;
+    { const listener_status_t r = listener_open_unix(file, 4, LISTENER_MODE_PRIVATE, &fd);
+      char got[32] = {0}; FILE *f = fopen(file, "r"); if (f) { (void)!fread(got, 1, sizeof got - 1u, f); fclose(f); }
+      CHECK(r == LISTENER_ERR_PATH && fd == -1 && strcmp(got, "operator data") == 0,
+            "paths: a regular file at the socket path is refused, and left exactly as it was"); }
+    int lfd = -1;
+    CHECK(listener_open_unix(live, 4, LISTENER_MODE_PRIVATE, &lfd) == LISTENER_OK && symlink(live, lnk) == 0,
+          "paths: a live socket, and a symlink to it");
+    fd = -1;
+    { const listener_status_t r = listener_open_unix(lnk, 4, LISTENER_MODE_PRIVATE, &fd);
+      struct stat ls, ts;
+      CHECK(r == LISTENER_ERR_PATH && fd == -1 && lstat(lnk, &ls) == 0 && S_ISLNK(ls.st_mode) &&
+            stat(live, &ts) == 0 && S_ISSOCK(ts.st_mode),
+            "paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched"); }
+    (void)unlink(lnk);
+
+    /* a stale socket (its listener gone) is replaced -- the canary */
+    listener_close(&lfd, NULL);                    /* the fd only: the socket file stays */
+    fd = -1;
+    CHECK(lp_count(live) && listener_open_unix(live, 4, LISTENER_MODE_PRIVATE, &fd) == LISTENER_OK && fd >= 0,
+          "paths: a stale socket left by a crash is replaced, so it cannot wedge the service -- the canary");
+
+    /* listener_accept_ex's allowlist bound */
+    { uid_t allow[LISTENER_MAX_ALLOW + 1u];
+      for (size_t i = 0; i < LISTENER_MAX_ALLOW + 1u; i++) { allow[i] = getuid(); }
+      int c = -1;
+      CHECK(listener_accept_ex(fd, allow, LISTENER_MAX_ALLOW + 1u, &c, NULL) == LISTENER_ERR_ARG && c == -1,
+            "paths: an allowlist longer than LISTENER_MAX_ALLOW is refused as a bad argument");
+      c = -1;
+      CHECK(listener_accept_ex(fd, allow, LISTENER_MAX_ALLOW, &c, NULL) == LISTENER_AGAIN && c == -1,
+            "paths: an allowlist of exactly LISTENER_MAX_ALLOW is accepted (nothing pending yet) -- the canary"); }
+    if (fd >= 0) { listener_close(&fd, live); }
+    (void)unlink(file); (void)unlink(fits); (void)rmdir(dir);
+}
+
 /* -------------------------------------- the CLI client's frame reader */
 
 /* V4-43 (audit F122 item 2): ws_client_read_message parses what a SERVER
@@ -1155,6 +1237,7 @@ int main(void)
     test_proxy_through_loop();
     test_proxy_uid_allowlist();
     test_listener_modes();
+    test_listener_paths();
     test_client_reader();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
