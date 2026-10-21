@@ -160,6 +160,8 @@ to its refusal, so a mutation deleting it would survive every campaign.
   - a schema version of the wrong length;
   - a store from a newer schema (`STORE_ERR_SCHEMA`);
   - a `store_id` or `decoy_pk` of the wrong length.
+
+  **Tested since V4-45** (campaign v77).
 - **The daemon's record path,** `authd_conn.c`:
   - a record over `AUTHD_MAX_RECORD`;
   - a BYE of the wrong length;

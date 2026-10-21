@@ -10306,3 +10306,83 @@ failure is recorded in V4-42's entry.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-45 — a damaged store is refused at open (loop iteration 20: coverage; F122 item 4)
+
+### The gap
+
+`store_open` reads three values from `meta`:
+- `schema_version`: a wrong length or a later schema is `STORE_ERR_SCHEMA`;
+- `store_id` and `decoy_pk`: a wrong length is `STORE_ERR_CORRUPT`.
+
+V4-40's coverage run found none of those refusals had ever run. Deleting any
+of them passed every check. The last is the key the decoy ServerHello
+carries for an unknown identity (D6).
+
+### The tests
+
+`test_authd_store` damages one `meta` value at a time in a fresh store with
+raw SQL. Each open must be refused with its own status and return no
+handle:
+
+| Damage | Status |
+|---|---|
+| `schema_version` of 7 zero bytes | SCHEMA |
+| `schema_version` 2 (a later schema) | SCHEMA |
+| `store_id` one byte short | CORRUPT |
+| `store_id` one byte long | DB: it overruns the read buffer and is refused one layer down, in `copy_blob_col` |
+| `decoy_pk` one byte short | CORRUPT |
+
+Every value is put back byte-exactly after each case, so each case damages
+one thing. Two checks bracket them:
+- the three values must have their expected lengths before any damage;
+- the repaired store must open again (the canary).
+
+### A one-line hardening the test needed
+
+The first short-version case wrote `00…01` in 7 bytes. Without the length
+check those 7 bytes are read together with the 8th byte of an uninitialised
+stack buffer. That yields a version of at least 256, refused as SCHEMA
+anyway. So the case could not have pinned the length check, and in the
+mutant world it read stack memory. `store_open`'s `vbuf` is now
+zero-initialised. The case writes seven zero bytes, which only the length
+check can refuse: without it they read as version 0, which opens.
+
+### The controls: campaign v77 (SD1–SD5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| SD1 | a `schema_version` of any length is read | KILLED(2 named) |
+| SD2 | a later schema opens | KILLED(2 named) |
+| SD3 | off by one: the next schema version opens | KILLED(2 named) |
+| SD4 | a `store_id` of any length is accepted | KILLED(2 named) |
+| SD5 | a `decoy_pk` of any length is accepted | KILLED(2 named) |
+
+`residue: none`, all sources restored.
+
+### The counts
+
+334 mutations in 47 campaigns, 373 anchors; all 16 stated counts restated.
+v77 is in nightly.yml's matrix. CLAIMS D6 cites SD5 and its check.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `367eeb2c7c7ed48d` | 57/57 |
+  | `build-bench-p` | `b8662d15109ee535` | 53/53 |
+  | ASan | `b7574f79a6b57511` | 57/57, instrumentation in all 43 |
+  | UBSan | `f3b1e0213421353d` | 57/57; one runtime error, the planted canary |
+  | fuzz | `a7ef8691e61960ff` | 36/36, and `test_authd_store`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_store` has 283 checks.
+- **The `store.c` change** (zeroing `vbuf`) moved no campaign anchor: 373 of
+  373 match.
+- **Gates:**
+  - anchors (16 counts agreeing);
+  - the claim map (the inventory counts included);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
