@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 127 findings (F0–F127), with severity, evidence and
+   register](../v4/audit.md). 128 findings (F0–F128), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 365 committed defects in 53 campaigns, each of which must be
+- **Mutations**: 366 committed defects in 53 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -429,6 +429,13 @@ full buffer closed the connection. Both are fixed. A peer that never reads now
 provably stops being served, holds one unsent reply at most, and is closed at
 its deadline; when it reads, every reply arrives byte for byte. Campaign v83
 shows each of those checks caught.
+
+V4-55 fixed a campaign, not the daemon (**F128**). The V4-50..53 control
+nightly found v82's LC1 red on Linux. Its mutant over-read the client's line
+buffer, and ASan caught that before the named check could. LC1 is now the
+line cap applied one byte late, and the test sends a request exactly one
+byte over the cap and one exactly at it. A new LC6, the cap one byte early,
+is caught by the second.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
