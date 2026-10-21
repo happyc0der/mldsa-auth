@@ -429,6 +429,11 @@ static int ws_reply_pending(const conn_io_t *c)
     return c->mode == CONN_IO_MODE_WS && c->ws.reply_len > c->ws.reply_sent;
 }
 
+size_t conn_io_in_room(const conn_io_t *c)
+{
+    return (c == NULL || c->in_len >= sizeof c->in) ? 0u : sizeof c->in - c->in_len;
+}
+
 size_t conn_io_pending(const conn_io_t *c)
 {
     if (c == NULL) {
