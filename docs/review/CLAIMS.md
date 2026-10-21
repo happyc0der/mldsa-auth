@@ -459,6 +459,12 @@ the most important thing on this page.
 - mutation `v65 RU1` — the allowlist scan compares the daemon's own uid, not the peer's; no test with one user can tell
 - check `test_authd_ws` "modes: a socket mode other than spec 8's two is refused with LISTENER_ERR_ARG, and nothing is created"
 - mutation `v68 CG1` — the refusal of a mode outside spec 8's two can never hold; 0666 opens a world-writable socket
+- check `test_authd_ws` "paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched"
+- check `test_authd_ws` "paths: a socket path one byte over sun_path's capacity is refused, and no socket is created at it or at its truncation"
+- check `test_authd_ws` "paths: an allowlist longer than LISTENER_MAX_ALLOW is refused as a bad argument"
+- mutation `v80 LP3` — `stat`, not `lstat`: a symlink planted at a socket path is followed, removed and bound over
+- mutation `v80 LP1` — a socket path with no room for its NUL is accepted
+- mutation `v80 LP5` — an allowlist of any length is accepted
 **Not established:** since V4-22b a real second user connects -- `nobody`, holding the daemon's group, as spec 8's site user would -- and is served on the socket its uid is listed for and refused at accept on the two it is not, file access granted; a third connection without the group shows file permission stops it first and is not counted. That leg needs Linux's `setpriv` and root or passwordless sudo, so it runs in CI's Linux jobs and a root container, and is skipped on macOS; elsewhere only the uid+1 leg runs. `nobody` stands in for the site's user, and admin.sock is opened to it for the leg, since its 0600 would stop it before the check. An EMPTY allowlist still means "no check" to the listener; since V4-14c (audit F92, fixed) the configuration can no longer produce one for `site.sock`, or for a proxy-facing listener that believes PROXY v2. The proxy-facing listener without PROXY v2 -- the development shape -- may still run without one. The ProVerif model treats the site socket as a private channel: an assumption, not a proof.
 
 ### D12 — The client address used for rate limiting is obtained from a source the client cannot forge

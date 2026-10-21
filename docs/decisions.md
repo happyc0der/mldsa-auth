@@ -10608,3 +10608,72 @@ their checks, and its custody bullet covers the passphrase file.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-49 — the listener's socket paths and allowlist bound (loop iteration 24: coverage)
+
+### The gap
+
+`listener.c` read 64% of lines in V4-44's re-measurement. Most of what was
+uncovered is the failure of a system call, and lines 71 and 72 are a
+measurement artifact: `htons` and `htonl` expand to byte-swap macros whose
+constant branch never runs, attributed to the source line. Three checks
+that matter had never run, or were named by no test:
+- **`listener_open_unix`'s refusal of a path too long for `sun_path`.** A
+  truncated `sun_path` would bind some OTHER path.
+- **The refusal of anything at the path that is not a socket,** which leaves
+  it in place. It ran, but no test named it.
+- **`listener_accept_ex`'s bound on the allowlist,** `LISTENER_MAX_ALLOW`.
+
+### The tests
+
+`test_authd_ws`'s new `test_listener_paths`, 9 checks, sized from the
+platform's own `sun_path` (104 bytes on macOS, 108 on Linux):
+
+| Case | Expected |
+|---|---|
+| a path of the capacity less one | opens (the canary) |
+| one byte over | refused, and no socket at the path or at its truncation |
+| a regular file at the path | refused, its contents unchanged |
+| a symlink at the path to a live socket | refused, the link still a link, its target still a socket |
+| a stale socket left by a closed listener | replaced (the canary) |
+| an allowlist of `LISTENER_MAX_ALLOW + 1` | `LISTENER_ERR_ARG` |
+| an allowlist of exactly `LISTENER_MAX_ALLOW` | accepted (the canary) |
+
+### The controls: campaign v80 (LP1–LP5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| LP1 | off by one: a path with no room for its NUL is accepted | KILLED(2 named) |
+| LP2 | anything at the path is removed, not only a socket | KILLED(3 named) |
+| LP3 | `stat`, not `lstat`: a planted symlink is followed, removed and bound over | KILLED(2 named) |
+| LP4 | a stale socket is never removed | KILLED(3 named) |
+| LP5 | an allowlist of any length is accepted | KILLED(2 named) |
+
+LP3 is the realistic one: a one-word slip that turns "refuse what is not a
+socket" into "follow the attacker's link, then unlink it".
+
+### The counts
+
+351 mutations in 50 campaigns, 390 anchors; all 16 stated counts restated.
+v80 is in nightly.yml's matrix. CLAIMS D11 cites LP1, LP3 and LP5 with their
+checks.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `8a020cbd559e9378` | 57/57 |
+  | `build-bench-p` | `bf51f472192261da` | 53/53 |
+  | ASan | `8a1690d68afecf34` | 57/57, instrumentation in all 43 |
+  | UBSan | `f157de80154f94a8` | 57/57; one runtime error, the planted canary |
+  | fuzz | `f1358d38239c5860` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_ws` has 154 checks.
+- **Gates:**
+  - anchors (390; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
