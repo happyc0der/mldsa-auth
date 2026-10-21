@@ -1070,6 +1070,109 @@ static void test_rotate(void)
     daemon_stop(&d);
 }
 
+/* ----------------------------------- V4-46 (audit F122 item 5): the record path */
+
+/* A ROTATE carrying the drop-tokens flag deletes the device's tokens in the
+ * same transaction, and the journal says how many went. V4-40's coverage run
+ * found that branch had never run: no test rotated a device that held a
+ * token, so a daemon that ignored the flag passed every check. Two devices
+ * of one user hold tokens; a rotation without the flag keeps them (the
+ * canary), one with it drops the rotated device's and only those. */
+static int token_ok(daemon_t *d, const uint8_t h[STORE_HASH_BYTES])
+{
+    store_token_verdict_t v = STORE_TOKEN_UNKNOWN;
+    store_token_info_t info;
+    return store_verify_token(d->store, h, d->app.now_unix, 0u, &v, &info) == STORE_OK && v == STORE_TOKEN_OK;
+}
+
+static void test_rotate_drop_tokens(void)
+{
+    daemon_t d; client_t c;
+    mldsa_keypair_t k1, k2, k3, kb;
+    static const uint8_t HANDLE2[] = { 'd','1','b','b' };
+    CHECK(daemon_start(&d, 8, "rotdrop.sqlite3") == 0, "rotate-drop: daemon starts");
+    CHECK(mldsa_keypair_generate(&k1) == 0 && mldsa_keypair_generate(&k2) == 0 &&
+          mldsa_keypair_generate(&k3) == 0 && mldsa_keypair_generate(&kb) == 0, "rotate-drop: keys");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &k1);
+    enroll(&d, HANDLE2, sizeof HANDLE2, &kb);
+    uint8_t t1[STORE_HASH_BYTES], t2[STORE_HASH_BYTES], t3[STORE_HASH_BYTES];
+    randombytes_buf(t1, sizeof t1); randombytes_buf(t2, sizeof t2); randombytes_buf(t3, sizeof t3);
+    const int64_t now = d.app.now_unix;
+    static const uint8_t HS[] = { 'h','s' };
+    CHECK(store_add_token(d.store, t1, USER1, sizeof USER1, HANDLE1, sizeof HANDLE1, HS, sizeof HS, now, now + 3600, now + 3600) == STORE_OK &&
+          store_add_token(d.store, t2, USER1, sizeof USER1, HANDLE1, sizeof HANDLE1, HS, sizeof HS, now, now + 3600, now + 3600) == STORE_OK &&
+          store_add_token(d.store, t3, USER1, sizeof USER1, HANDLE2, sizeof HANDLE2, HS, sizeof HS, now, now + 3600, now + 3600) == STORE_OK,
+          "rotate-drop: two tokens for the device, one for another device of the same user");
+
+    uint8_t pt[AUTHD_MAX_RECORD];
+    uint8_t rot[AUTHMSG_ROTATE_MAX_CONTENT];
+    authmsg_rotate_ack_t ack;
+    size_t pl = 0, rl = 0;
+
+    CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-drop: session (no flag)");
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k1, &k2, &k2,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK &&
+          token_ok(&d, t1) && token_ok(&d, t2) && token_ok(&d, t3),
+          "rotate-drop: a rotation without the flag keeps every token -- the canary");
+    client_close(&c);
+
+    char lpath[512];
+    snprintf(lpath, sizeof lpath, "%s/rotdrop.log", g_dir);
+    FILE *lf = fopen(lpath, "w+");
+    if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+    CHECK(rotate_session(&d, &c, &k2) == 0, "rotate-drop: session (drop flag)");
+    rl = build_rotate(rot, sizeof rot, c.hsid, AUTHMSG_FLAG_ROTATE_DROP_TOKENS, AUTHMSG_FLAG_ROTATE_DROP_TOKENS,
+                      HANDLE1, sizeof HANDLE1, &k2, &k3, &k3, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    CHECK(rl > 0 && pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK,
+          "rotate-drop: a rotation with the drop-tokens flag is acknowledged");
+    CHECK(!token_ok(&d, t1) && !token_ok(&d, t2),
+          "rotate-drop: the rotated device's tokens are gone after a rotation with the drop-tokens flag");
+    CHECK(token_ok(&d, t3),
+          "rotate-drop: the other device's token survives -- the drop is the rotated device's only");
+    char *buf = NULL;
+    long sz = 0;
+    if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+        fseek(lf, 0, SEEK_SET) == 0) {
+        buf = (char *)calloc((size_t)sz + 1u, 1u);
+        if (buf != NULL && fread(buf, 1u, (size_t)sz, lf) != (size_t)sz) { buf[0] = '\0'; }
+    }
+    CHECK(buf != NULL && strstr(buf, "event=rotate-tokens-dropped count=2\n") != NULL,
+          "rotate-drop: the journal says the rotation dropped 2 tokens");
+    free(buf);
+    if (lf != NULL) { (void)fclose(lf); }
+    client_close(&c);
+    mldsa_keypair_free(&k1); mldsa_keypair_free(&k2); mldsa_keypair_free(&k3); mldsa_keypair_free(&kb);
+    daemon_stop(&d);
+}
+
+/* A BYE is exactly one byte of content (its opcode). One with a byte after it
+ * is refused as MALFORMED, not taken as a goodbye; V4-40's coverage run found
+ * that refusal had never run. The well-formed BYE is test_login's. */
+static void test_bye_length(void)
+{
+    daemon_t d; client_t c;
+    mldsa_keypair_t k;
+    CHECK(daemon_start(&d, 4, "byelen.sqlite3") == 0, "bye-length: daemon starts");
+    CHECK(mldsa_keypair_generate(&k) == 0, "bye-length: key");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &k);
+    CHECK(rotate_session(&d, &c, &k) == 0, "bye-length: an authenticated session");
+    uint8_t bye[AUTHMSG_BYE_CONTENT_LEN + 1u];
+    size_t bl = 0;
+    CHECK(authmsg_encode_bye(bye, sizeof bye, &bl) == AUTHMSG_OK && bl == AUTHMSG_BYE_CONTENT_LEN, "bye-length: encode BYE");
+    bye[bl] = 0x00u;
+    uint8_t pt[AUTHD_MAX_RECORD];
+    const size_t pl = exchange_record(&d, &c, bye, bl + 1u, pt, sizeof pt);
+    CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_MALFORMED,
+          "bye-length: a BYE with a byte after its opcode is refused as MALFORMED, not taken as a goodbye");
+    client_close(&c);
+    mldsa_keypair_free(&k);
+    daemon_stop(&d);
+}
+
 /* ---------------------------------------------- the journal holds no key */
 
 /* sk_window_is_secret: F105's rule for which key windows count, in
@@ -1334,6 +1437,8 @@ int main(void)
     test_revoked();
     test_not_permitted();
     test_rotate();
+    test_rotate_drop_tokens();
+    test_bye_length();
     test_journal_holds_no_key_material();
     test_log_has_no_code();
     test_pin_lookup();
