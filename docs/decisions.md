@@ -10863,3 +10863,82 @@ check.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-52 — the local-API client against a daemon that misbehaves (loop iteration 27: coverage)
+
+### The gap
+
+`localcli.c` read 67% of lines in V4-44's re-measurement. `localcli_call`,
+the client `authd_admin` uses for every local-API command, had only ever
+talked to a well-behaved daemon. Never run:
+- the refusal of a reply larger than the caller's buffer;
+- the refusal of a reply the daemon closes before it is complete;
+- the timeout;
+- the refusal of a request over spec 8's 8192-byte line cap;
+- the connect failure.
+
+### The tests
+
+`test_authd_cli`'s new `test_localcli_robustness`, six checks, each against
+a forked fake daemon that accepts once and plays a script. Its child leaves
+through `child_exit`.
+
+| Case | Expected |
+|---|---|
+| a one-line reply | OK (the canary) |
+| 600 bytes, never complete, into a 64-byte buffer with 16 guard bytes after it | RESPONSE; the buffer is NUL-terminated inside itself; the guard bytes untouched |
+| a list closed before its END | RESPONSE, a truncation, not a list |
+| no reply, against a 300 ms timeout | TIMEOUT, in 250–1500 ms |
+| a request over the line cap | TOO_LONG; the fake daemon sees no connection at all |
+| a socket path with no daemon | cannot-connect |
+
+### The controls: campaign v82 (LC1–LC5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| LC1 | the line cap is not enforced: the request is sent, truncated | KILLED(1 named) |
+| LC2 | off by one: `recv` may fill the byte kept for the NUL, which is then written one past the buffer | KILLED(1 named): the guard bytes |
+| LC3 | a reply closed before it is complete is returned as OK | KILLED(1 named) |
+| LC4 | a timeout reported as an I/O error | KILLED(1 named) |
+| LC5 | every connect failure reported as a timeout | KILLED(1 named) |
+
+**One check is defence in depth, and the campaign says so by leaving it
+out.** `localcli_call` also stops explicitly when the reply reaches the
+buffer's size. But `recv`'s length already leaves room for the NUL, so the
+stop never decides anything. A hand control removed it: all 175 checks
+still passed, and the file was restored byte-exactly. The campaign therefore
+mutates the length (LC2) instead, where the real off-by-one would live.
+
+### One thing the triage did not find
+
+`keyfile.c`'s `publish` was listed uncovered at line 105. That region is
+the I/O-failure arm of its `link()`. The no-clobber refusal on the same
+line is covered by `test_authd_keyfile`'s existing-path check, so it is
+not a gap.
+
+### The counts
+
+359 mutations in 52 campaigns, 398 anchors; all 16 stated counts restated.
+v82 is in nightly.yml's matrix.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `eae2cbff93db8316` | 57/57 |
+  | `build-bench-p` | `aedc9f11378c93d0` | 53/53 |
+  | ASan | `a0c13396a93d0f78` | 57/57, instrumentation in all 43 |
+  | UBSan | `608864e473f9d6a5` | 57/57; one runtime error, the planted canary |
+  | fuzz | `09b53056ab413883` | 36/36, and `test_authd_cli`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_cli` has 175 checks.
+- **The gcc 16 check** (V4-49's lesson): `test_authd_cli.c` compiles
+  cleanly at `-O0` and `-O2`.
+- **Gates:**
+  - anchors (398; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
