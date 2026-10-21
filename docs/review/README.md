@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 329 committed defects in 46 campaigns, each of which must be
+- **Mutations**: 334 committed defects in 47 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -367,6 +367,12 @@ parses what a server sends. Each of its refusals is now driven from a byte
 array, among them the bound of a frame against the caller's buffer, with
 guard bytes after it. Campaign v76 removes each refusal in turn and is caught
 by name, or by ASan for the control frame read onto the stack.
+
+V4-44 gated the two gates' inventory counts in prose (25 constant-time sites,
+35 secure-memory sites) and re-measured coverage. V4-45 took F122's fourth
+item. A store whose `meta` holds a malformed or later schema version, or a
+store id or decoy key of the wrong length, is refused at open; campaign v77
+shows each check caught.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
