@@ -1,0 +1,9 @@
+WC1|^test_authd_ws$|client reader: a frame with any RSV bit set is refused (no extension was negotiated)
+WC2|^test_authd_ws$|client reader: a masked frame from the server is refused (RFC 6455 5.1)
+WC3|^test_authd_ws$|client reader: a 64-bit length with its top bit set is refused, on a Close as on a binary frame
+WC4|^test_authd_ws$|ASAN in ws_client_read_message
+WC5|^test_authd_ws$|client reader: a text frame is refused;client reader: a continuation frame is refused
+WC6|^test_authd_ws$|client reader: a binary frame without FIN (a fragment) is refused
+WC7|^test_authd_ws$|client reader: a frame one byte longer than the buffer is refused, and nothing is written past it
+WC8|^test_authd_ws$|client reader: a ping and a pong are skipped, and the binary frame after them is delivered
+WC9|^test_authd_ws$|client reader: end of stream at a frame boundary reports CLOSED
