@@ -831,18 +831,37 @@ static void test_localcli_robustness(void)
       CHECK(st == LOCALCLI_ERR_TIMEOUT && took >= 250u && took < 1500u,
             "localcli: a daemon that never answers is a TIMEOUT at the deadline"); }
 
-    /* a request over spec 8's 8192-byte line cap is refused before any byte
-     * is sent: the fake daemon sees no connection */
+    /* Spec 8's 8192-byte line cap, LF included, from both sides (V4-55). A
+     * request ONE byte over it is refused before any byte is sent -- the fake
+     * daemon sees no connection -- and one exactly AT it is sent. "PING " and
+     * the LF are 6 bytes, so the arguments are the cap minus 5 and minus 6.
+     * One byte over, not thousands: V4-52's 8197-byte request overflowed the
+     * client's 8194-byte line buffer once the check was mutated away, and
+     * ASan, not this check, then caught it on Linux (F128). */
     { const int lfd = lc_listen(path);
       static char args[AUTHD_LINE_MAX];
-      memset(args, 'a', sizeof args - 1u); args[sizeof args - 1u] = '\0';
+      memset(args, 'a', AUTHD_LINE_MAX - 5u); args[AUTHD_LINE_MAX - 5u] = '\0';
       char out[256]; size_t n = 0;
       const localcli_status_t st = localcli_call(path, "PING", args, 1000u, out, sizeof out, &n);
       struct pollfd pf = { lfd, POLLIN, 0 };
       const int pending = poll(&pf, 1, 100);
       (void)close(lfd);
+      CHECK(strlen("PING ") + strlen(args) + 1u == AUTHD_LINE_MAX + 1u,
+            "localcli: the over-cap request is exactly one byte over the 8192-byte cap");
       CHECK(lfd >= 0 && st == LOCALCLI_ERR_TOO_LONG && pending == 0,
             "localcli: a request over the 8192-byte line cap is refused before it connects"); }
+    { const int lfd = lc_listen(path);
+      static char args[AUTHD_LINE_MAX];
+      memset(args, 'a', AUTHD_LINE_MAX - 6u); args[AUTHD_LINE_MAX - 6u] = '\0';
+      char out[256]; size_t n = 0;
+      const localcli_status_t st = localcli_call(path, "PING", args, 300u, out, sizeof out, &n);
+      struct pollfd pf = { lfd, POLLIN, 0 };
+      const int pending = poll(&pf, 1, 100);
+      (void)close(lfd);
+      CHECK(strlen("PING ") + strlen(args) + 1u == AUTHD_LINE_MAX,
+            "localcli: the at-cap request is exactly 8192 bytes");
+      CHECK(lfd >= 0 && st != LOCALCLI_ERR_TOO_LONG && pending == 1,
+            "localcli: a request of exactly 8192 bytes is not refused: the client connects to send it"); }
 
     /* no daemon at all */
     { (void)unlink(path);
