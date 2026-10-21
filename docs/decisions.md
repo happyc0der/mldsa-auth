@@ -10213,3 +10213,54 @@ v76 is in nightly.yml's matrix.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-44 — the gates' inventory counts gated, and coverage re-measured (loop iteration 19: fixes and cleanup)
+
+### The inventory counts
+
+Two gates pin a list of sites, and four sentences say how many:
+- CLAIMS: "at 25 sites" (constant-time comparisons) and "35 of them"
+  (secure-memory allocations);
+- the review page: 35;
+- the README: 35.
+
+All four were right, but nothing compared them: F17's row still said "the 24
+sites" from V4-15b, before V4-20 added F48's owner comparison. That is the
+class of F106, F110, F116, F120 and F124 again.
+
+**The change.** `check_claim_map.py` counts the entries of
+`tests/constant_time_sites.txt` (25) and `tests/secure_mem_sites.txt` (35).
+It needs each sentence found and its number equal to its list's. F17's row
+now gives the current count beside its dated one. The audit table's 4.3
+row already recorded 24 becoming 25 in V4-20.
+
+**The controls**, each restored byte-exactly, each failing "the stated
+inventory counts" by name:
+
+| Rot | Printed |
+|---|---|
+| CLAIMS 25 → 24 | "docs/review/CLAIMS.md says 24 constant-time sites; the list holds 25" |
+| CLAIMS 35 → 34 | "… says 34 secure-memory sites; the list holds 35" |
+| review page 35 → 36 | "docs/review/README.md says 36 …" |
+| README's backticks removed | "README.md: no sentence matching …" |
+| one line added to `constant_time_sites.txt` | "docs/review/CLAIMS.md says 25 constant-time sites; the list holds 26" |
+
+### Coverage, re-measured
+
+The same tree and command as V4-40, after V4-41..43 (`docs/v4/coverage.md`,
+"Re-measured in V4-44"):
+- **`apps/authd/`:** 81.64% of lines (from 81.30), 88.11% of regions (from
+  87.51), 69.62% of branches (from 69.05), 98.14% of functions (from
+  97.45).
+- **`ws_client_read_message`:** 75 of 78 code regions, from 49. The three
+  left are its null-argument guard and two I/O failures.
+- **Functions under 80%:** 72, from 76.
+
+### Verification
+
+- **The changed script** (`check_claim_map.py`) was run green and under the
+  five controls above; it runs in CI's spec job.
+- **No source or test changed,** so no tree or campaign is affected. The
+  coverage tree was rebuilt and proven current (`0ef7effc6e611498`), 57/57.
+- **Gates:** anchors (368; 16 counts agreeing), the claim map, the spec
+  checks, the audit table's separators, `git diff --check`.
