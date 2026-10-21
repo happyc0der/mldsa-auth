@@ -481,8 +481,9 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         goto fail;
     }
 
-    /* schema_version */
-    uint8_t vbuf[8];
+    /* schema_version. Zeroed, so a value shorter than 8 bytes can never be
+     * read together with stack bytes, even if the length check below went. */
+    uint8_t vbuf[8] = { 0 };
     size_t vlen = 0;
     int found = 0;
     if ((r = meta_get(s->db, "schema_version", vbuf, sizeof vbuf, &vlen, &found)) != STORE_OK) {

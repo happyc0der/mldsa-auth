@@ -1489,6 +1489,76 @@ int main(void)
         }
     }
 
+    /* ---- V4-45 (audit F122 item 4): a damaged store is refused at open ----
+     * store_open reads three values from `meta` and refuses a store whose
+     * schema_version is malformed or from a later schema (STORE_ERR_SCHEMA),
+     * or whose store_id or decoy_pk has the wrong length (STORE_ERR_CORRUPT).
+     * V4-40's coverage run found none of those refusals had ever run. Each
+     * case damages one value in a fresh store with raw SQL and needs the open
+     * refused with its own status and no handle; the canary reopens the
+     * undamaged store. A store_id one byte LONG overruns the read buffer
+     * and is refused one layer down (STORE_ERR_DB), which is checked too. */
+    {
+        char dbp[512];
+        store_t *s = fresh_store("damaged.sqlite3", dbp, sizeof dbp);
+        CHECK(s != NULL, "damaged store: a fresh store opens");
+        if (s != NULL) { store_close(s); }
+        const char *names[] = { "schema_version", "store_id", "decoy_pk" };
+        uint8_t keep[3][STORE_PK_BYTES];
+        int keep_len[3] = { 0, 0, 0 };
+        for (int k = 0; k < 3; k++) {
+            sqlite3 *h = NULL; sqlite3_stmt *st = NULL;
+            if (sqlite3_open_v2(dbp, &h, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
+                sqlite3_prepare_v2(h, "SELECT value FROM meta WHERE key=?1;", -1, &st, NULL) == SQLITE_OK &&
+                sqlite3_bind_text(st, 1, names[k], -1, SQLITE_STATIC) == SQLITE_OK &&
+                sqlite3_step(st) == SQLITE_ROW) {
+                keep_len[k] = sqlite3_column_bytes(st, 0);
+                if (keep_len[k] > 0 && (size_t)keep_len[k] <= sizeof keep[k]) {
+                    memcpy(keep[k], sqlite3_column_blob(st, 0), (size_t)keep_len[k]);
+                }
+            }
+            sqlite3_finalize(st); sqlite3_close(h);
+        }
+        CHECK(keep_len[0] == 8 && keep_len[1] == (int)STORE_STORE_ID_BYTES && keep_len[2] == (int)STORE_PK_BYTES,
+              "damaged store: the three meta values have their expected lengths before any damage");
+        const struct { const char *sql; store_status_t want; const char *what; } cases[] = {
+            /* seven zero bytes: without the length check they would read as
+             * version 0, which opens, so only that check can refuse them */
+            { "UPDATE meta SET value=X'00000000000000' WHERE key='schema_version';", STORE_ERR_SCHEMA,
+              "damaged store: a schema_version of 7 bytes is refused as SCHEMA, and no handle is returned" },
+            { "UPDATE meta SET value=X'0000000000000002' WHERE key='schema_version';", STORE_ERR_SCHEMA,
+              "damaged store: a store from a later schema is refused as SCHEMA, and no handle is returned" },
+            { "UPDATE meta SET value=zeroblob(15) WHERE key='store_id';", STORE_ERR_CORRUPT,
+              "damaged store: a store_id one byte short is refused as CORRUPT, and no handle is returned" },
+            { "UPDATE meta SET value=zeroblob(17) WHERE key='store_id';", STORE_ERR_DB,
+              "damaged store: a store_id one byte long is refused (DB: it overruns the read buffer), and no handle is returned" },
+            { "UPDATE meta SET value=zeroblob(1951) WHERE key='decoy_pk';", STORE_ERR_CORRUPT,
+              "damaged store: a decoy_pk one byte short is refused as CORRUPT, and no handle is returned" },
+        };
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            store_t *d = NULL;
+            const int damaged = raw_sql(dbp, cases[i].sql) == 0;
+            const store_status_t r = store_open(dbp, KEK, &d);
+            CHECK(damaged && r == cases[i].want && d == NULL, cases[i].what);
+            if (d != NULL) { store_close(d); }
+            /* put every value back exactly, so each case damages one thing */
+            for (int k = 0; k < 3; k++) {
+                sqlite3 *h = NULL; sqlite3_stmt *st = NULL;
+                if (sqlite3_open_v2(dbp, &h, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+                    sqlite3_prepare_v2(h, "UPDATE meta SET value=?2 WHERE key=?1;", -1, &st, NULL) == SQLITE_OK) {
+                    sqlite3_bind_text(st, 1, names[k], -1, SQLITE_STATIC);
+                    sqlite3_bind_blob(st, 2, keep[k], keep_len[k], SQLITE_STATIC);
+                    (void)sqlite3_step(st);
+                }
+                sqlite3_finalize(st); sqlite3_close(h);
+            }
+        }
+        store_t *again = NULL;
+        CHECK(store_open(dbp, KEK, &again) == STORE_OK && again != NULL,
+              "damaged store: the same store, repaired, opens again -- the canary");
+        if (again != NULL) { store_close(again); }
+    }
+
     {
         char cmd[640];
         snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
