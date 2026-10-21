@@ -10781,3 +10781,85 @@ in `src/`, `apps/`, `tests/`, `tools/`, `web/` or the build files.
   fixture tests above ran green.
 - **Gates:** anchors, the claim map, the spec checks, the audit table's
   separators, `git diff --check`.
+
+## V4-51 — the daemon's start-up refusals, on the shipped binary (loop iteration 26: coverage; F126)
+
+### The gap
+
+The largest uncovered function in the daemon is `authd_main.c`'s `main`:
+58 code regions out of 223. Most are system-call failures, but three are
+the start-up refusals that keep the daemon from serving with a file it
+cannot trust:
+- a passphrase file `authd_secret_read` refuses;
+- a server key `keyfile_open` refuses, the wrong passphrase included;
+- a store `store_open` refuses.
+
+`authd_e2e` exercised configuration errors through `--check-config` and an
+occupied socket path, but none of these.
+
+### The test
+
+A new leg in `authd_e2e` damages one copy of the server's files at a time:
+- a group-readable passphrase file;
+- a group-readable server key;
+- the wrong passphrase;
+- a store file that is not a database.
+
+Each time it starts the shipped daemon. The daemon must exit non-zero, name
+the file and its status, and leave no socket behind. The same undamaged
+copies must then start (the canary).
+
+**The deadline.** The daemon runs in the background with a 20-second
+deadline. A daemon that wrongly STARTS would otherwise run forever, and a
+campaign would see a ctest timeout instead of a named check. The campaign
+below shows this is not hypothetical.
+
+**One wording.** The first run expected the passphrase refusal to read
+`unsafe-permissions`, the key file's name for it. The passphrase reader
+says `permissions (mode must be 0600)`, which led to F126.
+
+### The controls: campaign v81 (SU1–SU3), local, macOS ASan
+
+| ID | Mutation | Verdict, and what the daemon did |
+|---|---|---|
+| SU1 | a refused passphrase file is ignored | KILLED(1 named): it went on to the key and named the wrong thing |
+| SU2 | a refused server key is ignored | KILLED(1 named): **it started without its key and was still running 20 s later** |
+| SU3 | a store that cannot be opened is ignored | KILLED(1 named): **it started without its store and was still running 20 s later** |
+
+So each refusal is the only barrier: nothing later in start-up notices a
+missing key or store. The spec lines name the phrase both possible failures
+share (the damage's description), because whether a mutant crashes or keeps
+running depends on what the missing file breaks first.
+
+### F126, for the owner
+
+Three diagnostics disagree, each failing closed but explained differently:
+- **Exit codes.** A refused passphrase file exits 3 (configuration error,
+  spec §13), a refused server key 1 (operation failed).
+- **Names.** The same custody refusal is `unsafe-permissions` from the key
+  reader and `permissions (mode must be 0600)` from the passphrase reader.
+- **A misleading name.** `STORE_ERR_CORRUPT` is named `audit-chain-corrupt`,
+  and `store_open` also returns it for a damaged `store_id` or `decoy_pk`.
+
+Status names reach the journal and operators' scripts, so changing them is
+an interface decision. The tests match today's names and pin no exit code
+beyond "not 0".
+
+### The counts
+
+354 mutations in 51 campaigns, 393 anchors; all 16 stated counts restated.
+v81 is in nightly.yml's matrix. CLAIMS D10 cites SU1 and SU2 and the
+check.
+
+### Verification
+
+- **The changed script** (`tests/authd_e2e.sh`) passed in `build-p`,
+  `build-bench-p`, ASan and UBSan. In the last two the shipped daemon runs
+  sanitized through every refusal.
+- **No C source changed,** so the trees' fingerprints are V4-50's.
+- **Gates:**
+  - anchors (393; 16 counts agreeing);
+  - the claim map, including the register's size (126, F0–F126);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
