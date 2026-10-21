@@ -40,6 +40,9 @@ REPO="$1"; SCRATCH="$2"; MUTATE="$3"; SPEC="$4"; BUILD="${5:-build}"
 # compile kill is allowed to count (F79), beside the mutate script.
 CAMPAIGN=$(basename "$MUTATE" .py); CAMPAIGN=${CAMPAIGN#mutate_}
 ALLOWED="$(cd "$(dirname "$MUTATE")" && pwd)/compile_kills_allowed.txt"
+# Mutations only Linux's privileged e2e leg can kill (V4-53): off Linux a
+# listed survivor is expected, not BAD; on Linux the list changes nothing.
+LINUX_ONLY="$(cd "$(dirname "$MUTATE")" && pwd)/linux_only_kills.txt"
 SNAP="$SCRATCH/snapshot_v2"; LOG="$SCRATCH/mutation_v2-logs"
 rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 cd "$REPO" || exit 2
@@ -198,7 +201,10 @@ while IFS='|' read -r M TESTRE WANT; do
   grep -qE "Subprocess aborted|SIGABRT" "$LOG/$M.test" && how=" via abort"
   [ "${asan:-0}" = 1 ] && how=" + ASAN"; asan=0
   n=$(grep -c "FAIL: " "$LOG/$M.test")
-  if [ $ex -ne 0 ] && [ -z "$missing" ]; then res="KILLED(${n} named${how})"; else res="SURVIVED(BAD:$missing)"; overall=1; fi
+  if [ $ex -ne 0 ] && [ -z "$missing" ]; then res="KILLED(${n} named${how})"
+  elif [ "$MLDSA_PLATFORM" != "Linux" ] && grep -qE "^${CAMPAIGN} ${M}( |\$)" "$LINUX_ONLY" 2>/dev/null; then
+    res="SURVIVED(EXPECTED off Linux: linux_only_kills.txt; the nightly must kill it)"
+  else res="SURVIVED(BAD:$missing)"; overall=1; fi
   finish_mutation "$M" "$prov" "$res"
 done < "$SPEC"
 

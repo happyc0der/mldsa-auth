@@ -416,6 +416,12 @@ too large for the buffer, one cut off before its end, no reply at all, and a
 request over the line cap. Each is refused with its own status, and nothing
 is written past the buffer. Campaign v82 shows each check caught.
 
+V4-53 lists the mutations that only the privileged Linux leg can kill, in
+`tools/mutations/linux_only_kills.txt`. Off Linux, a listed survivor is
+scored as expected rather than as a failure, so a local campaign can end
+clean. On Linux the list changes nothing, and the nightly must still kill
+every one. The anchors gate refuses a list entry that names no mutation.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles

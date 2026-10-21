@@ -111,7 +111,9 @@ It ends with `residue: none` and `final: all sources restored; all artifacts
 identical to clean fingerprints`, and every row reads `KILLED(n named)`. A
 compile failure counts only if `tools/mutations/compile_kills_allowed.txt`
 lists it (one does: v24 M8). Since V4-14d every kill must be named (audit
-F90): a spec line without an expected check is refused. Before editing sources,
+F90): a spec line without an expected check is refused. The mutations only a
+privileged Linux leg can kill are listed in `tools/mutations/linux_only_kills.txt`;
+off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sources,
 check that every campaign still applies:
 
 ```bash

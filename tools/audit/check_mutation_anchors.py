@@ -114,6 +114,25 @@ for spec in specs:
 n_mut = sum(len([l for l in s.read_text().splitlines() if l.strip() and not l.startswith('#')]) for s in specs)
 print(f"--- {checked} anchors checked; {n_mut} mutations across {len(specs)} campaigns")
 
+# V4-53: the two allowlists the runner reads beside the campaigns -- the
+# compile kills that count (F79) and the kills only Linux can make -- name
+# mutations by "campaign ID". An entry naming no mutation is a stale exception
+# nothing would notice, so each must name a line of that campaign's spec.
+for lst in ("compile_kills_allowed.txt", "linux_only_kills.txt"):
+    lp = repo / "tools/mutations" / lst
+    if not lp.exists():
+        print(f"ALLOWLIST tools/mutations/{lst}: missing"); bad += 1; continue
+    for ln, line in enumerate(lp.read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            print(f"ALLOWLIST {lst}:{ln}: needs 'campaign ID reason'"); bad += 1; continue
+        sp = repo / "tools/mutations" / f"spec_{parts[0]}.txt"
+        ids = [l.split("|")[0] for l in sp.read_text().splitlines()] if sp.exists() else []
+        if parts[1] not in ids:
+            print(f"ALLOWLIST {lst}:{ln}: {parts[0]} {parts[1]} is not a mutation of that campaign"); bad += 1
+
 # V4-34: the documents that state these counts, checked against them. Three
 # had drifted unnoticed -- 305 and 40 after V4-29 and V4-30 made it 312 and
 # 42, and a "thirty-nine" and a "299" older still -- because nothing compared

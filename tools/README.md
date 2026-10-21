@@ -33,6 +33,14 @@ so `-Werror` refused them and no test was ever asked; two of them turned out to
 be caught by no test at all (audit finding F79). Write a mutation so it changes
 a value and keeps every use.
 
+**Since V4-53 the runner reads a second list beside the campaigns,**
+`mutations/linux_only_kills.txt`. It names the mutations only `authd_e2e`'s
+privileged Linux leg can kill, each with the reason. Off Linux a listed
+mutation that survives is scored `SURVIVED(EXPECTED off Linux)`, so a local
+campaign can end clean; on Linux the list changes nothing, and the nightly
+must kill every one. `audit/check_mutation_anchors.py` refuses an entry in
+either list that names no mutation.
+
 **Since V4-14d every kill must be named** (audit finding F90). A spec line is
 `ID|ctest-regex|expectations`, where each `;`-separated expectation is text
 that must appear on a `FAIL: ` line. An empty list, which used to mean "must
