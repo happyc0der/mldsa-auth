@@ -10130,3 +10130,86 @@ nightly.yml's matrix.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-43 — the CLI client's WebSocket frame reader, driven to its refusals (loop iteration 18: coverage; F122 item 2)
+
+### The gap
+
+`ws_client_read_message` parses every frame a server sends the CLI. V4-40's
+coverage run found none of its refusals had ever run, among them the one
+check between a hostile server and a write past the caller's buffer:
+`ws.c:544`, `len > cap`. The daemon's side of the same framing is fuzzed
+(`fuzz_ws`); this side was reached only by well-formed frames from the
+daemon itself.
+
+### The tests
+
+`test_authd_ws` gains `test_client_reader`, 16 checks. A byte-array reader
+feeds frames built to the RFC's layout.
+- **Canaries:**
+  - a 7-bit, a 16-bit and a 64-bit length frame (70,000 bytes), each
+    delivered whole;
+  - a frame exactly the buffer's size.
+- **The buffer's bound.** A frame one byte longer than a 16-byte buffer is
+  refused, and the guard bytes after the buffer are untouched.
+- **RFC 6455 §5 refusals:**
+  - each RSV bit on its own;
+  - a masked server frame;
+  - text, continuation and unfinished (no FIN) frames;
+  - a control frame over 125 bytes.
+- **Control frames and end of stream:**
+  - a ping and a pong are skipped, and the binary frame after them is the
+    one delivered;
+  - Close reports CLOSED;
+  - a stream that ends at a boundary is CLOSED, inside a header or a
+    payload IO.
+- **The top bit of a 64-bit length.** It is checked on a Close as well as
+  on a binary frame. On a binary frame the buffer's bound refuses such a
+  length anyway, and on a ping the control bound does. So only on a Close
+  does the top-bit rule alone decide, between PROTOCOL and CLOSED. Written
+  on a binary frame alone, the check would not have pinned the rule.
+
+### The controls: campaign v76 (WC1–WC9), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| WC1 | RSV bits ignored | KILLED(2 named) |
+| WC2 | masked server frames accepted | KILLED(2 named) |
+| WC3 | the 64-bit length's top bit allowed | KILLED(2 named) |
+| WC4 | a control frame's length unbounded: a 126-byte ping read into the 125-byte drain | KILLED(0 named + ASAN), expected as `ASAN in ws_client_read_message` |
+| WC5 | any data opcode accepted | KILLED(3 named) |
+| WC6 | fragments accepted | KILLED(2 named) |
+| WC7 | no bound against the buffer | KILLED(3 named), re-authored (below) |
+| WC8 | a ping returned as an empty message | KILLED(2 named) |
+| WC9 | a clean EOF reported as IO | KILLED(2 named) |
+
+**WC7, first written as `if (0)`,** was refused by the compiler: "unused
+parameter 'cap' [-Werror,-Wunused-parameter]", since that comparison was
+`cap`'s only use. The runner scored it `KILLED(compile)-NOT-ALLOWED(BAD)`.
+F79's rule is to re-author, not allowlist: `if (len > cap && 0)` keeps the
+use, and it is killed by three named checks.
+
+### The counts
+
+329 mutations in 46 campaigns, 368 anchors; all 16 stated counts restated.
+v76 is in nightly.yml's matrix.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `2060d47d6e17ff96` | 57/57 |
+  | `build-bench-p` | `e29413bf4ef36ec2` | 53/53 |
+  | ASan | `245118ef23ef6d34` | 57/57, instrumentation in all 43 |
+  | UBSan | `7f1becb08d49e658` | 57/57; one runtime error, the planted canary |
+  | fuzz | `982982e65f843a73` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  `test_authd_ws` has 145 checks, up from 129.
+- **Gates:**
+  - anchors (368; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.

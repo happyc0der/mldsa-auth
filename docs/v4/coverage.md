@@ -152,7 +152,8 @@ to its refusal, so a mutation deleting it would survive every campaign.
 
   Without that last one, a server's frame would be read past the buffer.
   The daemon's side of the same framing is fuzzed (`fuzz_ws`); this reader
-  is not.
+  is not. **Tested since V4-43** (campaign v76), frame by frame; still not
+  fuzzed.
 - **`REVOKE-TOKENS handle=`,** `localapi.c:667-676`. Revoking the tokens of
   one device never ran; only the per-user form is tested.
 - **`store_open`'s refusal of a damaged store,** `store.c:492-528`:

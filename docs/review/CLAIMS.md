@@ -115,7 +115,14 @@ the most important thing on this page.
 - mutation `v53 F1` — a frame's length header no longer compared to the bytes present
 - fuzz `wire` — at most one decoder accepts, only its own type byte, with full consumption and encode(decode(x)) == x
 - fuzz `frame` — on a bad length exactly the 4 header bytes are consumed, so no payload is read
-**Not established:** an ML-KEM encapsulation key's validity is checked inside encapsulation, which is a cryptographic call; the 1952-byte ML-DSA public key is never on the handshake wire, and its size is enforced by the key-file, ROTATE and enrollment parsers instead.
+- check `test_authd_ws` "client reader: a frame one byte longer than the buffer is refused, and nothing is written past it"
+- check `test_authd_ws` "client reader: a masked frame from the server is refused (RFC 6455 5.1)"
+- check `test_authd_ws` "client reader: a frame with any RSV bit set is refused (no extension was negotiated)"
+- check `test_authd_ws` "client reader: a control frame over 125 bytes is refused"
+- mutation `v76 WC7` — the CLI's frame reader stops bounding a frame by its buffer, and reads the payload past it
+- mutation `v76 WC4` — a control frame's length is not bounded: a 126-byte ping is read into a 125-byte stack buffer
+- mutation `v76 WC2` — a masked frame from the server is accepted
+**Not established:** since V4-43 the CLI client's WebSocket frame reader (`ws_client_read_message`) is driven to each of its refusals frame by frame, but it is not fuzzed: `fuzz_ws` covers the daemon's side of the framing only. An ML-KEM encapsulation key's validity is checked inside encapsulation, which is a cryptographic call; the 1952-byte ML-DSA public key is never on the handshake wire, and its size is enforced by the key-file, ROTATE and enrollment parsers instead.
 
 ### P7 — No silent key rotation
 - check `test_authd_store` "a known handle presenting a different key is rejected (Req 7)"
