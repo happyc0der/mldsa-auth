@@ -10730,3 +10730,54 @@ fixed (F125). Re-running only that job passed, 14/14. V4-45 had not touched
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-50 — the fixtures' cleanup re-checked, leftovers removed, F5's state stated (loop iteration 25: fixes and cleanup)
+
+### Has the fixture leak come back?
+
+V4-31 fixed a leak: 411 fixture directories and 119 MB, because the
+fixtures cleaned up only at a deadline they never reached. The system temp
+directory still held 40 `authd-wasm-*` directories. Before calling it a
+recurrence, I checked:
+- **Their dates.** 38 are from 00:45–00:50 on Oct 20, hours before V4-31's
+  fix landed. Two are from 15:52 and 16:09 on Oct 19, the phone-timing
+  session's fixture.
+- **A fresh run.** The six fixture-using tests (`wasm_interop`,
+  `web_flows`, `browser_e2e`, `phone_timing_tool`, `site_node_handler`,
+  `authd_e2e`) ran in `build-p` with the default temp directory: 6/6
+  passed. The count was 40 before and 40 after, and the newest was still
+  Oct 20 00:50.
+
+So the fixtures clean up today, and the 40 were the old leak's leftovers.
+- **Removed:** the 38 from before the fix. Each held a scratch store and two
+  socket files, nothing else.
+- **Kept:** the two from the phone-timing session. They are left for the
+  owner, rather than widening a deletion after the fact.
+- **Also removed:** one `authd-ws-*` scratch directory, from 22:50 on Oct
+  20. That was campaign v76's WC4, whose ASan abort stopped the test before
+  its cleanup. A unique name makes such a leftover harmless (F114's fix),
+  but it is still clutter.
+
+### F5's state, stated
+
+F5's row and the review page said only that F5 "stays open until those
+[F122's checks] are covered". Four of the five now are (V4-42, V4-43, V4-45,
+V4-46), and two more files the figures pointed at have tests (V4-48 the
+passphrase file, V4-49 the listener's paths). The row and the page now say
+what keeps F5 open:
+- F122 (3), `REVOKE-TOKENS handle=`, whose meaning waits on the owner's
+  decision on F123;
+- the unmeasured wasm build.
+
+### Housekeeping
+
+The local `main` branch was 52 commits behind `origin/main`, with none of
+its own, and has been fast-forwarded. No TODO, FIXME or XXX marker exists
+in `src/`, `apps/`, `tests/`, `tools/`, `web/` or the build files.
+
+### Verification
+
+- **No source or test changed,** so no tree or campaign is affected. The six
+  fixture tests above ran green.
+- **Gates:** anchors, the claim map, the spec checks, the audit table's
+  separators, `git diff --check`.

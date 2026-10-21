@@ -91,7 +91,7 @@ page said only F91 until V4-38, F120):
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure (81.3% of lines, 87.5% of regions; [coverage.md](../v4/coverage.md)), and it names the security checks no test reaches (F122); it stays open until those are covered |
+| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure ([coverage.md](../v4/coverage.md)), and the security checks it found untested (F122) are covered, all but `REVOKE-TOKENS handle=`, whose meaning waits on the owner's decision on F123. The wasm build is not measured |
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
 
@@ -398,6 +398,10 @@ refused, not truncated, and a file or a planted symlink at the path is
 refused and left alone. A stale socket is still replaced, and an allowlist
 longer than its bound is refused. Campaign v80 shows each check caught,
 including the `stat`-for-`lstat` slip that would follow a symlink.
+
+V4-50 re-checked that the test fixtures clean up after themselves (they do)
+and removed the leak's old leftovers. F5's row now says plainly that only
+`REVOKE-TOKENS handle=` and the unmeasured wasm build keep it open.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
