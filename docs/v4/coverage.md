@@ -217,6 +217,27 @@ llvm-cov attributes to the source line. Three checks had never run:
 Since V4-49 each is driven, with a symlink at the path and a stale socket
 besides; campaign v80 shows each caught.
 
+## The local-API client (V4-52)
+
+`localcli.c` read 67% of lines: `localcli_call`, the client `authd_admin`
+uses, had never met a misbehaving daemon. None of these had run:
+- a reply larger than the caller's buffer;
+- a list the daemon closes before its END;
+- a daemon that never answers;
+- a request over spec 8's line cap;
+- a socket with no daemon.
+
+Since V4-52 each is driven against a forked fake daemon, the buffer case
+with guard bytes after the buffer; campaign v82 shows each caught. The
+explicit "reply larger than the buffer" break is defence in depth: `recv`'s
+length already leaves room for the NUL, so removing the break alone changes
+nothing. The campaign mutates the length instead.
+
+The same triage found `keyfile.c`'s `publish` uncovered at line 105. That is
+the I/O-failure arm of its `link()`. The no-clobber refusal on the same line
+is covered (`test_authd_keyfile`, "refuses an existing path"), so it is not
+a gap.
+
 ## What these figures do not establish
 
 - **Covered is not checked.** A region a test runs can still be wrong with
