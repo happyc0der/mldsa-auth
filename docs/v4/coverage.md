@@ -138,7 +138,8 @@ to its refusal, so a mutation deleting it would survive every campaign.
   group/other bit set, is refused with `KEYFILE_ERR_PERMISSIONS`. Neither
   refusal ever ran: the condition was evaluated 174 and 4 times, the
   refusal 0. The demo apps' loader has such tests (`test_net` T14); the
-  daemon's and the client's key files have none.
+  daemon's and the client's key files had none. **Tested since V4-42**
+  (campaign v75); the owner half only on Linux, where root can arrange it.
 - **The CLI client's WebSocket frame reader,** `ws.c:503-545`
   (`ws_client_read_message`). It parses frames from the server. None of
   these ever refused anything:

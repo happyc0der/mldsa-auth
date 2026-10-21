@@ -10043,3 +10043,83 @@ and failed:
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-42 — key-file custody, driven to its refusals (loop iteration 17: coverage; F122 item 1)
+
+### The gap
+
+Spec §12 keeps a key file to its owner. `keyfile_open` refuses one that is
+not this euid's, or that has any group or other bit set, and
+`keyfile_promote` (rotation's rename into place) refuses the same. V4-40's
+coverage run found neither refusal had ever run: `keyfile_open`'s condition
+was evaluated 174 times and refused 0. Deleting either half passed every
+check. The demo apps' loader had such tests (`test_net` T14); the daemon's
+and the client's key files had none.
+
+### The tests
+
+- **`test_authd_keyfile`, the mode half:**
+  - The sealed key file is set to each group and other bit on its own
+    (0640, 0620, 0610, 0604, 0602, 0601). Every open must return
+    `KEYFILE_ERR_PERMISSIONS` and no key, so a check that kept only some of
+    the bits fails.
+  - Canary: 0600 and 0400 still open.
+  - `keyfile_promote` with a 0640 candidate must refuse and leave both
+    files as they were. A 0600 candidate must then rename over the current
+    file (the canary).
+- **`authd_e2e`, the owner half.** A file another user owns, mode 0600, is
+  unreadable to the client, so it would fail with `io` before the owner
+  check ever ran. Only root can read it, so the e2e's privileged leg
+  (Linux, with root or passwordless sudo, as CI's and the nightly's jobs
+  have) has root run the shipped client against a copy of the device key
+  chowned to `nobody`. The leg needs:
+  - `unsafe-permissions`;
+  - the canary: root's own 0600 copy is not refused for that reason.
+
+  On macOS the leg is skipped, as the second-user leg before it is.
+
+### The controls: campaign v75 (KC1–KC5)
+
+| ID | Mutation | Local (macOS, ASan) |
+|---|---|---|
+| KC1 | `keyfile_open` ignores the mode | KILLED(1 named) |
+| KC2 | ignores the group bits only (`077` → `007`) | KILLED(1 named) |
+| KC3 | ignores the other bits only (`077` → `070`) | KILLED(1 named) |
+| KC4 | `keyfile_promote` ignores the mode | KILLED(2 named) |
+| KC5 | `keyfile_open` ignores the owner | SURVIVED, as predicted: the owner leg does not run here |
+
+KC5 is killed only where the privileged leg runs: CI's Linux jobs and the
+nightly, like v58's GA13 and GA14. The first version of the mutate script
+built its texts with `str.replace`. The anchors gate, which reads the
+scripts statically, could not see them ("NO ANCHOR EXTRACTED"), so they are
+literals, as v73's lesson said. `keyfile_promote`'s owner half has no test:
+a rotation's candidate is always the client's own file.
+
+### The counts
+
+320 mutations in 45 campaigns, 359 anchors. All 16 stated counts were
+restated; the counts gate failed on each until they were. v75 is in
+nightly.yml's matrix.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `9ad8f7b5a5a66b10` | 57/57 |
+  | `build-bench-p` | `978252cbe1c4ec2e` | 53/53 |
+  | ASan | `3b54d98baeb50512` | 57/57, instrumentation in all 43 |
+  | UBSan | `36ed159328b042c8` | 57/57; one runtime error, the planted canary |
+  | fuzz | `6f9b9bf1bb9b36ff` | 36/36, and `test_authd_keyfile`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+  The four custody checks pass. The e2e's privileged leg printed its SKIP
+  line here (macOS).
+- **The owner leg's first real run** is CI's Linux jobs; it is recorded with
+  the bring-up.
+- **Gates:**
+  - anchors (359; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
