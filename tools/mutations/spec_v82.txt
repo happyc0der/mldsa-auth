@@ -1,0 +1,5 @@
+LC1|^test_authd_cli$|localcli: a request over the 8192-byte line cap is refused before it connects
+LC2|^test_authd_cli$|localcli: a reply larger than the caller's buffer is refused, NUL-terminated inside it, and nothing is written past it
+LC3|^test_authd_cli$|localcli: a list the daemon closes before its END is refused as a truncation, not returned
+LC4|^test_authd_cli$|localcli: a daemon that never answers is a TIMEOUT at the deadline
+LC5|^test_authd_cli$|localcli: a socket path with no daemon is cannot-connect
