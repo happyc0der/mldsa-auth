@@ -176,6 +176,58 @@ int main(void) {
           (void)unlink(lnk);
       } }
 
+    /* ---- V4-42 (audit F122, spec 12): custody ---------------------------
+     * keyfile_open refuses a key file anyone but its owner can read or write,
+     * and keyfile_promote refuses to rename such a file into place. V4-40's
+     * coverage run found neither refusal had ever run. Every group and other
+     * bit is tried on its own, so a check that kept only some of them fails;
+     * the owner-only modes are the canary that it does not refuse everything. */
+    { const mode_t bad[] = {0640, 0620, 0610, 0604, 0602, 0601};
+      int all = 1;
+      for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+          memset(&kp, 0, sizeof(kp));
+          const keyfile_status_t s = (chmod(ek, bad[i]) == 0)
+              ? keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL) : KEYFILE_ERR_IO;
+          if (s != KEYFILE_ERR_PERMISSIONS || kp.secret_key != NULL) {
+              printf("  (mode %04o: %s)\n", (unsigned)bad[i], keyfile_status_name(s));
+              all = 0;
+              if (kp.secret_key) mldsa_keypair_free(&kp);
+          }
+      }
+      CHECK(all, "custody: a key file with any one group or other bit set is refused as unsafe-permissions, and yields no key");
+      const mode_t good[] = {0600, 0400};
+      int ok = 1;
+      for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+          memset(&kp, 0, sizeof(kp));
+          if (chmod(ek, good[i]) != 0 ||
+              keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL) != KEYFILE_OK) { ok = 0; }
+          if (kp.secret_key) mldsa_keypair_free(&kp);
+      }
+      CHECK(ok, "custody: owner-only key files (0600, 0400) still open -- the canary");
+      (void)chmod(ek, 0600);
+
+      /* promote: a 0640 candidate is refused, and neither file moves */
+      char nx[256], cur[256];
+      path(nx, sizeof(nx), "promote.ek.next"); path(cur, sizeof(cur), "promote.ek");
+      (void)unlink(nx); (void)unlink(cur);
+      FILE *a = fopen(nx, "wb"); FILE *b = fopen(cur, "wb");
+      if (a) { fputs("candidate", a); fclose(a); }
+      if (b) { fputs("current", b); fclose(b); }
+      (void)chmod(nx, 0640); (void)chmod(cur, 0600);
+      char got[16] = {0};
+      FILE *c = NULL;
+      const keyfile_status_t ps = keyfile_promote(nx, cur);
+      c = fopen(cur, "rb"); if (c) { (void)!fread(got, 1, sizeof(got) - 1u, c); fclose(c); }
+      CHECK(ps == KEYFILE_ERR_PERMISSIONS && strcmp(got, "current") == 0 && fsize(nx) == 9,
+            "custody: promote refuses a group-readable candidate, and leaves both files as they were");
+      (void)chmod(nx, 0600);
+      memset(got, 0, sizeof(got));
+      const keyfile_status_t ps2 = keyfile_promote(nx, cur);
+      c = fopen(cur, "rb"); if (c) { (void)!fread(got, 1, sizeof(got) - 1u, c); fclose(c); }
+      CHECK(ps2 == KEYFILE_OK && strcmp(got, "candidate") == 0 && fsize(nx) == -1,
+            "custody: promote renames an owner-only candidate over the current file -- the canary");
+      (void)unlink(nx); (void)unlink(cur); }
+
     /* ---- V4-13a: the buffer API, and parity with the file API ------------ */
     { const size_t want = KEYFILE_HEADER_LEN + ilen + crypto_aead_xchacha20poly1305_ietf_ABYTES;
       CHECK(keyfile_sealed_len(ilen) == want && keyfile_sealed_len(0) == 0u &&
