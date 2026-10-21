@@ -165,8 +165,12 @@ to its refusal, so a mutation deleting it would survive every campaign.
 - **The daemon's record path,** `authd_conn.c`:
   - a record over `AUTHD_MAX_RECORD`;
   - a BYE of the wrong length;
-  - after a rotation, the closing of the old key's other live sessions
-    (`dropped > 0`, line 546).
+  - after a ROTATE with the drop-tokens flag, the dropping of the device's
+    tokens (`dropped > 0`, line 534; first described here as closing live
+    sessions, which it is not).
+
+  **Tested since V4-46** (campaign v78). The oversized record is unreachable:
+  the frame cap equals the record cap.
 
 ## Re-measured in V4-44, after V4-41 to V4-43
 

@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 334 committed defects in 47 campaigns, each of which must be
+- **Mutations**: 339 committed defects in 48 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -373,6 +373,14 @@ V4-44 gated the two gates' inventory counts in prose (25 constant-time sites,
 item. A store whose `meta` holds a malformed or later schema version, or a
 store id or decoy key of the wrong length, is refused at open; campaign v77
 shows each check caught.
+
+V4-46 took the fifth item, on the daemon's record path. A ROTATE with the
+drop-tokens flag now has a test while the device holds tokens: they go,
+another device's stay, and the journal says how many. A BYE of the wrong
+length is refused. The oversized-record check cannot be reached, because the
+frame cap equals the record cap, and the register says so instead of
+claiming a test. Campaign v78 shows each check caught. F122's last item,
+`REVOKE-TOKENS handle=`, waits on the owner's decision on F123.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

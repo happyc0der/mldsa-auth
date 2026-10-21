@@ -10386,3 +10386,75 @@ v77 is in nightly.yml's matrix. CLAIMS D6 cites SD5 and its check.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-46 — the daemon's record path: drop-tokens rotation and BYE length (loop iteration 21: coverage; F122 item 5)
+
+### The gap, described correctly
+
+V4-40's triage listed three uncovered branches on the record path in
+`authd_conn.c`. The third it described wrongly, as "the closing of the old
+key's other live sessions after a rotation". The branch (`dropped > 0`,
+line 534) is the journal line for a ROTATE carrying the drop-tokens flag:
+`store_rotate_key` deletes the device's tokens in the rotation's
+transaction, and the daemon logs how many went. No test rotated a device
+that held tokens, so a daemon that ignored the flag passed everything. F122's
+row now says so.
+
+### Two branches tested, one shown unreachable
+
+- **The drop-tokens rotation.** `test_authd_conn`'s new
+  `test_rotate_drop_tokens` enrolls two devices of one user. It gives the
+  first two tokens and the second one.
+  - A rotation without the flag keeps all three (the canary).
+  - A rotation with it is acknowledged and drops the first device's two
+    tokens and only those. The journal reads `event=rotate-tokens-dropped
+    count=2`.
+- **A BYE of the wrong length.** `test_bye_length` sends a BYE with a byte
+  after its opcode on an authenticated session. It is refused as MALFORMED,
+  not taken as a goodbye.
+- **The oversized record cannot be reached.** `on_record` refuses `len >
+  AUTHD_MAX_RECORD`, but `AUTHD_FRAME_MAX` is the larger of the record cap
+  and the largest ServerHello, and the record cap is the larger: both are
+  12,313 bytes. The frame layer refuses any longer frame before
+  `on_record`. The check stays as a guard for a future where the caps
+  differ, and the register says it is unreachable rather than claiming a
+  test.
+
+`test_authd_conn` has 207 checks.
+
+### The controls: campaign v78 (RP1–RP5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| RP1 | the daemon ignores the drop-tokens flag | KILLED(3 named) |
+| RP2 | the journal line is not written | KILLED(2 named) |
+| RP3 | the journal's count is off by one | KILLED(2 named) |
+| RP4 | the store drops every token, not only the device's | KILLED(3 named) |
+| RP5 | a BYE of any length is a goodbye | KILLED(2 named) |
+
+`residue: none`, all sources restored.
+
+### The counts and the map
+
+339 mutations in 48 campaigns, 378 anchors; all 16 stated counts restated.
+v78 is in nightly.yml's matrix. CLAIMS D9 cites RP1 and RP4, and P6 cites
+RP5, each with its check. F122's item (5) is closed. Only item (3) is left,
+`REVOKE-TOKENS handle=`, which waits on the owner's decision on F123.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `c2b6744b2be99cde` | 57/57 |
+  | `build-bench-p` | `8b7b55000b6925e9` | 53/53 |
+  | ASan | `885fc14002762f02` | 57/57, instrumentation in all 43 |
+  | UBSan | `23af7d0959cd35da` | 57/57; one runtime error, the planted canary |
+  | fuzz | `556bc63cd721a808` | 36/36, and `test_authd_conn`, `backend_symbols` and `doc_test_counts` 3/3 |
+- **Gates:**
+  - anchors (378; 16 counts agreeing);
+  - the claim map;
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.

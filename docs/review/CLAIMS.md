@@ -122,6 +122,8 @@ the most important thing on this page.
 - mutation `v76 WC7` — the CLI's frame reader stops bounding a frame by its buffer, and reads the payload past it
 - mutation `v76 WC4` — a control frame's length is not bounded: a 126-byte ping is read into a 125-byte stack buffer
 - mutation `v76 WC2` — a masked frame from the server is accepted
+- check `test_authd_conn` "bye-length: a BYE with a byte after its opcode is refused as MALFORMED, not taken as a goodbye"
+- mutation `v78 RP5` — a BYE of the wrong length is taken as a goodbye
 **Not established:** since V4-43 the CLI client's WebSocket frame reader (`ws_client_read_message`) is driven to each of its refusals frame by frame, but it is not fuzzed: `fuzz_ws` covers the daemon's side of the framing only. An ML-KEM encapsulation key's validity is checked inside encapsulation, which is a cryptographic call; the 1952-byte ML-DSA public key is never on the handshake wire, and its size is enforced by the key-file, ROTATE and enrollment parsers instead.
 
 ### P7 — No silent key rotation
@@ -381,6 +383,10 @@ the most important thing on this page.
 - check `wasm_interop` "disable: the daemon closes the disabled user's live WebSocket, seen from the client's process (Req 9, D9)"
 - check `wasm_interop` "revoke=all: the daemon closes BOTH of the user's live WebSockets, seen from the client's process (Req 9, D9)"
 - check `wasm_interop` "revoke=none: the user's live session stays open (the canary)"
+- check `test_authd_conn` "rotate-drop: the rotated device's tokens are gone after a rotation with the drop-tokens flag"
+- check `test_authd_conn` "rotate-drop: the other device's token survives -- the drop is the rotated device's only"
+- mutation `v78 RP1` — the daemon ignores ROTATE's drop-tokens flag, so the rotated device's tokens stay valid
+- mutation `v78 RP4` — the drop takes every token in the store, not only the rotated device's
 **Not established:** the device clause and, since V4-22a, the key clause are each shown to hold on their own only for a state an attacker with the database file creates (no API path revokes one without the other). `authd_e2e` drives `revoke=all` through the site's own library and checks that both of the user's devices are refused at their next login; that revoke=all closes their live sessions is checked in-process there, and since V4-33 from outside the daemon too. `wasm_interop`'s client, in Node, holds live WebSocket sessions against the separate daemon process. REVOKE-DEVICE (V4-32), DISABLE-USER and RECOVERY-USE with revoke=all (V4-33) each close exactly the sessions they name within 3 s. Another user's session, and revoke=none's, stay open. That runs only in trees with a wasm module, so the nightly's campaigns do not reach it. It was shown red by hand with v49a's V1 and v58's GA7, GA8 and GA9, and with a close that matched every session (V4-32's and V4-33's decisions entries). Raw-listener sessions are observed in-process only.
 
 ### D10 — Identity keys are encrypted at rest
