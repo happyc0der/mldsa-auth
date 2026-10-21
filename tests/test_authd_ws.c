@@ -1021,7 +1021,7 @@ static void test_listener_paths(void)
 {
     struct sockaddr_un probe;
     const size_t cap = sizeof probe.sun_path;
-    char dir[256];
+    char dir[272];                 /* g_dir is 256: room for "/lp" (gcc -Wformat-truncation, F19) */
     snprintf(dir, sizeof dir, "%s/lp", g_dir);
     CHECK(mkdir(dir, 0700) == 0 && strlen(dir) + 2u < cap, "paths: a short scratch directory");
 
@@ -1043,7 +1043,7 @@ static void test_listener_paths(void)
             "paths: a socket path one byte over sun_path's capacity is refused, and no socket is created at it or at its truncation"); }
 
     /* something that is not a socket at the path is refused, and untouched */
-    char file[300], lnk[300], live[300];
+    char file[320], lnk[320], live[320];
     snprintf(file, sizeof file, "%s/file.sock", dir);
     snprintf(lnk, sizeof lnk, "%s/link.sock", dir);
     snprintf(live, sizeof live, "%s/live.sock", dir);

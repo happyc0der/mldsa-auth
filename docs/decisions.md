@@ -10671,6 +10671,16 @@ checks.
   | fuzz | `f1358d38239c5860` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
 
   `test_authd_ws` has 154 checks.
+- **CI's first run failed on gcc** (39605350547, on `92bd836`): the gcc debug,
+  gcc Release and wasm jobs. The cause was
+  "'/lp' directive output may be truncated … [-Werror=format-truncation=]":
+  `snprintf(dir, 256, "%s/lp", g_dir)` with `g_dir` itself 256 bytes, F19's
+  class. Clang raises no such warning, so no local tree saw it. The buffers
+  are now sized past `g_dir`, as the file's other paths are.
+  - **The check that would have caught it:** compiling the file with gcc
+    16, using `build-p`'s own compile command, reproduces the exact error on
+    the old file and is clean on the fixed one, at `-O0` and `-O2`. It runs
+    before pushing any new test code from now on.
 - **Gates:**
   - anchors (390; 16 counts agreeing);
   - the claim map;
