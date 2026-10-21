@@ -10458,3 +10458,66 @@ RP5, each with its check. F122's item (5) is closed. Only item (3) is left,
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-47 — T12's false failures, made inconclusive and retried (loop iteration 22: fixes and cleanup; F125)
+
+### The failure
+
+V4-45's CI (39557319345) failed one job, `macos-26·clang·ubsan`, in
+`test_net`'s T12: "EINTR retries: client 0, server 0; 1 alarms in the
+client". V4-45 did not touch `test_net` or the network code, and re-running
+the job passed. It was the third sighting of the same shape on GitHub's
+macOS runners:
+- **V3-3:** a timer-driven storm, replaced by a dedicated signalling process.
+- **V3-5:** the scenario starts only once the first alarm lands.
+- **V4-45:** the signalling process was still not scheduled while the
+  scenario ran.
+
+T12 needs net_io's EINTR retries to have run under a signal storm, so a
+storm that does not land during the scenario fails a correct implementation.
+That is a false failure, never a false pass. It is recorded as **F125**
+(Info); the register had never carried it.
+
+### The fix
+
+An attempt in which no EINTR retry happened is **inconclusive**: the retry
+path never ran, so it says nothing either way. It is run again, up to five
+attempts. The rules:
+- a side failing under the storm fails the check at once;
+- five inconclusive attempts fail it too, so the check still needs evidence;
+- the check's name, which campaign v33 expects, is unchanged, and now ends
+  with "attempt N of 5".
+
+### The controls
+
+| Control | What was changed | Result |
+|---|---|---|
+| C1, recovery | the first attempt runs without the storm | PASS on "attempt 2 of 5" |
+| C2, the bound | the conclusive condition can never hold | FAIL on "attempt 5 of 5" |
+| v33 S1 | the retry counter stops counting | KILLED(1 named): all five attempts inconclusive, "attempt 5 of 5" with 512 alarms delivered |
+| v33 S2b | EINTR is no longer retried | KILLED(1 named): a side fails at once, "attempt 1 of 5" |
+
+C1 and C2 are hand controls, restored byte-exactly; S1 and S2b ran as
+campaign v33, locally on the ASan tree, with `residue: none`.
+
+Locally the storm is strong (about 400 alarms, conclusive on the first
+attempt), so the retry matters on loaded runners only. That is where it was
+needed.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `04ceb46593834fba` | 57/57 |
+  | `build-bench-p` | `730c02008bffe29f` | 53/53 |
+  | ASan | `7d523d72862d0b50` | 57/57, instrumentation in all 43 |
+  | UBSan | `5233949a733b7677` | 57/57; one runtime error, the planted canary |
+  | fuzz | `e24e380c178fa2ca` | 36/36, and `test_net`, `backend_symbols` and `doc_test_counts` 3/3 |
+- **Gates:**
+  - anchors (378; 16 counts agreeing);
+  - the claim map, including the register's size (125, F0–F125);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.

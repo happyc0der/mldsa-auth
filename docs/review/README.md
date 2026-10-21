@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 124 findings (F0–F124), with severity, evidence and
+   register](../v4/audit.md). 125 findings (F0–F125), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -381,6 +381,12 @@ length is refused. The oversized-record check cannot be reached, because the
 frame cap equals the record cap, and the register says so instead of
 claiming a test. Campaign v78 shows each check caught. F122's last item,
 `REVOKE-TOKENS handle=`, waits on the owner's decision on F123.
+
+V4-47 fixed a false failure seen three times on a loaded macOS runner:
+`test_net`'s T12 needs a signal storm to interrupt the network code, and the
+signalling process was sometimes not scheduled in time (**F125**). An attempt
+in which no call was interrupted is now retried, up to five times, rather
+than counted as a failure. A real failure is still immediate.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
