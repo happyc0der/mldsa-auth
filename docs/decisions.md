@@ -11247,3 +11247,90 @@ F0–F128.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-56 — a peer that vanishes with a reply unsent is closed at once, F129 (loop iteration 31: fixes and cleanup)
+
+### How it was found
+
+V4-54 left one reachable region of `slot_writable` untested: a write error,
+such as a peer that disappears mid-reply. Before writing a test for it, a
+probe asked what `poll` reports for a writer whose peer has gone, with data
+still unsent.
+
+On macOS, a Unix socket and a loopback TCP socket both report POLLHUP alone:
+no POLLOUT, no POLLERR. The next write is EPIPE. The Linux half of the probe
+did not run, because the msi laptop did not answer.
+
+The loop wrote only on POLLOUT. It closed on POLLHUP only when nothing was
+pending, so that a peer that half-closes still gets its reply. So a peer that
+vanished with a reply unsent kept its slot, and `poll` returned at once on
+every turn, until the slot's idle deadline.
+
+A test against the real loop showed it: **200 turns in 0 ms** against a 10 ms
+poll timeout, and the slot still held. **F129 (Low):** bounded by the
+deadline, CPU only, other slots still served.
+
+### Linux, from CI rather than the probe
+
+A scratch branch, `v4-56-ctl` (run 39687407344), carried the new test with
+only the fix reverted. It failed exactly this check, "200 turns in 0 ms", on
+all three macOS jobs, and passed it on every Linux job. So Linux reports such
+a socket with POLLOUT or POLLERR, and the old loop already closed it. The
+deployment platform was never affected. The branch was deleted.
+
+### The fix
+
+A hang-up with a reply pending is a write attempt. A peer that has gone
+answers EPIPE, and the slot closes. A peer that only half-closed can still be
+written to, and gets its reply. The test ignores SIGPIPE, as `mldsa-authd`
+does (`authd_main.c`).
+
+### The tests (`test_backpressure`, now 180 checks in `test_authd_evloop`)
+
+- **4. The vanished peer.** It stalls with a reply unsent and then closes. Its
+  slot must be freed within 3 turns, not by the deadline.
+- **5. The half-closing peer.** It sends one frame, shuts down its sending
+  side, and must get the whole reply.
+
+Hand controls on macOS, each file restored and compared by hash:
+- **the old loop:** check 4 fails ("200 turns in 0 ms"), and 5 passes;
+- **closing on every hang-up instead:** check 5 fails. That fix would also
+  have ended the spin, so check 5 is what rules it out.
+
+### No mutation, on purpose
+
+The fix's mutation (BP7, the hang-up condition removed) would be killed on
+macOS and survive on Linux. The nightly runs v83 on Linux, so it would be red
+there for a reason that is not a defect: F128's lesson.
+
+The guard is the test itself. It runs on CI's three macOS jobs on every push,
+and the scratch branch showed them turning red when the fix is reverted.
+
+### Cleanup (this iteration's other half)
+
+- The scratch branch was deleted.
+- Local `main` was fast-forwarded to `origin/main` (`fd44fe7`).
+- The remote holds only `main`, `nightly-bringup` and the branches in flight.
+- `~/.cache/mldsa-tmp` (466 MB) was left alone. It holds the libsodium builds
+  the trees depend on, and the raw campaign logs behind these records.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `2fe5237f97c7821f` | 57/57 |
+  | `build-bench-p` | `15876964bfff161d` | 53/53 |
+  | ASan | `5b685961b7252895` | 57/57, instrumentation in all 43 |
+  | UBSan | `aea70ae443ccab85` | 57/57; one runtime error, the planted canary |
+  | fuzz | `fd9d6b67e6cb849f` | 36/36, and `test_authd_evloop`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `evloop.c` and
+  `test_authd_evloop.c` are clean.
+- **Gates:**
+  - anchors (405; unchanged, since no campaign moved);
+  - the claim map (129 findings);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
