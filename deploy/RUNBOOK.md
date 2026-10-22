@@ -295,7 +295,7 @@ code). The result is `build-wasm/web/mldsa_client.{mjs,wasm}`, about 300 KB toge
 The page runs the client; **your site** decides who may have an account and
 turns a login code into a session. `examples/site-node/server.mjs` is a
 complete reference — `node:http`, no dependencies — and it is what the tests
-drive in a real browser. Use it, or hold your own site to the same four rules:
+drive in a real browser. Use it, or hold your own site to the same six rules:
 
 1. **A fresh `state` per login**, kept in the visitor's server-side session and
    put in the WebSocket URL; `EXCHANGE` must present it (spec §7.1, Req 5), so a
@@ -303,8 +303,15 @@ drive in a real browser. Use it, or hold your own site to the same four rules:
 2. **The login code arrives in a POST body on your own origin** — never in a
    URL, so never in a proxy log, a `Referer` or history (spec §14).
 3. **Every POST must carry your `Origin`**, on a session cookie that is
-   `HttpOnly; SameSite=Strict; Secure`.
+   `HttpOnly; SameSite=Strict; Secure` and named with the `__Host-` prefix, so
+   that no other host under your domain can set it.
 4. **The token stays on the server.** Page script never sees it.
+5. **A new session id at every change of privilege:** a login, a signup, a
+   recovery. Drop the old id with everything it held (session fixation, audit
+   F131).
+6. **A bounded session table.** Expire idle sessions, remove a session at
+   logout, and cap the sessions nobody has logged into, evicting the least
+   recently used (audit F132).
 
 The reference site, installed and started as the site's user:
 
