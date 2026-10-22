@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 130 findings (F0–F130), with severity, evidence and
+   register](../v4/audit.md). 132 findings (F0–F132), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 48 errata, each
+3. The two specifications. The deployment spec's §20 lists 49 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -58,7 +58,7 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 57 tests with the
+- **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
 - **Mutations**: 367 committed defects in 53 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
@@ -450,6 +450,12 @@ just refused to bind over, and, when started a second time on a running
 daemon's configuration, that daemon's three live sockets. The running
 daemon then stayed up but could not be reached. It now removes only what it
 holds, and both cases are tested end to end.
+
+V4-58 fixed **F131** and **F132** (both Medium) in the reference site. It now
+issues a new session id at a login, a signup and a recovery, names its cookie
+`__Host-sid` behind TLS, and bounds its session table. Erratum 49 states these
+obligations in spec §14, and the runbook's rules for writing your own site
+now include them.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.13, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26 errata)
+# mldsa-authd — deployment specification (v1.14, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -869,9 +869,14 @@ page was a secure context. The rows, and what they do not establish, are in
 
 **The login code's way to the site** (erratum 34). The page POSTs the code in a
 request **body** to the site's own endpoint, on the same origin, carrying the
-site's session cookie (HttpOnly, SameSite=Strict); the site checks the
+site's session cookie (HttpOnly, SameSite=Strict, and behind TLS `Secure`
+with the `__Host-` prefix, so no other host can set it); the site checks the
 `Origin`, `EXCHANGE`s the code with the `state` it placed in that session and
-put in the WebSocket URL (§7.1), and keeps the token server-side. The code is
+put in the WebSocket URL (§7.1), and keeps the token server-side. **On
+success the site issues a new session id** and drops the old one, as it does
+at a signup and a recovery (erratum 49). The site's session table is bounded:
+idle sessions expire, a logout removes its session, and sessions nobody has
+logged into are capped. The code is
 never in a URL — so never in a proxy log, a `Referer` or history — and the
 token never reaches page script. Pages are served under a CSP of
 `script-src 'self' 'wasm-unsafe-eval'` and `connect-src 'self'` with no inline
@@ -1336,3 +1341,11 @@ A correction to erratum 47, from finding the cause of F119:
 | # | § | Change | Why |
 |---|---|---|---|
 | 48 | 14 | Safari's ~21× slowdown attributed to the origin: Safari 27.0.1 runs a non-secure origin's pages without its JIT, and the tool served one. Safari's secure-origin figures added; "Safari does not" keep Argon2id inside the budget removed; non-local HTTPS and the iPhone stated as unmeasured; every timing row now records `secure` | erratum 47 published V4-25's Safari row as the browser's speed. V4-26 measured it on seven origins: it is 8–30× slow exactly where `isSecureContext` is false, including a non-localhost name that resolves to 127.0.0.1, and at Edge's speed where it is true. A deployment is HTTPS |
+
+### Revision v1.14 (V4-58)
+
+From the defensive review of the reference site:
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 49 | 14 | The site's session obligations stated: a new session id on a successful login, a signup and a recovery, the old id dropped; `__Host-` and `Secure` on the cookie behind TLS; a bounded session table (idle expiry, removal at logout, a cap on sessions nobody has logged into) | §14 named the cookie's attributes and stopped there. The reference site kept the session id across a login (finding **F131**, session fixation), and its session table had no bound (finding **F132**) |

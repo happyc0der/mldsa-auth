@@ -11499,3 +11499,97 @@ tools/README.md says v80 LP1–LP6. The register is 130 findings, F0–F130.
   - the audit table's separators;
   - `git diff --check`;
   - `sh -n` on `authd_e2e.sh`.
+
+## V4-58 — the reference site's sessions: a new id at each change of privilege, and a bounded table (F131, F132; the owner's go)
+
+### The findings
+
+The defensive review of 2026-10-21 found two defects in
+`examples/site-node/server.mjs`. The runbook offers it as the site to deploy.
+Both were reproduced locally, and both waited for the owner, who said go.
+
+- **F131 (Medium), session fixation.** A session kept its id across a login,
+  a signup and a recovery. Behind TLS, the cookie had no `__Host-` prefix.
+- **F132 (Medium), no bound on the session table.** Every cookieless request
+  added an entry, and none was ever removed.
+
+### The fix
+
+- **A new id at a login, a signup and a recovery.** `rotate()` drops the old
+  id with everything it held, and issues a new one.
+- **`__Host-sid` under `--secure`.** Only that exact cookie name is accepted
+  there. Plain `sid` is kept for tests over http, since the prefix needs
+  `Secure`.
+- **A bounded table:**
+  - idle sessions expire (30 minutes by default);
+  - a logout removes its session and clears the cookie;
+  - sessions with nobody logged in are capped (10,000 by default), least
+    recently used evicted first;
+  - logged-in sessions are never evicted.
+  - The table is kept in least-recently-used order, so expired entries are
+    dropped from its front for free.
+- **Spec and runbook.** Spec §14 states these obligations (erratum 49,
+  revision v1.14), and the runbook's rules for writing your own site grow
+  from four to six.
+
+### The test: `site_sessions` (24 checks)
+
+It runs against the real daemon and the real wasm client:
+
+- a session id issued before a login, a signup or a recovery holds nothing
+  afterwards;
+- the cookie's name and attributes, with and without `--secure`;
+- logout removes the session and clears the cookie;
+- 1,000 cookieless requests leave the table at its cap, with a logged-in
+  session still valid;
+- an idle session expires.
+
+It registers only in trees built with the wasm module, so those tiers count
+one more test: 56 with a WebAssembly tree, 58 with a browser.
+
+**Against the old site,** the session-id and cookie checks fail by name.
+**`browser_e2e`** passes in Edge with the fix (31 checks): signup, login,
+recovery onto a fresh profile, and the recovered device's login.
+
+### The controls: nine hand controls
+
+The mutation runner proves each mutant reached the compiled binaries, so it
+cannot mutate JavaScript. Each control below undid one part of the fix, ran
+`site_sessions`, required a nonzero exit and the named check, and restored
+the file, checked by sha256:
+
+| ID | Undone | Verdict |
+|---|---|---|
+| HC1 | the new id at login | KILLED (9 named) |
+| HC2 | the new id at signup | KILLED (2 named) |
+| HC3 | the new id at recovery | KILLED (3 named) |
+| HC4 | dropping the old id | KILLED (1 named) |
+| HC5 | `__Host-sid` behind TLS | KILLED (2 named) |
+| HC6 | the cap | KILLED (1 named) |
+| HC7 | sparing logged-in sessions | KILLED (1 named) |
+| HC8 | idle expiry | KILLED (1 named) |
+| HC9 | removal at logout | KILLED (2 named) |
+
+Step-up authentication before minting recovery codes was not added. That is
+a design change beyond these findings, and it is offered to the owner.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full.** The
+  fingerprints equal V4-57's, as they should: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `0e9ca24f16440127` | 58/58, `site_sessions` and `doc_test_counts` among them |
+  | `build-bench-p` | `7e66c1eb191ca8a5` | 53/53 |
+  | ASan | `579580adc52abc7e` | 58/58, instrumentation in all 43 |
+  | UBSan | `79e1f06bd2826649` | 58/58; one runtime error, the planted canary |
+  | fuzz | `6d73652afe730f62` | 36/36, and `test_authd_cli`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **Gates:**
+  - anchors (406; unchanged);
+  - the claim map (132 findings, 49 errata);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `node --check` on the site and the test.
