@@ -1,6 +1,8 @@
 #include "store.h"
 
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "schema.sql.h"
 
 #include <sqlite3.h>
@@ -107,9 +109,19 @@ static int store_commit_fault_fire(void)
     return 0;
 }
 #define STORE_COMMIT_FAULT() (store_commit_fault_fire())
+
+/* V4-59: an observer called between VACUUM INTO and the chmod after it, so a
+ * test can read the backup's mode at the one moment the copy is complete and
+ * nothing has tightened it yet -- the window F24's residue was about. */
+typedef void (*store_backup_observer_t)(const char *dest_path);
+static store_backup_observer_t g_store_backup_observer = NULL;
+void store_fault_arm_backup_observer(store_backup_observer_t fn);
+void store_fault_arm_backup_observer(store_backup_observer_t fn) { g_store_backup_observer = fn; }
+#define STORE_BACKUP_OBSERVE(p) do { if (g_store_backup_observer != NULL) { g_store_backup_observer(p); } } while (0)
 #else
 #define STORE_FAULT_POINT() (0)
 #define STORE_COMMIT_FAULT() (0)
+#define STORE_BACKUP_OBSERVE(p) ((void)0)
 #endif
 
 struct store {
@@ -2387,21 +2399,31 @@ store_status_t store_audit_tail(const store_t *s, size_t n, store_audit_fn fn, v
 store_status_t store_backup(store_t *s, const char *dest_path)
 {
     if (s == NULL || dest_path == NULL) { return STORE_ERR_ARG; }
-    /* VACUUM INTO writes a consistent, compacted snapshot and refuses to
-     * overwrite an existing file, which is exactly the no-clobber rule the
-     * key files follow. The destination is bound as a parameter so a path
-     * containing a quote cannot alter the statement (SQLITE_DQS=0 as well). */
+    /* V4-59 (F24's residue): the destination is created here, mode 0600,
+     * before VACUUM INTO writes a byte. VACUUM INTO creates its file under the
+     * process's umask, and the chmod below came only after the copy, so for
+     * the length of the copy -- and for good if it failed -- the copy had the
+     * umask's mode. O_EXCL keeps the no-clobber rule, O_NOFOLLOW refuses a
+     * symlink at the path, and SQLite accepts an existing EMPTY file. */
+    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */
+    (void)close(fd);
+    /* VACUUM INTO writes a consistent, compacted snapshot. The destination is
+     * bound as a parameter so a path containing a quote cannot alter the
+     * statement (SQLITE_DQS=0 as well). */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db, "VACUUM INTO ?1;", -1, &st, NULL) != SQLITE_OK) {
+        (void)unlink(dest_path);
         return STORE_ERR_DB;
     }
     store_status_t r = STORE_OK;
     if (sqlite3_bind_text(st, 1, dest_path, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else if (sqlite3_step(st) != SQLITE_DONE) {
-        r = STORE_ERR_IO;   /* destination exists, or is not writable */
+        r = STORE_ERR_IO;   /* the destination is not writable */
     }
     sqlite3_finalize(st);
+    STORE_BACKUP_OBSERVE(dest_path);
     /* VACUUM INTO creates the destination with the DAEMON'S umask, which is
      * whatever the service manager set -- 0022 in an interactive shell. A
      * backup is a byte-for-byte copy of the credential database: token hashes,
@@ -2410,6 +2432,11 @@ store_status_t store_backup(store_t *s, const char *dest_path)
      * and looking at the file, not by reading the code. */
     if (r == STORE_OK && chmod(dest_path, 0600) != 0) {
         r = STORE_ERR_IO;
+    }
+    /* A failed backup leaves nothing behind. The file is this call's own:
+     * O_EXCL created it above, so nothing else's is removed. */
+    if (r != STORE_OK) {
+        (void)unlink(dest_path);
     }
     return r;
 }

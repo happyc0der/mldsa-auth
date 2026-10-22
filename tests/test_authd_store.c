@@ -32,6 +32,18 @@ void store_fault_arm_write(int n_writes);   /* test-only: fail the n-th writing 
 int store_fault_arm_write_left(void);       /* -1 once that fault has fired */
 void store_fault_arm_commit(int n_commits); /* test-only: fail the n-th COMMIT, transaction left open (V4-23) */
 int store_fault_arm_commit_left(void);      /* -1 once that fault has fired */
+typedef void (*store_backup_observer_t)(const char *dest_path);
+void store_fault_arm_backup_observer(store_backup_observer_t fn); /* test-only (V4-59) */
+
+/* V4-59: what the backup's file looked like the moment VACUUM INTO finished. */
+static int g_bk_seen = 0;
+static mode_t g_bk_mode = 0;
+static void bk_observe(const char *dest)
+{
+    struct stat st;
+    g_bk_seen = (lstat(dest, &st) == 0) ? 1 : -1;
+    g_bk_mode = st.st_mode & 07777;
+}
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -1217,8 +1229,50 @@ int main(void)
         char bak[512];
         path(bak, sizeof bak, "backup.sqlite3");
         (void)unlink(bak);
+        /* V4-59 (F24's residue): the copy is never more open than 0600, not
+         * even for the length of the copy. Under a umask of 022, VACUUM INTO
+         * alone would create it 0644; the observer looks at the file between
+         * the copy and the chmod after it. */
+        const mode_t um = umask(022);
+        store_fault_arm_backup_observer(bk_observe);
+        g_bk_seen = 0;
         CHECK(store_backup(s, bak) == STORE_OK, "backup writes a snapshot");
+        store_fault_arm_backup_observer(NULL);
+        (void)umask(um);
+        CHECK(g_bk_seen == 1, "backup: the observer saw the finished copy (the check below is not vacuous)");
+        CHECK(g_bk_seen == 1 && g_bk_mode == 0600,
+              "backup: the copy is 0600 the moment VACUUM INTO finishes, under a umask of 022 (F24)");
+        { struct stat st;
+          CHECK(stat(bak, &st) == 0 && (st.st_mode & 07777) == 0600, "backup: ...and 0600 when it returns"); }
         CHECK(store_backup(s, bak) == STORE_ERR_IO, "backup refuses to overwrite an existing file");
+        { struct stat st;
+          store_t *chk = NULL;
+          CHECK(stat(bak, &st) == 0 && st.st_size > 0 && store_open(bak, KEK, &chk) == STORE_OK,
+                "backup: the refused second backup left the first one whole");
+          if (chk != NULL) { store_close(chk); } }
+
+        /* A backup that fails leaves no file: the copy it began is its own. */
+        { char bad[512];
+          path(bad, sizeof bad, "backup-failed.sqlite3");
+          (void)unlink(bad);
+          store_fault_arm_write(0);                /* VACUUM INTO is a writing statement */
+          const store_status_t r = store_backup(s, bad);
+          const int fired = store_fault_arm_write_left() == -1;
+          store_fault_arm_write(-1);
+          struct stat st;
+          CHECK(fired && r != STORE_OK && lstat(bad, &st) != 0,
+                "backup: a backup that fails leaves no file behind (F24)"); }
+
+        /* A symlink at the path is refused, and its target is not created. */
+        { char lnk[512], tgt[512];
+          path(lnk, sizeof lnk, "backup-link.sqlite3");
+          path(tgt, sizeof tgt, "backup-target.sqlite3");
+          (void)unlink(lnk); (void)unlink(tgt);
+          struct stat st;
+          CHECK(symlink(tgt, lnk) == 0 && store_backup(s, lnk) == STORE_ERR_IO &&
+                lstat(tgt, &st) != 0 && lstat(lnk, &st) == 0 && S_ISLNK(st.st_mode),
+                "backup: a symlink at the path is refused, and nothing is created at its target");
+          (void)unlink(lnk); }
 
         /* mutate the live store AFTER the snapshot */
         CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK, "bk: revoke after backup");
