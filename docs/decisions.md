@@ -11804,3 +11804,86 @@ The register is unchanged at 133 findings, with F122 and F123 now closed.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-61 — the daemon's start-up diagnostics agree, F126 (loop iteration 36; the owner's go)
+
+### The decisions
+
+F126 had waited since V4-51 for the owner: three start-up diagnostics
+disagreed with each other. The owner said fix it, and the choices are:
+
+- **(a) Exit codes.** A file the configuration names that cannot be used as
+  configured exits **3**, a configuration error. That covers the server key
+  and its passphrase file alike: missing, with unsafe modes, malformed, or
+  not opened by the passphrase. An internal failure (`*_ERR_CRYPTO`, an
+  allocation) exits **1**. Before, a refused passphrase file exited 3 and a
+  refused server key 1, though the operator fixes both the same way. Spec
+  §13 says so now (erratum 51), and so does the runbook's table.
+- **(b) One refusal, one name.** The passphrase reader's permissions refusal
+  is `unsafe-permissions`, the key-file reader's name. It was
+  `permissions (mode must be 0600)`. The status names are not enumerated in
+  the spec, so no vocabulary changes.
+- **(c) A damaged store is not a broken audit chain.** A stored value of the
+  wrong shape is the new `STORE_ERR_DAMAGED`, named `store-corrupt`. That
+  covers `store_id`, `decoy_pk`, a recovery hash and a public key.
+  `STORE_ERR_CORRUPT` keeps the meaning `store.h` always gave it, the audit
+  chain's verification. The audit-chain lines did not move, so the
+  constant-time inventory and v59's GB10 anchor, which quote them, are
+  untouched. The new value is appended to the enum, so no existing value
+  changes.
+
+### The tests
+
+- **`authd_e2e`.** The start-up legs now pin each refusal's exit code: 3
+  for the group-readable passphrase file, 3 for the group-readable server
+  key, 3 for the wrong passphrase, and 1 for a store that is not a database.
+  The passphrase leg expects `unsafe-permissions`.
+- **`test_authd_store` (292 checks).** The two damaged-meta cases expect
+  `STORE_ERR_DAMAGED`. A new check pins both names: `store-corrupt` for a
+  damaged value, and `audit-chain-corrupt` for the chain alone.
+- **The texts that quote these checks moved with them:** v77's SD4 and SD5
+  expectations, and the claim map's two citations.
+
+### The controls: campaign v86 (DG1–DG5), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| DG1 | a refused passphrase file exits 1 | KILLED (1 named), `authd_e2e` |
+| DG2 | a refused server key exits 1 (the behaviour before V4-61) | KILLED (1 named), `authd_e2e` |
+| DG3 | the passphrase reader's old name | KILLED (1 named), `authd_e2e` |
+| DG4 | a damaged store value named `audit-chain-corrupt` | KILLED (2 named), `test_authd_store` |
+| DG5 | a short `store_id` reported as the audit chain's status | KILLED (2 named), `test_authd_store` |
+
+Every source was restored clean, with no residue. DG1–DG3 are killed by
+`authd_e2e`'s start-up legs, which run on macOS too, so this local run covers
+all five.
+
+### The counts
+
+378 mutations in 56 campaigns, 418 anchors; all 16 stated counts restated.
+v86 is in nightly.yml's matrix, which after the rebase onto V4-60 lists v85
+and v86 both, and tools/README.md's campaign list names it. The register is
+unchanged at 133 findings, with F126 fixed. §20 lists 51 errata.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58 |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and `test_authd_store`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `authd_main.c`,
+  `authd_secret.c`, `store.c` and `test_authd_store.c` are clean. Adding an
+  enum value raised no `-Wswitch` anywhere.
+- **Gates:**
+  - anchors (418; 16 counts agreeing);
+  - the claim map (133 findings, 51 errata);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `sh -n` on `authd_e2e.sh`.

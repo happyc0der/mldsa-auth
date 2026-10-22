@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 133 findings (F0–F133), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 50 errata, each
+3. The two specifications. The deployment spec's §20 lists 51 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 373 committed defects in 55 campaigns, each of which must be
+- **Mutations**: 378 committed defects in 56 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -467,6 +467,12 @@ V4-60 fixed **F123** (Low): `REVOKE-TOKENS user= handle=` now revokes only
 that user's tokens on that handle, and a handle belonging to another user
 revokes nothing (`OK count=0`). Erratum 50 says so in §8. With it, F122's
 last untested check is covered, and F122 is closed.
+
+V4-61 fixed **F126**: the daemon's start-up diagnostics now agree. A file the
+configuration names that cannot be used exits 3, whichever file it is
+(erratum 51). The passphrase reader names its permissions refusal
+`unsafe-permissions`, like the key-file reader. A damaged store value is
+`store-corrupt`; `audit-chain-corrupt` now means only the audit chain.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
