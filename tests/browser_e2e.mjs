@@ -216,7 +216,12 @@ try {
   check(t.seal > 0 && t.login > 0, 'timings: measured in the browser');
 
   // ---- recovery codes, then a fresh device recovers ----
-  r = await act(b, 'account.html', {}, 'codes');
+  // V4-62: minting codes needs a login, not only the session -- so without the
+  // passphrase the page cannot get them, and with it, it can.
+  r = await act(b, 'account.html', { passphrase: 'not the passphrase at all' }, 'codes');
+  check(r.result !== 'ok' && (await b.eval("document.getElementById('codelist').textContent")) === '',
+        'recovery: without the passphrase, a logged-in page cannot mint recovery codes');
+  r = await act(b, 'account.html', { passphrase: PASS }, 'codes');
   const codes = (await b.eval("document.getElementById('codelist').textContent")).split('\n').filter(Boolean);
   check(r.result === 'ok' && codes.length === 5, 'recovery: five codes are shown once');
 

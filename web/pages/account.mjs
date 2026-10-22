@@ -1,4 +1,4 @@
-import { boot, session, loginParams, post, report, val } from './common.mjs';
+import { boot, session, loginParams, post, report, val, b64url } from './common.mjs';
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
@@ -16,7 +16,14 @@ document.getElementById('rotate').addEventListener('click', async () => {
 });
 document.getElementById('codes').addEventListener('click', async () => {
   try {
-    const { codes } = await post('/api/recovery-codes');
+    if (!me) { throw new Error('log in first'); }
+    // V4-62: minting codes needs a login, not only this session -- log in
+    // again with this device's key and the passphrase, and send that code.
+    const sess = await session();
+    const s = await flows.login(client, store, loginParams(sess, me.handle, val('passphrase')));
+    const code = b64url(s.code);
+    await s.close();
+    const { codes } = await post('/api/recovery-codes', { code });
     document.getElementById('codelist').textContent = codes.join('\n');
     report(true, 'Write these down now: they are shown once and cannot be retrieved');
   } catch (e) { report(false, e.message); }
