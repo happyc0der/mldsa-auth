@@ -11593,3 +11593,36 @@ a design change beyond these findings, and it is offered to the owner.
   - the audit table's separators;
   - `git diff --check`;
   - `node --check` on the site and the test.
+
+## V4-57 and V4-58 — CI on the branches and the nightly bring-up
+
+**V4-50..56 landed first.** The final nightly 39708403120 passed 68/68, with
+366/366 killed in 53 campaigns. The final-tree CI 39708422415 passed 14/14.
+main went from `fd44fe7` to `2e30443`, 13 commits, whose tree equals the
+tested revert's (`57bd54f`). main's CI 39724488410 passed 14/14. The branches
+v4-50..v4-56 were then deleted, each checked as contained in main first.
+
+### CI on the branches (14 jobs each, all green)
+
+| Step | Head | Run |
+|---|---|---|
+| V4-57 | `e1261a5` | 39718693313 |
+| V4-58 | `0b86a5d` | 39722865499 |
+
+V4-57's run includes the Linux end-to-end legs. On Linux a second daemon on
+the same configuration also fails at its TCP bind, and leaves the running
+one reachable.
+
+### The control nightly
+
+- **How it was built.** `ad13755` is `57bd54f` with V4-57 and V4-58
+  cherry-picked (V4-58's tree, `0b86a5d`), plus v80 LP6's expectation
+  rotted. spec_v80's sha256 before was `4d9f7a250300f2b9`.
+- **Run 39724503643** was red on exactly `mutations · v80`, 67/68:
+  - LP6 **SURVIVED(BAD)**, naming the rotted text; LP1–LP5 were killed by
+    name;
+  - 367 rows in 53 campaigns: 366 killed and 1 survived, the control;
+  - every fuzz job green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
