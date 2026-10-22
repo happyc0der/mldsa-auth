@@ -12033,3 +12033,37 @@ from reading the code.
   - the audit table's separators;
   - `git diff --check`;
   - `node --check` on both files.
+
+## V4-59 to V4-63 — CI on the branches and the nightly bring-up
+
+**V4-59 to V4-61 are the owner's three ("1, 2 and 3"). V4-62 is the owner's
+decision on recovery codes. V4-63 fixes the false failure V4-61's CI hit.**
+The control nightly ran on V4-59..61, with one v84 expectation rotted.
+V4-62 and V4-63 add no campaign and join the landing, as V4-43/44 and V4-56
+did. The final nightly is the first on their tree.
+
+### CI on the branches
+
+| Step | Head | Run | Result |
+|---|---|---|---|
+| V4-59 | `28c5e3e` | 39796583899 | run success; two job records left `in_progress`, every step complete, as main's green run |
+| V4-60 | `389d2ae` | 39806804775 | 14/14 |
+| V4-61 | `561b43b` | 39820109257 | 13/14: `browser_e2e` hung in its teardown (F134); the job re-run unchanged, 14/14 |
+| V4-62 | `ba209e4` | 39837758515 | run success; the wasm job's record left `in_progress`, its tests 7/7 (`browser_e2e` 16.6 s) |
+| V4-63 | `f7b9431` | 39844098645 | 14/14 |
+
+### The control nightly
+
+- **How it was built.** `ddca698` is `569e0e3` with V4-59..61 cherry-picked
+  (V4-61's tree, `561b43b`), plus v84 BK1's expectation rotted. spec_v84's
+  sha256 before was `6e5250c0f1064497`.
+- **Run 39820151202** was red on exactly `mutations · v84`, 70/71:
+  - BK1 **SURVIVED(BAD)**, naming the rotted text;
+  - 378 rows in 56 campaigns: 377 killed and 1 survived, the control;
+  - v84's other three, v85 RT1–RT2 and v86 DG1–DG5 (the start-up exit codes
+    and names among them) all killed on Linux;
+  - v49b's re-authored B1 and v77's renamed SD4/SD5 killed too;
+  - every fuzz job green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
