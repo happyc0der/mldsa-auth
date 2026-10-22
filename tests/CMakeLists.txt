@@ -441,6 +441,14 @@ if(MLDSA_WASM_DIR)
             $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
             ${PROJECT_SOURCE_DIR}/web/client)
   set_tests_properties(web_flows PROPERTIES TIMEOUT 240)
+  # V4-58 (audit F131, F132): the reference site's session table -- a new id at
+  # login, signup and recovery; __Host-sid behind TLS; a bounded table -- run
+  # as the attacker would, against the real daemon and the real wasm client.
+  add_test(NAME site_sessions
+    COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/site_sessions.mjs
+            $<TARGET_FILE:authd_wasm_fixture> ${MLDSA_WASM_DIR}/web/mldsa_client.mjs
+            ${PROJECT_SOURCE_DIR})
+  set_tests_properties(site_sessions PROPERTIES TIMEOUT 180)
 
   # V4-13c: the pages, the reference site and the module in a REAL browser
   # (headless Chromium over the DevTools protocol, tests/browser/cdp.mjs).
