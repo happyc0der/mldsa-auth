@@ -30,7 +30,10 @@
  *     and EXCHANGE must present it (Req 5), so a code cannot be replayed into
  *     somebody else's session (login-CSRF).
  *   * EVERY POST MUST COME FROM THIS ORIGIN (the Origin header), on top of a
- *     SameSite=Strict, HttpOnly session cookie.
+ *     SameSite=Strict, HttpOnly session cookie -- `__Host-sid` behind TLS.
+ *   * A NEW SESSION ID AT EVERY CHANGE OF PRIVILEGE (a login, a signup, a
+ *     recovery), and a BOUNDED session table (V4-58, audit F131 and F132; see
+ *     the table's own comment below).
  *   * A STRICT CSP on every response. `'wasm-unsafe-eval'` is required for any
  *     page that compiles WebAssembly and allows nothing else; there is no
  *     inline script anywhere, and no eval.
@@ -80,7 +83,7 @@ function args(argv) {
 }
 
 export async function startSite(opt) {
-  const sessions = new Map();       // sid -> { state, user, token, signupUser, ticket }
+  const sessions = new Map();       // sid -> { sid, seen, state, user, token, signupUser, ticket }, least recently used first
   const csp = opt.csp ?? CSP;
   const serverPubHex = Buffer.from(opt.serverPub).toString('hex');
   // Static roots: the pages, the transport, the wasm module. Nothing else is served.
@@ -96,14 +99,76 @@ export async function startSite(opt) {
     try { return await fn(a); } finally { a.close(); }
   };
 
-  const session = (req, res) => {
-    const m = /(?:^|;\s*)sid=([0-9a-f]{64})/.exec(req.headers.cookie || '');
-    if (m && sessions.has(m[1])) { return sessions.get(m[1]); }
+  // The session table (V4-58, audit F131 and F132). What a site's sessions need,
+  // which this one lacked:
+  //   * A NEW ID AT EVERY CHANGE OF PRIVILEGE -- a login, a signup, a recovery
+  //     -- with the old id dropped (session fixation, F131).
+  //   * `__Host-sid` behind TLS: the prefix makes a browser accept the cookie
+  //     only if it is Secure, host-only and Path=/. (Plain `sid` without
+  //     --secure: the prefix needs Secure, and tests run over http.)
+  //   * A BOUNDED TABLE (F132). An idle session expires, a logout removes its
+  //     own, and sessions nobody has logged into are capped, the least
+  //     recently used evicted first; logged-in sessions are never evicted. A
+  //     visitor whose pre-login session is evicted under load simply starts
+  //     the login again. A deployment also rate-limits per client in front of
+  //     the site.
+  const COOKIE = opt.secure ? '__Host-sid' : 'sid';
+  const COOKIE_RE = new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})(?=;|$)`);
+  const IDLE_MS = opt.sessionIdleMs ?? 30 * 60 * 1000;
+  const MAX_ANON = opt.maxAnonSessions ?? 10000;
+  let anon = 0;                     // sessions with no token: the ones the cap bounds
+
+  const drop = (s) => {
+    if (sessions.delete(s.sid) && !s.token) { anon--; }
+  };
+  const create = (res) => {
+    const now = Date.now();
+    // The table is in least-recently-used order, so the expired ones are at the
+    // front: dropping them costs nothing per request that is not reclaimed.
+    for (const old of sessions.values()) {
+      if (now - old.seen <= IDLE_MS) { break; }
+      drop(old);
+    }
+    if (anon >= MAX_ANON) {
+      for (const old of sessions.values()) {
+        if (anon < MAX_ANON) { break; }
+        if (!old.token) { drop(old); }
+      }
+    }
     const sid = randomBytes(32).toString('hex');
-    const s = { sid, state: null, user: null, token: null, signupUser: null, ticket: null };
+    const s = { sid, seen: now, state: null, user: null, token: null, signupUser: null, ticket: null };
     sessions.set(sid, s);
-    res.setHeader('Set-Cookie', `sid=${sid}; HttpOnly; SameSite=Strict; Path=/${opt.secure ? '; Secure' : ''}`);
+    anon++;
+    res.setHeader('Set-Cookie', `${COOKIE}=${sid}; HttpOnly; SameSite=Strict; Path=/${opt.secure ? '; Secure' : ''}`);
     return s;
+  };
+  const session = (req, res) => {
+    const m = COOKIE_RE.exec(req.headers.cookie || '');
+    const s = m ? sessions.get(m[1]) : undefined;
+    if (s && Date.now() - s.seen <= IDLE_MS) {
+      sessions.delete(s.sid);         // to the back: most recently used
+      sessions.set(s.sid, s);
+      s.seen = Date.now();
+      return s;
+    }
+    if (s) { drop(s); }
+    return create(res);
+  };
+  // A new id for what the session is about to become; the old id is dropped
+  // with everything it held (F131).
+  const rotate = (res, s) => {
+    drop(s);
+    return create(res);
+  };
+  const authenticate = (s, user, token) => {
+    if (!s.token) { anon--; }
+    s.user = user;
+    s.token = token;
+  };
+  // Forgets the session, and tells the browser to forget its cookie.
+  const end = (res, s) => {
+    drop(s);
+    res.setHeader('Set-Cookie', `${COOKIE}=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/${opt.secure ? '; Secure' : ''}`);
   };
 
   const send = (res, code, body, type = 'application/json; charset=utf-8') => {
@@ -155,18 +220,18 @@ export async function startSite(opt) {
       s.state = null;               // one state, one login
       try {
         const r = await withAuthd((a) => exchange(a, code, state));
-        s.user = r.user; s.token = r.token;
+        authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
       } catch (e) { send(res, 403, { error: e.code || 'exchange-failed' }); }
     },
     'GET /api/me': async (req, res, s) => {
       if (!s.token) { return send(res, 401, { error: 'not logged in' }); }
       try { const r = await withAuthd((a) => verify(a, s.token)); send(res, 200, { user: r.user, handle: r.handle }); }
-      catch (e) { s.token = null; s.user = null; send(res, 401, { error: e.code || 'verify-failed' }); }
+      catch (e) { end(res, s); send(res, 401, { error: e.code || 'verify-failed' }); }
     },
     'POST /api/logout': async (req, res, s) => {
       if (s.token) { try { await withAuthd((a) => logout(a, s.token)); } catch { /* already gone */ } }
-      s.token = null; s.user = null;
+      end(res, s);
       send(res, 200, { ok: true });
     },
     // The site's own account check. Here: an invite secret. A real site uses
@@ -176,7 +241,7 @@ export async function startSite(opt) {
       if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || invite !== opt.invite) {
         return send(res, 403, { error: 'signup refused' });
       }
-      s.signupUser = user;
+      rotate(res, s).signupUser = user;                    // F131: the account a planted id must not be able to claim
       send(res, 200, { user });
     },
     // The page generated the key; the site enrolls its PUBLIC half for the
@@ -203,7 +268,7 @@ export async function startSite(opt) {
       const { user, code } = await body(req);
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code));
-        s.ticket = { user, ticket: t.ticket };      // the ticket stays on the server
+        rotate(res, s).ticket = { user, ticket: t.ticket };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
       } catch (e) { send(res, 403, { error: e.code || 'recover-failed' }); }
     },
