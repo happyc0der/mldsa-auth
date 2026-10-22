@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 133 findings (F0–F133), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 49 errata, each
+3. The two specifications. The deployment spec's §20 lists 50 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 371 committed defects in 54 campaigns, each of which must be
+- **Mutations**: 373 committed defects in 55 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -91,7 +91,7 @@ page said only F91 until V4-38, F120):
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure ([coverage.md](../v4/coverage.md)), and the security checks it found untested (F122) are covered, all but `REVOKE-TOKENS handle=`, whose meaning waits on the owner's decision on F123. The wasm build is not measured |
+| F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure ([coverage.md](../v4/coverage.md)), and the security checks it found untested (F122) are all covered, the last (`REVOKE-TOKENS handle=`) in V4-60. The wasm build is not measured |
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
 
@@ -462,6 +462,11 @@ umask's mode until the copy finished. The backup file is now created 0600
 before a byte is copied, and removed if the backup fails. A test-only observer
 reads the mode between the copy and the chmod, and campaign v84 shows each
 part caught.
+
+V4-60 fixed **F123** (Low): `REVOKE-TOKENS user= handle=` now revokes only
+that user's tokens on that handle, and a handle belonging to another user
+revokes nothing (`OK count=0`). Erratum 50 says so in §8. With it, F122's
+last untested check is covered, and F122 is closed.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

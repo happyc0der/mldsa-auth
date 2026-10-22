@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.14, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58 errata)
+# mldsa-authd — deployment specification (v1.15, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -465,6 +465,10 @@ is a build failure, and so is a code defined here that nothing emits.
 | `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) / `ERR code=invalid\|user-disabled\|not-permitted` |
 | `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted` |
 | `PING` | `OK version= schema= uptime=` |
+
+`REVOKE-TOKENS user= handle=` revokes only `user`'s tokens on `handle`: a
+handle that belongs to another user revokes nothing and answers `OK count=0`
+(erratum 50). Without `handle=` it revokes every token of `user`.
 
 `ENROLL`'s `ticket=` is **required** when `via=recovery` and **refused** when
 `via=site`: a request carrying a ticket that would be ignored is `malformed`,
@@ -1349,3 +1353,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 49 | 14 | The site's session obligations stated: a new session id on a successful login, a signup and a recovery, the old id dropped; `__Host-` and `Secure` on the cookie behind TLS; a bounded session table (idle expiry, removal at logout, a cap on sessions nobody has logged into) | §14 named the cookie's attributes and stopped there. The reference site kept the session id across a login (finding **F131**, session fixation), and its session table had no bound (finding **F132**) |
+
+### Revision v1.15 (V4-60)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 50 | 8 | `REVOKE-TOKENS user= handle=` scoped to the user: only `user`'s tokens on `handle` are revoked, and a handle that belongs to another user answers `OK count=0`. No new error code | §8 gave only the request and `OK count=`, and the daemon deleted every token on the handle whatever `user=` named (finding **F123**, fixed; the owner's decision) |

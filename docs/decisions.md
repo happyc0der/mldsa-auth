@@ -11719,3 +11719,88 @@ The register is 133 findings, F0–F133.
   - the audit table's separators, after F133's escaped `|`s (the F105 trap);
   - `git diff --check`;
   - nightly.yml's matrix against the spec files.
+
+## V4-60 — REVOKE-TOKENS user= handle= is scoped to the user, F123 (loop iteration 35; the owner's go)
+
+### The decision
+
+F123 had waited since V4-40 for the owner to say what `REVOKE-TOKENS user=
+handle=` means. The daemon validated `user=`, then deleted every token on
+`handle=` whoever it belonged to.
+
+The owner approved the fix the register proposed: the delete is scoped to
+both. A handle that belongs to another user revokes nothing and answers
+`OK count=0`. There is no new error code, so §8's vocabulary is unchanged,
+following the owner's preference in F48. Erratum 50 adds one sentence to §8.
+
+### The change
+
+`store_delete_tokens_for_handle` now takes the user as well, and deletes
+`WHERE handle=?1 AND user_id=?2`. The local API passes `user=` through. The
+function has no other production caller.
+
+### The tests
+
+- **`test_authd_store` (291 checks).** Another user with this handle deletes
+  nothing, and the token still verifies. The handle's own user deletes it,
+  with the count reported.
+- **`test_authd_localapi` (303 checks), new `test_revoke_tokens_scope`.**
+  Over the site socket: `REVOKE-TOKENS user=u2 handle=<u1's>` answers
+  `OK count=0` and u1's token still verifies. The same request with `user=u1`
+  answers `OK count=1` (the canary), and the token is gone.
+
+This is also F122's item 3, the last of its five untested security checks,
+so F122 is closed. F5 stays open only for the unmeasured wasm build.
+
+### The controls: campaign v85 (RT1–RT2), local, macOS ASan
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| RT1 | the user condition neutralised (the behaviour before V4-60) | KILLED (8 named, across both tests) |
+| RT2 | the handle bound where the user belongs | KILLED (8 named, across both tests) |
+
+Every source was restored clean, with no residue. RT1 is the gap
+demonstration. The new tests cannot be built against the old code, whose
+function took no user.
+
+**Three problems in the campaign's own spec, fixed before it ran:**
+- **The test regex.** First written with `|`, which splits a spec line and
+  left both lines unnamed; then with `{4,}`, which CMake's regex dialect does
+  not support, so `ctest -R` matched nothing. It is now
+  `^test_authd_[sl][a-z][a-z][a-z][a-z][a-z]*$`, which `ctest -N` shows
+  selecting exactly `test_authd_store` and `test_authd_localapi`.
+- **RT2's anchor.** The bind line alone occurs five times in `store.c`. The
+  gate called it ROTTED; an earlier grep for chosen words had hidden that.
+  RT2 now anchors on the block from this function's `DELETE` through its
+  second bind, which occurs once.
+- **The first run was stopped in its preflight** when RT2's anchor was found.
+  No mutation had been applied. Afterwards there was no runner process and
+  no `MUTATION` marker in any source.
+
+### The counts
+
+373 mutations in 55 campaigns, 413 anchors; all 16 stated counts restated.
+v85 is in nightly.yml's matrix, and tools/README.md's campaign list names it.
+The register is unchanged at 133 findings, with F122 and F123 now closed.
+§20 lists 50 errata.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `522b887acb309040` | 58/58 |
+  | `build-bench-p` | `6f4b7c465ef1e18c` | 53/53 |
+  | ASan | `62a7787249550bd1` | 58/58, instrumentation in all 43 |
+  | UBSan | `727c4867bae8be24` | 58/58; one runtime error, the planted canary |
+  | fuzz | `f6e12b6fc1e92bad` | 36/36, and `test_authd_localapi`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `store.c`,
+  `localapi.c`, `test_authd_store.c` and `test_authd_localapi.c` are clean.
+- **Gates:**
+  - anchors (413; 16 counts agreeing; no rotted anchor);
+  - the claim map (133 findings, 50 errata);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
