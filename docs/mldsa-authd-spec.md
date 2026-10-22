@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.16, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61 errata)
+# mldsa-authd — deployment specification (v1.17, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -884,7 +884,9 @@ put in the WebSocket URL (§7.1), and keeps the token server-side. **On
 success the site issues a new session id** and drops the old one, as it does
 at a signup and a recovery (erratum 49). The site's session table is bounded:
 idle sessions expire, a logout removes its session, and sessions nobody has
-logged into are capped. The code is
+logged into are capped. **New recovery codes need a login, not only a
+session:** the page logs in again and sends that login's code, and the site
+issues codes only if `EXCHANGE` returns the session's own user (erratum 52). The code is
 never in a URL — so never in a proxy log, a `Referer` or history — and the
 token never reaches page script. Pages are served under a CSP of
 `script-src 'self' 'wasm-unsafe-eval'` and `connect-src 'self'` with no inline
@@ -1369,3 +1371,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 51 | 13 | A file the configuration names that cannot be used as configured (the server key or its passphrase file) is a configuration error, 3, whichever file it is; an internal failure is 1 | the daemon exited 3 for a refused passphrase file and 1 for a refused server key, though the operator fixes both the same way (finding **F126**, fixed with the owner's go; its names were aligned in the same step) |
+
+### Revision v1.17 (V4-62)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 52 | 14 | A site issues new recovery codes only on a fresh login by the session's own user, not on a session alone | a session cookie is a weaker credential than the device key and passphrase a login proves; the owner decided that minting codes, which can enroll a new device, needs the stronger one |

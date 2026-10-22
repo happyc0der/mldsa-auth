@@ -11887,3 +11887,75 @@ unchanged at 133 findings, with F126 fixed. §20 lists 51 errata.
   - the audit table's separators;
   - `git diff --check`;
   - `sh -n` on `authd_e2e.sh`.
+
+## V4-62 — new recovery codes need a login, not only a session (loop iteration 37; the owner's decision)
+
+### The decision
+
+V4-58 left one question for the owner: should minting recovery codes on the
+reference site take more than a logged-in session? A session cookie is a
+weaker credential than what a login proves, the device key and the
+passphrase. Recovery codes can enroll a new device. The owner decided: **it
+should require login.**
+
+### The change
+
+- **The site.** `POST /api/recovery-codes` takes the code of a fresh login.
+  The site `EXCHANGE`s it against the state it put in the session, and
+  mints the codes only if the login is the session's own user's. A request
+  without a code is `401 login required`; another user's login is `403`. The
+  session keeps the token it had, and the new login's token is logged out at
+  once.
+- **The account page.** The button logs in again with this device's key and
+  the passphrase field (the one rotation already uses), then sends that
+  code. The field's label now says it is for both.
+- **Spec and runbook.** §14 states the rule (erratum 52, revision v1.17).
+  The runbook's rules for your own site grow to seven.
+
+### The tests
+
+- **`site_sessions` (28 checks):**
+  - a logged-in session alone gets `401`;
+  - a login by another user gets `403`;
+  - the session's own fresh login mints five codes (the canary);
+  - a code replayed after it minted once is refused.
+- **`browser_e2e` in Edge:** with a wrong passphrase the account page mints
+  nothing and the list stays empty; with the right one it mints five codes,
+  and the rest of the recovery flow, onto a fresh profile, still passes.
+
+### The controls: hand controls (the site is JavaScript)
+
+| ID | Undone | Verdict |
+|---|---|---|
+| HC10 | the whole login requirement (the route before V4-62) | KILLED (4 named) |
+| HC11 | the same-user comparison | KILLED (1 named) |
+
+Each `server.mjs` was restored and checked by sha256. V4-58's nine controls
+were re-run against the changed test: all still KILLED.
+
+**Not pinned, and why:**
+- **The state reset** (`s.state = null`): the daemon already makes a login
+  code single-use, so a replay fails without it.
+- **The logout of the new login's token:** the site never stores the token
+  or sends it anywhere, so no test can see it either way.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full.** The
+  fingerprints equal V4-61's, as they should: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `site_sessions` and `browser_e2e` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **Gates:**
+  - the claim map (133 findings, 52 errata);
+  - anchors (418);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `node --check` on the site, the account page and both tests.
