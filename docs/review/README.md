@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 129 findings (F0–F129), with severity, evidence and
+   register](../v4/audit.md). 130 findings (F0–F130), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 57 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 366 committed defects in 53 campaigns, each of which must be
+- **Mutations**: 367 committed defects in 53 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -443,6 +443,13 @@ reports that socket as a hang-up alone. A hang-up with a reply pending is now
 a write attempt, so a peer that has gone is closed at once, and one that only
 half-closed still gets its reply. CI with the fix reverted failed on the three
 macOS jobs and passed on Linux.
+
+V4-57 fixed **F130** (Medium), found by the defensive review. A daemon that
+failed to start deleted socket paths it had never created: a file it had
+just refused to bind over, and, when started a second time on a running
+daemon's configuration, that daemon's three live sockets. The running
+daemon then stayed up but could not be reached. It now removes only what it
+holds, and both cases are tested end to end.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

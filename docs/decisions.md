@@ -11399,3 +11399,103 @@ and 5 named). The final nightly is the first on its tree.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-57 — a failed start no longer deletes socket paths it never created, F130 (the owner's go; defensive review)
+
+### How it was found
+
+After V4-56, the defensive review read the daemon's start-up failure path.
+`listener_failed:` calls `listener_close(&fd, path)` for all three Unix
+sockets, whichever listener actually failed. `listener_close` unlinked `path`
+even when `fd` was -1.
+
+Reproduced against the built daemon before anything was changed:
+
+1. **A regular file at `admin_socket`'s path.** The daemon refused it,
+   correctly (`admin socket ...: path`), and then deleted it. A configuration
+   typo that named a real file would destroy that file; it could be the
+   store.
+2. **A second daemon on the same configuration while the first runs.** The
+   second failed at its TCP bind (`loopback listener: bind`) and unlinked all
+   three of the first daemon's sockets. The first stayed up and logged
+   nothing, but `list-users` over its admin socket went from `OK count=0` to
+   `cannot-connect`: the site, the proxy and the operator were all cut off
+   until it was restarted.
+
+The e2e leg written for the refused file planted it, checked that the other
+sockets were cleaned up, and then removed it itself with `rm -f`. So it could
+never see the daemon delete it first.
+
+Only someone who can run the daemon with its configuration can trigger this,
+so it is not remotely exploitable. But a debugging session or an overlapping
+restart is enough. **Medium**, like F51's availability failure. Per the
+loop's rules it waited for the owner, who said go.
+
+### The fix
+
+`listener_close` does nothing at all, path included, unless it holds a
+listener (`*fd >= 0`). Nothing is lost by that: a listener that fails after
+`bind()` already unlinks its own path inside `listener_open_unix`. And
+`store_open` writes nothing to an existing store, so a second instance does
+not disturb the first one's audit chain either.
+
+### The tests
+
+- **`authd_e2e`:**
+  - The planted file at the admin path must survive, byte for byte.
+  - New leg: a second daemon on the running daemon's own configuration must
+    fail, leave its three sockets in place, and leave its admin socket
+    answering.
+  - On Linux the second bind fails the same way: the loopback listener sets
+    `SO_REUSEADDR` only, never `SO_REUSEPORT`.
+- **`test_authd_ws` (156 checks):** `listener_close` with nothing held leaves
+  a file at the path alone. The canary: a held listener is closed and its
+  socket unlinked.
+
+**Shown against the old code:** with `listener.c` and `listener.h` checked
+out from V4-56, the unit check failed by name. `authd_e2e` failed at "a
+second daemon's failed start removed the running daemon's p.sock (F130)"; it
+stops at its first failure, so the planted-file check, further on, did not
+run. The fixed files were restored and checked by hash.
+
+### The control: campaign v80 LP6, local, macOS ASan
+
+LP6 undoes the fix: the early return never taken, so an unheld path is
+unlinked again.
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| LP1–LP5 | V4-49's listener-path mutants | all KILLED (2, 4, 2, 3 and 2 named) |
+| LP6 | the early return never taken: an unheld path unlinked | KILLED (1 named): "listener_close with no listener held leaves the file at the path alone (F130)" |
+
+Every source was restored clean, with no residue. On Linux, `authd_e2e`'s
+second-daemon leg also catches LP6; v80's spec names `test_authd_ws` only.
+
+### The counts
+
+367 mutations in 53 campaigns, 406 anchors; all 16 stated counts restated.
+tools/README.md says v80 LP1–LP6. The register is 130 findings, F0–F130.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `0e9ca24f16440127` | 57/57 |
+  | `build-bench-p` | `7e66c1eb191ca8a5` | 53/53 |
+  | ASan | `579580adc52abc7e` | 57/57, instrumentation in all 43 |
+  | UBSan | `79e1f06bd2826649` | 57/57; one runtime error, the planted canary |
+  | fuzz | `6d73652afe730f62` | 36/36, and `test_authd_ws`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `listener.c` and
+  `test_authd_ws.c` are clean. `test_authd_ws.c` now includes `<errno.h>`
+  itself: the canary reads `errno`, and glibc does not promise it through the
+  headers the file had.
+- **Gates:**
+  - anchors (406; 16 counts agreeing);
+  - the claim map (130 findings);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `sh -n` on `authd_e2e.sh`.
