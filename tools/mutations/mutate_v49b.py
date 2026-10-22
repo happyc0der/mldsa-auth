@@ -98,8 +98,12 @@ M = {
  # a listener failure leaks the decrypted server key and every allocation
  "R1": (MN, [("        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            fprintf(stderr, \"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            goto listener_failed;\n        }",
               "        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            fprintf(stderr, \"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            free(slots); return 1; /* MUTATION R1: epilogue skipped, server key unwiped */\n        }")]),
- # a store backup is written with the daemon's umask instead of the store's mode
- "B1": (ST, [("    if (r == STORE_OK && chmod(dest_path, 0600) != 0) {\n        r = STORE_ERR_IO;\n    }",
+ # a store backup is written with the daemon's umask instead of the store's mode.
+ # V4-59: the backup is now created 0600 BEFORE the copy and chmod'd after, so
+ # the umask's mode needs both undone (a lone chmod removal is equivalent).
+ "B1": (ST, [("    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);",
+              "    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666); /* MUTATION B1 */"),
+             ("    if (r == STORE_OK && chmod(dest_path, 0600) != 0) {\n        r = STORE_ERR_IO;\n    }",
               "    /* MUTATION B1: the backup keeps the umask's mode */")]),
 }
 path, edits = M[MID]
