@@ -11887,3 +11887,183 @@ unchanged at 133 findings, with F126 fixed. §20 lists 51 errata.
   - the audit table's separators;
   - `git diff --check`;
   - `sh -n` on `authd_e2e.sh`.
+
+## V4-62 — new recovery codes need a login, not only a session (loop iteration 37; the owner's decision)
+
+### The decision
+
+V4-58 left one question for the owner: should minting recovery codes on the
+reference site take more than a logged-in session? A session cookie is a
+weaker credential than what a login proves, the device key and the
+passphrase. Recovery codes can enroll a new device. The owner decided: **it
+should require login.**
+
+### The change
+
+- **The site.** `POST /api/recovery-codes` takes the code of a fresh login.
+  The site `EXCHANGE`s it against the state it put in the session, and
+  mints the codes only if the login is the session's own user's. A request
+  without a code is `401 login required`; another user's login is `403`. The
+  session keeps the token it had, and the new login's token is logged out at
+  once.
+- **The account page.** The button logs in again with this device's key and
+  the passphrase field (the one rotation already uses), then sends that
+  code. The field's label now says it is for both.
+- **Spec and runbook.** §14 states the rule (erratum 52, revision v1.17).
+  The runbook's rules for your own site grow to seven.
+
+### The tests
+
+- **`site_sessions` (28 checks):**
+  - a logged-in session alone gets `401`;
+  - a login by another user gets `403`;
+  - the session's own fresh login mints five codes (the canary);
+  - a code replayed after it minted once is refused.
+- **`browser_e2e` in Edge:** with a wrong passphrase the account page mints
+  nothing and the list stays empty; with the right one it mints five codes,
+  and the rest of the recovery flow, onto a fresh profile, still passes.
+
+### The controls: hand controls (the site is JavaScript)
+
+| ID | Undone | Verdict |
+|---|---|---|
+| HC10 | the whole login requirement (the route before V4-62) | KILLED (4 named) |
+| HC11 | the same-user comparison | KILLED (1 named) |
+
+Each `server.mjs` was restored and checked by sha256. V4-58's nine controls
+were re-run against the changed test: all still KILLED.
+
+**Not pinned, and why:**
+- **The state reset** (`s.state = null`): the daemon already makes a login
+  code single-use, so a replay fails without it.
+- **The logout of the new login's token:** the site never stores the token
+  or sends it anywhere, so no test can see it either way.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full.** The
+  fingerprints equal V4-61's, as they should: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `site_sessions` and `browser_e2e` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **Gates:**
+  - the claim map (133 findings, 52 errata);
+  - anchors (418);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `node --check` on the site, the account page and both tests.
+
+## V4-63 — browser_e2e's teardown is bounded, F134 (loop iteration 38: fixes)
+
+### The failure
+
+V4-61's CI (39820109257) failed one job, the wasm client's. `browser_e2e`
+printed every check as PASS, then never printed its summary, and CTest
+killed it at its 600 s limit. The four runs before it took 14.5–16.4 s.
+The job was re-run to see whether the failure repeats.
+
+### The cause, read from the code
+
+`tests/browser/cdp.mjs`'s `close()` has two unbounded waits:
+
+- **An answer to `Browser.close`.** No handler failed pending requests when
+  the DevTools socket closed. A browser that dropped the socket before
+  answering left the wait open for ever.
+- **The process's exit, judged by `exitCode` alone.** A process killed by a
+  signal keeps a null `exitCode`, and its `exit` event has already fired, so
+  the wait could never end.
+
+The fixture's exit in `browser_e2e`'s `finally` was unbounded as well.
+**F134 (Info):** a false failure, never a false pass.
+
+### The fix
+
+- **`cdp.mjs`:**
+  - a closing DevTools socket fails every pending request;
+  - `send` refuses a socket that is not open;
+  - `close()` gives `Browser.close` 5 s and the exit 10 s, then sends
+    SIGKILL and waits;
+  - "exited" means `exitCode` or `signalCode`.
+- **`browser_e2e.mjs`:** the fixture gets 3 s after SIGTERM, then SIGKILL,
+  as in `wasm_interop`.
+
+### The check, and what it shows
+
+A third browser is launched, killed with SIGKILL, and closed. With the fix,
+`close()` returns in 20 ms, and the whole test takes about 16 s.
+
+- **Against the old helper** (`cdp.mjs` checked out from V4-62), the check
+  fails at its 20 s guard. The test then exits instead of hanging.
+- **Hand control:** with `signalCode` dropped from "exited", the check fails
+  again at 20 s.
+
+Both times the file was restored, checked by sha256. `phone_timing_tool`,
+the other user of the helper, passes.
+
+**What the check does not show:** which of the two waits hung in CI. A
+browser that drops its socket without answering cannot be produced on
+demand. That path is closed by the socket-close handler and the 5 s bound,
+from reading the code.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full.** The
+  fingerprints equal V4-61's: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `browser_e2e` (16 s) and `phone_timing_tool` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **V4-61's failed job, re-run unchanged** (39820109257, attempt 2): 14/14.
+  The hang did not repeat; it was intermittent, as a teardown race would be.
+- **Gates:**
+  - the claim map (134 findings);
+  - anchors;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `node --check` on both files.
+
+## V4-59 to V4-63 — CI on the branches and the nightly bring-up
+
+**V4-59 to V4-61 are the owner's three ("1, 2 and 3"). V4-62 is the owner's
+decision on recovery codes. V4-63 fixes the false failure V4-61's CI hit.**
+The control nightly ran on V4-59..61, with one v84 expectation rotted.
+V4-62 and V4-63 add no campaign and join the landing, as V4-43/44 and V4-56
+did. The final nightly is the first on their tree.
+
+### CI on the branches
+
+| Step | Head | Run | Result |
+|---|---|---|---|
+| V4-59 | `28c5e3e` | 39796583899 | run success; two job records left `in_progress`, every step complete, as main's green run |
+| V4-60 | `389d2ae` | 39806804775 | 14/14 |
+| V4-61 | `561b43b` | 39820109257 | 13/14: `browser_e2e` hung in its teardown (F134); the job re-run unchanged, 14/14 |
+| V4-62 | `ba209e4` | 39837758515 | run success; the wasm job's record left `in_progress`, its tests 7/7 (`browser_e2e` 16.6 s) |
+| V4-63 | `f7b9431` | 39844098645 | 14/14 |
+
+### The control nightly
+
+- **How it was built.** `ddca698` is `569e0e3` with V4-59..61 cherry-picked
+  (V4-61's tree, `561b43b`), plus v84 BK1's expectation rotted. spec_v84's
+  sha256 before was `6e5250c0f1064497`.
+- **Run 39820151202** was red on exactly `mutations · v84`, 70/71:
+  - BK1 **SURVIVED(BAD)**, naming the rotted text;
+  - 378 rows in 56 campaigns: 377 killed and 1 survived, the control;
+  - v84's other three, v85 RT1–RT2 and v86 DG1–DG5 (the start-up exit codes
+    and names among them) all killed on Linux;
+  - v49b's re-authored B1 and v77's renamed SD4/SD5 killed too;
+  - every fuzz job green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.

@@ -259,8 +259,23 @@ export async function startSite(opt) {
         send(res, 200, { user, handle });
       } catch (e) { send(res, 403, { error: e.code || 'enroll-failed' }); }
     },
+    // Minting recovery codes needs a LOGIN, not only a session (V4-62, the
+    // owner's decision). The page logs in again -- the device key and the
+    // passphrase -- under a state from /api/session, and sends that login's
+    // code; the codes are minted only if the code is the session's own
+    // user's. A session cookie on its own cannot mint them.
     'POST /api/recovery-codes': async (req, res, s) => {
       if (!s.token) { return send(res, 401, { error: 'not logged in' }); }
+      const { code } = await body(req);
+      if (!s.state || typeof code !== 'string') { return send(res, 401, { error: 'login required' }); }
+      const state = s.state;
+      s.state = null;               // one state, one login
+      let again;
+      try { again = await withAuthd((a) => exchange(a, code, state)); }
+      catch (e) { return send(res, 403, { error: e.code || 'exchange-failed' }); }
+      // The session keeps the token it had; this login's token is not kept.
+      try { await withAuthd((a) => logout(a, again.token)); } catch { /* already gone */ }
+      if (again.user !== s.user) { return send(res, 403, { error: 'login is another user' }); }
       try { send(res, 200, { codes: await withAuthd((a) => recoveryIssue(a, s.user, 5)) }); }
       catch (e) { send(res, 403, { error: e.code || 'issue-failed' }); }
     },

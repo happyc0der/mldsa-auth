@@ -106,8 +106,35 @@ try {
     const en = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage) }, before);
     check(en.status === 403, 'signup: the id from before the signup cannot enroll a key into the new account');
   }
+  // V4-62 (the owner's decision): minting recovery codes needs a LOGIN -- the
+  // device key and the passphrase -- not only a logged-in session.
+  const stepUp = async (sid, id, pass) => {
+    const st = await (await get('/api/session', sid)).json();
+    const s = await client.login({ url: `ws://127.0.0.1:${port}/authd/v1?state=${st.state}`, serverId: info.server_id,
+                                   serverPub, handle: id.handle, passphrase: pass, envelope: id.envelope });
+    const code = Buffer.from(s.code).toString('base64url');      // before close(): it wipes s.code
+    await s.close();
+    return code;
+  };
+  let minted = [];
   {
-    const codes = (await (await post('/api/recovery-codes', {}, fresh)).json()).codes || [];
+    const bare = await post('/api/recovery-codes', {}, fresh);
+    check(bare.status === 401, 'mint: a logged-in session alone cannot mint recovery codes -- a login is required');
+    const other = client.newIdentity('another passphrase, long enough');
+    const oe = await siteLine(`ENROLL user=${hex(enc('someone-else'))} handle=${hex(enc(other.handle))} pk=${hex(pkOf(other.publicImage))} via=site`);
+    const ocode = await stepUp(fresh, other, 'another passphrase, long enough');
+    const mo = await post('/api/recovery-codes', { code: ocode }, fresh);
+    check(oe.startsWith('OK fp=') && mo.status === 403, 'mint: a login by another user does not mint this user\'s codes');
+    const code = await stepUp(fresh, vid, PASS);
+    const r = await post('/api/recovery-codes', { code }, fresh);
+    minted = (await r.json()).codes || [];
+    check(r.status === 200 && minted.length === 5, 'mint: a fresh login by the session\'s own user mints five codes (the canary)');
+    await get('/api/session', fresh);                              // a new state: the replay below is refused by the daemon
+    const again = await post('/api/recovery-codes', { code }, fresh);
+    check(again.status === 403, 'mint: one login mints once -- its code cannot be replayed');
+  }
+  {
+    const codes = minted;
     check(codes.length === 5, 'recovery: the visitor mints recovery codes on their own session (the canary)');
     const before = idOf(await get('/api/session'));
     const rv = await post('/api/recover', { user, code: codes[0] }, before);
