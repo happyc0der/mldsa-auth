@@ -341,7 +341,7 @@ static store_status_t sc_verify(store_t *s)
     return (r == STORE_OK && v != STORE_TOKEN_OK) ? STORE_ERR_NOT_FOUND : r;
 }
 static store_status_t sc_delete_token(store_t *s) { return store_delete_token(s, TH1, NULL); }
-static store_status_t sc_delete_handle(store_t *s) { return store_delete_tokens_for_handle(s, H1, sizeof H1, NULL); }
+static store_status_t sc_delete_handle(store_t *s) { return store_delete_tokens_for_handle(s, U1, sizeof U1, H1, sizeof H1, NULL); }
 static store_status_t sc_delete_user(store_t *s) { return store_delete_tokens_for_user(s, U1, sizeof U1, NULL); }
 static store_status_t sc_add_token(store_t *s)
 {
@@ -749,8 +749,13 @@ int main(void)
                 "an idle-expired token is distinguished from an expired one");
           CHECK(store_delete_token(s, th3, NULL) == STORE_OK, "cleanup"); }
 
-        size_t ndel = 0;
-        CHECK(store_delete_tokens_for_handle(s, H1, sizeof H1, &ndel) == STORE_OK && ndel == 1u,
+        size_t ndel = 9;
+        /* F123: another user named with this handle deletes nothing. */
+        CHECK(store_delete_tokens_for_handle(s, U2, sizeof U2, H1, sizeof H1, &ndel) == STORE_OK && ndel == 0u,
+              "delete tokens for handle: a user the handle does not belong to deletes nothing (F123)");
+        CHECK(store_verify_token(s, th, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_OK,
+              "delete tokens for handle: ...and the handle's token still verifies (F123)");
+        CHECK(store_delete_tokens_for_handle(s, U1, sizeof U1, H1, sizeof H1, &ndel) == STORE_OK && ndel == 1u,
               "delete tokens for handle reports the count");
         CHECK(store_verify_token(s, th, 150, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
               "a deleted token no longer verifies");

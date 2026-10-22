@@ -216,7 +216,10 @@ store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HAS
 /* The delete calls report how many rows went, because the local API answers
  * `OK deleted=` / `OK count=` with exactly that (spec 8). `n_out` may be NULL. */
 store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HASH_BYTES], size_t *n_out);
-store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len, size_t *n_out);
+/* REVOKE-TOKENS user= handle= (V4-60, F123): only `user_id`'s tokens on
+ * `handle` go; a handle that belongs to another user deletes nothing. */
+store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                              const uint8_t *handle, size_t handle_len, size_t *n_out);
 store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len, size_t *n_out);
 
 /* --- sweep and enumeration ---------------------------------------------- */

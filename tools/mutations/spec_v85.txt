@@ -1,0 +1,2 @@
+RT1|^test_authd_[sl][a-z][a-z][a-z][a-z][a-z]*$|delete tokens for handle: a user the handle does not belong to deletes nothing (F123);rvscope: naming another user with this handle revokes nothing: OK count=0 (F123)
+RT2|^test_authd_[sl][a-z][a-z][a-z][a-z][a-z]*$|delete tokens for handle reports the count;rvscope: the handle's own user revokes its token: OK count=1 (the canary)
