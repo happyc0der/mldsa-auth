@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 128 findings (F0–F128), with severity, evidence and
+   register](../v4/audit.md). 129 findings (F0–F129), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 48 errata, each
    citing the finding that forced it.
@@ -436,6 +436,13 @@ buffer, and ASan caught that before the named check could. LC1 is now the
 line cap applied one byte late, and the test sends a request exactly one
 byte over the cap and one exactly at it. A new LC6, the cap one byte early,
 is caught by the second.
+
+V4-56 found **F129** (Low, macOS only). A peer that vanished with a reply
+still unsent kept its slot, and the loop spun until the slot's deadline: macOS
+reports that socket as a hang-up alone. A hang-up with a reply pending is now
+a write attempt, so a peer that has gone is closed at once, and one that only
+half-closed still gets its reply. CI with the fix reverted failed on the three
+macOS jobs and passed on Linux.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

@@ -11247,3 +11247,155 @@ F0–F128.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-56 — a peer that vanishes with a reply unsent is closed at once, F129 (loop iteration 31: fixes and cleanup)
+
+### How it was found
+
+V4-54 left one reachable region of `slot_writable` untested: a write error,
+such as a peer that disappears mid-reply. Before writing a test for it, a
+probe asked what `poll` reports for a writer whose peer has gone, with data
+still unsent.
+
+On macOS, a Unix socket and a loopback TCP socket both report POLLHUP alone:
+no POLLOUT, no POLLERR. The next write is EPIPE. The Linux half of the probe
+did not run, because the msi laptop did not answer.
+
+The loop wrote only on POLLOUT. It closed on POLLHUP only when nothing was
+pending, so that a peer that half-closes still gets its reply. So a peer that
+vanished with a reply unsent kept its slot, and `poll` returned at once on
+every turn, until the slot's idle deadline.
+
+A test against the real loop showed it: **200 turns in 0 ms** against a 10 ms
+poll timeout, and the slot still held. **F129 (Low):** bounded by the
+deadline, CPU only, other slots still served.
+
+### Linux, from CI rather than the probe
+
+A scratch branch, `v4-56-ctl` (run 39687407344), carried the new test with
+only the fix reverted. It failed exactly this check, "200 turns in 0 ms", on
+all three macOS jobs, and passed it on every Linux job. So Linux reports such
+a socket with POLLOUT or POLLERR, and the old loop already closed it. The
+deployment platform was never affected. The branch was deleted.
+
+### The fix
+
+A hang-up with a reply pending is a write attempt. A peer that has gone
+answers EPIPE, and the slot closes. A peer that only half-closed can still be
+written to, and gets its reply. The test ignores SIGPIPE, as `mldsa-authd`
+does (`authd_main.c`).
+
+### The tests (`test_backpressure`, now 180 checks in `test_authd_evloop`)
+
+- **4. The vanished peer.** It stalls with a reply unsent and then closes. Its
+  slot must be freed within 3 turns, not by the deadline.
+- **5. The half-closing peer.** It sends one frame, shuts down its sending
+  side, and must get the whole reply.
+
+Hand controls on macOS, each file restored and compared by hash:
+- **the old loop:** check 4 fails ("200 turns in 0 ms"), and 5 passes;
+- **closing on every hang-up instead:** check 5 fails. That fix would also
+  have ended the spin, so check 5 is what rules it out.
+
+### No mutation, on purpose
+
+The fix's mutation (BP7, the hang-up condition removed) would be killed on
+macOS and survive on Linux. The nightly runs v83 on Linux, so it would be red
+there for a reason that is not a defect: F128's lesson.
+
+The guard is the test itself. It runs on CI's three macOS jobs on every push,
+and the scratch branch showed them turning red when the fix is reverted.
+
+### Cleanup (this iteration's other half)
+
+- The scratch branch was deleted.
+- Local `main` was fast-forwarded to `origin/main` (`fd44fe7`).
+- The remote holds only `main`, `nightly-bringup` and the branches in flight.
+- `~/.cache/mldsa-tmp` (466 MB) was left alone. It holds the libsodium builds
+  the trees depend on, and the raw campaign logs behind these records.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `2fe5237f97c7821f` | 57/57 |
+  | `build-bench-p` | `15876964bfff161d` | 53/53 |
+  | ASan | `5b685961b7252895` | 57/57, instrumentation in all 43 |
+  | UBSan | `aea70ae443ccab85` | 57/57; one runtime error, the planted canary |
+  | fuzz | `fd9d6b67e6cb849f` | 36/36, and `test_authd_evloop`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `evloop.c` and
+  `test_authd_evloop.c` are clean.
+- **Gates:**
+  - anchors (405; unchanged, since no campaign moved);
+  - the claim map (129 findings);
+  - the spec checks;
+  - the audit table's separators;
+  - `git diff --check`.
+
+## V4-50 to V4-56 — CI on the branches and the nightly bring-up
+
+**One bring-up for seven steps.** V4-51, V4-52, V4-54 and V4-55 add or
+change campaigns: v81, v82, v83, and v82's LC1 and LC6. The two control
+nightlies ran on V4-50..53 and then on V4-50..55, each with one v79
+expectation rotted. The final nightly runs every campaign against the final
+tree, V4-56 included.
+
+### CI on the branches
+
+| Step | Head | Run | Result |
+|---|---|---|---|
+| V4-50 | `88e0b44` | 39610818141 | 14/14 |
+| V4-51 | `e9648b9` | 39619270709 | 14/14 |
+| V4-52 | `8735ec5` | 39635433752 | 14/14 |
+| V4-53 | `47748ce` | 39643818929 | 14/14 |
+| V4-54 | `7786de9` | 39670776071 | 14/14 |
+| V4-55 | `4b78a30` | 39686403056 | 14/14 |
+| V4-56 | `9eb3d23` | 39697644974 | run concluded success; see below |
+
+**V4-56's run concluded `success` with one job record that never closed.**
+13 jobs reported success. The fourteenth, `Release + install + hardening
+(Linux, clang)`, kept the status `in_progress` with no conclusion. Every one
+of its 11 steps reported success, and its log ends normally: the suite
+53/53, the install tree, hardening, and one optimized backend.
+That is a GitHub record, not a failure. It is stated here rather than counted
+as a pass.
+
+### The first control nightly: two campaigns red, one of them not planned
+
+- **How it was built.** `62472ad` is `b692854` with V4-50..53 cherry-picked
+  (its parent's tree equals V4-53's `47748ce`), plus v79 PF6's expectation
+  rotted. PF6 is in `linux_only_kills.txt`. spec_v79's sha256 before was
+  `c6d7717df274f731`.
+- **Run 39646314151** was red on two campaigns, 65/67:
+  - **v79, as planned.** PF6 scored **SURVIVED(BAD)**, naming the rotted text,
+    on Linux, although the list names it. So the list changes nothing on
+    Linux, which is the evidence V4-53 asked for.
+  - **v82, not planned.** LC1's mutant over-read the client's line buffer, and
+    ASan aborted the test before the named check printed. That is F128,
+    fixed in V4-55.
+- Across 52 campaign jobs there were 359 rows: 357 killed, and these 2
+  survived. v81's first Linux run killed SU1–SU3.
+
+### The second control nightly: red on exactly v79
+
+- **How it was built.** `7d44d51` is `62472ad` with V4-54 and V4-55
+  cherry-picked: V4-55's tree (`4b78a30`), plus the same rot.
+- **Run 39686433565** was red on exactly `mutations · v79`, 67/68:
+  - **366 rows in 53 campaigns:** 365 killed and 1 survived, the control.
+  - **v82 on Linux:** LC1–LC6 all killed by name. F128's fix holds there.
+  - **v83's first Linux run:** BP1–BP6 all killed by name.
+  - **The Linux-only kills:** v65 RU1, v75 KC5 and v79's other six mutants
+    were killed.
+  - **Fuzz:** all 12 jobs green.
+
+**V4-56 joins this landing without a control of its own.** It adds no
+campaign. Its test runs on CI's macOS jobs, which V4-56's scratch branch
+showed turning red when the fix is reverted. v83, the campaign its change
+touches, was re-run locally on its tree: BP1–BP6 all killed (3, 5, 5, 4, 3
+and 5 named). The final nightly is the first on its tree.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
