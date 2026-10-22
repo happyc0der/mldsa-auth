@@ -1,5 +1,5 @@
 SD1|^test_authd_store$|damaged store: a schema_version of 7 bytes is refused as SCHEMA, and no handle is returned
 SD2|^test_authd_store$|damaged store: a store from a later schema is refused as SCHEMA, and no handle is returned
 SD3|^test_authd_store$|damaged store: a store from a later schema is refused as SCHEMA, and no handle is returned
-SD4|^test_authd_store$|damaged store: a store_id one byte short is refused as CORRUPT, and no handle is returned
-SD5|^test_authd_store$|damaged store: a decoy_pk one byte short is refused as CORRUPT, and no handle is returned
+SD4|^test_authd_store$|damaged store: a store_id one byte short is refused as DAMAGED (store-corrupt), and no handle is returned
+SD5|^test_authd_store$|damaged store: a decoy_pk one byte short is refused as DAMAGED (store-corrupt), and no handle is returned

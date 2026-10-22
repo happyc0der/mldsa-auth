@@ -48,7 +48,8 @@ typedef enum {
     STORE_ERR_STATE,        /* operation illegal in the current row state */
     STORE_ERR_SCHEMA,       /* store schema newer than this build */
     STORE_ERR_CRYPTO,       /* key derivation / RNG failure */
-    STORE_ERR_CORRUPT       /* audit chain verification failed */
+    STORE_ERR_CORRUPT,      /* audit chain verification failed */
+    STORE_ERR_DAMAGED       /* a stored value has the wrong shape (V4-61, F126): not the audit chain */
 } store_status_t;
 
 typedef enum { STORE_ROLE_OPERATOR = 0, STORE_ROLE_USER = 1 } store_role_t;

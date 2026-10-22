@@ -1,0 +1,5 @@
+DG1|^authd_e2e$|the daemon refused a group-readable passphrase file with exit code 1, expected 3
+DG2|^authd_e2e$|the daemon refused a group-readable server key with exit code 1, expected 3
+DG3|^authd_e2e$|the daemon refused a group-readable passphrase file without saying
+DG4|^test_authd_store$|damaged store: a damaged value is named store-corrupt, and only the audit chain is audit-chain-corrupt (F126)
+DG5|^test_authd_store$|damaged store: a store_id one byte short is refused as DAMAGED (store-corrupt), and no handle is returned

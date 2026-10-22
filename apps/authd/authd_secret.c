@@ -16,7 +16,7 @@ const char *authd_secret_status_name(authd_secret_status_t st)
     case AUTHD_SECRET_ERR_OPEN:         return "cannot-open";
     case AUTHD_SECRET_ERR_NOT_REGULAR:  return "not-a-regular-file";
     case AUTHD_SECRET_ERR_OWNER:        return "not-owned-by-this-user";
-    case AUTHD_SECRET_ERR_PERMISSIONS:  return "permissions (mode must be 0600)";
+    case AUTHD_SECRET_ERR_PERMISSIONS:  return "unsafe-permissions";   /* the key-file reader's name (F126) */
     case AUTHD_SECRET_ERR_SIZE:         return "empty-or-too-large";
     case AUTHD_SECRET_ERR_READ:         return "short-read";
     case AUTHD_SECRET_ERR_CRYPTO:       return "allocation-failed";
