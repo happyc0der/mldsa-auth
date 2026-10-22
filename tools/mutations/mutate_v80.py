@@ -16,6 +16,8 @@ had never run. Every spec line names the check that must catch it (F90).
           removed and bound over.
     LP4   a stale socket is not removed, so a crash wedges the service.
     LP5   an allowlist of any length is accepted.
+    LP6   F130 undone: closing a listener that was never opened still unlinks
+          the path, deleting what is there.
 """
 import sys, pathlib
 L = "apps/authd/listener.c"
@@ -31,6 +33,8 @@ M = {
                 "        if (1) { /* MUTATION LP4: a stale socket is never removed */\n            return LISTENER_ERR_PATH;\n        }\n    }\n")],
     "LP5": [(L, "    if (out_fd == NULL || listen_fd < 0 || (n_allow > 0u && allow == NULL) ||\n        n_allow > LISTENER_MAX_ALLOW) {\n",
                 "    if (out_fd == NULL || listen_fd < 0 || (n_allow > 0u && allow == NULL) ||\n        (n_allow > LISTENER_MAX_ALLOW && 0)) { /* MUTATION LP5: any length */\n")],
+    "LP6": [(L, "    if (fd == NULL || *fd < 0) {\n        return;\n    }\n    (void)close(*fd);\n",
+                "    if ((fd == NULL || *fd < 0) && 0) { /* MUTATION LP6: F130, an unheld path unlinked */\n        return;\n    }\n    (void)close(*fd);\n")],
 }
 
 

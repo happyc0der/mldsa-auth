@@ -14,6 +14,7 @@
  * The upgrade parser is the first attacker-facing TEXT parser in the tree, so
  * its refusals are enumerated rather than sampled.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1079,7 +1080,20 @@ static void test_listener_paths(void)
       c = -1;
       CHECK(listener_accept_ex(fd, allow, LISTENER_MAX_ALLOW, &c, NULL) == LISTENER_AGAIN && c == -1,
             "paths: an allowlist of exactly LISTENER_MAX_ALLOW is accepted (nothing pending yet) -- the canary"); }
-    if (fd >= 0) { listener_close(&fd, live); }
+    /* F130: closing with no listener held removes nothing at the path -- the
+     * daemon's start-up cleanup calls listener_close for listeners that never
+     * opened. A held one is still unlinked: the canary. */
+    { int none = -1;
+      listener_close(&none, file);                /* file.sock: "operator data", from above */
+      char got[32] = {0}; FILE *f = fopen(file, "r"); if (f) { (void)!fread(got, 1, sizeof got - 1u, f); fclose(f); }
+      CHECK(strcmp(got, "operator data") == 0,
+            "paths: listener_close with no listener held leaves the file at the path alone (F130)"); }
+    if (fd >= 0) {
+        listener_close(&fd, live);
+        struct stat st;
+        CHECK(fd == -1 && lstat(live, &st) != 0 && errno == ENOENT,
+              "paths: listener_close on a held listener closes it and unlinks its socket -- the canary");
+    }
     (void)unlink(file); (void)unlink(fits); (void)rmdir(dir);
 }
 

@@ -207,6 +207,21 @@ esac
 grep -q '^OK count=0' "$TMP/users0.txt" || fail "a fresh store did not report zero users"
 echo "PASS: E2E: the admin socket answers on a fresh store"
 
+# F130: a second daemon started on the SAME configuration while this one runs
+# -- an operator debugging by hand, an overlapping restart -- fails, because its
+# TCP port is taken. Its start-up cleanup used to unlink every Unix socket path
+# in the configuration, opened or not, so the running daemon lost all three
+# sockets and stayed up, unreachable, logging nothing.
+rc=0
+"$DAEMON" --config "$TMP/authd.conf" > "$TMP/second.log" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a second daemon started on a configuration already in use"
+for sk in p.sock s.sock a.sock; do
+    [ -S "$TMP/$sk" ] || fail "a second daemon's failed start removed the running daemon's $sk (F130)"
+done
+"$ADMIN" list-users --socket "$TMP/a.sock" > /dev/null \
+    || fail "the running daemon is unreachable after a second daemon failed to start (F130)"
+echo "PASS: E2E: a second daemon on the same configuration fails and leaves the running one reachable"
+
 # A listener failure must run the cleanup epilogue, not return early. The real
 # damage when it does not is the DECRYPTED server key left unwiped in secure
 # memory -- which LSan would see, except LSan does not run under macOS ASan. The
@@ -227,13 +242,16 @@ admin_socket = $TMP/ba.sock
 site_uids = $(id -u)
 admin_uids = $(id -u)
 EOF
-: > "$TMP/ba.sock"
+printf 'not a socket\n' > "$TMP/ba.sock"
 rc=0
 "$DAEMON" --config "$TMP/bind.conf" > "$TMP/bind.log" 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "the daemon started despite an unusable admin socket path"
 grep -q 'admin socket' "$TMP/bind.log" || fail "the daemon did not name the admin socket it refused"
 [ ! -e "$TMP/bs.sock" ] || fail "a listener failure left the site socket behind: the cleanup epilogue did not run"
 [ ! -e "$TMP/bp.sock" ] || fail "a listener failure left the protocol socket behind: the cleanup epilogue did not run"
+# F130: ...and the file it refused to bind over is NOT the daemon's to delete.
+[ "$(cat "$TMP/ba.sock" 2>/dev/null)" = "not a socket" ] \
+    || fail "the daemon deleted the file at the admin socket path that it refused to bind over (F130)"
 rm -f "$TMP/ba.sock"
 echo "PASS: E2E: a listener failure runs the cleanup epilogue that wipes the server key"
 

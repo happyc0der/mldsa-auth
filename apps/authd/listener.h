@@ -79,7 +79,10 @@ typedef struct {
 listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n_allow,
                                      int *out_fd, listener_peer_t *peer_out);
 
-/* Closes and, for a Unix listener, unlinks its path. */
+/* Closes a listener this process holds and, for a Unix listener, unlinks its
+ * path. With *fd < 0 it does NOTHING, path included (audit F130): the path is
+ * then not this process's to remove -- it may be a file listener_open_unix
+ * refused to bind over, or another daemon's live socket. */
 void listener_close(int *fd, const char *unix_path);
 
 #endif /* MLDSA_AUTHD_LISTENER_H */

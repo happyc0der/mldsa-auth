@@ -249,10 +249,18 @@ listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n
 
 void listener_close(int *fd, const char *unix_path)
 {
-    if (fd != NULL && *fd >= 0) {
-        (void)close(*fd);
-        *fd = -1;
+    /* F130: the path is unlinked only for a listener this process holds. The
+     * daemon's start-up failure path calls this for EVERY listener, opened or
+     * not, and unlinking unconditionally deleted a regular file that
+     * listener_open_unix had just refused to bind over -- and, when a second
+     * daemon with the same config failed at its TCP bind, the running daemon's
+     * three live sockets, leaving it up and unreachable. A listener that
+     * failed after bind() has already unlinked its own path. */
+    if (fd == NULL || *fd < 0) {
+        return;
     }
+    (void)close(*fd);
+    *fd = -1;
     if (unix_path != NULL && unix_path[0] != '\0') {
         (void)unlink(unix_path);
     }

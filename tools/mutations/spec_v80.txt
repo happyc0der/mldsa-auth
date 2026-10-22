@@ -3,3 +3,4 @@ LP2|^test_authd_ws$|paths: a regular file at the socket path is refused, and lef
 LP3|^test_authd_ws$|paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched
 LP4|^test_authd_ws$|paths: a stale socket left by a crash is replaced, so it cannot wedge the service -- the canary
 LP5|^test_authd_ws$|paths: an allowlist longer than LISTENER_MAX_ALLOW is refused as a bad argument
+LP6|^test_authd_ws$|paths: listener_close with no listener held leaves the file at the path alone (F130)
