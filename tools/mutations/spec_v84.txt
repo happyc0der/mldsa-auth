@@ -1,4 +1,4 @@
-BK1|^test_authd_store$|backup: the copy is 0600 the moment VACUUM INTO finishes, under a umask of 022 (F24)
+BK1|^test_authd_store$|backup: the copy is 0600 the moment VACUUM INTO finishes, under a umask of 022 (F24) CONTROL -- a check no test prints (V4-59..61)
 BK2|^test_authd_store$|backup: the copy is 0600 the moment VACUUM INTO finishes, under a umask of 022 (F24)
 BK4|^test_authd_store$|backup: the refused second backup left the first one whole
 BK5|^test_authd_store$|backup: a backup that fails leaves no file behind (F24)
