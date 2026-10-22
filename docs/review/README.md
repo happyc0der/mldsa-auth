@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 133 findings (F0–F133), with severity, evidence and
+   register](../v4/audit.md). 134 findings (F0–F134), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 52 errata, each
    citing the finding that forced it.
@@ -479,6 +479,11 @@ login, not only a session. The account page logs in again with the device
 key and passphrase and sends that login's code, and the site mints the codes
 only if the code is the session's own user's. Erratum 52 and the runbook's
 seventh site rule say so.
+
+V4-63 fixed **F134** (Info), a false failure: `browser_e2e`'s teardown could
+wait for ever on a browser that had closed its DevTools socket or died, and
+V4-61's CI ran it into the 600 s limit with every check passed. Every wait in
+the teardown is bounded now, and a killed browser is closed in milliseconds.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

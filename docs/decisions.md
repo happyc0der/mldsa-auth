@@ -11959,3 +11959,77 @@ were re-run against the changed test: all still KILLED.
   - the audit table's separators;
   - `git diff --check`;
   - `node --check` on the site, the account page and both tests.
+
+## V4-63 — browser_e2e's teardown is bounded, F134 (loop iteration 38: fixes)
+
+### The failure
+
+V4-61's CI (39820109257) failed one job, the wasm client's. `browser_e2e`
+printed every check as PASS, then never printed its summary, and CTest
+killed it at its 600 s limit. The four runs before it took 14.5–16.4 s.
+The job was re-run to see whether the failure repeats.
+
+### The cause, read from the code
+
+`tests/browser/cdp.mjs`'s `close()` has two unbounded waits:
+
+- **An answer to `Browser.close`.** No handler failed pending requests when
+  the DevTools socket closed. A browser that dropped the socket before
+  answering left the wait open for ever.
+- **The process's exit, judged by `exitCode` alone.** A process killed by a
+  signal keeps a null `exitCode`, and its `exit` event has already fired, so
+  the wait could never end.
+
+The fixture's exit in `browser_e2e`'s `finally` was unbounded as well.
+**F134 (Info):** a false failure, never a false pass.
+
+### The fix
+
+- **`cdp.mjs`:**
+  - a closing DevTools socket fails every pending request;
+  - `send` refuses a socket that is not open;
+  - `close()` gives `Browser.close` 5 s and the exit 10 s, then sends
+    SIGKILL and waits;
+  - "exited" means `exitCode` or `signalCode`.
+- **`browser_e2e.mjs`:** the fixture gets 3 s after SIGTERM, then SIGKILL,
+  as in `wasm_interop`.
+
+### The check, and what it shows
+
+A third browser is launched, killed with SIGKILL, and closed. With the fix,
+`close()` returns in 20 ms, and the whole test takes about 16 s.
+
+- **Against the old helper** (`cdp.mjs` checked out from V4-62), the check
+  fails at its 20 s guard. The test then exits instead of hanging.
+- **Hand control:** with `signalCode` dropped from "exited", the check fails
+  again at 20 s.
+
+Both times the file was restored, checked by sha256. `phone_timing_tool`,
+the other user of the helper, passes.
+
+**What the check does not show:** which of the two waits hung in CI. A
+browser that drops its socket without answering cannot be produced on
+demand. That path is closed by the socket-close handler and the 5 s bound,
+from reading the code.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full.** The
+  fingerprints equal V4-61's: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `browser_e2e` (16 s) and `phone_timing_tool` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **V4-61's failed job, re-run unchanged** (39820109257, attempt 2): 14/14.
+  The hang did not repeat; it was intermittent, as a teardown race would be.
+- **Gates:**
+  - the claim map (134 findings);
+  - anchors;
+  - the audit table's separators;
+  - `git diff --check`;
+  - `node --check` on both files.
