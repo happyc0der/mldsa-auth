@@ -470,13 +470,14 @@ The daemon's exit code says which half is wrong (spec §13):
 
 | Exit | Meaning | Look at |
 |---|---|---|
-| 3 | configuration | the message names the key and line; `--check-config` says the same thing without starting |
-| 1 | operation failed | the key would not open, or the store would not — check the credential and the file modes |
+| 3 | configuration | the message names the setting and line, or the file the configuration names that cannot be used: the server key or its passphrase file, missing, with unsafe modes, malformed, or not opened by the passphrase (since V4-61, F126) — check the credential and the file modes; `--check-config` reports configuration lines without starting |
+| 1 | operation failed | the store would not open, or an internal failure |
 | 2 | usage | the unit's `ExecStart` |
 
 Common ones, and what they actually are:
 
-- **`passphrase file …: permissions`** — the credential must be a regular file,
+- **`passphrase file …: unsafe-permissions`** (before V4-61:
+  `permissions (mode must be 0600)`) — the credential must be a regular file,
   mode 0600 or tighter, owned by the service user. A `LoadCredentialEncrypted`
   credential is 0400 and owned correctly; a file you copied by hand may not be.
 - **`unix listener …: path`** — a socket path longer than `sun_path` (104–108

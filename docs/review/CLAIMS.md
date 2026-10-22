@@ -310,7 +310,7 @@ the most important thing on this page.
 - check `test_authd_conn` "decoy: good, wrong-key, unknown, disabled, superseded and revoked all get a ServerHello of the"
 - check `test_authd_conn` "decoy: a DISABLED user's device is served the decoy (Req 6)"
 - check `test_authd_conn` "decoy: a SUPERSEDED key is refused on the known-handle path -- the new key is pinned, not the decoy"
-- check `test_authd_store` "damaged store: a decoy_pk one byte short is refused as CORRUPT, and no handle is returned"
+- check `test_authd_store` "damaged store: a decoy_pk one byte short is refused as DAMAGED (store-corrupt), and no handle is returned"
 - mutation `v77 SD5` — a decoy key of the wrong length is accepted at open, so the decoy ServerHello would carry it
 **Not established:** the lengths are equal by construction -- one code path builds every ServerHello from fixed-size fields -- so no mutation isolates the length check; it pins the invariant. No test compares the bytes (fresh per handshake), the close, or timing, and ProVerif does not model the decoy.
 
@@ -434,7 +434,7 @@ the most important thing on this page.
 - mutation `v79 PF3` — the passphrase file's group and other bits are ignored
 - mutation `v79 PF1` — a symlinked passphrase file is followed
 - mutation `v79 PF6` — the passphrase file's owner is ignored
-- check `authd_e2e` "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, and leaving no socket; the undamaged copies start"
+- check `authd_e2e` "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 - mutation `v81 SU2` — the daemon ignores a server key it refused, and starts without it
 - mutation `v81 SU1` — the daemon ignores a passphrase file it refused
 **Not established:** the window scans read files under the directories the CLI writes to, in raw bytes, for 16 contiguous SECRET bytes -- a window touching `rho` or `tr`, which the public key determines, is not looked for (F105) -- so fewer than 16 contiguous secret bytes would not be seen, nor would a deleted temp file, swap, a core dump or another encoding of the key. Since V4-24c the same scan covers rotation: `test_authd_cli` runs the CLI's own rotate and login against the in-process daemon and looks for every key the device held after an acknowledged rotation, after the login that completes an interrupted one, and after a rotation attempted from a key the daemon has superseded. Since V4-35 a CLI rotation whose session opens but whose reply is refused, or lost, is scanned too. The in-process daemon refuses a real ROTATE after the store's key has moved behind the session, or commits and is cut off before its ACK flushes; campaign v73 shows both scans catching a raw key that passed V4-34's suite; the e2e's real processes still have only its header scan, since the shell holds no plaintext key. The browser is scanned since V4-27:

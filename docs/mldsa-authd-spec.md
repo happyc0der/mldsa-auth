@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.15, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60 errata)
+# mldsa-authd — deployment specification (v1.16, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -814,6 +814,10 @@ can still rotate.
 
 Exit codes: 0 success, 1 operation failed, 2 usage error, 3 configuration
 error. Every failure prints a status name from the same enums the daemon logs.
+A file the configuration names that cannot be used as configured -- the
+server key or its passphrase file, missing, unsafe, malformed, or not opened
+by the passphrase -- is a configuration error, 3; an internal failure is 1
+(erratum 51).
 
 ## 14. Browser client *(B)*
 
@@ -1359,3 +1363,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 50 | 8 | `REVOKE-TOKENS user= handle=` scoped to the user: only `user`'s tokens on `handle` are revoked, and a handle that belongs to another user answers `OK count=0`. No new error code | §8 gave only the request and `OK count=`, and the daemon deleted every token on the handle whatever `user=` named (finding **F123**, fixed; the owner's decision) |
+
+### Revision v1.16 (V4-61)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 51 | 13 | A file the configuration names that cannot be used as configured (the server key or its passphrase file) is a configuration error, 3, whichever file it is; an internal failure is 1 | the daemon exited 3 for a refused passphrase file and 1 for a refused server key, though the operator fixes both the same way (finding **F126**, fixed with the owner's go; its names were aligned in the same step) |
