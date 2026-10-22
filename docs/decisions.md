@@ -11626,3 +11626,96 @@ one reachable.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-59 — the store backup is 0600 from its first byte, F133 (F24's residue; loop iteration 34: fixes and cleanup, the owner's go)
+
+### The finding
+
+V4-9b fixed F24 by chmod-ing the backup 0600 after `VACUUM INTO`. But
+`VACUUM INTO` creates its file under the process's umask, so until the copy
+had finished, the copy of the credential database had the umask's mode, 0644
+under 0022. A backup that failed after creating its file kept that mode.
+
+The window was noted in V4-35 and parked for the owner. Under the shipped
+systemd unit (`UMask=0077`) it never opened; it did wherever else the daemon
+ran. Recorded now as **F133 (Low)**. The owner said fix it.
+
+### The fix
+
+`store_backup` creates the destination itself, before `VACUUM INTO` writes
+into it:
+- the file is created with mode 0600 and `O_CREAT|O_EXCL|O_NOFOLLOW`. SQLite
+  accepts an existing empty file as `VACUUM INTO`'s destination;
+- `O_EXCL` keeps the no-clobber rule that `VACUUM INTO` used to provide;
+- the chmod after the copy stays;
+- if the backup fails, the file is removed. `O_EXCL` made it, so it is this
+  call's own to remove.
+
+### The tests (`test_authd_store`, 289 checks)
+
+- **The mode during the copy.** A test-only observer, compiled only under
+  `MLDSA_STORE_FAULT_HOOK` and named `store_fault_arm_*` so
+  `check_store_fault_hook.sh` proves it absent from shipped builds, reads the
+  file between the copy and the chmod. Under a umask of 022 it must be 0600.
+  A second check requires that the observer ran, so the first is not
+  vacuous.
+- **A refused second backup** leaves the first whole: the first still opens
+  as a store.
+- **A failed backup leaves no file.** The write-fault hook fails the
+  `VACUUM INTO`.
+- **A symlink at the path** is refused, and nothing is created at its
+  target.
+
+### The controls: campaign v84 (local, macOS ASan)
+
+| ID | Mutation | Verdict |
+|---|---|---|
+| BK1 | the destination created 0644 | KILLED (2 named) |
+| BK2 | no destination created first (the old behaviour) | KILLED (5 named) |
+| BK4 | `O_EXCL` dropped: the failure path deletes the existing backup | KILLED (3 named) |
+| BK5 | a failed backup's file kept | KILLED (2 named) |
+
+Every source was restored clean, with no residue. BK3, `O_NOFOLLOW` dropped,
+is not committed: `O_CREAT|O_EXCL` already refuses a symlink, so that mutant
+would be equivalent.
+
+**BK2 is the gap demonstration.** It is the code before this step, and five
+named checks fail on it. The test cannot be run against the old code as it
+stands: the old code has no observer to link against.
+
+### A step rotting another step's campaign, caught before the nightly
+
+v49b's B1, from V4-9b, removed the chmod, and `authd_e2e` saw a non-0600
+backup. With the file now created 0600 first, removing the chmod alone
+changes nothing: B1 would have survived in the nightly. B1 is re-authored as
+"the backup keeps the umask's mode": the creation mode 0666 and the chmod
+removed. Run alone on macOS ASan, it was KILLED (1 named), "the backup is not
+0600", restored clean.
+
+### The counts
+
+371 mutations in 54 campaigns, 411 anchors; all 16 stated counts restated.
+v84 is in nightly.yml's matrix, and tools/README.md's campaign list names it.
+The register is 133 findings, F0–F133.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full:**
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `b7f185dcd3391709` | 58/58 |
+  | `build-bench-p` | `3db092661705b510` | 53/53 |
+  | ASan | `f7950740aa47f5ee` | 58/58, instrumentation in all 43 |
+  | UBSan | `e27d1f9a9fbf8f8b` | 58/58; one runtime error, the planted canary |
+  | fuzz | `deca59ad3d19f9b2` | 36/36, and `test_authd_store`, `backend_symbols` and `doc_test_counts` 3/3 |
+
+- **The gcc 16 check**, as a full compile at `-O0` and `-O2`: `store.c` and
+  `test_authd_store.c` are clean.
+- **Gates:**
+  - anchors (411; 16 counts agreeing);
+  - the claim map (133 findings);
+  - the spec checks;
+  - the audit table's separators, after F133's escaped `|`s (the F105 trap);
+  - `git diff --check`;
+  - nightly.yml's matrix against the spec files.
