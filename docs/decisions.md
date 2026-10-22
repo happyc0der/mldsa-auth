@@ -11334,3 +11334,68 @@ and the scratch branch showed them turning red when the fix is reverted.
   - the spec checks;
   - the audit table's separators;
   - `git diff --check`.
+
+## V4-50 to V4-56 — CI on the branches and the nightly bring-up
+
+**One bring-up for seven steps.** V4-51, V4-52, V4-54 and V4-55 add or
+change campaigns: v81, v82, v83, and v82's LC1 and LC6. The two control
+nightlies ran on V4-50..53 and then on V4-50..55, each with one v79
+expectation rotted. The final nightly runs every campaign against the final
+tree, V4-56 included.
+
+### CI on the branches
+
+| Step | Head | Run | Result |
+|---|---|---|---|
+| V4-50 | `88e0b44` | 39610818141 | 14/14 |
+| V4-51 | `e9648b9` | 39619270709 | 14/14 |
+| V4-52 | `8735ec5` | 39635433752 | 14/14 |
+| V4-53 | `47748ce` | 39643818929 | 14/14 |
+| V4-54 | `7786de9` | 39670776071 | 14/14 |
+| V4-55 | `4b78a30` | 39686403056 | 14/14 |
+| V4-56 | `9eb3d23` | 39697644974 | run concluded success; see below |
+
+**V4-56's run concluded `success` with one job record that never closed.**
+13 jobs reported success. The fourteenth, `Release + install + hardening
+(Linux, clang)`, kept the status `in_progress` with no conclusion. Every one
+of its 11 steps reported success, and its log ends normally: the suite
+53/53, the install tree, hardening, and one optimized backend.
+That is a GitHub record, not a failure. It is stated here rather than counted
+as a pass.
+
+### The first control nightly: two campaigns red, one of them not planned
+
+- **How it was built.** `62472ad` is `b692854` with V4-50..53 cherry-picked
+  (its parent's tree equals V4-53's `47748ce`), plus v79 PF6's expectation
+  rotted. PF6 is in `linux_only_kills.txt`. spec_v79's sha256 before was
+  `c6d7717df274f731`.
+- **Run 39646314151** was red on two campaigns, 65/67:
+  - **v79, as planned.** PF6 scored **SURVIVED(BAD)**, naming the rotted text,
+    on Linux, although the list names it. So the list changes nothing on
+    Linux, which is the evidence V4-53 asked for.
+  - **v82, not planned.** LC1's mutant over-read the client's line buffer, and
+    ASan aborted the test before the named check printed. That is F128,
+    fixed in V4-55.
+- Across 52 campaign jobs there were 359 rows: 357 killed, and these 2
+  survived. v81's first Linux run killed SU1–SU3.
+
+### The second control nightly: red on exactly v79
+
+- **How it was built.** `7d44d51` is `62472ad` with V4-54 and V4-55
+  cherry-picked: V4-55's tree (`4b78a30`), plus the same rot.
+- **Run 39686433565** was red on exactly `mutations · v79`, 67/68:
+  - **366 rows in 53 campaigns:** 365 killed and 1 survived, the control.
+  - **v82 on Linux:** LC1–LC6 all killed by name. F128's fix holds there.
+  - **v83's first Linux run:** BP1–BP6 all killed by name.
+  - **The Linux-only kills:** v65 RU1, v75 KC5 and v79's other six mutants
+    were killed.
+  - **Fuzz:** all 12 jobs green.
+
+**V4-56 joins this landing without a control of its own.** It adds no
+campaign. Its test runs on CI's macOS jobs, which V4-56's scratch branch
+showed turning red when the fix is reverted. v83, the campaign its change
+touches, was re-run locally on its tree: BP1–BP6 all killed (3, 5, 5, 4, 3
+and 5 named). The final nightly is the first on its tree.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
