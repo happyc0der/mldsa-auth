@@ -292,14 +292,34 @@ try {
           `at rest, ${name}: the passphrase is in no file of the profile, as UTF-8 or UTF-16 ` +
           `(${p8 && p16 ? `${p8.found} of ${p8.of}, ${p16.found} of ${p16.of}` : 'scan failed'})`);
   }
+  // V4-63 (audit F134): closing a browser that has died is bounded. A
+  // Browser.close nobody answers, or a browser killed by a signal (exitCode
+  // null, 'exit' already emitted), left close() waiting for ever, and this
+  // test ran into CTest's 600 s limit with every check passed (CI 39820109257).
+  {
+    const b3 = await Browser.launch(browserPath, extra);
+    const died = new Promise((r) => b3.proc.once('exit', r));
+    b3.proc.kill('SIGKILL');
+    await died;
+    const t0 = Date.now();
+    const closed = await Promise.race([b3.close().then(() => true), new Promise((r) => setTimeout(() => r(false), 20000))]);
+    check(closed && Date.now() - t0 < 20000,
+          `teardown: closing a browser that was killed returns, not waits for ever (${Date.now() - t0} ms)`);
+  }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
   if (b) { await b.close(); }
   if (b2) { await b2.close(); }
   site.server.close();
+  // Bounded too (F134), as wasm_interop's is: a fixture still there after
+  // 3 s is killed.
+  const exited = new Promise((r) => (fx.exitCode !== null || fx.signalCode !== null) ? r() : fx.once('exit', r));
   fx.kill();
-  await new Promise((r) => fx.once('exit', r));
+  if (!(await Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 3000))]))) {
+    fx.kill('SIGKILL');
+    await exited;
+  }
   rmSync(work, { recursive: true, force: true });
 }
 console.log(fail ? '\nFAILED' : '\nAll checks passed');

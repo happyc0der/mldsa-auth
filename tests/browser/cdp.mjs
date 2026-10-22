@@ -65,6 +65,14 @@ export class Browser {
       this.ws = new WebSocket(url);
       this.ws.onopen = resolve;
       this.ws.onerror = () => reject(new Error('DevTools WebSocket failed'));
+      // V4-63 (audit F134): a connection that closes fails what was waiting on
+      // it. Before, a Browser.close the browser never answered -- it dropped
+      // the socket first -- left close() waiting for ever, and browser_e2e
+      // ran into CTest's 600 s limit with every check passed.
+      this.ws.onclose = () => {
+        for (const { rej } of this.pending.values()) { rej(new Error('DevTools connection closed')); }
+        this.pending.clear();
+      };
       this.ws.onmessage = (ev) => {
         const m = JSON.parse(ev.data);
         if (m.id && this.pending.has(m.id)) {
@@ -81,6 +89,7 @@ export class Browser {
   send(method, params = {}) {
     const id = ++this.id;
     return new Promise((res, rej) => {
+      if (this.ws.readyState !== WebSocket.OPEN) { rej(new Error('DevTools connection closed')); return; }
       this.pending.set(id, { res, rej });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
@@ -111,9 +120,20 @@ export class Browser {
     return until(() => this.eval(expression).catch(() => false), what, ms);
   }
 
+  // Every wait here is bounded (V4-63, F134). A browser that died by a signal
+  // has a null exitCode and has already emitted 'exit', so waiting on exitCode
+  // alone waited for ever; signalCode says it too.
   async close() {
-    try { await this.send('Browser.close'); } catch { /* already gone */ }
-    await new Promise((r) => { if (this.proc.exitCode !== null) { r(); } else { this.proc.once('exit', r); } });
+    const exited = () => this.proc.exitCode !== null || this.proc.signalCode !== null;
+    const gone = new Promise((r) => { if (exited()) { r(); } else { this.proc.once('exit', r); } });
+    const within = (p, ms) => Promise.race([p.then(() => true, () => true),
+                                            new Promise((r) => setTimeout(() => r(false), ms))]);
+    await within(this.send('Browser.close'), 5000);
+    if (!(await within(gone, 10000))) {
+      this.proc.kill('SIGKILL');
+      await gone;
+    }
+    try { this.ws.close(); } catch { /* already closed */ }
     rmSync(this.profile, { recursive: true, force: true });
   }
 }
