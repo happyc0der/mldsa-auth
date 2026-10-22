@@ -1528,6 +1528,48 @@ static void test_enroll_other_users_handle(void)
     h_stop(&d);
 }
 
+/* V4-60 (audit F123): REVOKE-TOKENS user= handle= revokes only that user's
+ * tokens on that handle. Before, only the handle was bound: a request naming
+ * one user and another user's device revoked the other user's tokens and
+ * counted them. Nothing had ever sent the handle= form. */
+static void test_revoke_tokens_scope(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "rvscope.sqlite3", 1) == 0, "rvscope: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);                 /* HANDLE1 is u1's */
+    static const uint8_t U2[] = { 'u','2' };
+    CHECK(store_add_user(d.store, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK, "rvscope: a second user");
+    uint8_t th[STORE_HASH_BYTES];
+    memset(th, 0x5A, sizeof th);
+    const int64_t now = d.app.now_unix;
+    CHECK(store_add_token(d.store, th, U1, sizeof U1, HANDLE1, sizeof HANDLE1, NULL, 0,
+                          now, now + 3600, now + 3600) == STORE_OK, "rvscope: a token for u1's device");
+    store_token_verdict_t v = STORE_TOKEN_UNKNOWN;
+
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "rvscope: connect to site.sock");
+    char uh1[16], uh2[16], hh[16], req[256], resp[512];
+    hx(uh1, sizeof uh1, U1, sizeof U1);
+    hx(uh2, sizeof uh2, U2, sizeof U2);
+    hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+
+    snprintf(req, sizeof req, "REVOKE-TOKENS user=%s handle=%s", uh2, hh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK count=0\n"),
+          "rvscope: naming another user with this handle revokes nothing: OK count=0 (F123)");
+    CHECK(store_verify_token(d.store, th, now, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_OK,
+          "rvscope: ...and u1's token on the handle still verifies (F123)");
+    snprintf(req, sizeof req, "REVOKE-TOKENS user=%s handle=%s", uh1, hh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK count=1\n"),
+          "rvscope: the handle's own user revokes its token: OK count=1 (the canary)");
+    CHECK(store_verify_token(d.store, th, now, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
+          "rvscope: ...and the token is gone");
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1559,6 +1601,7 @@ int main(void)
     test_recovery_revoke_all();
     test_req7_logged();
     test_enroll_other_users_handle();
+    test_revoke_tokens_scope();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

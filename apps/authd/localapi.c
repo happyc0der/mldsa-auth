@@ -669,7 +669,7 @@ static ev_action_t h_revoke_tokens(authd_app_t *app, authd_slot_t *slot, const r
             !id_valid(handle, handle_len)) {
             return send_err(slot, "malformed");
         }
-        s = store_delete_tokens_for_handle(app->store, handle, handle_len, &n);
+        s = store_delete_tokens_for_handle(app->store, user, user_len, handle, handle_len, &n);   /* F123 */
     } else {
         s = store_delete_tokens_for_user(app->store, user, user_len, &n);
     }

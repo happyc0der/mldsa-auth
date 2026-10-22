@@ -1608,10 +1608,29 @@ store_status_t store_delete_token(store_t *s, const uint8_t token_hash[STORE_HAS
     return delete_where_blob(s, "DELETE FROM tokens WHERE token_hash=?1;", token_hash, STORE_HASH_BYTES, n_out);
 }
 
-store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *handle, size_t handle_len, size_t *n_out)
+store_status_t store_delete_tokens_for_handle(store_t *s, const uint8_t *user_id, size_t user_id_len,
+                                              const uint8_t *handle, size_t handle_len, size_t *n_out)
 {
-    if (s == NULL || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
-    return delete_where_blob(s, "DELETE FROM tokens WHERE handle=?1;", handle, handle_len, n_out);
+    if (n_out != NULL) { *n_out = 0u; }
+    if (s == NULL || !id_ok(user_id, user_id_len) || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
+    /* F123: scoped to the user as well as the handle. Before V4-60 only the
+     * handle was bound, so `REVOKE-TOKENS user=` named one user and revoked
+     * another user's device's tokens. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db, "DELETE FROM tokens WHERE handle=?1 AND user_id=?2;", -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_step(st) != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    } else if (n_out != NULL) {
+        const int ch = sqlite3_changes(s->db);
+        *n_out = (ch > 0) ? (size_t)ch : 0u;
+    }
+    sqlite3_finalize(st);
+    return r;
 }
 
 store_status_t store_delete_tokens_for_user(store_t *s, const uint8_t *user_id, size_t user_id_len, size_t *n_out)
