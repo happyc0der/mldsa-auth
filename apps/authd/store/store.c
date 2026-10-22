@@ -151,6 +151,7 @@ const char *store_status_name(store_status_t st)
     case STORE_ERR_SCHEMA:    return "unsupported-schema-version";
     case STORE_ERR_CRYPTO:    return "crypto-failure";
     case STORE_ERR_CORRUPT:   return "audit-chain-corrupt";
+    case STORE_ERR_DAMAGED:   return "store-corrupt";
     default:                  return "unknown";
     }
 }
@@ -521,7 +522,7 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         randombytes_buf(s->store_id, sizeof s->store_id);
         if ((r = meta_put(s->db, "store_id", s->store_id, sizeof s->store_id)) != STORE_OK) { goto fail_tx; }
     } else if (n != sizeof s->store_id) {
-        r = STORE_ERR_CORRUPT;
+        r = STORE_ERR_DAMAGED;
         goto fail_tx;
     }
 
@@ -539,7 +540,7 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         mldsa_keypair_free(&kp);   /* the secret key is wiped and dropped here */
         if ((r = meta_put(s->db, "decoy_pk", s->decoy_pk, sizeof s->decoy_pk)) != STORE_OK) { goto fail_tx; }
     } else if (n != sizeof s->decoy_pk) {
-        r = STORE_ERR_CORRUPT;
+        r = STORE_ERR_DAMAGED;
         goto fail_tx;
     }
 
@@ -921,7 +922,7 @@ static store_status_t active_key_of(store_t *s, const uint8_t *handle, size_t ha
             if (key_id_out != NULL) { *key_id_out = sqlite3_column_int64(st, 0); }
             size_t n = 0;
             r = copy_blob_col(st, 1, pk_out, STORE_PK_BYTES, &n);
-            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_CORRUPT; }
+            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_DAMAGED; }
         } else if (rc != SQLITE_DONE) {
             r = STORE_ERR_DB;
         }
@@ -1390,7 +1391,7 @@ store_status_t store_lookup_active(const store_t *s,
         if (rc == SQLITE_ROW) {
             size_t n = 0;
             r = copy_blob_col(st, 0, pk_out, STORE_PK_BYTES, &n);
-            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_CORRUPT; }
+            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_DAMAGED; }
             if (r == STORE_OK && user_id_out != NULL) {
                 r = copy_blob_col(st, 1, user_id_out, user_id_cap, user_id_len_out);
             }
@@ -2045,7 +2046,7 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
             if (rc == SQLITE_ROW) {
                 const int n = sqlite3_column_bytes(st, 0);
                 if (n <= 0 || (size_t)n > sizeof h) {
-                    r = STORE_ERR_CORRUPT;
+                    r = STORE_ERR_DAMAGED;
                 } else {
                     memcpy(h, sqlite3_column_blob(st, 0), (size_t)n);
                     hn = (size_t)n;
@@ -2504,7 +2505,7 @@ store_status_t store_handle_last_key(const store_t *s, const uint8_t *handle, si
         if (rc == SQLITE_ROW) {
             size_t n = 0;
             r = copy_blob_col(st, 0, pk_out, STORE_PK_BYTES, &n);
-            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_CORRUPT; }
+            if (r == STORE_OK && n != STORE_PK_BYTES) { r = STORE_ERR_DAMAGED; }
         } else if (rc != SQLITE_DONE) {
             r = STORE_ERR_DB;
         }

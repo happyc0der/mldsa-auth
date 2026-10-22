@@ -292,21 +292,24 @@ su_refused() {
     rc=0
     wait "$supid" || rc=$?
     [ "$rc" -ne 0 ] || fail "the daemon started with $2"
+    # F126 (V4-61): spec §13 -- 3 for a file the configuration names that
+    # cannot be used as configured, 1 for an operation that failed.
+    [ -z "${3:-}" ] || [ "$rc" -eq "$3" ] || fail "the daemon refused $2 with exit code $rc, expected $3 (spec §13, F126)"
     grep -qF "$1" "$TMP/su.log" || fail "the daemon refused $2 without saying '$1': $(cat "$TMP/su.log")"
     for s in su-p su-s su-a; do [ ! -e "$TMP/$s.sock" ] || fail "refusing $2 left $s.sock behind"; done
 }
 chmod 0644 "$TMP/su/pass"
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
-su_refused "passphrase file $TMP/su/pass: permissions" "a group-readable passphrase file"
+su_refused "passphrase file $TMP/su/pass: unsafe-permissions" "a group-readable passphrase file" 3
 chmod 0600 "$TMP/su/pass"; chmod 0644 "$TMP/su/server.ek"
-su_refused "$TMP/su/server.ek: unsafe-permissions" "a group-readable server key"
+su_refused "$TMP/su/server.ek: unsafe-permissions" "a group-readable server key" 3
 chmod 0600 "$TMP/su/server.ek"
 printf 'not the passphrase\n' > "$TMP/su/wrongpass" && chmod 0600 "$TMP/su/wrongpass"
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/wrongpass"
-su_refused "$TMP/su/server.ek: decryption-failed" "the wrong passphrase"
+su_refused "$TMP/su/server.ek: decryption-failed" "the wrong passphrase" 3
 printf 'this file is not a database, whatever its name says\n' > "$TMP/su/garbage.sqlite3"
 su_conf "$TMP/su/garbage.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
-su_refused "$TMP/su/garbage.sqlite3: database-error" "a store file that is not a database"
+su_refused "$TMP/su/garbage.sqlite3: database-error" "a store file that is not a database" 1
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
 "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok.log" 2>&1 &
 SUPID=$!
@@ -318,7 +321,7 @@ while ! grep -q 'event=started' "$TMP/su-ok.log" 2>/dev/null; do
     sleep 0.05
 done
 kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
-echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, and leaving no socket; the undamaged copies start"
+echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 
 # ------------------------------------------------- keygen, enroll, login
 

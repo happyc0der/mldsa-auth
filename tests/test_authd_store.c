@@ -1551,7 +1551,8 @@ int main(void)
     /* ---- V4-45 (audit F122 item 4): a damaged store is refused at open ----
      * store_open reads three values from `meta` and refuses a store whose
      * schema_version is malformed or from a later schema (STORE_ERR_SCHEMA),
-     * or whose store_id or decoy_pk has the wrong length (STORE_ERR_CORRUPT).
+     * or whose store_id or decoy_pk has the wrong length (STORE_ERR_DAMAGED since
+     * V4-61; it was STORE_ERR_CORRUPT, named audit-chain-corrupt, F126).
      * V4-40's coverage run found none of those refusals had ever run. Each
      * case damages one value in a fresh store with raw SQL and needs the open
      * refused with its own status and no handle; the canary reopens the
@@ -1587,12 +1588,12 @@ int main(void)
               "damaged store: a schema_version of 7 bytes is refused as SCHEMA, and no handle is returned" },
             { "UPDATE meta SET value=X'0000000000000002' WHERE key='schema_version';", STORE_ERR_SCHEMA,
               "damaged store: a store from a later schema is refused as SCHEMA, and no handle is returned" },
-            { "UPDATE meta SET value=zeroblob(15) WHERE key='store_id';", STORE_ERR_CORRUPT,
-              "damaged store: a store_id one byte short is refused as CORRUPT, and no handle is returned" },
+            { "UPDATE meta SET value=zeroblob(15) WHERE key='store_id';", STORE_ERR_DAMAGED,
+              "damaged store: a store_id one byte short is refused as DAMAGED (store-corrupt), and no handle is returned" },
             { "UPDATE meta SET value=zeroblob(17) WHERE key='store_id';", STORE_ERR_DB,
               "damaged store: a store_id one byte long is refused (DB: it overruns the read buffer), and no handle is returned" },
-            { "UPDATE meta SET value=zeroblob(1951) WHERE key='decoy_pk';", STORE_ERR_CORRUPT,
-              "damaged store: a decoy_pk one byte short is refused as CORRUPT, and no handle is returned" },
+            { "UPDATE meta SET value=zeroblob(1951) WHERE key='decoy_pk';", STORE_ERR_DAMAGED,
+              "damaged store: a decoy_pk one byte short is refused as DAMAGED (store-corrupt), and no handle is returned" },
         };
         for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
             store_t *d = NULL;
@@ -1615,6 +1616,10 @@ int main(void)
         store_t *again = NULL;
         CHECK(store_open(dbp, KEK, &again) == STORE_OK && again != NULL,
               "damaged store: the same store, repaired, opens again -- the canary");
+        /* F126: what an operator reads. A damaged value is not a broken audit chain. */
+        CHECK(strcmp(store_status_name(STORE_ERR_DAMAGED), "store-corrupt") == 0 &&
+              strcmp(store_status_name(STORE_ERR_CORRUPT), "audit-chain-corrupt") == 0,
+              "damaged store: a damaged value is named store-corrupt, and only the audit chain is audit-chain-corrupt (F126)");
         if (again != NULL) { store_close(again); }
     }
 

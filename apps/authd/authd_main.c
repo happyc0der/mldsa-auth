@@ -198,7 +198,11 @@ int main(int argc, char **argv)
                     cfg.key_passphrase_file, authd_secret_status_name(ps));
             secure_mem_free(kek, STORE_KEK_BYTES);
             free(slots); free(conns);
-            return 3;
+            /* F126 (V4-61): a file the configuration names that cannot be
+             * used as configured is a configuration error, spec §13's 3; only
+             * an internal failure is "operation failed", 1. The same rule as
+             * the server key's, below. */
+            return (ps == AUTHD_SECRET_ERR_CRYPTO) ? 1 : 3;
         }
         const keyfile_status_t ks = keyfile_open(cfg.key_path, cfg.server_id, cfg.server_id_len,
                                                  (const char *)pass, pass_len, &server_kp, kek);
@@ -207,7 +211,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(ks));
             secure_mem_free(kek, STORE_KEK_BYTES);
             free(slots); free(conns);
-            return 1;
+            /* F126: missing, unsafe, malformed, or not opened by the configured
+             * passphrase -- the operator fixes a file or the configuration, as
+             * for the passphrase file above, so 3. Before V4-61 this was 1. */
+            return (ks == KEYFILE_ERR_CRYPTO) ? 1 : 3;
         }
     }
 
