@@ -923,3 +923,60 @@ half microsecond needs about 100,000 a class.
   F135 would give one, and at what cost, is in its audit row.
 - **One path.** Req 4.9 covers every secret-dependent site; this measures
   only §7.3's flow. F17 stays open.
+
+### With the time floor (V4-67)
+
+V4-67 puts the pin's lookup under a 50 µs floor (spec §7.3, erratum 53):
+`authd_conn_resolve_pin` does not return until 50 µs after the lookup
+began. `bench_decoy` gained a third section that times that step in-process
+and counts the resolutions whose lookup alone overran the floor. Same
+machine and method; `build-bench-p` at fingerprint `cf0643399241a0f7`.
+
+**End to end, ClientHello → ServerHello:**
+
+| Run | Medians, real / unknown / revoked | real vs unknown, max \|t\| | revoked vs unknown, max \|t\| |
+|---|---|---|---|
+| default 1 (4,000 a class) | 219.6 / 220.1 / 219.7 µs | 0.94 | 1.56 |
+| default 2 | 214.2 / 214.0 / 214.7 µs | 1.14 | 2.30 |
+| default 3 | 223.5 / 221.1 / 222.3 µs | 2.45 | 2.45 |
+| 100,000 a class, 1 | 217.8 / 218.0 / 218.2 µs | **2.13** | 1.15 |
+| 100,000 a class, 2 | 218.4 / 218.5 / 218.6 µs | **1.80** | 0.91 |
+
+Without the floor, the same 100,000-a-class measurement gave 5.40, 6.05 and
+4.92. With it, the enrolled handle is no longer the slower one, and no run
+shows a difference. Every handshake is about 50 µs later (166 → 218 µs
+median).
+
+**The floored step alone, in-process:**
+
+| Run | Medians, all three classes | Lookups over the floor (real / unknown / revoked) | real vs unknown, max \|t\| |
+|---|---|---|---|
+| 100,000 a class, 1 | 49.96 µs | 16 / 6 / 7 | 3.67 |
+| 100,000 a class, 2 | 49.96 µs | 13 / 8 / 7 | **8.83** |
+
+The second run's 8.83 is real, and it is about one nanosecond. The bench's
+clock ticks every 41 ns, and nearly every sample is 49.96 or 50.00 µs. The
+enrolled class lands on the upper tick slightly more often: at the 50% cut,
+53.1% of its samples against 56.6% of the unknown class's in run 2, and 1.5
+points apart in run 1. That is a mean shift of about 1 ns. The cause is
+where the wait loop exits: it reads the clock until it passes 50 µs, so its
+overshoot depends on where the lookup ended in the loop's read cycle, and
+the two lookups end at different points. End to end this does not show at
+100,000 a class. On the measured noise, showing a 1 ns difference would
+take on the order of 10^10 handshakes.
+
+**Overruns** are lookups that alone took longer than 50 µs, which the floor
+cannot hide. There were 29 enrolled, 14 unknown and 14 revoked in 200,000
+resolutions a class, about 1 in 10,000. That the enrolled count is about
+twice the others in both runs is suggestive at these counts, not
+established: an exact binomial test of 29 against 14 gives p = 0.03,
+two-sided.
+
+**What these numbers do not establish:**
+- No difference below about 1 µs end to end is ruled out by a 100,000 run.
+  The in-process section shows one of about 1 ns.
+- One machine. A slower host's lookups are slower. The floor holds while
+  they stay under 50 µs; a Debug ASan build's lookup on this machine is
+  14–15 µs.
+- A lookup slower than the floor is not hidden: a cold page, a contended
+  store.

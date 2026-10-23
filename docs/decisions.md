@@ -12379,3 +12379,123 @@ and the site stays up.
 - **Gates:** anchors, the claim map (136 findings), the spec's constants and
   vocabularies, the audit table's separators, `node --check` on both
   changed files, and `git diff --check`.
+
+## V4-67 — the pin's time floor, F135 (loop iteration 42; the owner's choice)
+
+### The decision
+
+V4-65 left F135 open with three remedies. The owner chose the time floor
+and asked that it not weaken the protocol's guarantees. It does not: the
+floor only waits. Which key is pinned, every byte of every message, and
+every outcome are what they were. What it costs is time, and what it cannot
+do is hide a lookup slower than itself.
+
+### The floor
+
+`authd_conn_resolve_pin` (in `authd_conn.c`, declared in `authd_conn.h`)
+does what `on_client_hello` did inline: the active key and its user, or the
+decoy key and no user, or -1 if the decoy cannot be read. It now does not
+return until `AUTHD_PIN_FLOOR_NS` after the lookup began, on
+`CLOCK_MONOTONIC`.
+- **The clock** is read before the lookup. A clock that fails ends the wait
+  instead of spinning on.
+- **`on_client_hello`** calls the function and nothing else. The three
+  lines of its decoy branch, which campaign v48b's C1 anchors on, are kept
+  byte for byte.
+- **Two test hooks,** both NULL in the daemon: the clock the floor reads,
+  and an observer that sees each resolution's time before and after the
+  wait.
+
+**Why 50 µs, not the 10 µs first proposed.** The first campaign run, under
+ASan, let FL2 (the wait removed) survive. A Debug ASan lookup on this
+machine takes 14–15 µs, longer than 10 µs, so the floor never waited there,
+and nothing timed on the real clock could tell the wait was gone. The test
+problem has its own fix (below). But the measurement is also about the
+value. A deployment's host may be slower than this one, and a floor below
+its lookup time hides nothing. 50 µs is ten times the Release lookup's 99th
+percentile here and over three times the ASan median.
+- **The cost of 50 µs:** a busy wait of 50 µs of one core per handshake.
+  The daemon-wide limit (`rate_global_per_sec`, default 50) bounds that at
+  0.25% of a core.
+- **Latency:** each login is 50 µs slower, 166 → 218 µs median on this
+  machine.
+- **Spec:** §7.3 and §17 state the value, as erratum 53, and
+  `check_spec_constants.sh` derives it from the header. Set to 20 µs, the
+  gate failed on both lines; the header was restored byte-exact.
+
+### The tests: `test_authd_conn` (222 checks; 13 on the floor)
+
+- **Through the daemon:** six ClientHellos, three enrolled and three
+  unknown. Each must resolve through the floor, none may return before
+  50 µs, and the floor's clock must have started before the lookup. The
+  test requires at least 500 ns before the wait; a lookup takes several
+  µs.
+- **Directly, timed from outside:** the enrolled, unknown and revoked
+  handles each pin the right key and user, and each takes at least 50 µs.
+- **Under a stepped clock,** which reads 1 µs later each time: a
+  resolution reads 0 before the lookup and 1 µs after it, then must keep
+  reading until exactly 50 µs. This shows the wait whatever the build's
+  speed.
+- **The tree's floor is the spec's.**
+
+### Campaign v87, six mutations
+
+| | Mutation | Verdict (ASan, final run) |
+|---|---|---|
+| FL1 | the floor set to 0 | KILLED (5 named) |
+| FL2 | the wait removed | KILLED (5 named); SURVIVED in the first run, before the stepped clock |
+| FL3 | the floor's clock started after the lookup | KILLED (2 named) |
+| FL4 | the decoy path returns before the floor | KILLED (5 named); the first run's prediction named a real-clock check that ASan's slow lookup passed |
+| FL5 | `on_client_hello` resolves the pin without the floor (the code before V4-67) | KILLED (4 named) |
+| FL6 | the decoy path leaves the caller's user length as it was | KILLED (3 named) |
+
+Every source was restored, there was no residue, and every artifact was
+identical to the clean fingerprints. v87 is in `nightly.yml`'s matrix. The
+stated counts are now 384 mutations, 57 campaigns and 424 anchors.
+
+### Does it work?
+
+`bench_decoy` gained a third section: the floored step, in-process, with
+the lookups that overran the floor counted through the observer. The
+numbers are in `bench/results.md`.
+- **End to end, 100,000 a class:** real vs unknown max |t| 2.13 and 1.80,
+  where V4-65 had 5.40, 6.05 and 4.92 without the floor. The enrolled
+  handle is no longer the slower one.
+- **In-process,** the floored step shows |t| 3.67 and 8.83. That is about
+  1 ns. The bench's clock ticks every 41 ns, and almost every sample is
+  49.96 or 50.00 µs; the enrolled class lands on the upper tick a few
+  percent more often. The wait loop reads the clock until it passes 50 µs,
+  so where it exits depends on where the lookup ended in its read cycle.
+  End to end this does not show; showing 1 ns there would take on the
+  order of 10^10 handshakes.
+- **Overruns:** 29 enrolled, 14 unknown and 14 revoked lookups in 200,000
+  a class took longer than the floor alone. The floor does not hide those.
+  The enrolled excess is p = 0.03 (exact binomial, two-sided): suggestive,
+  not established.
+
+**Not established:** the tests pin that the floor exists, waits and starts
+before the lookup. Whether it hides the difference is the benchmark's to
+say, on one machine.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on V4-66's
+  tree plus this step:
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `1d3a5f9b922181ec` | 58/58, `test_authd_conn` (222 checks) among them |
+  | `build-bench-p` | `cf0643399241a0f7` | 53/53; the fingerprint the floor's measurements ran on |
+  | ASan | `26fbaab7a29858ee` | 58/58, instrumentation in all 44 |
+  | UBSan | `45d551d2490c32dc` | 58/58; one runtime error, the planted canary |
+  | fuzz | `15e6a6bd17f5e9cc` | 36/36, and 3/3 |
+
+- **gcc-16** compiles `authd_conn.c`, `test_authd_conn.c` and
+  `bench_decoy.c` at -O0 and -O2 with no diagnostic.
+- **The fuzzer is not slowed** by the floor: `fuzz_authd_conn`'s 60 s smoke,
+  run alone from its regenerated seeds, ran 538,162 inputs (about 9,000 a
+  second). The defensive review of 2026-10-22, with all twelve targets in
+  parallel, ran it at about 7,000 a second.
+- **Gates:** anchors (424, 384 mutations, 57 campaigns), the claim map, the
+  spec's constants (the floor among them) and vocabularies, the audit
+  table's separators, and `git diff --check`.

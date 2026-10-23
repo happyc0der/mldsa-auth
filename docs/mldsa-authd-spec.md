@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.17, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62 errata)
+# mldsa-authd — deployment specification (v1.18, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -403,6 +403,21 @@ point as a valid identity presenting a wrong signature (Req 6).
 This costs one signature per probe, which is the rate limiter's problem, and it
 is the only way to close the enumeration channel without changing the verified
 handshake code.
+
+**The pin's time floor** (erratum 53). Resolving the pin is a store lookup, and
+an active identity's lookup does more work than any other: it joins three
+tables and copies the key and the user id, where every other outcome ends at
+the first index probe. Measured, an active handle's ServerHello came about half
+a microsecond later (audit F135). So the daemon does not proceed until **50 µs**
+after the lookup began, on the monotonic clock, whichever way it went. The
+floor only waits: what is pinned, and every byte and outcome after it, are
+unchanged. It hides only lookups that finish within it; a lookup slower than
+the floor (a cold page, a contended store) is not hidden. 50 µs is ten times
+the lookup's 99th percentile in a Release build on the machine that measured
+it, and over three times its median in a Debug build under AddressSanitizer,
+so a slower host should still finish within it. The wait is busy, and the
+daemon-wide rate limit bounds what it costs: at the default 50 handshakes a
+second, 0.25 % of a core.
 
 **An authenticated login is not a probe** (erratum 38). Every connection pays
 one token from its address's bucket at admission (§7.2), before any signature.
@@ -1112,6 +1127,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
 | Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
+| The pin's time floor | 50 µs from the start of the lookup, not configurable | §7.3 |
 
 The last four are **operator policy with a documented default**, not protocol
 constants: this document fixes no rate limit, and a deployment that wants
@@ -1377,3 +1393,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 52 | 14 | A site issues new recovery codes only on a fresh login by the session's own user, not on a session alone | a session cookie is a weaker credential than the device key and passphrase a login proves; the owner decided that minting codes, which can enroll a new device, needs the stronger one |
+
+### Revision v1.18 (V4-67)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 53 | 7.3, 17 | The pin's resolution does not return until 50 µs after it began, whichever key it pinned | V4-65 measured an active handle's ServerHello about half a microsecond later than a decoy's (F135); the owner chose a time floor |

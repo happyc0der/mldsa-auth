@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 136 findings (F0–F136), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 52 errata, each
+3. The two specifications. The deployment spec's §20 lists 53 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 378 committed defects in 56 campaigns, each of which must be
+- **Mutations**: 384 committed defects in 57 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -499,6 +499,12 @@ upgrade target the URL parser refuses. Both are now answered or closed, and
 the site keeps serving. `site_sessions` runs the site in a child process to
 show it.
 
+V4-67 fixed **F135** with the owner's choice of remedy, a time floor. The
+pin's lookup does not return until 50 µs after it began, whichever key it
+pinned, and at 100,000 round trips a class the difference no longer shows.
+It only waits, so nothing pinned or sent changes. A lookup slower than the
+floor is not hidden; about 1 in 10,000 here.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
@@ -519,8 +525,9 @@ into the journal.
 4. **The decoy flow** (§7.3): an unknown or revoked identity gets a real,
    signed ServerHello and fails at ClientAuth. Is the uniformity real, and is
    what the tests compare (outcomes, not bytes or timing) enough? A
-   benchmark first measured the timing in V4-65: an enrolled handle is about
-   half a microsecond slower (F135).
+   benchmark first measured the timing in V4-65: an enrolled handle was about
+   half a microsecond slower (F135). Since V4-67 a 50 µs floor on the lookup
+   hides it end to end. Is a floor the right remedy?
 5. **The key envelope** (§12): Argon2id and XChaCha20-Poly1305 with the header
    as associated data. Are the parameters and the construction sound?
 6. **The browser trust chain** (§14): the module is compiled from the C core
