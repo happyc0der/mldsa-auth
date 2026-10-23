@@ -25,7 +25,10 @@
  * none -- only that this many samples on this machine did not show one. The
  * hand control in docs/decisions.md (V4-65) puts the default's reach at about
  * 2-5 us. MLDSA_DECOY_SAMPLES=100000 reaches below 1 us, and found F135: an
- * enrolled handle's lookup is about 0.3 us slower than a miss.
+ * enrolled handle's lookup is about 0.3 us slower than a miss. V4-67 puts the
+ * lookup under a time floor (authd_conn_resolve_pin); a third section times
+ * that step, and counts the resolutions whose lookup overran the floor, which
+ * it cannot hide.
  *
  * A measurement, not a gate: bench_smoke runs it with a handful of samples to
  * keep it building and running, and asserts only that every ServerHello
@@ -66,6 +69,16 @@ static double welch_t(const sample_t *a, const sample_t *b, double cut, size_t *
     const double vb = (qb - (double)nb * mb * mb) / (double)(nb - 1);
     const double se = sqrt(va / (double)na + vb / (double)nb);
     return (se > 0.0) ? (ma - mb) / se : 0.0;
+}
+
+/* The floor's test hook (authd_conn.c): each resolution's time before the wait. */
+typedef void (*authd_pin_observer_t)(uint64_t before_ns, uint64_t after_ns, int decoy);
+void authd_conn_arm_pin_observer(authd_pin_observer_t fn);
+static uint64_t g_before_ns;
+static void note_before(uint64_t before_ns, uint64_t after_ns, int decoy)
+{
+    (void)after_ns; (void)decoy;
+    g_before_ns = before_ns;
 }
 
 static double median_of(const sample_t *s)
@@ -281,6 +294,39 @@ int main(int argc, char **argv)
     compare("real vs unknown", &l[REAL], &l[UNKNOWN]);
     compare("revoked vs unknown", &l[REVOKED], &l[UNKNOWN]);
     for (size_t k = 0; k < CLASSES; k++) { free(l[k].v); }
+
+    /* The same step as on_client_hello runs it since V4-67: under the time
+     * floor. An overrun is a resolution whose lookup alone took longer than
+     * the floor; the floor cannot hide those. */
+    bench_section("authd_conn_resolve_pin (the lookup under its time floor), in-process");
+    sample_t f[CLASSES];
+    size_t overruns[CLASSES] = { 0 };
+    for (size_t k = 0; k < CLASSES; k++) {
+        f[k].v = malloc(per_class * sizeof(double));
+        f[k].n = 0;
+        BENCH_REQUIRE(f[k].v != NULL, "sample buffer");
+    }
+    authd_conn_arm_pin_observer(note_before);
+    for (size_t i = 0; i < total; i++) {
+        const size_t k = order[i];
+        uint8_t pk[STORE_PK_BYTES], uid[STORE_ID_MAX];
+        size_t uid_len = 0;
+        g_before_ns = 0;
+        const uint64_t t0 = bench_now_ns();
+        const int pin = authd_conn_resolve_pin(&d.app, handles[k], HANDLE_LEN, pk, uid, sizeof uid, &uid_len);
+        const uint64_t t1 = bench_now_ns();
+        BENCH_REQUIRE(pin == (k == REAL ? 0 : 1), "the %s handle's resolution", class_name[k]);
+        if (g_before_ns > AUTHD_PIN_FLOOR_NS) { overruns[k]++; }
+        f[k].v[f[k].n++] = (double)(t1 - t0) / 1000.0;
+    }
+    authd_conn_arm_pin_observer(NULL);
+    for (size_t k = 0; k < CLASSES; k++) {
+        printf("  %-8s n=%zu  median %.2f us  lookup over the %u us floor: %zu\n", class_name[k], f[k].n,
+               median_of(&f[k]), (unsigned)(AUTHD_PIN_FLOOR_NS / 1000u), overruns[k]);
+    }
+    compare("real vs unknown", &f[REAL], &f[UNKNOWN]);
+    compare("revoked vs unknown", &f[REVOKED], &f[UNKNOWN]);
+    for (size_t k = 0; k < CLASSES; k++) { free(f[k].v); }
 
     for (size_t k = 0; k < CLASSES; k++) { free(c[k].v); }
     free(order);

@@ -1,0 +1,6 @@
+FL1|^test_authd_conn$|floor: the tree's floor is spec 7.3's 50 us;floor: under a stepped clock, an enrolled handle's resolution waits to exactly 50 us
+FL2|^test_authd_conn$|floor: under a stepped clock, an enrolled handle's resolution waits to exactly 50 us;floor: under a stepped clock, an unknown handle's resolution waits to exactly 50 us
+FL3|^test_authd_conn$|floor: the floor's clock started before the lookup, not after it
+FL4|^test_authd_conn$|floor: all 6 ClientHellos, 3 enrolled and 3 unknown, resolved their pin through the floor;floor: under a stepped clock, an unknown handle's resolution waits to exactly 50 us
+FL5|^test_authd_conn$|floor: all 6 ClientHellos, 3 enrolled and 3 unknown, resolved their pin through the floor
+FL6|^test_authd_conn$|floor: an unknown handle pins the decoy key and no user, and takes at least 50 us
