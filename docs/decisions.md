@@ -12279,3 +12279,103 @@ should: both take the decoy branch.
   quoted here and in `bench/results.md` was read from a saved output.
 - **Gates:** anchors, the claim map (135 findings), the spec's constants and
   vocabularies, the audit table's separators, and `git diff --check`.
+
+## V4-66 — one malformed request no longer ends the reference site, F136 (loop iteration 41: fixes)
+
+### F136 (Medium)
+
+The defensive review after V4-65 read `examples/site-node/server.mjs` as it
+stands after V4-58 and V4-62. The request handler is `async` and calls each
+API route as `return route(...)` inside its `try`. Without `await`, a
+rejected route is not caught there. The handler's promise rejects, nothing
+handles it, and Node 24 ends the process on an unhandled rejection.
+
+Reproduced locally, each against a fresh site process, with no daemon
+needed:
+- a POST body that is not JSON;
+- a JSON `null`, which a route then destructures;
+- a body over 16 KiB, which `body()` refused by rejecting.
+
+Each ended the site with exit code 1. A second path is the `upgrade`
+handler, which parsed `req.url` outside any `catch`. Three targets the URL
+parser refuses (`http://[`, `http://a:b:c/authd/v1`, `//[::1`) ended it the
+same way.
+- **What stops it:** nothing in the site. The Origin check binds browsers,
+  not other clients.
+- **Restart:** the session table is in memory, so a restarted site has
+  logged everyone out.
+- **The runbook's deployment:** Caddy routes `/authd/v1*` to the daemon and
+  refuses unparseable targets itself, so the body cases reach the site and
+  the upgrade cases most likely do not.
+- **Not a crash:** a client that resets in the middle of a body. The site
+  stayed up.
+
+Medium, as F132 (the unbounded session table) was: an unauthenticated
+denial of service against the reference site, with no effect on the daemon.
+
+### The fix
+
+- **The route is awaited,** so its rejection reaches the `catch`. A refused
+  body is answered with its status, and anything else with 500. If an
+  answer has started, or the body was dropped, the connection is closed.
+- **`body()` accepts only a JSON object:** 400 for anything else, `null`
+  and arrays included. Over 16 KiB, it reads to the end and then answers
+  413, because an answer sent while the client is still sending can be
+  lost to a reset. Past 1 MiB it drops the connection.
+- **The `upgrade` handler** closes a target it cannot parse, and any
+  upgrade when no daemon address was given. That address is used as
+  `opt.authdWs.split`, which would throw on `undefined`.
+
+A first version tested `req.destroyed` to mean "the body was dropped". Node
+destroys every request once its body has been read, so every refused body
+went unanswered. The new checks showed it (no response, site alive), and
+the catch now tests the refusal's own status instead.
+
+### The test: `site_sessions` (36 checks, 8 new)
+
+The new section runs the site in a child process. A check cannot report
+from a process that has ended, and ending it is what F136 did.
+- **Canary:** the child serves.
+- **Four malformed POSTs** must each be answered with the right status,
+  with the site alive after each: not JSON → 400, `null` → 400, an array
+  → 400, over 16 KiB → 413.
+- **Two upgrades** to unparseable targets must be closed, with the site
+  alive.
+- **At the end,** the site still serves.
+
+Against the unfixed site, every check after the canary fails by name, and
+the test ends normally.
+
+### Hand controls
+
+Each was run with `tools/hand_control.py --interpreted` against
+`site_sessions`. Each was KILLED by its named check, and `server.mjs` was
+restored byte-exact (clean fingerprint `1576a46ed9f5`).
+
+| | Mutation | Killed by |
+|---|---|---|
+| HC1 | `return await route(...)` back to `return route(...)` | "a body that is not JSON …" (no response; the site exited) |
+| HC2 | the `upgrade` handler's `try` around the URL parse removed | "an upgrade to \"http://[\" …" |
+| HC3 | `body()`'s JSON-object check removed | "a JSON array …" (403) |
+| HC4 | 413 dropped from the catch's statuses | "a body over 16 KiB …" (500) |
+
+The scratch repros were run again on the fixed site: every case answered or
+closed, the site alive, and the next request 200. A 2 MiB body is dropped,
+and the site stays up.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on V4-65's
+  tree plus this step. The fingerprints equal V4-65's: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `29ce9d76178af29a` | 58/58, `site_sessions` (36 checks) and `browser_e2e` among them |
+  | `build-bench-p` | `eae0f634d9f0fcb1` | 53/53 |
+  | ASan | `73f6dda252e09fe2` | 58/58, instrumentation in all 44 |
+  | UBSan | `633d021f348216f4` | 58/58; one runtime error, the planted canary |
+  | fuzz | `15594e190c8df97b` | 36/36, and 3/3 |
+
+- **Gates:** anchors, the claim map (136 findings), the spec's constants and
+  vocabularies, the audit table's separators, `node --check` on both
+  changed files, and `git diff --check`.

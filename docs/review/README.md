@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 135 findings (F0–F135), with severity, evidence and
+   register](../v4/audit.md). 136 findings (F0–F136), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 52 errata, each
    citing the finding that forced it.
@@ -492,6 +492,12 @@ a class over loopback, and the cause is the store lookup: a hit does more
 work than a miss. Revoked and unknown handles do not differ. A prober can
 learn only whether a handle it already holds is active, since handles cannot
 be guessed. The remedy is the owner's call.
+
+V4-66 fixed **F136** (Med): one malformed request ended the reference
+site's process. A route's error escaped the request handler, and so did an
+upgrade target the URL parser refuses. Both are now answered or closed, and
+the site keeps serving. `site_sessions` runs the site in a child process to
+show it.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
