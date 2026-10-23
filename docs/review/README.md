@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 134 findings (F0–F134), with severity, evidence and
+   register](../v4/audit.md). 135 findings (F0–F135), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 52 errata, each
    citing the finding that forced it.
@@ -93,7 +93,7 @@ page said only F91 until V4-38, F120):
 |---|---|---|
 | F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure ([coverage.md](../v4/coverage.md)), and the security checks it found untested (F122) are all covered, the last (`REVOKE-TOKENS handle=`) in V4-60. The wasm build is not measured |
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
-| F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11 |
+| F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite
@@ -485,6 +485,14 @@ wait for ever on a browser that had closed its DevTools socket or died, and
 V4-61's CI ran it into the 600 s limit with every check passed. Every wait in
 the teardown is bounded now, and a killed browser is closed in milliseconds.
 
+V4-65 measured the decoy flow's timing for the first time (`bench_decoy`),
+and found **F135** (Low, open). An enrolled handle's ServerHello comes about
+half a microsecond later than a decoy's. It showed only at 100,000 round trips
+a class over loopback, and the cause is the store lookup: a hit does more
+work than a miss. Revoked and unknown handles do not differ. A prober can
+learn only whether a handle it already holds is active, since handles cannot
+be guessed. The remedy is the owner's call.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
@@ -504,7 +512,9 @@ into the journal.
    stop login-CSRF, given that the code rides a same-origin POST?
 4. **The decoy flow** (§7.3): an unknown or revoked identity gets a real,
    signed ServerHello and fails at ClientAuth. Is the uniformity real, and is
-   what the tests compare (outcomes, not bytes or timing) enough?
+   what the tests compare (outcomes, not bytes or timing) enough? A
+   benchmark first measured the timing in V4-65: an enrolled handle is about
+   half a microsecond slower (F135).
 5. **The key envelope** (§12): Argon2id and XChaCha20-Poly1305 with the header
    as associated data. Are the parameters and the construction sound?
 6. **The browser trust chain** (§14): the module is compiled from the C core

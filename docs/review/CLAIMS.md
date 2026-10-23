@@ -312,7 +312,7 @@ the most important thing on this page.
 - check `test_authd_conn` "decoy: a SUPERSEDED key is refused on the known-handle path -- the new key is pinned, not the decoy"
 - check `test_authd_store` "damaged store: a decoy_pk one byte short is refused as DAMAGED (store-corrupt), and no handle is returned"
 - mutation `v77 SD5` — a decoy key of the wrong length is accepted at open, so the decoy ServerHello would carry it
-**Not established:** the lengths are equal by construction -- one code path builds every ServerHello from fixed-size fields -- so no mutation isolates the length check; it pins the invariant. No test compares the bytes (fresh per handshake), the close, or timing, and ProVerif does not model the decoy.
+**Not established:** the lengths are equal by construction -- one code path builds every ServerHello from fixed-size fields -- so no mutation isolates the length check; it pins the invariant. No test compares the bytes (fresh per handshake), the close, or timing, and ProVerif does not model the decoy. Since V4-65 `bench_decoy` measures the timing (a benchmark, not a test): an enrolled handle's ServerHello is about half a microsecond later than a decoy's (F135, open); revoked and unknown handles do not differ.
 
 ### D7 — No silent key rotation
 - check `test_authd_store` "a known handle presenting a different key is rejected (Req 7)"
