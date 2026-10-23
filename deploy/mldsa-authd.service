@@ -18,7 +18,7 @@ Documentation=https://github.com/happyc0der/mldsa-auth
 # The daemon binds a Unix socket the proxy connects to; it does not require the
 # proxy, and it must be able to start before it so the socket exists when the
 # proxy first tries.
-After=network-target.service network.target
+After=network.target
 Wants=network.target
 
 [Service]
