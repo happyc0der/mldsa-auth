@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -470,6 +471,139 @@ static void test_revoked(void)
     CHECK(d.app.logins_issued == 1u, "revoked: still only the pre-revocation login");
     client_close(&c2);
     mldsa_keypair_free(&kp);
+    daemon_stop(&d);
+}
+
+/* --- the pin's time floor (V4-67, audit F135, spec 7.3 erratum 53) ------ */
+
+/* The floor spec 7.3 states. The tree's constant is checked against it, so a
+ * floor quietly lowered fails here, not only in the spec gate. */
+#define SPEC_PIN_FLOOR_NS 50000u
+/* A pin lookup prepares and runs a three-table query, several microseconds on
+ * every machine this suite has run on. A resolution whose time before the
+ * wait is under this did not start the floor's clock before the lookup. */
+#define LOOKUP_AT_LEAST_NS 500u
+
+typedef int (*authd_pin_clock_t)(uint64_t *now_ns);
+typedef void (*authd_pin_observer_t)(uint64_t before_ns, uint64_t after_ns, int decoy);
+void authd_conn_arm_pin_clock(authd_pin_clock_t fn);
+void authd_conn_arm_pin_observer(authd_pin_observer_t fn);
+
+static struct { int calls, decoys; uint64_t min_before_ns, min_after_ns, last_before_ns, last_after_ns; } g_pins;
+static void pin_observer(uint64_t before_ns, uint64_t after_ns, int decoy)
+{
+    g_pins.calls++;
+    g_pins.decoys += (decoy != 0);
+    if (before_ns < g_pins.min_before_ns) { g_pins.min_before_ns = before_ns; }
+    if (after_ns < g_pins.min_after_ns) { g_pins.min_after_ns = after_ns; }
+    g_pins.last_before_ns = before_ns;
+    g_pins.last_after_ns = after_ns;
+}
+
+/* A clock that reads 1 us later each time it is read. */
+static uint64_t g_step_ns;
+static int stepped_clock(uint64_t *now_ns)
+{
+    *now_ns = g_step_ns;
+    g_step_ns += 1000u;
+    return 0;
+}
+
+static uint64_t mono_now_ns(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) { return 0u; }
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+static void test_pin_floor(void)
+{
+    static const uint8_t HANDLE_REV[] = { 'd','1','r','r' };
+    daemon_t d;
+    mldsa_keypair_t good, other, rev;
+    CHECK(daemon_start(&d, 4, "floor.sqlite3") == 0, "floor: daemon starts");
+    CHECK(mldsa_keypair_generate(&good) == 0 && mldsa_keypair_generate(&other) == 0 &&
+          mldsa_keypair_generate(&rev) == 0, "floor: keys");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &good);
+    enroll(&d, HANDLE_REV, sizeof HANDLE_REV, &rev);
+    CHECK(store_revoke_device(d.store, HANDLE_REV, sizeof HANDLE_REV, "test", NULL, 0) == STORE_OK,
+          "floor: the second device is revoked");
+    CHECK(AUTHD_PIN_FLOOR_NS == SPEC_PIN_FLOOR_NS, "floor: the tree's floor is spec 7.3's 50 us");
+
+    /* (1) Through the daemon: three ClientHellos for the enrolled handle and
+     * three for an unknown one, each resolving its pin through the floor. */
+    memset(&g_pins, 0, sizeof g_pins);
+    g_pins.min_before_ns = UINT64_MAX;
+    g_pins.min_after_ns = UINT64_MAX;
+    authd_conn_arm_pin_observer(pin_observer);
+    for (int i = 0; i < 3; i++) {
+        client_t c;
+        (void)client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &good);
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        (void)client_handshake(&d, &c, HANDLE_UNK, sizeof HANDLE_UNK, &other);
+        client_close(&c);
+        (void)PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+    }
+    authd_conn_arm_pin_observer(NULL);
+    CHECK(g_pins.calls == 6 && g_pins.decoys == 3,
+          "floor: all 6 ClientHellos, 3 enrolled and 3 unknown, resolved their pin through the floor");
+    CHECK(g_pins.calls > 0 && g_pins.min_after_ns >= SPEC_PIN_FLOOR_NS,
+          "floor: no resolution, real or decoy, returned before 50 us");
+    CHECK(g_pins.calls > 0 && g_pins.min_before_ns >= LOOKUP_AT_LEAST_NS,
+          "floor: the floor's clock started before the lookup, not after it");
+
+    /* (2) Called directly and timed from outside: each kind of handle pins
+     * what it must and takes at least the floor. */
+    static const struct { const uint8_t *h; size_t hl; int want; const char *what; } cases[] = {
+        { HANDLE1, sizeof HANDLE1, 0,
+          "floor: an enrolled handle pins its own key and user, and takes at least 50 us" },
+        { HANDLE_UNK, sizeof HANDLE_UNK, 1,
+          "floor: an unknown handle pins the decoy key and no user, and takes at least 50 us" },
+        { HANDLE_REV, sizeof HANDLE_REV, 1,
+          "floor: a revoked handle pins the decoy key and no user, and takes at least 50 us" },
+    };
+    uint8_t decoy[STORE_PK_BYTES];
+    CHECK(store_get_decoy_pk(d.store, decoy) == STORE_OK, "floor: the store's decoy key reads");
+    for (size_t k = 0; k < sizeof cases / sizeof cases[0]; k++) {
+        uint8_t pk[STORE_PK_BYTES], uid[STORE_ID_MAX];
+        size_t uid_len = 99u;
+        const uint64_t t0 = mono_now_ns();
+        const int pin = authd_conn_resolve_pin(&d.app, cases[k].h, cases[k].hl, pk, uid, sizeof uid, &uid_len);
+        const uint64_t t1 = mono_now_ns();
+        const int pinned_right = (cases[k].want == 0)
+            ? (memcmp(pk, good.public_key, STORE_PK_BYTES) == 0 &&
+               uid_len == sizeof USER1 && memcmp(uid, USER1, sizeof USER1) == 0)
+            : (memcmp(pk, decoy, STORE_PK_BYTES) == 0 && uid_len == 0u);
+        CHECK(pin == cases[k].want && pinned_right && t0 != 0u && t1 - t0 >= SPEC_PIN_FLOOR_NS, cases[k].what);
+    }
+
+    /* (3) Under a stepped clock the wait shows whatever the build's speed: a
+     * resolution reads the clock before the lookup (0) and after it (1 us),
+     * then must go on reading it until exactly the floor. In a Debug ASan
+     * build a real lookup takes 14-15 us, longer than the floor once was, and
+     * then no real-clock check could see whether the wait was there. */
+    authd_conn_arm_pin_clock(stepped_clock);
+    authd_conn_arm_pin_observer(pin_observer);
+    static const struct { const uint8_t *h; size_t hl; const char *what; } stepped[] = {
+        { HANDLE1, sizeof HANDLE1, "floor: under a stepped clock, an enrolled handle's resolution waits to exactly 50 us" },
+        { HANDLE_UNK, sizeof HANDLE_UNK, "floor: under a stepped clock, an unknown handle's resolution waits to exactly 50 us" },
+    };
+    for (size_t k = 0; k < sizeof stepped / sizeof stepped[0]; k++) {
+        uint8_t pk[STORE_PK_BYTES], uid[STORE_ID_MAX];
+        size_t uid_len = 0;
+        memset(&g_pins, 0, sizeof g_pins);
+        g_step_ns = 0;
+        (void)authd_conn_resolve_pin(&d.app, stepped[k].h, stepped[k].hl, pk, uid, sizeof uid, &uid_len);
+        CHECK(g_pins.calls == 1 && g_pins.last_before_ns == 1000u && g_pins.last_after_ns == SPEC_PIN_FLOOR_NS,
+              stepped[k].what);
+    }
+    authd_conn_arm_pin_observer(NULL);
+    authd_conn_arm_pin_clock(NULL);
+
+    mldsa_keypair_free(&good);
+    mldsa_keypair_free(&other);
+    mldsa_keypair_free(&rev);
     daemon_stop(&d);
 }
 
@@ -1435,6 +1569,7 @@ int main(void)
     test_login();
     test_uniform_responder();
     test_revoked();
+    test_pin_floor();
     test_not_permitted();
     test_rotate();
     test_rotate_drop_tokens();

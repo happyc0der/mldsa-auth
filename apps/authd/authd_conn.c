@@ -1,6 +1,7 @@
 #include "authd_conn.h"
 
 #include <string.h>
+#include <time.h>
 
 #include <sodium.h>
 
@@ -180,6 +181,61 @@ static ev_action_t fail_with_error(authd_slot_t *slot, authd_conn_t *c, uint8_t 
     return EV_ACTION_CLOSE;
 }
 
+/* --- the pin's time floor (V4-67, F135; see authd_conn.h) ---------------- */
+
+/* Test hooks, both NULL in the daemon: the clock the floor reads (NULL means
+ * CLOCK_MONOTONIC), and an observer that sees each resolution's time before
+ * and after the wait. The clock is a hook because a real lookup in a slow
+ * build can take longer than the floor, and then no real-clock check can see
+ * whether the wait is there (V4-67's first campaign: FL2 survived under ASan). */
+typedef int (*authd_pin_clock_t)(uint64_t *now_ns);
+typedef void (*authd_pin_observer_t)(uint64_t before_ns, uint64_t after_ns, int decoy);
+static authd_pin_clock_t g_pin_clock = NULL;
+static authd_pin_observer_t g_pin_observer = NULL;
+void authd_conn_arm_pin_clock(authd_pin_clock_t fn);
+void authd_conn_arm_pin_clock(authd_pin_clock_t fn) { g_pin_clock = fn; }
+void authd_conn_arm_pin_observer(authd_pin_observer_t fn);
+void authd_conn_arm_pin_observer(authd_pin_observer_t fn) { g_pin_observer = fn; }
+
+static int mono_ns(uint64_t *out)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return -1;
+    }
+    *out = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+    return 0;
+}
+
+int authd_conn_resolve_pin(authd_app_t *app, const uint8_t *handle, size_t handle_len,
+                           uint8_t pk[STORE_PK_BYTES],
+                           uint8_t *user_id, size_t user_id_cap, size_t *user_id_len)
+{
+    const authd_pin_clock_t now = (g_pin_clock != NULL) ? g_pin_clock : mono_ns;
+    uint64_t t0 = 0, t = 0;
+    const int timed = (now(&t0) == 0);
+    int pin;
+    if (store_lookup_active(app->store, handle, handle_len, pk, user_id, user_id_cap, user_id_len, NULL) == STORE_OK) {
+        pin = 0;
+    } else if (store_get_decoy_pk(app->store, pk) == STORE_OK) {
+        *user_id_len = 0;
+        pin = 1;
+    } else {
+        return -1;
+    }
+    /* The floor. A clock that fails ends the wait rather than spinning on. */
+    if (timed && now(&t) == 0) {
+        const uint64_t before = t - t0;
+        while (t - t0 < AUTHD_PIN_FLOOR_NS && now(&t) == 0) {
+            /* wait */
+        }
+        if (g_pin_observer != NULL) {
+            g_pin_observer(before, t - t0, pin);
+        }
+    }
+    return pin;
+}
+
 /* --- AWAIT_CH ------------------------------------------------------------ */
 
 static ev_action_t on_client_hello(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c,
@@ -195,18 +251,18 @@ static ev_action_t on_client_hello(authd_app_t *app, authd_slot_t *slot, authd_c
         return EV_ACTION_CLOSE;   /* no session exists yet: nothing to reply with */
     }
 
-    /* Resolve the pin. Every not-active outcome -- unknown, revoked,
-     * superseded, disabled -- lands in the same branch and gets the decoy. */
+    /* Resolve the pin, under its time floor (F135). Every not-active outcome
+     * -- unknown, revoked, superseded, disabled -- gets the decoy. */
     uint8_t pk[STORE_PK_BYTES];
-    store_status_t st = store_lookup_active(app->store, ch.id, ch.id_len, pk,
-                                            c->user_id, sizeof c->user_id, &c->user_id_len, NULL);
-    if (st == STORE_OK) {
+    const int pin = authd_conn_resolve_pin(app, ch.id, ch.id_len, pk,
+                                           c->user_id, sizeof c->user_id, &c->user_id_len);
+    if (pin < 0) {
+        authd_log_slot(AUTHD_LOG_ERROR, "decoy-unavailable", slot->index);
+        return EV_ACTION_CLOSE;
+    }
+    if (pin == 0) {
         c->decoy = 0;
     } else {
-        if (store_get_decoy_pk(app->store, pk) != STORE_OK) {
-            authd_log_slot(AUTHD_LOG_ERROR, "decoy-unavailable", slot->index);
-            return EV_ACTION_CLOSE;
-        }
         c->decoy = 1;
         c->user_id_len = 0;
         app->decoy_pins++;

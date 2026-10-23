@@ -174,6 +174,37 @@ typedef struct {
     uint64_t swept_tickets;
 } authd_app_t;
 
+/* THE PIN'S TIME FLOOR (V4-67, audit F135, spec 7.3). Resolving the pin is a
+ * store lookup, and the two outcomes cost different amounts: a hit runs the
+ * three-table join and copies the key and the user id, a miss ends at the
+ * first index probe. V4-65's bench_decoy measured the hit about 0.3 us slower
+ * in-process and half a microsecond end to end, enough at 100,000 samples a
+ * class to tell an active handle from any other. So a resolution does not
+ * return until AUTHD_PIN_FLOOR_NS after it began, on the monotonic clock,
+ * whichever way it went.
+ *
+ * It only waits. Which key is pinned, and every byte and outcome after it,
+ * are unchanged. What it cannot hide is a lookup slower than the floor (a cold
+ * page, a busy store); bench_decoy counts those through the test hook in
+ * authd_conn.c.
+ *
+ * Why 50 us. The lookup's 99th percentile is about 5 us in a Release build on
+ * the bench machine (V4-65), but its median is 14-15 us in a Debug ASan build
+ * on the same machine (V4-67), and a deployment's host may be slower than
+ * either. 10 us, the first value, was below the ASan figure, so it would not
+ * have hidden anything on a host that slow. The wait is a busy one: 50 us of
+ * one core a handshake, which rate_global_per_sec (default 50 a second) bounds
+ * at 0.25 % of a core. */
+#define AUTHD_PIN_FLOOR_NS 50000u
+
+/* Resolves the pin for a claimed identity under the floor above: the active
+ * key and its user, or -- for unknown, revoked, superseded and disabled
+ * identities alike -- the store's decoy key and no user. Returns 0 for a real
+ * pin, 1 for the decoy, and -1 if the decoy key could not be read. */
+int authd_conn_resolve_pin(authd_app_t *app, const uint8_t *handle, size_t handle_len,
+                           uint8_t pk[STORE_PK_BYTES],
+                           uint8_t *user_id, size_t user_id_cap, size_t *user_id_len);
+
 /* Clock adaptor for the pending store and the session: both take the
  * library's handshake_clock_fn and are given `app` as the context. */
 uint64_t authd_app_clock(void *ctx);

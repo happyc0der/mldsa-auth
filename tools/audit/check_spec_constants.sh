@@ -186,6 +186,15 @@ in_s14() { case "$S14" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
 in_s14 "passphrase: minimum length"   "at least $PP_CP characters"
 in_s14 "passphrase: estimate floor"   "at least $PP_BITS bits"
 in_s14 "passphrase: common list size" "$PP_N_FMT entries"
+# --- the pin's time floor, §7.3 and §17 (V4-67, erratum 53) ------------------
+# The value comes from authd_conn.h; the spec states it in µs, bold in §7.3's
+# paragraph and in §17's limits table.
+FLOOR_NS=$(hdr AUTHD_PIN_FLOOR_NS apps/authd/authd_conn.h)
+FLOOR_US=$((FLOOR_NS / 1000))
+S73=$(awk '/^### 7\.3 /{f=1} /^## 8\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
+case "$S73" in *"**$FLOOR_US µs**"*) printf '  ok    %-34s %s\n' "pin floor: §7.3" "$FLOOR_US µs";;
+                *) printf '  FAIL  %-34s derived %s µs, not in §7.3\n' "pin floor: §7.3" "$FLOOR_US"; fail=1;; esac
+check "pin floor: §17's table" "| The pin's time floor | $FLOOR_US µs"
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"
