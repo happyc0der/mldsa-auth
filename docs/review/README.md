@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 136 findings (F0–F136), with severity, evidence and
+   register](../v4/audit.md). 137 findings (F0–F137), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 53 errata, each
+3. The two specifications. The deployment spec's §20 lists 54 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -505,6 +505,15 @@ pinned, and at 100,000 round trips a class the difference no longer shows.
 It only waits, so nothing pinned or sent changes. A lookup slower than the
 floor is not hidden; about 1 in 10,000 here.
 
+V4-68 fixed **F137** (Med), found answering the owner's question whether the
+system is secure end to end. The threat model said an attacker inside TLS
+could not impersonate the site. That is true for the CLI, and not for a
+browser, whose page code arrives over that TLS on every visit. And the
+browser client stored its server pin but logged in with whatever key the
+page offered. It now uses the pin and refuses a page offering another, and
+the threat model, spec §14 (erratum 54) and the runbook say what a browser
+still trusts TLS for.
+
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
 until V4-21: it takes a type of its own now, so a bare secret no longer compiles
@@ -532,7 +541,8 @@ into the journal.
    as associated data. Are the parameters and the construction sound?
 6. **The browser trust chain** (§14): the module is compiled from the C core
    with a pinned Emscripten, checked against a native known-answer golden, and
-   served under a strict CSP. What remains trusted that should not be?
+   served under a strict CSP. What remains trusted that should not be? Since
+   V4-68 the answer the project gives is TLS, for the page's own code (F137).
 7. **The findings above**, and the three fixed in V4-14c: are the fixes
    whole?
 

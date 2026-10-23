@@ -425,6 +425,23 @@ The enrollment page says these itself; your help page should too.
 - **Script injected into your site can use an unlocked key.** No origin-level
   bug is survivable; keep the CSP exactly as it is.
 - A copied blob is an undetectable clone, and there is no hardware backing.
+- **A browser trusts your TLS for the page itself** (F137). The page's code
+  arrives over it on every visit, so whoever controls your certificate or your
+  proxy controls what runs where the key is unlocked. The CLI does not depend
+  on it. Keep the Caddyfile's HSTS header, publish a CAA record naming your
+  certificate authority, and watch certificate-transparency logs for your
+  name. Check that the TLS key exchange is post-quantum, because recovery
+  codes cross it, shown once and typed at recovery:
+
+  ```bash
+  openssl s_client -connect authd.example.com:443 -groups X25519MLKEM768 </dev/null 2>&1 | grep "Negotiated TLS1.3 group"
+  ```
+
+  It prints `Negotiated TLS1.3 group: X25519MLKEM768` when the server offers
+  it. Offered only that group, a server without it fails the handshake, and
+  the line reads `<NULL>`. That needs OpenSSL 3.5 or later (checked with
+  3.6.4 against hosts of both kinds). A browser shows the key exchange in its developer tools' Security
+  panel.
 
 ## 18. Check it from a phone
 
@@ -498,4 +515,8 @@ Common ones, and what they actually are:
 - The head MAC is not published anywhere automatically (spec §18) — step 12 is
   manual, and a timer is your job.
 - Server identity-key rotation is not specified: changing it means
-  redistributing `server.pub` to every client.
+  redistributing `server.pub` to every client. Browsers pin the key at
+  enrollment and refuse another (F137), so every browser identity must be
+  enrolled again.
+- It does not protect browser users from whoever controls the site's TLS
+  (F137, §17 above).

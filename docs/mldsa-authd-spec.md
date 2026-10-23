@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.18, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67 errata)
+# mldsa-authd — deployment specification (v1.19, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -854,6 +854,15 @@ further (erratum 31).
 The wasm build requires `-sSTACK_SIZE=8MB` — the 64 KiB default faults
 immediately on this codebase's 4 KB keys.
 
+**The server pin, and what it cannot do** (erratum 54). A login and a rotation
+use the server key pinned in IndexedDB at enrollment, and refuse a page that
+offers another before anything is sent. The pin holds only while the page's
+code is the site's. That code arrives over TLS on every visit, so against
+whoever controls the site's TLS a browser has TLS's protection, not the
+protocol's. That means a mis-issued certificate, a compromised proxy, or one
+day a quantum computer forging TLS's certificate signatures. The CLI's code
+and pin are local, and it does not depend on TLS.
+
 **The module's contract** (V4-13b, addition 32). It is built with **Emscripten
 6.0.9** exactly, and its known-answer test must reproduce the native golden
 (`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
@@ -1399,3 +1408,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 53 | 7.3, 17 | The pin's resolution does not return until 50 µs after it began, whichever key it pinned | V4-65 measured an active handle's ServerHello about half a microsecond later than a decoy's (F135); the owner chose a time floor |
+
+### Revision v1.19 (V4-68)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 54 | 14 | A login and a rotation use the server key pinned at enrollment and refuse a page offering another; and the browser's dependence on TLS for the page's own code is stated | the client stored the pin but logged in with whatever key the page offered, and the threat model credited the browser with protection against an attacker inside TLS that only the CLI has (F137) |
