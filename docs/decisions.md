@@ -12529,3 +12529,99 @@ joins this landing.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-68 — the browser uses its pin, and the threat model says what it trusts TLS for, F137 (loop iteration 43; the owner's go)
+
+### How it was found
+
+The owner asked whether the whole protocol is secure end to end, against
+classical and quantum attackers. Answering it meant reading the threat
+model against the browser client. Two rows did not survive:
+- **"Active network attacker inside TLS":** said such an attacker cannot
+  impersonate the site, because the client verifies a ServerHello signed by
+  the pinned key.
+- **"Compromised Caddy":** said Caddy cannot read the protocol, forge a
+  handshake or mint a token.
+
+Both hold for the CLI, whose code and pin are local. A browser gets the
+page's code over the site's TLS on every visit, so whoever controls that
+TLS decides what code runs where the key is unlocked. And the browser
+client did not use its pin. Spec §14 says IndexedDB holds the pinned server
+key, and `enroll.mjs` stores it, but `flows.login` and `flows.rotate` used
+whatever key `/api/session` sent that visit. The owner said to record and
+fix it; Medium.
+
+### The fix
+
+- **`flows.mjs`:** `login` and `rotate` take the server id and key from the
+  store, before anything else, and refuse a page that offers a different one
+  with `PinMismatch`. The probes `resolveKey` makes use the pinned key too.
+  This makes the pin real against anything short of the page's own code: a
+  site process that serves a wrong key from `/api/session`, or a server key
+  that changed.
+- **What it cannot fix, now stated where it was overstated:**
+  - **The threat model's two rows** are split into CLI and browser.
+  - **The first trust boundary** says a browser trusts TLS, and so Caddy,
+    for the page's code.
+  - **"What the PQ layer adds"** names the browser's dependence on TLS.
+  - **The residual risks** include TLS's classical certificate signatures.
+  - **The "recording for later" row** says which secrets cross only the
+    site's HTTPS: recovery codes, the invite, the session cookie and the
+    login code's last hop. They are as safe as TLS's key exchange.
+- **Spec §14,** erratum 54 (v1.19), states the pin and what it cannot do.
+- **Runbook §17** tells operators what browser users trust TLS for. It
+  asks for HSTS (the Caddyfile has it), a CAA record and certificate-
+  transparency monitoring, and gives a command that checks the TLS key
+  exchange is post-quantum. The command was run with OpenSSL 3.6.4: against
+  hosts that offer X25519MLKEM768 it prints `Negotiated TLS1.3 group:
+  X25519MLKEM768`. Against github.com, which does not, the handshake fails
+  and the line reads `<NULL>`. The first draft said "prints nothing", and
+  running it corrected that.
+- **"What this deployment does not do"** adds that browsers must enroll
+  again after a server key change, and that the deployment does not protect
+  browser users from whoever controls the site's TLS.
+
+**Not changed: the Caddyfile.** Caddy 2.10.2 already prefers X25519MLKEM768
+by default. CI's `caddy` gate validates the example over plain HTTP, so a
+`tls { curves … }` block there would be checked without TLS, and could
+break the gate for nothing.
+
+### The test: `web_flows` (10 checks, 3 new)
+
+- **A page that offers no server key** logs in, with the pinned one. This
+  shows the pin is what is used.
+- **A page offering a different key** is refused with `PinMismatch`, and
+  the store is unchanged.
+- **A rotation offered a different server id** is refused too, and stages
+  nothing.
+
+### Hand controls
+
+Each was run with `tools/hand_control.py --interpreted` against `web_flows`,
+and `flows.mjs` was restored byte-exact each time (clean fingerprint
+`c016b702f93a`).
+
+| | Mutation | Verdict |
+|---|---|---|
+| HC1 | `login` takes the page's key (no `pinned`) | KILLED by "a page that offers no server key logs in…" |
+| HC2 | `false && …` on the comparison, meant to disable it | KILLED(other) by the rotation check. The `&&` bound only the server-id half; the key half still refused. A mis-written mutation, re-run as HC2b |
+| HC2b | a mismatch is not refused | KILLED by "a page offering a different server key is refused…" |
+| HC3 | `rotate` takes the page's key | KILLED by "a rotation offered a different server identity is refused…" |
+| HC4 | `pinned` returns the page's parameters | KILLED by "a page that offers no server key logs in…" |
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on V4-67's
+  tree plus this step. The fingerprints equal V4-67's: no C changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `1d3a5f9b922181ec` | 58/58, `web_flows` (10 checks), `browser_e2e` and `site_sessions` among them |
+  | `build-bench-p` | `cf0643399241a0f7` | 53/53 |
+  | ASan | `26fbaab7a29858ee` | 58/58, instrumentation in all 44 |
+  | UBSan | `45d551d2490c32dc` | 58/58; one runtime error, the planted canary |
+  | fuzz | `15e6a6bd17f5e9cc` | 36/36, and 3/3 |
+
+- **Gates:** anchors, the claim map (137 findings), the spec's constants and
+  vocabularies, the audit table's separators, `node --check` on both changed
+  files, and `git diff --check`.
