@@ -12499,3 +12499,33 @@ say, on one machine.
 - **Gates:** anchors (424, 384 mutations, 57 campaigns), the claim map, the
   spec's constants (the floor among them) and vocabularies, the audit
   table's separators, and `git diff --check`.
+
+## V4-66 and V4-67 — CI on the branches and the nightly bring-up
+
+**V4-66 is the owner's go on F136. V4-67 is the owner's choice of remedy for
+F135.** V4-64 and V4-65 landed before them (main `0864ae1`, nightly
+39886206580 71/71, main CI 39903876496 14/14). V4-66 adds no campaign and
+joins this landing.
+
+### CI on the branches
+
+| Step | Head | Run | Result |
+|---|---|---|---|
+| V4-66 | `c0fe1c7` | 39894805540 | 14/14 |
+| V4-67 | `0718f86` | 39913032326 | 14/14 |
+
+### The control nightly
+
+- **How it was built.** `c7106ec` has V4-67's tree (`0718f86`), with one
+  line of `spec_v87.txt` changed: FL3 names a check that does not exist.
+  The sha256 of spec_v87.txt before was `e2855fa697f0ea2e`. Its parent is
+  `f48a1de`, the tree-equal commit V4-65's nightly ran on.
+- **Run 39913063141** was red on exactly `mutations · v87`, 71/72:
+  - FL3 **SURVIVED(BAD)**, naming the rotted text;
+  - 384 rows in 57 campaigns: 383 killed and 1 survived, the control;
+  - v87's other five killed on Linux: FL1 by 6 named checks (5 on macOS),
+    FL2 by 5, FL4 by 5, FL5 by 4, FL6 by 3;
+  - every fuzz job green.
+
+The revert, whose tree equals this branch's final tree, follows. Its
+nightly and main's landing are recorded with the next step.
