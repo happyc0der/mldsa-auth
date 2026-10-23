@@ -12067,3 +12067,215 @@ did. The final nightly is the first on their tree.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-64 — hand_control.py takes interpreted sources; the unit's After= (loop iteration 39: cleanup)
+
+### hand_control.py --interpreted
+
+V4-58 and V4-62 ran their controls for the reference site (JavaScript) with
+a throwaway script. The runner cannot mutate it: it proves each mutant
+reached the compiled binaries. `hand_control.py` could not either: it built
+a target and compared code, so a JavaScript mutant would have come out
+VOID. That is how V4-33's throwaway script went wrong, and why
+`hand_control.py` exists.
+
+`--interpreted` keeps the tool's rules for a source nothing compiles:
+- there is no build, and the file's sha256 is the fingerprint, so a mutant
+  that leaves it unchanged is VOID;
+- the CTest runs from the mutated file;
+- KILLED needs a nonzero exit and the named check;
+- the restore is checked by sha256;
+- `--target` is not needed, and a campaign is refused, because campaigns
+  mutate compiled code.
+
+**`hand_control_selftest`** gains an interpreted probe: a Python script
+registered as a CTest in the selftest's own throwaway project.
+- A mutation the probe sees is KILLED by name, with no build.
+- One it cannot see SURVIVES.
+- The file comes back byte-exact.
+- `--interpreted` with `--campaign` is refused.
+
+**On the real site,** V4-58's HC1 (the login keeps its id), run through the
+tool against `site_sessions`, is KILLED. The fingerprints are clean
+`b53a4668f570` and mutant `8602d15bedfb`. `server.mjs` was restored
+byte-exact, with no change left in git.
+
+**A slip, caught before it cost anything.** V4-64 was first branched from a
+local `main` not yet fast-forwarded past V4-63, so its first verification
+and its first run of this control were on V4-58's tree. Deleting the landed
+branches exposed it: `git branch -d` said they were not merged into HEAD.
+The verification was stopped, and the branch was rebased onto `018e0c3`; the
+only conflict was this file's append. The control and the verification were
+run again on the right tree, and both are what this entry records.
+
+### The unit's After=
+
+`deploy/mldsa-authd.service` said `After=network-target.service
+network.target`. No unit is called `network-target.service`, and systemd
+ignores an ordering on a unit that does not exist. It now says
+`After=network.target`, matching its `Wants=`. CI's `deploy_checks` runs
+`systemd-analyze verify` on the unit in a Debian container, and this Mac
+has no systemd, so that run is the check.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on
+  `018e0c3`'s tree plus this step. The fingerprints equal main's: no C
+  changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `hand_control_selftest` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **Gates:** anchors, the claim map, `git diff --check`, and a Python parse
+  of both changed files.
+- **Left to CI:** `systemd-analyze verify` on the unit, in `deploy_checks`.
+
+## V4-65 — the decoy flow's timing, measured; F135 (loop iteration 40)
+
+### Why this, now
+
+F17 says Req 4.9 (no secret-dependent control flow) has no timing
+measurement. Since V4-15b a gate has checked that the constant-time
+comparison sites still use one, but nothing had timed anything. The place
+where a timing difference would matter most at the protocol level is §7.3's
+decoy flow. It exists so that a prober cannot tell an enrolled handle from
+any other, and the tests check its outcomes (CLAIMS D6), not its time.
+
+### bench_decoy
+
+A new benchmark in `bench/`, built wherever the benches are, and in
+`bench_smoke`'s list, where it runs 8 samples a class and checks only
+correctness.
+- **Three handles of the same length:** enrolled; never seen; enrolled
+  and then revoked. The ClientHellos go to the test harness's daemon,
+  in-process, over loopback TCP, in an order drawn at random.
+- **A sample** is from sending the ClientHello to holding the whole
+  ServerHello. Each ServerHello is verified. The bench fails unless every
+  unknown and revoked sample took the decoy path (`decoy_pins`).
+- **The analysis** is dudect's: Welch's t at five cuts of the pooled
+  samples (all, then the slow tail trimmed at 99/90/75/50%). It compares
+  real with unknown, and revoked with unknown.
+- **A second section** times the store's step alone, in-process, so a
+  difference can be placed.
+- **`MLDSA_DECOY_SAMPLES`** sets the count a class (default 4,000; 2 to
+  1,000,000).
+
+Two harness behaviours had to be worked around, both found by the bench's
+own numbers:
+- **`h_recv_frame` ticks the loop with a 5 ms poll timeout.** The first
+  draft's samples were 12.5 ms, in 5 ms steps. `recv_frame_spin` runs the
+  loop with a zero timeout, and samples are about 166 µs.
+- **Back-to-back runs failed at their first connect:** 8,000 client-first
+  closes a run filled macOS's ephemeral ports with TIME_WAIT. Each client
+  now closes with `SO_LINGER` 0.
+
+### What it found: F135 (Low, open)
+
+**The first draft compared two classes, 4,000 each, and showed nothing.**
+In 24 runs no max |t| reached 4.5: the largest was 3.89, the median 1.63.
+But the sign leaned: at the 50% cut, 19 of 24 runs had the enrolled handle
+slower. Combining the runs' t at that cut (sum over √24) gives 3.94. A lean
+like that is what a real difference too small for one run looks like, so it
+was tested directly instead of being written up as "no difference".
+
+**At 100,000 a class it shows.** Three runs: 5.40 (the two-class draft),
+6.05 and 4.92 (with the revoked class). Each time the enrolled handle was
+slower, with medians 0.4–0.6 µs apart.
+
+**The store step, timed alone, explains it.** `store_lookup_active` takes
+about 4.5–4.8 µs on a hit, against about 4.1–4.5 µs for a miss plus the
+decoy key's copy. That is about 0.3 µs, with |t| 56–318 in every run. A
+hit runs the three-table join and copies the 1,952-byte key and the user
+id; a miss ends at the first index probe.
+
+**Revoked handles match unknown ones,** on the wire (0.59 and 2.79 at
+100,000) and in the store (never above 1.77). The query plan says why.
+`EXPLAIN QUERY PLAN` on the schema in `schema.sql.h` (Python's SQLite
+3.53.4) searches `dk` through `one_active_key`, the partial unique index
+`ON device_keys(handle) WHERE status='active'`. A revoked key is not in it,
+so a revoked handle misses at the same index an unknown one does.
+
+**Severity: Low.** What leaks is whether a handle the prober already holds
+is active.
+- **Handles cannot be guessed.** They are 128 random bits (§3.1), so the
+  gap cannot be used to find them.
+- **Holding a handle already says a lot.** It means having the device's
+  key file, which is named after the handle, or the daemon's logs, which
+  print it.
+- **Slow.** One 100,000-a-class run is 200,000 handshakes: about four
+  weeks from one address at the default `rate_per_min` of 5. That is with
+  loopback's jitter; a network's is far larger.
+
+**The remedy is the owner's call** (the loop's guardrails: a design
+decision). The options:
+1. **The same store work on both paths.** A miss would also look up a
+   reserved row through the same join. That needs a hidden decoy user and
+   device in the schema, which every listing and count would have to skip.
+2. **A time floor on the lookup.** Spin until a fixed time after the
+   step's start, about 10 µs (the step's p99 is about 5 µs). It costs
+   about 5 µs a handshake, about 3%. It leaks again only when the floor is
+   overrun, and an overrun is noise, not class.
+3. **Accept it,** as a §18 known limitation, by erratum.
+
+The handshake library calls the pin lookup inside
+`accept_client_hello`. So moving the lookup after the ServerHello would
+mean changing the verified handshake code, which §7.3 exists to avoid.
+
+### Sensitivity (the hand control)
+
+`scratchpad/decoy-hc.py` added a busy-wait of D ns after `decoy_pins++`, on
+the decoy branch only. Before each build it deleted `authd_conn.c.o`,
+`libmldsa_authd.a` and `bench_decoy` (V4-33's trap). It ran the default
+measurement, restored `authd_conn.c` and checked it by sha256 (byte-exact),
+and rebuilt clean. It ran twice, on the two-class draft and on the final
+bench:
+
+| D | real vs unknown, max \|t\| (draft / final) |
+|---|---|
+| 20,000 ns | 39.63 / 36.37 |
+| 5,000 ns | 12.75 / 9.54 |
+| 2,000 ns | 5.72 / 3.53 |
+| 1,000 ns | 2.29 / 1.46 |
+
+The final run's revoked vs unknown stayed below 2.3 at every D, as it
+should: both take the decoy branch.
+- **The default's reach:** 5 µs reliably, 2 µs sometimes, not 1 µs.
+- **F135's half microsecond** needed 25× the samples.
+
+### What changed outside bench/
+
+- **CLAIMS D6** keeps "no test compares timing" and adds the
+  measurement, which is a benchmark, not a test.
+- **F17** records the first measured path and stays open.
+- **F135** is new.
+- **The review page** has 135 findings, a V4-65 paragraph, and a sentence
+  on question 4.
+- **No spec change:** §7.3 promises the same outcome, not the same time.
+  An erratum waits on the owner's choice of remedy.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on V4-64's
+  tree plus this step. Each tree has one object and one executable more
+  than V4-64's: `bench_decoy`.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `29ce9d76178af29a` | 58/58 |
+  | `build-bench-p` | `eae0f634d9f0fcb1` | 53/53; `bench_smoke` runs `bench_decoy` |
+  | ASan | `73f6dda252e09fe2` | 58/58, instrumentation in all 44 |
+  | UBSan | `633d021f348216f4` | 58/58; one runtime error, the planted canary |
+  | fuzz | `15594e190c8df97b` | 36/36, and 3/3 |
+
+- **gcc-16** compiles `bench_decoy.c` from `build-bench-p`'s compile
+  commands at -O0 and -O2 with no diagnostic.
+- **The measurements** are from `build-bench-p` at `eae0f634d9f0fcb1`,
+  proven current before the runs, with nothing else building. Every number
+  quoted here and in `bench/results.md` was read from a saved output.
+- **Gates:** anchors, the claim map (135 findings), the spec's constants and
+  vocabularies, the audit table's separators, and `git diff --check`.

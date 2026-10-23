@@ -45,6 +45,17 @@ target_compile_options(bench_authd PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANI
 target_compile_definitions(bench_authd PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(bench_authd PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
+# bench_decoy (V4-65, F17): the decoy flow's timing, through the test harness's
+# in-process daemon -- so it needs the harness's include path as well.
+add_executable(bench_decoy bench_decoy.c)
+target_link_libraries(bench_decoy PRIVATE mldsa_bench mldsa_authd m)
+target_include_directories(bench_decoy PRIVATE ${CMAKE_SOURCE_DIR}/apps/authd
+                                                ${CMAKE_SOURCE_DIR}/apps/authd/store
+                                                ${CMAKE_SOURCE_DIR}/tests)
+target_compile_options(bench_decoy PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
+target_compile_definitions(bench_decoy PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_link_options(bench_decoy PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
+
 target_link_libraries(bench_primitives PRIVATE mldsa_demo)
 target_link_libraries(bench_handshake PRIVATE mldsa_demo)
 
@@ -58,6 +69,7 @@ add_test(NAME bench_smoke
     -DBENCH_HANDSHAKE=$<TARGET_FILE:bench_handshake>
     -DBENCH_SESSION=$<TARGET_FILE:bench_session>
     -DBENCH_AUTHD=$<TARGET_FILE:bench_authd>
+    -DBENCH_DECOY=$<TARGET_FILE:bench_decoy>
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_smoke.cmake
 )
 set_tests_properties(bench_smoke PROPERTIES TIMEOUT 300)

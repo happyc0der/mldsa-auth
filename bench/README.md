@@ -24,6 +24,7 @@ Individual suites:
 ./build-bench/bench/bench_primitives        # per-primitive costs
 ./build-bench/bench/bench_handshake         # phases, in-process and loopback handshake
 ./build-bench/bench/bench_session           # record layer at 64 B / 1 KiB / 64 KiB
+./build-bench/bench/bench_decoy             # the decoy flow's timing: enrolled, unknown, revoked handles (V4-65)
 ```
 
 `--csv` switches to CSV. `--smoke` runs tiny iteration counts for the CTest

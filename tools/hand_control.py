@@ -38,6 +38,13 @@ touched source, the static library each of those objects belongs to, and the
 target's executable. Nothing else is touched, so a tree the tool ran in
 stays current for every other target.
 
+--interpreted (V4-64) is for a source nothing compiles -- the reference
+site, the browser pages, a test script -- whose file IS the code under test.
+There is no build: the fingerprint is the file's sha256 (a mutant that leaves
+it unchanged is VOID), the test runs from the mutated file, and the restore is
+checked by sha256 as always. V4-58 and V4-62 ran their site controls with a
+throwaway script; this is that script's rule, kept here.
+
 One line per control on stdout, in run_mutations_v2.sh's shape. Exit 0 only
 when the verdict is exactly the expected one (KILLED unless
 --expect-verdict says otherwise, which is for testing this tool) and the
@@ -131,7 +138,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo", default=".")
     ap.add_argument("--build", required=True)
-    ap.add_argument("--target", required=True, help="the executable target the ctest runs (or that it spawns)")
+    ap.add_argument("--target", help="the executable target the ctest runs (or that it spawns)")
+    ap.add_argument("--interpreted", action="store_true",
+                    help="the mutated file is run as it is (JavaScript, Python, shell): no build, its sha256 is the fingerprint")
     ap.add_argument("--binary", default=None, help="the file that target builds, if its OUTPUT_NAME differs")
     ap.add_argument("--ctest", required=True, help="ctest -R regex")
     ap.add_argument("--expect", required=True, help="text a FAIL: line (or node:test assertion) must contain")
@@ -143,6 +152,10 @@ def main():
     ap.add_argument("--label", default=None)
     ap.add_argument("--expect-verdict", default="KILLED", help="for testing this tool")
     args = ap.parse_args()
+    if args.interpreted and args.campaign:
+        sys.exit("--interpreted takes --mutation/--old/--new: campaigns mutate compiled code")
+    if not args.interpreted and not args.target:
+        sys.exit("--target is required unless --interpreted")
     repo = pathlib.Path(args.repo).resolve()
     args.build = str((repo / args.build) if not os.path.isabs(args.build) else pathlib.Path(args.build))
     label = args.label or (f"{args.campaign} {args.id}" if args.campaign else f"{args.mutation}")
@@ -159,7 +172,10 @@ def main():
     backups = {s: (repo / s).read_bytes() for s in sources}
     before = {s: sha(repo / s) for s in sources}
 
-    rc0, clean = build(args, sources)
+    if args.interpreted:
+        rc0, clean = 0, before[sources[0]]
+    else:
+        rc0, clean = build(args, sources)
     if clean is None:
         print(f"{label}: CLEAN BUILD FAILED (exit {rc0}) -- nothing tested")
         sys.exit(2)
@@ -179,7 +195,10 @@ def main():
                 print(f"{label}: ANCHOR MATCHES {n} TIMES, NOT ONCE -- nothing tested")
                 sys.exit(2)
             p.write_text(t.replace(args.old, args.new, 1))
-        rc1, mutant = build(args, sources)
+        if args.interpreted:
+            rc1, mutant = 0, sha(repo / args.mutation)
+        else:
+            rc1, mutant = build(args, sources)
         if mutant is None:
             verdict = "KILLED(compile) -- not a kill"
         elif mutant == clean:
@@ -196,9 +215,14 @@ def main():
         for s, b in backups.items():
             (repo / s).write_bytes(b)
     restored = all(sha(repo / s) == before[s] for s in sources)
-    rc2, back = build(args, sources)
-    print(f"{label}: {verdict} | clean={clean[:12]} mutant={(mutant or 'none')[:12]} (text) "
-          f"| restored={'byte-exact' if restored else 'MISMATCH'} | rebuilt={'ok' if back else 'FAILED'}")
+    if args.interpreted:
+        back = "n/a"
+    else:
+        rc2, back = build(args, sources)
+    kind = "(file)" if args.interpreted else "(text)"
+    rebuilt = "n/a (interpreted)" if args.interpreted else ("ok" if back else "FAILED")
+    print(f"{label}: {verdict} | clean={clean[:12]} mutant={(mutant or 'none')[:12]} {kind} "
+          f"| restored={'byte-exact' if restored else 'MISMATCH'} | rebuilt={rebuilt}")
     for f in fails:
         print(f"    FAIL: {f[:200]}")
     ok = verdict.split()[0] == args.expect_verdict and restored and back is not None

@@ -47,6 +47,17 @@ enable_testing()
 add_test(NAME probe COMMAND probe)
 add_test(NAME probe_renamed COMMAND probe_bin)
 """
+# V4-64: an interpreted probe -- the file the test runs is the code under test.
+IPROBE = """import sys
+def answer():
+    return 42
+def unused():
+    return 7
+if answer() != 42:
+    print("FAIL: the interpreted answer is 42")
+    sys.exit(1)
+print("PASS: the interpreted answer is 42")
+"""
 PLIB = """/* the probe library */
 int answer(void) { return 42; }
 int unused(void) { return 7; }
@@ -63,7 +74,8 @@ int main(void)
 
 with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     d = pathlib.Path(tmp)
-    (d / "CMakeLists.txt").write_text(CMAKE)
+    (d / "CMakeLists.txt").write_text(CMAKE + f'add_test(NAME iprobe COMMAND "{sys.executable}" "${{CMAKE_SOURCE_DIR}}/iprobe.py")\n')
+    (d / "iprobe.py").write_text(IPROBE)
     (d / "plib.c").write_text(PLIB)
     (d / "probe.c").write_text(PROBE)
     b = d / "b"
@@ -91,6 +103,26 @@ with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     check(rc == 0 and ": VOID" in out, "a mutation that leaves the binary unchanged is VOID, not SURVIVED")
     rc, out = hc("return 42;", "return 42 +;", verdict="KILLED(compile)")
     check(rc == 0 and ": KILLED(compile)" in out, "a mutation that does not compile is KILLED(compile), which is not a kill")
+
+    # V4-64: --interpreted. No build; the file's sha256 is the fingerprint.
+    def hci(old, new, expect="the interpreted answer is 42", verdict="KILLED"):
+        r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--interpreted",
+                            "--ctest", "^iprobe$", "--expect", expect, "--mutation", "iprobe.py",
+                            "--old", old, "--new", new, "--expect-verdict", verdict],
+                           capture_output=True, text=True)
+        print("  " + (r.stdout.strip() or r.stderr.strip()).replace("\n", "\n  "))
+        return r.returncode, r.stdout
+    rc, out = hci("    return 42\n", "    return 43\n")
+    check(rc == 0 and ": KILLED |" in out and "(file)" in out and "rebuilt=n/a (interpreted)" in out,
+          "--interpreted: a mutation the interpreted probe sees is KILLED by name, with no build")
+    rc, out = hci("    return 7\n", "    return 8\n", verdict="SURVIVED")
+    check(rc == 0 and ": SURVIVED |" in out, "--interpreted: a mutation the interpreted probe cannot see SURVIVES")
+    check((d / "iprobe.py").read_text() == IPROBE, "--interpreted: the interpreted file is restored byte-exactly")
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--interpreted",
+                        "--ctest", "^iprobe$", "--expect", "x", "--campaign", "v99", "--id", "X1"],
+                       capture_output=True, text=True)
+    check(r.returncode != 0 and "--interpreted takes --mutation" in (r.stdout + r.stderr),
+          "--interpreted refuses a campaign: campaigns mutate compiled code")
 
     # The trap, made real. With the archive dated ahead, the old way -- delete
     # the object, rebuild -- links the old code: the probe still passes.

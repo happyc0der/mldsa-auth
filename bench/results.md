@@ -826,3 +826,100 @@ secure pages.
 - **The phone's own origin effect.** V4-25's phone rows were taken on
   non-secure origins in Chromium. Edge on the Mac shows Chromium unaffected,
   but Chrome on Android was not timed on a secure origin.
+
+## The decoy flow's timing (V4-65)
+
+§7.3 promises that a ClientHello naming an unknown, revoked, superseded or
+disabled handle gets the same treatment as one naming a real device: the
+daemon pins a decoy key and answers with a signed ServerHello, so a prober
+cannot tell which handles are enrolled. Tests check the outcomes (CLAIMS D6).
+This is the first measurement of the time (audit F17). It found a difference:
+**F135**.
+
+### Method
+
+`bench_decoy` drives the test harness's daemon in-process, over loopback TCP.
+Three handles of the same length (34 bytes) are used: one enrolled, one never
+seen, and one enrolled and then revoked. The daemon answers ClientHellos for
+them in an order drawn at random, 4,000 a class by default and more with
+`MLDSA_DECOY_SAMPLES`. A sample is the time from sending the ClientHello to
+holding the whole ServerHello, and every ServerHello is verified. Two details
+make the samples mean something:
+
+- **The daemon's loop runs with a zero poll timeout while waiting.** The
+  harness's usual 5 ms tick made the first draft's samples 12.5 ms of sleep,
+  in 5 ms steps.
+- **Each client closes with `SO_LINGER` 0.** Otherwise 8,000 connections a
+  run exhausted the ephemeral ports when runs followed each other.
+
+The harness clock moves 11 s before each sample, so every handshake meets an
+empty pending ledger. A second section times the store's step alone,
+in-process: `store_lookup_active`, plus the decoy key's copy on a miss.
+
+The test is dudect's: Welch's t between two classes, on all samples and with
+the slow tail cut at the 99th, 90th, 75th and 50th pooled percentiles.
+|t| > 4.5 is dudect's threshold for evidence of a difference.
+
+Apple M4 Pro, macOS 27.0.1, Apple clang 21, Release (`build-bench-p`,
+fingerprint `eae0f634d9f0fcb1`).
+
+### Results
+
+**At the default 4,000 a class, ten runs:**
+
+| | real vs unknown | revoked vs unknown |
+|---|---|---|
+| max \|t\|, largest of ten | 2.27 | 2.79 |
+| max \|t\|, median of ten | 1.71 | 1.50 |
+| medians, µs | real 164.8–167.5, unknown 164.9–167.5, revoked 164.8–167.8 | |
+
+No run shows a difference.
+
+**At 100,000 a class:**
+
+| Run | Medians, real / unknown / revoked | real vs unknown, max \|t\| | revoked vs unknown, max \|t\| |
+|---|---|---|---|
+| Two-class draft | 166.8 / 166.4 / — µs | **5.40** | — |
+| Three-class draft | 166.2 / 165.6 / 165.7 µs | **6.05** | 0.59 |
+| Final | 166.0 / 165.4 / 165.4 µs | **4.92** | 2.79 |
+
+In all three runs the enrolled handle is the slower one, at every cut where
+the difference is large (the final run's cuts give t = +3.18, +4.73, +3.92,
++4.62 and +4.92). The medians are 0.4 to 0.6 µs apart. Revoked and unknown
+handles show no difference.
+
+**The store's step alone, in-process,** in all eleven final runs:
+
+| | real | unknown | revoked |
+|---|---|---|---|
+| median, default runs | 4.38–4.88 µs | 4.08–4.54 µs | 4.08–4.54 µs |
+| median, the 100,000 run | 4.79 µs | 4.50 µs | 4.50 µs |
+
+Real vs unknown gives |t| 56 to 318 in every run. Revoked vs unknown never
+exceeds 1.77. A hit costs about 0.3 µs more than a miss, because it runs the
+three-table join and copies the key and the user id, while a miss ends at the
+first index probe. That accounts for most of the end-to-end difference.
+
+**Sensitivity.** The same default measurement, with a busy-wait added to the
+daemon's decoy branch only, which unknown and revoked handles both take. Two
+hand-control runs: the two-class draft's, and the final bench's.
+
+| Added delay | real vs unknown, max \|t\| (draft / final) | Medians, real / unknown (final) |
+|---|---|---|
+| 20 µs | 39.63 / 36.37 | 172.6 / 190.8 µs |
+| 5 µs | 12.75 / 9.54 | 172.5 / 176.6 µs |
+| 2 µs | 5.72 / 3.53 | 172.2 / 174.5 µs |
+| 1 µs | 2.29 / 1.46 | 169.8 / 170.1 µs |
+
+So 4,000 a class shows 5 µs reliably, 2 µs sometimes, and not 1 µs. F135's
+half microsecond needs about 100,000 a class.
+
+### What these numbers do not establish
+
+- **No difference below about 0.5 µs** is ruled out, even at 100,000 a
+  class.
+- **Loopback on one machine.** A remote prober sees network jitter, which
+  makes a difference of this size much harder to detect, not easier. What
+  F135 would give one, and at what cost, is in its audit row.
+- **One path.** Req 4.9 covers every secret-dependent site; this measures
+  only §7.3's flow. F17 stays open.

@@ -85,7 +85,7 @@ function(check_environment_block exe out)
   endif()
 endfunction()
 
-foreach(_exe "${BENCH_PRIMITIVES}" "${BENCH_HANDSHAKE}" "${BENCH_SESSION}" "${BENCH_AUTHD}")
+foreach(_exe "${BENCH_PRIMITIVES}" "${BENCH_HANDSHAKE}" "${BENCH_SESSION}" "${BENCH_AUTHD}" "${BENCH_DECOY}")
   message(STATUS "bench_smoke: ${_exe} --smoke")
   execute_process(COMMAND "${_exe}" --smoke RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
   if(NOT _rc EQUAL 0)
