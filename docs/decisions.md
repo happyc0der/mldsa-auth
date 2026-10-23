@@ -12067,3 +12067,70 @@ did. The final nightly is the first on their tree.
 
 The revert, whose tree equals this branch's final tree, follows. Its
 nightly and main's landing are recorded with the next step.
+
+## V4-64 — hand_control.py takes interpreted sources; the unit's After= (loop iteration 39: cleanup)
+
+### hand_control.py --interpreted
+
+V4-58 and V4-62 ran their controls for the reference site (JavaScript) with
+a throwaway script. The runner cannot mutate it: it proves each mutant
+reached the compiled binaries. `hand_control.py` could not either: it built
+a target and compared code, so a JavaScript mutant would have come out
+VOID. That is how V4-33's throwaway script went wrong, and why
+`hand_control.py` exists.
+
+`--interpreted` keeps the tool's rules for a source nothing compiles:
+- there is no build, and the file's sha256 is the fingerprint, so a mutant
+  that leaves it unchanged is VOID;
+- the CTest runs from the mutated file;
+- KILLED needs a nonzero exit and the named check;
+- the restore is checked by sha256;
+- `--target` is not needed, and a campaign is refused, because campaigns
+  mutate compiled code.
+
+**`hand_control_selftest`** gains an interpreted probe: a Python script
+registered as a CTest in the selftest's own throwaway project.
+- A mutation the probe sees is KILLED by name, with no build.
+- One it cannot see SURVIVES.
+- The file comes back byte-exact.
+- `--interpreted` with `--campaign` is refused.
+
+**On the real site,** V4-58's HC1 (the login keeps its id), run through the
+tool against `site_sessions`, is KILLED. The fingerprints are clean
+`b53a4668f570` and mutant `8602d15bedfb`. `server.mjs` was restored
+byte-exact, with no change left in git.
+
+**A slip, caught before it cost anything.** V4-64 was first branched from a
+local `main` not yet fast-forwarded past V4-63, so its first verification
+and its first run of this control were on V4-58's tree. Deleting the landed
+branches exposed it: `git branch -d` said they were not merged into HEAD.
+The verification was stopped, and the branch was rebased onto `018e0c3`; the
+only conflict was this file's append. The control and the verification were
+run again on the right tree, and both are what this entry records.
+
+### The unit's After=
+
+`deploy/mldsa-authd.service` said `After=network-target.service
+network.target`. No unit is called `network-target.service`, and systemd
+ignores an ordering on a unit that does not exist. It now says
+`After=network.target`, matching its `Wants=`. CI's `deploy_checks` runs
+`systemd-analyze verify` on the unit in a Debian container, and this Mac
+has no systemd, so that run is the check.
+
+### Verification
+
+- **Every native tree rebuilt, proven current and run in full,** on
+  `018e0c3`'s tree plus this step. The fingerprints equal main's: no C
+  changed.
+
+  | Tree | Fingerprint | Result |
+  |---|---|---|
+  | `build-p` | `41fe7e30c6adec64` | 58/58, `hand_control_selftest` among them |
+  | `build-bench-p` | `79a2d7a2d52eed3b` | 53/53 |
+  | ASan | `162314732ed398a6` | 58/58, instrumentation in all 43 |
+  | UBSan | `ed98793378a73ded` | 58/58; one runtime error, the planted canary |
+  | fuzz | `d58caa0246d37a18` | 36/36, and 3/3 |
+
+- **Gates:** anchors, the claim map, `git diff --check`, and a Python parse
+  of both changed files.
+- **Left to CI:** `systemd-analyze verify` on the unit, in `deploy_checks`.
