@@ -205,6 +205,65 @@ try {
     check(idOf(late) !== undefined && idOf(late) !== old && !is.has(old),
           'idle: a session idle past its limit is gone, and the visitor gets a new one');
   }
+
+  // --- F136: a malformed request is the client's error, not the process's ----
+  {
+    // The site runs in a child process here: what F136 did was end the site's
+    // process, and a check cannot report from a process that has ended.
+    const CHILD = `
+      const o = JSON.parse(process.env.SITE_CHILD);
+      const { startSite } = await import(o.server);
+      const { port } = await startSite({ authdSite: o.site, authdWs: o.ws, serverId: o.serverId,
+                                         serverPub: Buffer.from(o.serverPub, 'hex'), moduleDir: o.moduleDir,
+                                         invite: 'the-invite' });
+      console.log(JSON.stringify({ port }));`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', CHILD], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SITE_CHILD: JSON.stringify({
+        server: pathToFileURL(`${repo}/examples/site-node/server.mjs`).href, site: info.site,
+        ws: `127.0.0.1:${info.ws_port}`, serverId: info.server_id, serverPub: info.server_pub, moduleDir: `${repo}/web` }) } });
+    let childErr = '';
+    child.stderr.on('data', (d) => { childErr += d; });
+    try {
+      const cp = await new Promise((resolve, reject) => {
+        child.stdout.once('data', (d) => resolve(JSON.parse(String(d)).port));
+        child.on('exit', (c) => reject(new Error(`the site's child exited ${c} before it listened: ${childErr}`)));
+      });
+      const cb = `http://127.0.0.1:${cp}`;
+      const alive = () => child.exitCode === null && child.signalCode === null;
+      const raw = (path, payload) => fetch(`${cb}${path}`, {
+        method: 'POST', body: payload, headers: { Origin: cb, 'Content-Type': 'application/json' } })
+        .then((r) => r.status, (e) => `no response (${e.cause?.code || e.message})`);
+      const rawUpgrade = (target) => new Promise((resolve) => {
+        const u = createConnection(cp, '127.0.0.1');
+        u.on('error', () => {});
+        u.on('close', resolve);
+        u.on('connect', () => u.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${cp}\r\n` +
+                                      'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+        setTimeout(() => u.destroy(), 2000);
+      });
+      check((await fetch(`${cb}/api/session`)).status === 200, 'malformed: the site in its own process serves (the canary)');
+      for (const [path, payload, want, what] of [
+        ['/api/login', '{', 400, 'a body that is not JSON'],
+        ['/api/login', 'null', 400, 'a JSON null'],
+        ['/api/signup', '[1]', 400, 'a JSON array'],
+        ['/api/recover', 'x'.repeat(20000), 413, 'a body over 16 KiB'],
+      ]) {
+        const got = await raw(path, payload);
+        await sleep(100);
+        check(got === want && alive(),
+              `malformed: ${what}, POSTed to ${path}, is answered ${want} and the site lives (${got}${alive() ? '' : '; the site EXITED'})`);
+      }
+      for (const target of ['http://[', '//[::1']) {
+        await rawUpgrade(target);
+        await sleep(100);
+        check(alive(), `malformed: an upgrade to ${JSON.stringify(target)}, which the URL parser refuses, is closed and the site lives`);
+      }
+      check(alive() && (await fetch(`${cb}/api/session`)).status === 200, 'malformed: the site still serves after all of them');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

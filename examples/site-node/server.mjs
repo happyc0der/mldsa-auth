@@ -179,10 +179,26 @@ export async function startSite(opt) {
     res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
   };
 
+  // A request's JSON object, or a refusal carrying the status to answer it
+  // with (V4-66, audit F136): a body that is not a JSON object is 400, and one
+  // over 16 KiB is 413 once it has been read to its end (an answer sent before
+  // then can be lost to a reset); past 1 MiB the connection is dropped.
   const body = (req) => new Promise((resolve, reject) => {
     let b = '';
-    req.on('data', (d) => { b += d; if (b.length > 16384) { reject(new Error('too large')); req.destroy(); } });
-    req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}); } catch (e) { reject(e); } });
+    let n = 0;
+    const refuse = (status, why) => reject(Object.assign(new Error(why), { status }));
+    req.on('data', (d) => {
+      n += d.length;
+      if (n > 1048576) { req.destroy(); refuse(0, 'dropped'); return; }
+      if (n <= 16384) { b += d; }
+    });
+    req.on('end', () => {
+      if (n > 16384) { return refuse(413, 'too large'); }
+      let v;
+      try { v = b ? JSON.parse(b) : {}; } catch { return refuse(400, 'malformed JSON'); }
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) { return refuse(400, 'not a JSON object'); }
+      resolve(v);
+    });
   });
 
   const api = {
@@ -298,7 +314,10 @@ export async function startSite(opt) {
         if (origin !== self) { return send(res, 403, { error: 'cross-origin POST refused' }); }
       }
       const route = api[`${req.method} ${url.pathname}`];
-      if (route) { return route(req, res, session(req, res)); }
+      // `await`, so a route's rejection lands in the catch below. Without it
+      // (F136) the rejection escaped this handler, and Node ended the process
+      // on it: one POST of a malformed body stopped the site.
+      if (route) { return await route(req, res, session(req, res)); }
       if (req.method !== 'GET') { return send(res, 405, { error: 'method' }); }
       if (url.pathname === '/') { res.writeHead(302, { Location: '/login.html' }); return res.end(); }
       for (const [prefix, root] of Object.entries(ROOTS).sort((x, y) => y[0].length - x[0].length)) {
@@ -309,6 +328,12 @@ export async function startSite(opt) {
       }
       send(res, 404, { error: 'not found' });
     } catch (e) {
+      // A refused body is the client's error; anything else is ours. If an
+      // answer has started, or the body was dropped (status 0), the connection
+      // is all there is left to end. (Not req.destroyed: every request is
+      // destroyed once its body has been read.)
+      if (res.headersSent || (e && e.status === 0)) { res.destroy(); return; }
+      if (e && (e.status === 400 || e.status === 413)) { return send(res, e.status, { error: e.message }); }
       send(res, 500, { error: 'internal' });
     }
   });
@@ -316,7 +341,12 @@ export async function startSite(opt) {
   // The WebSocket to the daemon, proxied byte for byte after the upgrade
   // request -- Caddy's job in production.
   server.on('upgrade', (req, sock, head) => {
-    if (!new URL(req.url, 'http://x').pathname.startsWith('/authd/v1')) { sock.destroy(); return; }
+    // A target the URL parser refuses throws here, outside any request's
+    // catch, and that ended the process too (F136); so does an upgrade when
+    // neither daemon address was given.
+    let path;
+    try { path = new URL(req.url, 'http://x').pathname; } catch { sock.destroy(); return; }
+    if (!path.startsWith('/authd/v1') || (!opt.authdWsUnix && !opt.authdWs)) { sock.destroy(); return; }
     const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix)
                                : net.connect(Number(opt.authdWs.split(':')[1]), opt.authdWs.split(':')[0]);
     up.on('connect', () => {
