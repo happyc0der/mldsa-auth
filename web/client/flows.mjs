@@ -25,6 +25,32 @@ export class RecoveryRefused extends Error {
   }
 }
 
+export class PinMismatch extends Error {
+  constructor(handle) {
+    super(`the server key this page offers is not the one ${handle} pinned at enrollment; nothing was sent`);
+    this.name = 'PinMismatch';
+  }
+}
+
+const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+// The server identity a login or a rotation trusts is the one pinned when the
+// identity was enrolled (spec 14, erratum 54, audit F137), not whatever the
+// page offers this time. A page that offers another is refused before anything
+// is sent: either the server's key changed, which needs a new enrollment, or
+// what served the page is not the site this identity was enrolled with. What
+// it cannot do: the page's own code also comes over TLS, and code that is not
+// the site's need not call this at all (docs/v4/threat-model.md).
+async function pinned(store, params) {
+  const r = await store.get(params.handle);
+  if (!r) { throw new Error(`no identity for ${params.handle}`); }
+  if ((params.serverId !== undefined && params.serverId !== r.serverId) ||
+      (params.serverPub !== undefined && !sameBytes(params.serverPub, r.serverPub))) {
+    throw new PinMismatch(params.handle);
+  }
+  return { ...params, serverId: r.serverId, serverPub: r.serverPub };
+}
+
 // Logs in with a key; resolves to 1 if the daemon accepted it (and closes the
 // session), 0 if not. A login code obtained this way is simply never used --
 // it expires on its own, exactly as the CLI's probes do.
@@ -64,13 +90,16 @@ export async function resolveKey(client, store, handle, params, events = () => {
 
 // Logs in. `params` = { url, serverId, serverPub, handle, passphrase, ... } as
 // AuthdClient.login takes them, minus the envelope, which comes from the store.
+// The server identity comes from the store too; one the page offers must match.
 export async function login(client, store, params, events) {
-  const envelope = await resolveKey(client, store, params.handle, params, events);
-  return client.login({ ...params, envelope });
+  const p = await pinned(store, params);
+  const envelope = await resolveKey(client, store, p.handle, p, events);
+  return client.login({ ...p, envelope });
 }
 
 // Rotates to a fresh key under the same passphrase (spec 10.2).
-export async function rotate(client, store, params, events = () => {}) {
+export async function rotate(client, store, offered, events = () => {}) {
+  const params = await pinned(store, offered);
   const envelope = await resolveKey(client, store, params.handle, params, events);
   const r = await store.get(params.handle);
   if (r.pending) {

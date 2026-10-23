@@ -11,6 +11,8 @@
 //   lost ACK                the daemon committed, the store did not: the next
 //                           login completes the rotation
 //   neither key works       refused, and the store is byte-identical afterwards
+// and, since V4-68 (F137), that the server key used is the one pinned at
+// enrollment, whatever the page offers.
 // The IndexedDB store itself (its transactions) is tested in a real browser.
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -124,6 +126,31 @@ try {
     try { client.newIdentity('zzzzzzzzzzzz'); } catch (e) { threw = e.statusName === 'passphrase-policy'; }
     check(!weak.ok && good.ok && good.codePoints === 28 && threw,
           'policy: the page sees the verdict, and cannot seal under a refused passphrase'); }
+
+  // F137 (V4-68): the server identity a login or a rotation trusts is the one
+  // pinned at enrollment, not the one the page offers this time. Each step is
+  // caught separately, so a broken pin fails its own check by name.
+  { const { store, params } = await fresh();
+    const before = await store.get(params.handle);
+    const other = Uint8Array.from(serverPub);
+    other[other.length - 1] ^= 1;
+    const bare = { ...params };
+    delete bare.serverId;
+    delete bare.serverPub;
+    let logged = false;
+    try { const s = await flows.login(client, store, bare); logged = s.code.length === 32; await s.close(); }
+    catch { logged = false; }
+    check(logged, 'pin: a page that offers no server key logs in with the one pinned at enrollment');
+    let name = null;
+    try { const s = await flows.login(client, store, { ...params, serverPub: other }); await s.close(); }
+    catch (e) { name = e.name; }
+    check(name === 'PinMismatch' && isDeepStrictEqual(await store.get(params.handle), before),
+          'pin: a page offering a different server key is refused by the pin check (PinMismatch), and the store is unchanged');
+    let rname = null;
+    try { await flows.rotate(client, store, { ...params, serverId: `not-${params.serverId}` }); }
+    catch (e) { rname = e.name; }
+    check(rname === 'PinMismatch' && isDeepStrictEqual(await store.get(params.handle), before),
+          'pin: a rotation offered a different server identity is refused too, and stages nothing'); }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
