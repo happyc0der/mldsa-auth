@@ -124,8 +124,11 @@ void recovery_spend_one(unsigned long long ops, size_t mem)
 {
     static const uint8_t salt[crypto_pwhash_SALTBYTES] = {0};
     uint8_t h[MRC1_HASH_BYTES];
-    (void)crypto_pwhash(h, sizeof h, "0000000000000000", (unsigned long long)BASE32_CODE_CHARS,
-                        salt, ops, mem, crypto_pwhash_ALG_ARGON2ID13);
+    if (crypto_pwhash(h, sizeof h, "0000000000000000", (unsigned long long)BASE32_CODE_CHARS,
+                      salt, ops, mem, crypto_pwhash_ALG_ARGON2ID13) != 0) {
+        /* Nothing to report: the computation, not its result, is the point.
+         * (A (void) cast does not silence gcc's warn_unused_result.) */
+    }
     sodium_memzero(h, sizeof h);
 }
 
