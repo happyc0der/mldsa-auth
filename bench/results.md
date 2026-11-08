@@ -1028,9 +1028,10 @@ browsers.
 
 ### Network conditions
 
-**How.** On the i9 (WSL2), inside an unprivileged user and network
-namespace (`unshare -rn`), a real kernel `netem` qdisc on the namespace's
-loopback. Nothing outside the namespace was changed. Netem applies to each
+**How.** `bench/net_matrix.sh` (committed in V4-77; this table was taken by
+hand-run scripts it replaces, with the same profiles). On the i9 (WSL2),
+inside an unprivileged user and network namespace (`unshare -rn`), a real
+kernel `netem` qdisc on the namespace's loopback. Nothing outside the namespace was changed. Netem applies to each
 direction, so RTT is twice the delay, which `ping` confirmed for every
 profile. Jitter reorders packets. Each profile got a fresh demo
 `auth_server`, because the demo ledger admits 16 handshakes per 30 s

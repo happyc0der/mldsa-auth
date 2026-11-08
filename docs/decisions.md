@@ -12695,8 +12695,8 @@ would have meant changing the system's packet filter, which is not done
 from this project. The results and their caveats are in `bench/results.md`,
 "Hardware and network matrix (V4-71)". The scripts that produced them were
 run by hand and are not committed: they belong in `bench/` only once they
-are a CTest-runnable tool with a demonstrated failure mode, like every
-other script here.
+are a tool with a demonstrated failure mode, like every other script here.
+(V4-77 made them one.)
 
 ## V4-72 — F140 and F141: the line cap, and fields in a logged identity
 
@@ -12824,3 +12824,17 @@ Campaign v49d: G1 re-anchored and G4 re-authored for the new code, both
 KILLED (15 and 3 named checks), sources restored, clean suite 51/51 with
 the two usual skips. gcc-16 `-O2` clean. The constant-time inventory gained
 the new comparison (26 sites).
+
+## V4-77 — `bench/net_matrix.sh`
+
+The network matrix as a tool. It re-runs itself under `unshare -rn`, puts a
+netem qdisc on the namespace's loopback per profile, starts a fresh demo
+server per profile (F1's ledger), and times N logins. **A profile whose
+measured RTT is not within 25% (or 0.35 ms) of twice its delay fails**, so a
+qdisc that silently did not attach cannot publish loopback numbers under a
+satellite's name. Hand control: the qdisc never attached fails all eleven
+emulated profiles. The first floor, 0.5 ms, let the LAN profile (0.5 ms RTT)
+pass under that control; measured LAN runs differ from it by at most
+0.3 ms, so the floor is 0.35 ms, and three real runs passed at it. Not a
+CTest: GitHub's Ubuntu runners restrict unprivileged user namespaces, and
+the tool exits 77 where it cannot run. Run on the i9 (WSL2, Linux 6.18).

@@ -27,6 +27,16 @@ Individual suites:
 ./build-bench/bench/bench_decoy             # the decoy flow's timing: enrolled, unknown, revoked handles (V4-65)
 ```
 
+Network conditions (V4-71, V4-77), Linux only:
+
+```sh
+bench/net_matrix.sh build-bench 15        # twelve emulated links, 15 logins each
+```
+
+It needs unprivileged user namespaces and the kernel's netem (it exits 77
+otherwise), changes nothing outside its own namespace, and fails a profile
+whose measured RTT does not match what it emulates.
+
 `--csv` switches to CSV. `--smoke` runs tiny iteration counts for the CTest
 `bench_smoke` gate; its numbers are meaningless by construction.
 
