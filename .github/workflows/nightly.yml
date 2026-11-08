@@ -22,12 +22,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false   # a nightly should finish, not be superseded
 
-
-# V4-85: where .github/actions/deps restores the pinned dependencies;
-# cmake/Dependencies.cmake reads it from the environment.
-env:
-  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
-
 jobs:
   # Every campaign anchor still matches its source EXACTLY once, checked
   # statically in seconds.

@@ -29,12 +29,6 @@ on:
 permissions:
   contents: read
 
-
-# V4-85: where .github/actions/deps restores the pinned dependencies;
-# cmake/Dependencies.cmake reads it from the environment.
-env:
-  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
-
 jobs:
   bench:
     name: bench · ${{ github.event.inputs.repetitions || '5' }} repetitions

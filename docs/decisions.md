@@ -13005,3 +13005,11 @@ Homebrew's OpenSSL first there.
 after. Re-anchored; its expected check reads "the 60-bit floor". Both
 campaigns touched by V4-85 were run: PP10 KILLED (5 named), FL1 KILLED (4
 named), sources restored, clean suite passing.
+
+**V4-85c.** The first nightly passed but restored nothing: no cache existed.
+actions/cache rejects a path containing `..`, and V4-85's
+`${{ github.workspace }}/../mldsa-deps` was refused with a warning at the
+post-job save, so every job fell back to fetching. The action now sets the
+path itself, `$RUNNER_TEMP/mldsa-deps`, through `$GITHUB_ENV`, and the
+workflows no longer set it. Verified by two CI runs: the first must log
+"Cache saved", the second "Cache restored".

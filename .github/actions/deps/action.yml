@@ -6,7 +6,7 @@
 # main-branch jobs and three nightly attempts. This restores the directory
 # deploy/fetch-deps.sh fills, keyed on the files that hold the pins, and on a
 # miss fetches it with retries. The build reads it from MLDSA_DEPS_CACHE (set
-# by each workflow) and checks every artifact against cmake/Dependencies.cmake's
+# by the first step below) and checks every artifact against cmake/Dependencies.cmake's
 # pins at configure time, exactly as for a fresh download -- a cache never
 # weakens what the build accepts.
 name: Pinned dependencies
@@ -14,11 +14,18 @@ description: Restore the dependency cache, fetching it with retries on a miss
 runs:
   using: composite
   steps:
+    # The path is set here, for this step and every later one in the job.
+    # It was ${{ github.workspace }}/../mldsa-deps at first, and actions/cache
+    # rejects a path with '..' in it -- with only a warning, at the post-job
+    # save -- so nothing was ever saved (V4-85c).
+    - name: Where the dependencies live
+      shell: bash
+      run: echo "MLDSA_DEPS_CACHE=$RUNNER_TEMP/mldsa-deps" >> "$GITHUB_ENV"
     - name: Restore the dependency cache
       id: deps
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ env.MLDSA_DEPS_CACHE }}
+        path: ${{ runner.temp }}/mldsa-deps
         key: mldsa-deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'deploy/fetch-deps.sh') }}
     - name: Fetch the dependencies (cache miss), with retries
       if: steps.deps.outputs.cache-hit != 'true'

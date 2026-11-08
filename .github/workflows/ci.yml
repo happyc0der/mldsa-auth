@@ -23,12 +23,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-
-# V4-85: where .github/actions/deps restores the pinned dependencies;
-# cmake/Dependencies.cmake reads it from the environment.
-env:
-  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
-
 jobs:
   suite:
     name: ${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}
