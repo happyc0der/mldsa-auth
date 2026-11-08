@@ -55,6 +55,10 @@ typedef struct {
      * lifecycle, which is this struct's job. */
     int          addr_settled;
     int          addr_admitted;
+    /* PROTO slots: the handshake has completed. Until it has, the handshake
+     * deadline set at accept stands, and serving a frame does not re-arm it:
+     * the idle deadline belongs to a live session only. */
+    int          established;
     slot_state_t state;
     conn_io_t    io;
     uint64_t     deadline_ms;   /* absolute; 0 = none */

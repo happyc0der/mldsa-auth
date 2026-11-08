@@ -289,6 +289,14 @@ static void test_login(void)
       CHECK(nz, "login: the code is not all-zero"); }
     CHECK(d.app.logins_issued == 1u, "login: one login counted");
     CHECK(d.app.decoy_pins == 0u, "login: a known identity did NOT get the decoy");
+    /* V4-69: the login completed the handshake, so the slot is established
+     * and on the IDLE deadline; before this it kept the handshake deadline. */
+    { const authd_slot_t *s = NULL;
+      for (size_t i = 0; i < d.nslots; i++) {
+          if (d.slots[i].state == SLOT_ACTIVE && d.slots[i].kind == SLOT_KIND_PROTO) { s = &d.slots[i]; }
+      }
+      CHECK(s != NULL && s->established == 1 && s->deadline_ms == d.app.now_ms + 60000u,
+            "login: once the code is issued the slot is established, on the idle deadline (V4-69)"); }
 
     /* Req 4 + Req 5: the store holds SHA-256(code), bound to this handshake
      * and to SHA-256(state). Consuming proves both halves. */

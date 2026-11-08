@@ -470,6 +470,7 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
     }
     authd_log_slot_id(AUTHD_LOG_INFO, "login-code-issued", slot->index, c->handle, c->handle_len);
     c->stage = CONN_STAGE_SERVING;
+    slot->established = 1;   /* the idle deadline applies from here (evloop) */
     return EV_ACTION_CONTINUE;
 }
 

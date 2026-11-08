@@ -293,6 +293,7 @@ typedef struct {
     const char *ahead;        /* V4-54: bytes expected BEHIND the frame being served ... */
     int ahead_at;             /* ... when h->frames reaches this */
     int ahead_seen;
+    int establish;            /* V4-69: mark the slot's handshake complete, as authd_conn does */
 } harness_t;
 
 static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *payload, size_t len)
@@ -310,6 +311,9 @@ static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *paylo
         memmem(payload + len, (size_t)(slot->io.in + slot->io.in_len - (payload + len)),
                h->ahead, strlen(h->ahead)) != NULL) {
         h->ahead_seen = 1;
+    }
+    if (h->establish) {
+        slot->established = 1;
     }
     if (h->echo) {
         (void)conn_io_queue(&slot->io, payload, len);
@@ -406,13 +410,30 @@ static void test_evloop(void)
         ssize_t got = read(c1, back, sizeof back);
         CHECK(got == (ssize_t)sizeof back && memcmp(back + 4, "hello", 5) == 0,
               "ev: the echoed reply arrives complete");
+        /* V4-69: a frame served before the handshake completes leaves the
+         * handshake deadline where accept put it. */
+        CHECK(slots[0].deadline_ms == 1000u + 5000u,
+              "ev: a frame served before the handshake completes does NOT re-arm the deadline");
+    }
+
+    /* the frame that completes the handshake switches to the idle timeout */
+    {
+        h.establish = 1;
+        uint8_t f[4 + 5];
+        put_be32(f, 5); memcpy(f + 4, "estab", 5);
+        CHECK(write(c1, f, sizeof f) == (ssize_t)sizeof f, "ev: client sends a second frame");
+        (void)PUMP_UNTIL(&ev, 1000, h.frames >= 2 && conn_io_pending(&slots[0].io) == 0u);
+        uint8_t back[4 + 5];
+        CHECK(read(c1, back, sizeof back) == (ssize_t)sizeof back, "ev: its echo arrives");
+        h.establish = 0;
     }
 
     /* the deadline, with its lower bound */
     {
+        CHECK(slots[0].established == 1, "ev: the slot is marked established");
         /* the frame above re-armed it to the idle timeout */
         CHECK(slots[0].deadline_ms == 1000u + 20000u,
-              "ev: serving a frame re-arms the deadline to the IDLE timeout");
+              "ev: once established, serving a frame re-arms the deadline to the IDLE timeout");
         const uint64_t dl = slots[0].deadline_ms;
         (void)evloop_run_once(&ev, 0, dl - 1u);
         CHECK(evloop_active(&ev) == 1u, "ev: the connection is STILL OPEN one ms before its deadline");
@@ -420,6 +441,7 @@ static void test_evloop(void)
         CHECK(evloop_active(&ev) == 0u, "ev: the connection is closed at its deadline");
         CHECK(ev.closed_deadline == 1u, "ev: the deadline close is counted");
         CHECK(h.close_calls == 1, "ev: on_close ran for the expired slot");
+        CHECK(slots[0].established == 0, "ev: a released slot is no longer established (V4-69)");
     }
     (void)close(c1);
 
@@ -666,6 +688,7 @@ static void test_backpressure(void)
     int lfd = -1;
     memset(&h, 0, sizeof h);
     h.echo = 1;
+    h.establish = 1;   /* V4-69: these slots stand for live sessions, on the idle deadline */
     /* mkdtemp, not a pid-keyed name (audit F114). */
     char dir[] = "/tmp/authd-evl-XXXXXX", path[64];
     CHECK(mkdtemp(dir) != NULL, "bp: a scratch directory for the socket");

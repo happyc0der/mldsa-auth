@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 137 findings (F0–F137), with severity, evidence and
+   register](../v4/audit.md). 138 findings (F0–F138), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 54 errata, each
    citing the finding that forced it.
@@ -513,6 +513,12 @@ browser client stored its server pin but logged in with whatever key the
 page offered. It now uses the pin and refuses a page offering another, and
 the threat model, spec §14 (erratum 54) and the runbook say what a browser
 still trusts TLS for.
+
+V4-69 fixed **F138** (Med), found by the adversarial review the owner asked
+for. A handshake that never completed could keep its connection slot past
+the 10 s handshake deadline: serving any frame re-armed the slot to the 60 s
+idle deadline. The idle deadline now applies only once the handshake has
+completed.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

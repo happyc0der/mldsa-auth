@@ -179,6 +179,7 @@ void evloop_close_slot(evloop_t *ev, authd_slot_t *s)
     s->is_admin = 0;
     s->addr_settled = 0;
     s->addr_admitted = 0;
+    s->established = 0;
     s->peer.uid = (uid_t)-1;
     s->peer.pid = 0;
     if (local) {
@@ -331,8 +332,15 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
         } else {
             conn_io_consume_frame(&s->io);
         }
-        /* A frame was served: re-arm the idle deadline. */
-        s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
+        /* A frame was served: re-arm the idle deadline -- but on a PROTO slot
+         * only once the handshake has completed. Before that the handshake
+         * deadline set at accept stands: re-arming it on every frame let a
+         * peer that sends a ClientHello, then frames that never complete the
+         * handshake, hold the slot past handshake_timeout_ms, by up to
+         * idle_timeout_ms per frame. */
+        if (s->kind == SLOT_KIND_LOCAL || s->established) {
+            s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
+        }
         if (act == EV_ACTION_CLOSE) {
             s->state = SLOT_DRAINING;
             break;

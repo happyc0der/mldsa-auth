@@ -12625,3 +12625,35 @@ and `flows.mjs` was restored byte-exact each time (clean fingerprint
 - **Gates:** anchors, the claim map (137 findings), the spec's constants and
   vocabularies, the audit table's separators, `node --check` on both changed
   files, and `git diff --check`.
+
+## V4-69 — F138: a handshake's deadline holds until it completes
+
+**Context.** The owner asked for continuous benchmarks and an adversarial
+review by agents, one lane each: the protocol's design, input parsing and
+memory safety, the daemon and site with denial of service, and side channels
+with key custody. The daemon lane's reading found that `serve_buffered`
+re-armed every slot to `idle_timeout_ms` after serving a frame, so a protocol
+slot left the handshake deadline it got at accept as soon as its ClientHello
+was served. The owner approved the fix (F138, Med).
+
+**Decision.** A protocol slot is re-armed to the idle deadline only once its
+handshake has completed. `authd_slot_t` gains `established`: `authd_conn`
+sets it where the login code is issued and the stage becomes SERVING, and
+`evloop` clears it when the slot is released. Until it is set the deadline
+set at accept stands, whatever frames arrive. Local-API slots keep the idle
+deadline from accept, as before.
+
+**What is and is not shown.** The rule is shown by unit tests with the
+event loop's own clock: a frame served before the handshake completes leaves
+the deadline at accept + handshake timeout; the frame that completes it moves
+it to now + idle timeout; a released slot is not established; a completed
+daemon login is established on the idle deadline. Two hand controls: the
+re-arm made unconditional fails the first, and the marker removed from
+`authd_conn` fails the second. The exhaustion itself (how many addresses it
+takes to hold every slot) was not measured; the register states the bound
+from `max_slots` and `max_conns_per_addr`.
+
+**Verification.** A fresh Debug tree (`build-v469`), 51/53 with the two usual
+skips; `test_authd_evloop` 186 checks and `test_authd_conn` 223 checks;
+gcc-16 `-O2` on the four changed files. The other trees were left as they
+were, because the review's agents were running their binaries.
