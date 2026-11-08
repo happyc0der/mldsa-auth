@@ -720,18 +720,23 @@ static ev_action_t h_revoke_device(authd_app_t *app, authd_slot_t *slot, const r
     }
     /* Req 11, extended to revocation (V4-82, F171; the owner's choice): an
      * OPERATOR's device is revoked from admin.sock only, as its recovery is.
-     * A compromised site could otherwise lock the operators out. Asked of the
-     * active key: a device that is already revoked, or whose user is
-     * disabled, answers as before, and revoking it again changes nothing. */
+     * A compromised site could otherwise lock the operators out. The role is
+     * the device's user's, whatever the device's or the user's status: asked
+     * of the active key (V4-82), a DISABLED operator's devices looked like
+     * nobody's and could be revoked, ending its recovery codes too (F172).
+     * And it fails CLOSED: a store error refuses rather than revoking. */
     if (!slot->is_admin) {
-        uint8_t pk[STORE_PK_BYTES];
         store_role_t role = STORE_ROLE_USER;
-        if (store_lookup_active(app->store, handle, handle_len, pk, NULL, 0u, NULL, &role) == STORE_OK &&
-            role == STORE_ROLE_OPERATOR) {
-            sodium_memzero(pk, sizeof pk);
+        const store_status_t rr = store_device_owner_role(app->store, handle, handle_len, &role);
+        if (rr == STORE_ERR_NOT_FOUND) {
+            return send_err(slot, "unknown");
+        }
+        if (rr != STORE_OK) {
+            return send_err(slot, "internal");
+        }
+        if (role == STORE_ROLE_OPERATOR) {
             return send_err(slot, "not-permitted");
         }
-        sodium_memzero(pk, sizeof pk);
     }
     const store_status_t s = store_revoke_device(app->store, handle, handle_len, "local-api",
                                                  (reason_len > 0u) ? reason : NULL, reason_len);

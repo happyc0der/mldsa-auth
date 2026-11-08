@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.26, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82 errata)
+# mldsa-authd — deployment specification (v1.27, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -704,9 +704,12 @@ and this section used to run them together:
    nothing, so the first revocation's record stands. **Revoking a device
    ends its user's unused recovery codes** (marked `revoked-device`, never
    deleted): a generation minted on a stolen, unlocked device would otherwise
-   outlive it, and the owner mints new codes from a device still trusted. On
-   `site.sock`, revoking an **operator's** device is `not-permitted`, as its
-   recovery is: that is an administrative act (erratum 65). A code whose
+   outlive it, and the owner mints new codes from a device still trusted. It
+   does not end tickets already minted, so a recovery's own ticket survives
+   the revocation of the lost device; `revoke=all` ends them. On `site.sock`,
+   revoking an **operator's** device is `not-permitted`, whatever the
+   device's or the operator's status, as its recovery is: that is an
+   administrative act (errata 65, 66). A code whose
    device or user is no longer active is refused at `EXCHANGE` and spent
    whatever wrote it; and a handshake whose pinned key is no longer the
    handle's active key gets no code.
@@ -1515,3 +1518,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 65 | 8, 10.3 | Revoking a device ends its user's unused recovery codes; `REVOKE-DEVICE` of an operator's device from `site.sock` is `not-permitted` | recovery codes minted on a stolen device recovered the account after the device was revoked (F164); a compromised site could revoke the operators' devices though it cannot recover them (F171); the owner chose both |
+
+### Revision v1.27 (V4-83)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 66 | 10.3 | The operator check on `REVOKE-DEVICE` holds whatever the device's or the operator's status; a plain revocation leaves already-minted tickets | V4-82's check went through the active key, so a disabled operator's devices could be revoked from the site and its recovery codes ended with them (F172); which tickets a revocation ends was unstated (F173) |

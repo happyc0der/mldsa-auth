@@ -1251,6 +1251,16 @@ static void test_recovery_policy(void)
         snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", ophh);
         CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
               "policy: an operator's device cannot be revoked from site.sock (F171)");
+        /* V4-83, F172: nor when the operator is DISABLED -- whose key the
+         * active-key lookup no longer returns. */
+        { char ope[160], dreq[256];
+          hx(ope, sizeof ope, OP, sizeof OP);
+          snprintf(dreq, sizeof dreq, "DISABLE-USER user=%s", ope);
+          CHECK(h_local_cmd(&d, adm, dreq, resp, sizeof resp) == 0 && starts(resp, "OK"), "policy: the operator is disabled");
+          CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+                "policy: a DISABLED operator's device cannot be revoked from site.sock either (F172)");
+          snprintf(dreq, sizeof dreq, "ENABLE-USER user=%s", ope);
+          CHECK(h_local_cmd(&d, adm, dreq, resp, sizeof resp) == 0 && starts(resp, "OK"), "policy: re-enabled"); }
         CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
               "policy: ...and can be from admin.sock");
         mldsa_keypair_free(&ok); } }

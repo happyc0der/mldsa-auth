@@ -1338,10 +1338,7 @@ static store_status_t revoke_device_locked(store_t *s,
                                            const char *by, const uint8_t *reason, size_t reason_len,
                                            int64_t now)
 {
-    /* Its outstanding login codes are spent with it (F157 refuses them at
-     * EXCHANGE as well; this leaves none to refuse). */
-    store_status_t r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, 0, now);
-    if (r != STORE_OK) { return r; }
+    store_status_t r = STORE_OK;
 
     /* An already-revoked device is left as it is (V4-81): revoking it again
      * answered OK and overwrote the first revocation's time, actor and
@@ -1369,6 +1366,12 @@ static store_status_t revoke_device_locked(store_t *s,
         if (revoked == -1) { return STORE_ERR_NOT_FOUND; }
         if (revoked == 1) { return STORE_OK; }
     }
+
+    /* Its outstanding login codes are spent with it (F157 refuses them at
+     * EXCHANGE as well; this leaves none to refuse). After the check above,
+     * so a repeat revoke writes nothing by construction (V4-83). */
+    r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, 0, now);
+    if (r != STORE_OK) { return r; }
 
     /* REVOKING A DEVICE ENDS ITS USER'S UNUSED RECOVERY CODES (V4-82, F164; the
      * owner's choice). Codes belong to the user, so a thief who logged in on a
@@ -1438,6 +1441,29 @@ static store_status_t revoke_device_locked(store_t *s,
     return r;
 }
 
+
+store_status_t store_device_owner_role(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                       store_role_t *role_out)
+{
+    if (s == NULL || !id_ok(handle, handle_len) || role_out == NULL) { return STORE_ERR_ARG; }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT u.role FROM devices d JOIN users u ON u.user_id = d.user_id WHERE d.handle=?1 LIMIT 1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    if (sqlite3_bind_blob(st, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW)       { r = role_from_text(sqlite3_column_text(st, 0), role_out); }
+        else if (rc == SQLITE_DONE) { r = STORE_ERR_NOT_FOUND; }
+        else                        { r = STORE_ERR_DB; }
+    }
+    sqlite3_finalize(st);
+    return r;
+}
 
 store_status_t store_revoke_device(store_t *s,
                                    const uint8_t *handle, size_t handle_len,

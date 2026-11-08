@@ -12948,3 +12948,15 @@ performs still completes.
 **Shown.** `test_authd_localapi` 415 checks; a hand control each (the first
 attempt at F164's broke the SQL itself and killed for the wrong reason, and
 was redone with an update that matches nothing).
+
+## V4-83 — the fifth round (F172–F174)
+
+A focused review of V4-81 and V4-82 found no High or Medium. F172 (Low): the
+operator check reads the device owner's role directly, whatever the
+statuses, and fails closed. F173: erratum 66 states which tickets a plain
+revocation leaves. F174: the device's codes are spent after the
+already-revoked check, so a repeat revoke writes nothing by construction.
+The reviewer's notes that the repo's write-fault fixture for a single revoke
+holds no recovery codes, so it never exercises the new update, are recorded
+here as a gap; its own sweep with three live codes left the database
+unchanged at every fault.

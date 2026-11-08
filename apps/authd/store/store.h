@@ -153,6 +153,13 @@ store_status_t store_enroll_device_ex(store_t *s,
 
 /* Revoke a device: device and its active key -> revoked, delete its tokens,
  * one transaction + audit. */
+/* The role of the user a device belongs to, WHATEVER the device's, its key's
+ * or the user's status (V4-83). OK, NOT_FOUND for no such device, or an
+ * error. REVOKE-DEVICE's Req 11 check reads it: through the active-key
+ * lookup a disabled operator's device looked like nobody's (F172). */
+store_status_t store_device_owner_role(const store_t *s, const uint8_t *handle, size_t handle_len,
+                                       store_role_t *role_out);
+
 store_status_t store_revoke_device(store_t *s,
                                    const uint8_t *handle, size_t handle_len,
                                    const char *by, const uint8_t *reason, size_t reason_len);
