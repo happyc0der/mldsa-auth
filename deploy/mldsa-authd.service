@@ -87,9 +87,12 @@ AmbientCapabilities=
 UMask=0077
 LimitCORE=0
 
-# A core dump of this process would contain the server's secret key in
-# plaintext. LimitCORE=0 above stops the kernel writing one; this stops a
-# crash handler doing it by another route.
+# A core dump of this process could contain the server's secret key in
+# plaintext. LimitCORE=0 above stops the kernel writing a core FILE. A piped
+# core_pattern (systemd-coredump, apport) is not bound by it: those two honour
+# a zero limit, others need not. What covers the keys under any handler is
+# that they live in libsodium's sodium_malloc regions, which it marks
+# MADV_DONTDUMP on Linux. No directive below adds to this (F154, V4-74).
 ProtectHostname=yes
 ProtectClock=yes
 RestrictRealtime=yes

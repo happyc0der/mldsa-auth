@@ -12747,3 +12747,13 @@ in a scratch report is one a later reader cannot check.
 the daemon-wide rate bucket drained from many addresses (partly §18 and
 F81 already), and IPv4-mapped IPv6 addresses from a proxy keyed as one
 bucket. Each needs a measurement before it is a finding.
+
+## V4-74 — F154: what protects the keys from a core dump
+
+The unit's comment claimed a second control against crash handlers that
+does not exist. It now says what `LimitCORE=0` covers (a core file),
+what it does not (a piped `core_pattern` that ignores the limit), and what
+covers the keys under any handler: libsodium's `MADV_DONTDUMP` on every
+`sodium_malloc` region. `prctl(PR_SET_DUMPABLE, 0)` in the daemon was
+considered and not done: it would also stop LeakSanitizer's ptrace, which
+the Linux ASan jobs depend on. `tests/deploy_checks.sh` passes.
