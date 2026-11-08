@@ -12679,3 +12679,21 @@ the test fails at "the login is still waiting for its ClientAuth after the
 local slot closed". Suite 51/53 (the two usual skips); gcc-16 `-O2` clean.
 This also closes the path by which a reset slot kept F138's `established`
 marker.
+
+## V4-71 — the hardware and network matrix
+
+**Context.** The owner asked for benchmarks across hardware and network
+levels. Measured on four CPU tiers (M4 Pro P-cores; i9-12900HX with AVX2
+and with the portable C backend; M4 Pro under `taskpolicy -b`), the browser
+client in headless Chrome, and twelve network profiles emulated with netem
+on the i9.
+
+**Decision.** Network emulation runs inside an unprivileged user and network
+namespace on WSL2 (`unshare -rn` + `tc ... netem` on its loopback): a real
+kernel qdisc, with nothing outside the namespace changed. On macOS that
+would have meant changing the system's packet filter, which is not done
+from this project. The results and their caveats are in `bench/results.md`,
+"Hardware and network matrix (V4-71)". The scripts that produced them were
+run by hand and are not committed: they belong in `bench/` only once they
+are a CTest-runnable tool with a demonstrated failure mode, like every
+other script here.

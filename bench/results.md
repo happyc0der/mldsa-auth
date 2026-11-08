@@ -980,3 +980,99 @@ two-sided.
   14–15 µs.
 - A lookup slower than the floor is not hidden: a cold page, a contended
   store.
+
+## Hardware and network matrix (V4-71, 2026-11-07)
+
+The owner asked how the protocol performs across hardware and network
+conditions. Everything below was measured on the tree at `c168f96`; V4-69
+and V4-70 change only the daemon's event loop, which none of these
+benchmarks exercise.
+
+### CPU tiers: the full mutual handshake, in process
+
+Median of three run medians (`bench_handshake`, Release).
+
+| Machine and build | ML-DSA / ML-KEM backend | Full handshake | Create ServerHello (sign) | Verify ClientAuth |
+|---|---|---|---|---|
+| Apple M4 Pro, performance cores (macOS 27, Apple clang) | NEON | **0.43 ms** | 115 µs | 69 µs |
+| Intel i9-12900HX, WSL2 (Linux 6.18 under Hyper-V, gcc 11.4) | AVX2 | **0.58 ms** | 137 µs | 94 µs |
+| Intel i9-12900HX, WSL2, `-DMLDSA_OQS_OPT_TARGET=generic` | portable C | **1.18 ms** | 334 µs | 158 µs |
+| Apple M4 Pro under `taskpolicy -b` (efficiency cores, throttled) | NEON | **2.85 ms** | 700 µs | 487 µs |
+
+- **The spec's < 15 ms on an x86_64 core holds on real x86_64 hardware**,
+  about 26× under it with AVX2 and 13× with the portable C backend. This
+  is v4's code; F15 concerns v1's, which no longer exists, so F15 stays as
+  it is.
+- The M4 Pro row is slower than this file's 0.372 ms headline: the load
+  average was about 5 while it ran. The rows are comparable with each
+  other only roughly.
+- Under `taskpolicy -b` the environment block still reports
+  `USER_INTERACTIVE`: the block shows the QoS class the process holds, not
+  the background policy that confines and throttles it. The 6.7× slowdown
+  is the policy's. This row approximates a slow, low-power core, not any
+  particular device.
+- WSL2 has no cpufreq interface (the block says so), so the i9's frequency
+  was not under the measurement's control. The record layer on the i9:
+  64 KiB sealed in 29.9 µs (about 2.1 GiB/s); 64 B in 0.31 µs.
+
+### The browser client (WebAssembly)
+
+`tools/phone_timing.mjs --host 127.0.0.1 --auto`, headless Chrome for
+Testing 155 on the M4 Pro (a secure context), three runs of five logins
+each: login medians **85.1, 83.3, 82.6 ms**; sealing the key at enrollment
+**92.6–95.3 ms**. Most of a login is unlocking the key: Argon2id at the
+browser's parameters costs about 67 ms per attempt (V4-69's side-channel
+review), and the handshake is the rest. V4-25 has phones and other
+browsers.
+
+### Network conditions
+
+**How.** On the i9 (WSL2), inside an unprivileged user and network
+namespace (`unshare -rn`), a real kernel `netem` qdisc on the namespace's
+loopback. Nothing outside the namespace was changed. Netem applies to each
+direction, so RTT is twice the delay, which `ping` confirmed for every
+profile. Jitter reorders packets. Each profile got a fresh demo
+`auth_server`, because the demo ledger admits 16 handshakes per 30 s
+(F1). A first run that reused one server had 97 of 240 logins refused
+`resource-error` for exactly that reason, not for the network. Then 15
+logins: `auth_client connect`, timed from process start (about 3 ms of
+process start and key loading) through TCP connect, the handshake, one
+authenticated echo and GOODBYE. The last column is `bench_handshake`'s
+handshake on an already-open TCP connection, from a separate run of the
+same profiles.
+
+| Link | netem, each direction | RTT (ping) | Logins ok | Login median | p90 | max | Handshake on an open connection, median |
+|---|---|---|---|---|---|---|---|
+| none | — | 0.1 ms | 15/15 | 3.0 ms | 3.2 ms | 4.0 ms | 0.6 ms |
+| LAN | delay 0.25ms | 0.8 ms | 15/15 | 5.6 ms | 6.0 ms | 6.3 ms | 1.5 ms |
+| broadband | delay 10ms 1ms | 20.2 ms | 15/15 | 106.6 ms | 107.7 ms | 108.7 ms | 31.2 ms |
+| continental | delay 40ms 4ms | 81.8 ms | 15/15 | 404.9 ms | 410.7 ms | 413.6 ms | 119.8 ms |
+| intercontinental | delay 75ms 5ms | 149.2 ms | 15/15 | 753.9 ms | 762.9 ms | 771.4 ms | 226.9 ms |
+| 4G | delay 25ms 8ms, loss 0.5%, 20 Mbit/s | 53.3 ms | 15/15 | 271.4 ms | 286.1 ms | 296.3 ms | 85.5 ms |
+| 3G | delay 100ms 20ms, loss 1%, 1 Mbit/s | 187.3 ms | 15/15 | 1120.1 ms | 1739.9 ms | 4898.9 ms | 383.4 ms |
+| 2G/EDGE | delay 150ms 30ms, loss 2%, 200 kbit/s | 312.1 ms | 15/15 | 2004.9 ms | 2041.9 ms | 3076.7 ms | 835.2 ms |
+| GEO satellite | delay 300ms 10ms, loss 0.5%, 5 Mbit/s | 602.6 ms | 15/15 | 3036.0 ms | 3061.0 ms | 4483.3 ms | 924.7 ms |
+| lossy Wi-Fi | delay 10ms, loss 5% | 20.3 ms | 15/15 | 106.4 ms | 608.1 ms | 1117.1 ms | 31.5 ms |
+| very lossy | delay 10ms, loss 10% | 20.2 ms | 15/15 | 332.6 ms | 1034.9 ms | 3604.7 ms | 31.4 ms |
+| hostile | delay 25ms, loss 20% | 50.2 ms | 15/15 | 1340.6 ms | 2979.5 ms | 5070.6 ms | 492.9 ms |
+
+**Reading it.**
+- **The cost is round trips, not computation.** The handshake on an open
+  connection is about 1.5 RTT on every pure-latency link (31.2/20.2,
+  119.8/81.8, 226.9/149.2, 924.7/602.6). The demo client's whole run is
+  about 5 RTT: TCP's connect, the handshake, its echo and its GOODBYE.
+  Computation is under 1 ms of any of these.
+- **Bandwidth shows only at 200 kbit/s.** The three messages are at most
+  9,203 bytes (ClientHello 1,330, ServerHello 4,545, ClientAuth 3,328; the
+  demo's ServerHello was 4,484), about 0.37 s of serialisation
+  at 2G rates, so there the handshake takes 2.7 RTT instead of 1.5.
+- **Loss shows in the tail, not the median,** until it is heavy: TCP's
+  retransmission timeouts (about 1 s at first) are the p90 and max. Every
+  login completed, even at 20% loss, inside the demo's 10 s handshake
+  timeout. In the separate `bench_handshake` run at 20% loss, its
+  loopback connect/accept row failed its own deadline, which is
+  connection setup under heavy loss and not the protocol.
+- **Not measured here:** a deployment adds TLS 1.3 (1 RTT) and the
+  WebSocket upgrade (1 RTT) in front of the daemon (spec §7.1). A browser
+  login adds the key's unlock (above), and the daemon's real path adds
+  the store (V4-12). The demo server is single-connection.
