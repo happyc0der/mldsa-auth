@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.27, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83 errata)
+# mldsa-authd — deployment specification (v1.28, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -949,7 +949,9 @@ page was a secure context. The rows, and what they do not establish, are in
 request **body** to the site's own endpoint, on the same origin, carrying the
 site's session cookie (HttpOnly, SameSite=Strict, and behind TLS `Secure`
 with the `__Host-` prefix, so no other host can set it); the site checks the
-`Origin`, `EXCHANGE`s the code with the `state` it placed in that session and
+`Origin` — on its POSTs, and on a WebSocket upgrade it proxies, which it
+refuses when an `Origin` other than its own is sent (erratum 67) —
+`EXCHANGE`s the code with the `state` it placed in that session and
 put in the WebSocket URL (§7.1), and keeps the token server-side. **On
 success the site issues a new session id** and drops the old one, as it does
 at a signup and a recovery (erratum 49). The site's session table is bounded:
@@ -1524,3 +1526,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 66 | 10.3 | The operator check on `REVOKE-DEVICE` holds whatever the device's or the operator's status; a plain revocation leaves already-minted tickets | V4-82's check went through the active key, so a disabled operator's devices could be revoked from the site and its recovery codes ended with them (F172); which tickets a revocation ends was unstated (F173) |
+
+### Revision v1.28 (V4-84)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 67 | 14 | A site that proxies `/authd/v1` refuses an upgrade carrying another origin's `Origin` | the reference site checked `Origin` on POSTs only, so a page on another origin could open the daemon's socket through it (F160); behind the reference Caddyfile, `/authd/v1` goes to the daemon directly and this is unchanged |

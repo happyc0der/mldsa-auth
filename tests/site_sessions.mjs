@@ -156,6 +156,26 @@ try {
     check(devices.startsWith('OK count=1'), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
   }
 
+  // V4-84, F160: a WebSocket upgrade from another origin is refused; the
+  // site's own origin, and a client that sends no Origin, are upgraded.
+  {
+    const upgradeStatus = (origin) => new Promise((resolve) => {
+      const c = createConnection(port, '127.0.0.1');
+      let buf = '';
+      c.on('data', (d) => { buf += d; const nl = buf.indexOf('\r\n'); if (nl >= 0) { c.destroy(); resolve(Number(buf.split(' ')[1])); } });
+      c.on('error', () => resolve(-1));
+      c.on('close', () => resolve(Number(buf.split(' ')[1]) || -1));
+      c.write(`GET /authd/v1?state=00 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+              'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' +
+              (origin ? `Origin: ${origin}\r\n` : '') + '\r\n');
+    });
+    const foreign = await upgradeStatus('http://attacker.example');
+    const own = await upgradeStatus(`http://127.0.0.1:${port}`);
+    const none = await upgradeStatus(null);
+    check(foreign === 403 && own === 101 && none === 101,
+          `ws: a foreign Origin is refused, the site's own and none are upgraded (${foreign}, ${own}, ${none}) (F160)`);
+  }
+
   // V4-76, F143: /api/recover gives every refusal ONE reply, so it does not say
   // which usernames exist; and it is rate-limited per client.
   {

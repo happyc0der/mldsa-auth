@@ -12960,3 +12960,17 @@ The reviewer's notes that the repo's write-fault fixture for a single revoke
 holds no recovery codes, so it never exercises the new update, are recorded
 here as a gap; its own sweep with three live codes left the database
 unchanged at every fault.
+
+## V4-84 — F160, and the fault sweeps over live rows
+
+**F160.** The reference site's WebSocket proxy refuses an upgrade carrying a
+foreign `Origin` (erratum 67). An absent `Origin` passes: browsers always
+send one on a WebSocket, so its absence means a non-browser client, which
+the cross-origin concern is not about, and Node's WebSocket in this repo's
+tests sends none. The Caddy path is unchanged and recorded as such.
+
+**Sweeps.** Round 5 noted that the write-fault sweeps for disable, rotate
+and revoke used fixtures holding no recovery codes, tickets or login codes,
+so the statements V4-80 and V4-82 added ran against nothing. Three more
+sweeps run the same calls over `sw_expired` (codes, a ticket, a token, a
+login code): every fault leaves the database as it was.

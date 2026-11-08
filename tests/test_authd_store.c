@@ -1525,6 +1525,17 @@ int main(void)
             { "revoke", "sweep(revoke): a fault at each of its writes leaves the database exactly as it was",
               sw_token, sc_revoke, STORE_OK, 1,
               "commit(revoke): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write" },
+            /* V4-84: the same three over a store that holds what V4-80 and
+             * V4-82 make them spend -- recovery codes, a ticket, a token and a
+             * login code (sw_expired) -- so every spend statement is itself
+             * faulted against live rows. The fixtures above hold none, and
+             * the round-5 review found their sweeps never reached them. */
+            { "disable-outstanding", "sweep(disable-outstanding): a fault at each of its writes leaves the database exactly as it was",
+              sw_expired, sc_disable, STORE_OK, 1, NULL },
+            { "rotate-outstanding", "sweep(rotate-outstanding): a fault at each of its writes leaves the database exactly as it was",
+              sw_expired, sc_rotate, STORE_OK, 1, NULL },
+            { "revoke-outstanding", "sweep(revoke-outstanding): a fault at each of its writes leaves the database exactly as it was",
+              sw_expired, sc_revoke, STORE_OK, 1, NULL },
             { "touch-last-seen", "sweep(touch-last-seen): a fault at each of its writes leaves the database exactly as it was",
               sw_device, sc_touch, STORE_OK, 1,
               NULL },

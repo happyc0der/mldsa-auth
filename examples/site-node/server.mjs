@@ -413,6 +413,15 @@ export async function startSite(opt) {
     let path;
     try { path = new URL(req.url, 'http://x').pathname; } catch { sock.destroy(); return; }
     if (!path.startsWith('/authd/v1') || (!opt.authdWsUnix && !opt.authdWs)) { sock.destroy(); return; }
+    // A page on another origin may not open the daemon's socket through this
+    // site (V4-84, F160). A browser always sends Origin on a WebSocket; a
+    // client that sends none is not a browser, and the cross-site concern is
+    // a browser's. Behind Caddy, /authd/v1 never reaches this handler.
+    const origin = req.headers.origin;
+    if (origin !== undefined && origin !== `${opt.secure ? 'https' : 'http'}://${req.headers.host}`) {
+      sock.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix)
                                : net.connect(Number(opt.authdWs.split(':')[1]), opt.authdWs.split(':')[0]);
     up.on('connect', () => {
