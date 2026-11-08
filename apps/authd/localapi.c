@@ -718,6 +718,21 @@ static ev_action_t h_revoke_device(authd_app_t *app, authd_slot_t *slot, const r
         get_hex(req, "reason", reason, sizeof reason, &reason_len, 0u) != 0) {
         return send_err(slot, "malformed");
     }
+    /* Req 11, extended to revocation (V4-82, F171; the owner's choice): an
+     * OPERATOR's device is revoked from admin.sock only, as its recovery is.
+     * A compromised site could otherwise lock the operators out. Asked of the
+     * active key: a device that is already revoked, or whose user is
+     * disabled, answers as before, and revoking it again changes nothing. */
+    if (!slot->is_admin) {
+        uint8_t pk[STORE_PK_BYTES];
+        store_role_t role = STORE_ROLE_USER;
+        if (store_lookup_active(app->store, handle, handle_len, pk, NULL, 0u, NULL, &role) == STORE_OK &&
+            role == STORE_ROLE_OPERATOR) {
+            sodium_memzero(pk, sizeof pk);
+            return send_err(slot, "not-permitted");
+        }
+        sodium_memzero(pk, sizeof pk);
+    }
     const store_status_t s = store_revoke_device(app->store, handle, handle_len, "local-api",
                                                  (reason_len > 0u) ? reason : NULL, reason_len);
     if (s == STORE_ERR_NOT_FOUND) {

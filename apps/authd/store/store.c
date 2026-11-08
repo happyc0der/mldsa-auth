@@ -1370,6 +1370,27 @@ static store_status_t revoke_device_locked(store_t *s,
         if (revoked == 1) { return STORE_OK; }
     }
 
+    /* REVOKING A DEVICE ENDS ITS USER'S UNUSED RECOVERY CODES (V4-82, F164; the
+     * owner's choice). Codes belong to the user, so a thief who logged in on a
+     * stolen, unlocked device could mint a generation and recover with it long
+     * after the device was revoked. Marked `revoked-device`, never deleted; the
+     * owner mints new codes from a device still trusted. In revoke=all the
+     * code being spent is already marked by then, so it is not touched. */
+    {
+        sqlite3_stmt *q = NULL;
+        if (sqlite3_prepare_v2(s->db,
+                "UPDATE recovery_codes SET used_at=?2, used_from='revoked-device'"
+                " WHERE used_at IS NULL AND user_id=(SELECT user_id FROM devices WHERE handle=?1);",
+                -1, &q, NULL) != SQLITE_OK) {
+            return STORE_ERR_DB;
+        }
+        const int ok = sqlite3_bind_blob(q, 1, handle, (int)handle_len, SQLITE_TRANSIENT) == SQLITE_OK &&
+                       sqlite3_bind_int64(q, 2, now) == SQLITE_OK &&
+                       sqlite3_step(q) == SQLITE_DONE;
+        sqlite3_finalize(q);
+        if (!ok) { return STORE_ERR_DB; }
+    }
+
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
             "UPDATE devices SET status='revoked', revoked_at=?2, revoked_by=?3, revoked_reason=?4"

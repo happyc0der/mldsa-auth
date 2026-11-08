@@ -1241,7 +1241,19 @@ static void test_recovery_policy(void)
             "policy: an operator's recovery codes are NOT mintable from site.sock (Req 11)");
       snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", oph);
       CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
-            "policy: an operator cannot be recovered from site.sock either"); }
+            "policy: an operator cannot be recovered from site.sock either");
+      /* V4-82, F171: nor can an operator's device be revoked from site.sock. */
+      { mldsa_keypair_t ok; static const uint8_t OPH[] = { 'o','p','d','1' }; char ophh[64];
+        CHECK(mldsa_keypair_generate(&ok) == 0 &&
+              store_enroll_device(d.store, OPH, sizeof OPH, OP, sizeof OP, ok.public_key, "site", "admin", NULL, 0) == STORE_OK,
+              "policy: the operator has a device");
+        hx(ophh, sizeof ophh, OPH, sizeof OPH);
+        snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", ophh);
+        CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+              "policy: an operator's device cannot be revoked from site.sock (F171)");
+        CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+              "policy: ...and can be from admin.sock");
+        mldsa_keypair_free(&ok); } }
 
     /* --- a disabled user --- */
     snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
@@ -1770,6 +1782,53 @@ static void test_codes_outlive(void)
       h_stop(&d); }
 }
 
+/* V4-82, F164 (the owner's choice): revoking a device ends its user's unused
+ * recovery codes -- a thief's generation minted on a stolen device with them. */
+static void test_revoke_ends_codes(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "revcodes.sqlite3", 1) == 0, "revcodes: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    int fd = h_dial_unix(d.site_path);
+    static char req[9000], resp[16384];
+    char uh[160], hh[160], c1[BASE32_CODE_CHARS + 1u], c2[BASE32_CODE_CHARS + 1u], c3[BASE32_CODE_CHARS + 1u];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "revcodes: codes issued");
+    first_code(resp, c1);
+    snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", hh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "revcodes: the device is revoked");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, c1);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "revcodes: a recovery code from before a device revocation no longer recovers (F164)");
+
+    /* revoke=all still works -- the code it spends is marked first -- and
+     * the generation's other codes end with the devices it revokes. */
+    { mldsa_keypair_t k2; char pk2h[4000];
+      static const uint8_t H2[] = { 'd','2','x','x' };
+      CHECK(mldsa_keypair_generate(&k2) == 0, "revcodes: a second device key");
+      CHECK(store_enroll_device(d.store, H2, sizeof H2, U1, sizeof U1, k2.public_key, "site", "test", NULL, 0) == STORE_OK,
+            "revcodes: a second device");
+      (void)pk2h;
+      mldsa_keypair_free(&k2); }
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "revcodes: a new generation");
+    nth_code(resp, 0u, c2); nth_code(resp, 1u, c3);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s revoke=all", uh, c2);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "revcodes: revoke=all still recovers");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, c3);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "revcodes: ...and the generation's other code ended with the revoked devices");
+
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 /* V4-79, F158: a handshake whose pinned key stops being the handle's active key
  * between its ClientHello and its ClientAuth -- a rotation, here, as a second
  * session would do it -- gets no login code. */
@@ -2053,6 +2112,7 @@ int main(void)
     test_key_changed_mid_handshake();
     test_issued_before_outlives();
     test_codes_outlive();
+    test_revoke_ends_codes();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

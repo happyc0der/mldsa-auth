@@ -377,7 +377,8 @@ the most important thing on this page.
 - check `test_authd_localapi` "revoke-all: the lost device's live session was CLOSED, not just revoked in the store (Req 9)"
 - check `test_authd_localapi` "revoke-all: revoke=none leaves the user's live session open"
 - check `authd_e2e` "PASS: E2E: a disabled user is refused, and the same identity logs in again once re-enabled"
-- check `authd_e2e` "PASS: E2E: a device revoked over site.sock is refused at its next login"
+- check `authd_e2e` "PASS: E2E: a device revoked over admin.sock is refused at its next login"
+- check `authd_e2e` "PASS: E2E: site.sock may not revoke an operator's device (F171)"
 - mutation `v58 GA6` — the lookup's device clause becomes `d.status=d.status`
 - mutation `v58 GA7` — live sessions no longer matched by user
 - mutation `v58 GA8` — DISABLE-USER closes no live session

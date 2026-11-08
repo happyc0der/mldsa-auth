@@ -695,11 +695,19 @@ rc=0; dave_login || rc=$?
 dave_login || fail "re-enabled, dave still cannot log in: the refusal was not the user's status"
 echo "PASS: E2E: a disabled user is refused, and the same identity logs in again once re-enabled"
 if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
-    "$NODE" "$SITE" "$TMP/s.sock" --revoke "$DAVE" > /dev/null 2>> "$TMP/site.err" \
-        || fail "REVOKE-DEVICE over site.sock failed"
+    # dave is an operator, and since V4-82 (F171) an operator's device is
+    # revoked from admin.sock only: site.sock must refuse it, and admin.sock
+    # then revokes it the same way.
+    rc=0; "$NODE" "$SITE" "$TMP/s.sock" --revoke "$DAVE" > /dev/null 2> "$TMP/site-op.err" || rc=$?
+    [ "$rc" -ne 0 ] && grep -q 'not-permitted' "$TMP/site-op.err" \
+        || fail "site.sock revoked an OPERATOR's device (F171)"
+    dave_login || fail "a refused revocation still revoked dave's device"
+    echo "PASS: E2E: site.sock may not revoke an operator's device (F171)"
+    "$NODE" "$SITE" "$TMP/a.sock" --revoke "$DAVE" > /dev/null 2>> "$TMP/site.err" \
+        || fail "REVOKE-DEVICE over admin.sock failed"
     rc=0; dave_login || rc=$?
     [ "$rc" -ne 0 ] || fail "a REVOKED device still obtained a login code (Req 9)"
-    echo "PASS: E2E: a device revoked over site.sock is refused at its next login"
+    echo "PASS: E2E: a device revoked over admin.sock is refused at its next login"
 else
     echo "SKIP: E2E: node not found, so the REVOKE-DEVICE leg did not run"
 fi

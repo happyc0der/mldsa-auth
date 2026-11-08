@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.25, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81 errata)
+# mldsa-authd — deployment specification (v1.26, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -476,7 +476,7 @@ is a build failure, and so is a code defined here that nothing emits.
 | `VERIFY token=` | `OK user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|idle-expired\|device-revoked\|user-disabled` |
 | `LOGOUT token=` | `OK deleted=0\|1` |
 | `REVOKE-TOKENS user= [handle=]` | `OK count=` |
-| `REVOKE-DEVICE handle= reason=` | `OK` / `ERR code=unknown` |
+| `REVOKE-DEVICE handle= reason=` | `OK` / `ERR code=unknown\|not-permitted` |
 | `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` / `ERR code=too-many` |
 | `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) / `ERR code=invalid\|user-disabled\|not-permitted` |
 | `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted\|busy` |
@@ -701,7 +701,12 @@ and this section used to run them together:
    token-dropping `ROTATE` spends the rotating session's own login code too,
    if the site has not exchanged it yet, so the client logs in again
    (erratum 64). Revoking an already-revoked device answers `OK` and changes
-   nothing, so the first revocation's record stands. A code whose
+   nothing, so the first revocation's record stands. **Revoking a device
+   ends its user's unused recovery codes** (marked `revoked-device`, never
+   deleted): a generation minted on a stolen, unlocked device would otherwise
+   outlive it, and the owner mints new codes from a device still trusted. On
+   `site.sock`, revoking an **operator's** device is `not-permitted`, as its
+   recovery is: that is an administrative act (erratum 65). A code whose
    device or user is no longer active is refused at `EXCHANGE` and spent
    whatever wrote it; and a handshake whose pinned key is no longer the
    handle's active key gets no code.
@@ -1504,3 +1509,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 64 | 10.3 | A re-issue spends tickets only; what a re-issue and a token-dropping rotation end is stated; a second revoke of a revoked device changes nothing | the re-issue also spent other devices' login codes in flight, against erratum 63's own text (F167); a repeat revoke overwrote the first revocation's record (F170); two consequences of erratum 63 were unstated (F168, F169) |
+
+### Revision v1.26 (V4-82)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 65 | 8, 10.3 | Revoking a device ends its user's unused recovery codes; `REVOKE-DEVICE` of an operator's device from `site.sock` is `not-permitted` | recovery codes minted on a stolen device recovered the account after the device was revoked (F164); a compromised site could revoke the operators' devices though it cannot recover them (F171); the owner chose both |

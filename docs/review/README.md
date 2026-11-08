@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 171 findings (F0–F171), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 64 errata, each
+3. The two specifications. The deployment spec's §20 lists 65 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -580,6 +580,10 @@ were defects -- a re-issue spent other devices' login codes (F167), a
 repeat revoke overwrote the first revocation's record (F170) -- documented
 two consequences of erratum 63 (F168, F169; erratum 64) and recorded F171,
 a site's ability to revoke an operator's devices, for the owner.
+
+V4-82 took the owner's two decisions: revoking a device now ends its user's
+unused recovery codes (F164), and the site socket cannot revoke an
+operator's device (F171), erratum 65.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

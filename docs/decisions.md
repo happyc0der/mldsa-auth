@@ -12931,3 +12931,20 @@ hand control; F168 and F169 are erratum 64's text; F171 is the owner's. The
 helper now takes a user's codes and its tickets as separate switches, since
 the events differ in which they end. Suite 51/53, tree proven current
 (`001b8fefd3c43c1f`), gcc-16 full compile clean on all 14 changed C files.
+
+## V4-82 — F164 and F171, the owner's decisions
+
+**F164, option (a).** Revoking any device ends its user's unused recovery
+codes, in `revoke_device_locked`, after the repeat-revoke early return (so a
+no-op revoke ends nothing). Option (b), codes bound to the device that
+minted them, was more precise and needed a schema change; the owner chose
+(a). Cost: after any revocation the owner mints new codes. `revoke=all`
+marks its code `recovery-use` before revoking devices, so the recovery it
+performs still completes.
+
+**F171.** site.sock refuses `REVOKE-DEVICE` for an operator's active device,
+`not-permitted`, the code Req 11 already uses for an operator's recovery.
+
+**Shown.** `test_authd_localapi` 415 checks; a hand control each (the first
+attempt at F164's broke the SQL itself and killed for the wrong reason, and
+was redone with an update that matches nothing).
