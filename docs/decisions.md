@@ -12999,3 +12999,9 @@ with a mutant that compiles.
 pinned by commit, v6.1.0 (`55cc834`, released 2026-06-26). macOS's
 LibreSSL 3.3.6 cannot compute SQLite's SHA3-256 pin, so the action puts
 Homebrew's OpenSSL first there.
+
+**V4-85b.** CI's anchor gate caught campaign v55's PP10 still anchored on
+`PP_MIN_BITS 50u`: the gate had been run before the floor changed, not
+after. Re-anchored; its expected check reads "the 60-bit floor". Both
+campaigns touched by V4-85 were run: PP10 KILLED (5 named), FL1 KILLED (4
+named), sources restored, clean suite passing.

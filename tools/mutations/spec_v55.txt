@@ -7,6 +7,6 @@ PP6|^test_passphrase$|not-utf8: overlong, surrogate, above U+10FFFF, truncated, 
 PP7|^test_passphrase$|predictable: runs of a repeated character count almost nothing (30 bits, not 75)
 PP8|^test_passphrase$|predictable: a walk along the keyboard rows
 PP9|^test_passphrase$|predictable: one 3-character unit repeated counts as the unit plus 2 bits (17)
-PP10|^test_passphrase$|predictable: 12 random digits are 39 bits, under the 50-bit floor
+PP10|^test_passphrase$|predictable: 12 random digits are 39 bits, under the 60-bit floor
 PP11|^test_client_wasm$|policy: sealing under a refused passphrase is CC_ERR_PASSPHRASE and produces nothing
 PP12|^test_passphrase$|common: a 12-character entry of the list itself

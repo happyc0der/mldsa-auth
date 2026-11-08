@@ -54,7 +54,7 @@ M = {
  "PP8":  (PC, [("        } else if (i >= 2 && keyboard_walk(cp[i - 2], cp[i - 1], cp[i])) {",
                 "        } else if (i >= 2 && keyboard_walk(cp[i - 2], cp[i - 1], cp[i]) && i > n) { /* MUTATION PP8 */")]),
  "PP9":  (PC, [("            if (unit < millibits) {", "            if (unit < millibits / 4u) { /* MUTATION PP9 */")]),
- "PP10": (PH, [("#define PP_MIN_BITS        50u", "#define PP_MIN_BITS        39u /* MUTATION PP10 */")]),
+ "PP10": (PH, [("#define PP_MIN_BITS        60u", "#define PP_MIN_BITS        39u /* MUTATION PP10 */")]),
  "PP11": (SH, [("    if (pp_check((const uint8_t *)pass, pass_len, NULL) != PP_OK) {",
                 "    if (pp_check((const uint8_t *)pass, pass_len, NULL) != PP_OK && pass_len == 0u) { /* MUTATION PP11 */")]),
  "PP12": (PC, [("        if (r < 0) { hi = mid; } else { lo = mid + 1u; }", "        if (r > 0) { hi = mid; } else { lo = mid + 1u; } /* MUTATION PP12 */")]),

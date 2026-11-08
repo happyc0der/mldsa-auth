@@ -136,7 +136,7 @@ int main(int argc, char **argv)
     CHECK(v("kx7kx7kx7kx7", &r) == PP_PREDICTABLE && (r.reasons & PP_R_REPEATED_UNIT) != 0u && r.est_bits == 17u,
           "predictable: one 3-character unit repeated counts as the unit plus 2 bits (17)");
     CHECK(v("839201748392", &r) == PP_PREDICTABLE && (r.reasons & PP_R_ONE_CLASS) != 0u && r.est_bits == 39u,
-          "predictable: 12 random digits are 39 bits, under the 50-bit floor");
+          "predictable: 12 random digits are 39 bits, under the 60-bit floor");
 
     CHECK(strcmp(pp_verdict_name(PP_COMMON), "common") == 0 && strcmp(pp_verdict_name(PP_PREDICTABLE), "predictable") == 0,
           "names: verdicts have the names a page shows");
