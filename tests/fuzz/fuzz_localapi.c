@@ -175,6 +175,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
      * extra: every property under test is about WHICH code matches and what
      * the store does, not about how expensive the hash is. The daemon's real
      * parameters are asserted by tools/audit/check_spec_constants.sh. */
+    app.recovery_use_per_sec = 1000000u;   /* V4-78: the budget is not what this fuzzes */
+    app.recovery_use_burst = 1000000u;
     app.recovery_ops = crypto_pwhash_OPSLIMIT_MIN;
     app.recovery_mem = crypto_pwhash_MEMLIMIT_MIN;
     app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;

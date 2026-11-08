@@ -46,7 +46,16 @@ try {
   const serverPub = Uint8Array.from(Buffer.from(info.server_pub, 'hex'));
   const { default: createMldsaClient } = await import(pathToFileURL(modulePath).href);
   const { AuthdClient } = await import(pathToFileURL(`${repo}/web/client/authd-client.mjs`).href);
-  const { startSite } = await import(pathToFileURL(`${repo}/examples/site-node/server.mjs`).href);
+  const { startSite, limiterKey } = await import(pathToFileURL(`${repo}/examples/site-node/server.mjs`).href);
+  // V4-78, F155: the recovery limiter keys an IPv6 client on its /64, so one
+  // subscriber's prefix is one bucket, and an IPv4-mapped address on its IPv4.
+  { const cases = [['203.0.113.7', '203.0.113.7'], ['::ffff:203.0.113.7', '203.0.113.7'],
+                   ['2001:db8:1:2:3:4:5:6', '2001:db8:1:2::/64'], ['2001:db8:1:2::9', '2001:db8:1:2::/64'],
+                   ['2001:DB8:0001:0002:ffff::1', '2001:db8:1:2::/64'], ['[2001:db8::1]', '2001:db8:0:0::/64'],
+                   ['fe80::1%en0', 'fe80:0:0:0::/64'], ['garbage', '?'], ['', '?']];
+    const bad = cases.filter(([i, w]) => limiterKey(i) !== w);
+    check(bad.length === 0, `limiter: ${cases.length - bad.length}/${cases.length} addresses keyed as expected` +
+          (bad.length ? ` (wrong: ${bad.map(([i]) => i).join(', ')})` : '')); }
   const client = await AuthdClient.load(createMldsaClient);
   const start = async (extra = {}) => {
     const st = await startSite({ authdSite: info.site, authdWs: `127.0.0.1:${info.ws_port}`, serverId: info.server_id,
@@ -162,6 +171,19 @@ try {
     const st = [];
     for (let i = 0; i < 3; i++) { st.push((await lpost({ user: 'nobody-by-this-name', code: '0000000000000000' })).status); }
     check(st[0] === 403 && st[1] === 403 && st[2] === 429, `recover: the third attempt past a burst of two is 429 (${st.join(', ')})`);
+    // V4-79, F159: behind a proxy the key is the RIGHTMOST X-Forwarded-For
+    // entry, the proxy's; a client rotating the entries it prepends stays in
+    // its own bucket.
+    const tp = await start({ recoverBurst: 2, recoverRefillMs: 60 * 60 * 1000, trustProxy: true });
+    const tbase = `http://127.0.0.1:${tp.port}`;
+    const tst = [];
+    for (let i = 0; i < 3; i++) {
+      tst.push((await fetch(`${tbase}/api/recover`, { method: 'POST',
+        body: JSON.stringify({ user: 'nobody-by-this-name', code: '0000000000000000' }),
+        headers: { Origin: tbase, 'Content-Type': 'application/json',
+                   'X-Forwarded-For': `198.51.100.${i + 1}, 203.0.113.9` } })).status);
+    }
+    check(tst[2] === 429, `recover: a client rotating the X-Forwarded-For entries it prepends is still limited (${tst.join(', ')})`);
   }
 
   // V4-76, F145: a signup naming an EXISTING user cannot add a device to it.

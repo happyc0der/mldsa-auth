@@ -272,7 +272,12 @@ typedef enum {
     STORE_CODE_UNKNOWN,
     STORE_CODE_EXPIRED,
     STORE_CODE_USED,
-    STORE_CODE_STATE_MISMATCH
+    STORE_CODE_STATE_MISMATCH,
+    /* V4-79 (F157): the code is genuine, but its device or its user is no
+     * longer active -- revoked or disabled after the code was issued. The
+     * code is spent, so it cannot be tried again once re-enabled. */
+    STORE_CODE_DEVICE_REVOKED,
+    STORE_CODE_USER_DISABLED
 } store_code_verdict_t;
 
 /* As store_consume_login_code, but reports WHY. On STORE_CODE_OK the code is

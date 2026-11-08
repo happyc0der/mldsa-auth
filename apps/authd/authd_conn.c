@@ -457,6 +457,28 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
         return EV_ACTION_CLOSE;
     }
 
+    /* THE PINNED KEY MUST STILL BE THE ACTIVE ONE (V4-79, F158). The pin is
+     * taken at ClientHello, and a ROTATE, a revocation or a disable can land
+     * between that and this ClientAuth -- up to handshake_timeout_ms. Without
+     * this, a handshake begun under a rotated-away key still got a login
+     * code. The store is authoritative (Req 9), so it is asked again, here,
+     * for the same handle, its owner and its key. */
+    {
+        uint8_t cur[STORE_PK_BYTES], owner[STORE_ID_MAX];
+        size_t owner_len = 0;
+        const store_status_t ls = store_lookup_active(app->store, c->handle, c->handle_len, cur,
+                                                      owner, sizeof owner, &owner_len, NULL);
+        const int same = (ls == STORE_OK && sodium_memcmp(cur, c->pin_pk, STORE_PK_BYTES) == 0 &&
+                          owner_len == c->user_id_len &&
+                          sodium_memcmp(owner, c->user_id, owner_len) == 0);
+        sodium_memzero(cur, sizeof cur);
+        if (!same) {
+            authd_log_slot(AUTHD_LOG_INFO, "client-auth-key-changed", slot->index);
+            app->handshakes_failed++;
+            return EV_ACTION_CLOSE;
+        }
+    }
+
     if (issue_login_code(app, slot, c) != 0) {
         authd_log_slot(AUTHD_LOG_ERROR, "login-code-failed", slot->index);
         return EV_ACTION_CLOSE;

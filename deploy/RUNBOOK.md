@@ -341,10 +341,10 @@ repository.
   refuses every POST as cross-origin — sign-up, login, everything — while
   the pages still load.
 - **`--trust-proxy` belongs behind Caddy and nowhere else.** The recovery
-  route is rate-limited per client, keyed on the address in
-  `X-Forwarded-For`, which Caddy sets to the real client and does not take
-  from it. Without a proxy in front the header is whatever the client says,
-  so leave the flag off and the key is the TCP peer.
+  route is rate-limited per client, keyed on the RIGHTMOST `X-Forwarded-For`
+  entry, the one the proxy added; everything to its left is the client's
+  (F159). Without a proxy in front even that entry is the client's, so
+  leave the flag off and the key is the TCP peer.
 - **The invite is the reference site's stand-in for your account check.**
   Whoever holds it can create an account, but not join an existing one: a
   signup enrolls `via=signup`, which the daemon refuses for a known user

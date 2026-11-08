@@ -12838,3 +12838,55 @@ pass under that control; measured LAN runs differ from it by at most
 0.3 ms, so the floor is 0.35 ms, and three real runs passed at it. Not a
 CTest: GitHub's Ubuntu runners restrict unprivileged user namespaces, and
 the tool exits 77 where it cannot run. Run on the i9 (WSL2, Linux 6.18).
+
+## V4-78 — F155: a budget for recovery attempts; F156 recorded
+
+**Context.** Round 2 of the review (parsing lane) found that V4-76's F143
+fix had removed a bound: refusals that used to cost nothing now cost one
+Argon2id computation, and a made-up username never locks. Fixed within the
+owner's go for F143, because it is that fix's own defect.
+
+**Decision.** A daemon-wide token bucket on `RECOVERY-USE` from site.sock,
+taken before the user is looked up, so a refusal for it costs nothing and
+names nobody. Rate and burst are `authd_app_t` fields the daemon assigns
+from `RECOVERY_USE_PER_SEC` (2) and `RECOVERY_USE_BURST` (4), the way the
+KDF's parameters are, so tests can raise them and `check_spec_constants.sh`
+pins what the daemon writes; an unconfigured budget refuses rather than
+running unbounded. A per-user budget was not chosen: names are free, which
+is the whole problem. The cost is that a stream of refusals can keep real
+recovery `busy`; recovery is rare, and logins are not affected. The site's
+limiter keys IPv6 by /64.
+
+**F156** (Low) is recorded, not fixed: a known user's failure writes its
+failure count durably, which takes tens of microseconds an unknown user's
+refusal does not. V4-76's comment claimed uniform time; it is corrected.
+
+## V4-79 — F157 (High), F158, F159: what a revocation must also stop
+
+**Context.** Round 2's logic lane reproduced an account takeover after
+recovery (F157) and a rotation race (F158); its web lane, that V4-76's
+limiter keyed on the client's end of `X-Forwarded-For` (F159).
+
+**F157.** The check belongs where the code is spent: `store_consume_login_code_ex`
+reads the device's and the user's status in its own transaction, after the
+state check, and a refusal spends the code. Marking a handle's outstanding
+codes used inside each revoking transaction was the alternative; it needs
+the same rule in three places (revoke, disable, `revoke=all`) and misses any
+fourth added later, where the check at the spend covers them all. The
+store's coarse `store_consume_login_code` reports the new verdicts as
+NOT_FOUND, as it does every refusal but a state mismatch. One existing test
+issued a code for a device it had revoked and now uses the active one.
+
+**F158.** `on_client_auth` asks the store again, after ClientAuth verifies,
+for the handle's active key and owner, and issues nothing unless both are
+the pinned ones. One store read per successful login.
+
+**F159.** The rightmost `X-Forwarded-For` entry: the proxy's, whether the
+proxy replaces the header or appends to it.
+
+**Shown.** Tests and a hand control for each (see the register). The
+review's own takeover program, rebuilt against this tree, reports every
+property held, where at fb257f9 the thief ended owning the account. Suite
+51/53 with the two usual skips, `check_build_current.sh` reproduced the tree
+(`afc704bfbb992f49`), gcc-16 `-O2` clean on the seven changed C files. F157
+is a High: it stays on its branch until the owner has seen it.

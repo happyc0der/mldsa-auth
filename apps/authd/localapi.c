@@ -560,6 +560,8 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
     case STORE_CODE_EXPIRED:        return send_err(slot, "expired");
     case STORE_CODE_USED:           return send_err(slot, "used");
     case STORE_CODE_STATE_MISMATCH: return send_err(slot, "state-mismatch");
+    case STORE_CODE_DEVICE_REVOKED: return send_err(slot, "device-revoked");   /* F157 */
+    case STORE_CODE_USER_DISABLED:  return send_err(slot, "user-disabled");    /* F157 */
     default:                        return send_err(slot, "unknown");
     }
 
@@ -1044,6 +1046,37 @@ done:
     return act;
 }
 
+/* The daemon-wide RECOVERY-USE budget (V4-78, F155): a token bucket on the
+ * injected clock, so tests are exact. Returns 1 if an attempt may proceed. */
+static int recovery_budget_take(authd_app_t *app)
+{
+    const uint64_t now = app->now_ms;
+    if (app->recovery_use_burst == 0u || app->recovery_use_per_sec == 0u) {
+        return 0;                              /* unconfigured: refuse, never unbounded */
+    }
+    if (!app->recovery_budget_live) {
+        app->recovery_budget_live = 1;
+        app->recovery_budget_tokens = app->recovery_use_burst;
+        app->recovery_budget_at_ms = now;
+    }
+    if (now > app->recovery_budget_at_ms) {
+        const uint64_t add = (now - app->recovery_budget_at_ms) * app->recovery_use_per_sec / 1000u;
+        if (add > 0u) {
+            const uint64_t t = (uint64_t)app->recovery_budget_tokens + add;
+            app->recovery_budget_tokens = (t > app->recovery_use_burst) ? app->recovery_use_burst : (uint32_t)t;
+            app->recovery_budget_at_ms += add * 1000u / app->recovery_use_per_sec;
+        }
+    }
+    if (app->recovery_budget_tokens == app->recovery_use_burst) {
+        app->recovery_budget_at_ms = now;     /* a full bucket accrues nothing */
+    }
+    if (app->recovery_budget_tokens == 0u) {
+        return 0;
+    }
+    app->recovery_budget_tokens--;
+    return 1;
+}
+
 static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const req_t *req)
 {
     static const char *const allowed[] = { "user", "code", "revoke" };
@@ -1071,6 +1104,14 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         } else if (!(rv->val_len == 4u && memcmp(rv->val, "none", 4) == 0)) {
             return send_err(slot, "malformed");
         }
+    }
+
+    /* THE BUDGET COMES FIRST (V4-78, F155): before the user is looked up and
+     * before any hashing, so a refusal for it costs nothing and says nothing
+     * about who was named. */
+    if (!slot->is_admin && !recovery_budget_take(app)) {
+        app->recovery_busy++;
+        return send_err(slot, "busy");
     }
 
     /* EVERY REFUSAL COSTS ONE ARGON2ID COMPUTATION (V4-76, F143), the same as a

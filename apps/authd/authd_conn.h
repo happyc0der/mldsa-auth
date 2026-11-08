@@ -145,6 +145,11 @@ typedef struct {
     int                recovery_lock_threshold;
     int64_t            recovery_lock_seconds;
     uint32_t           ticket_ttl_s;
+    /* V4-78 (F155): the RECOVERY-USE budget's rate and burst. The daemon
+     * assigns RECOVERY_USE_PER_SEC and RECOVERY_USE_BURST; tests raise them
+     * the way they lower the KDF, and one test sets the daemon's values. */
+    uint32_t           recovery_use_per_sec;
+    uint32_t           recovery_use_burst;
     uint64_t started_ms;      /* for PING's uptime */
     uint64_t next_sweep_ms;
 
@@ -165,6 +170,12 @@ typedef struct {
      * to this; the error code alone cannot tell a lockout enforced before the
      * KDF from one enforced after it. */
     uint64_t recovery_kdf_calls;
+    /* V4-78 (F155): the daemon-wide RECOVERY-USE budget (recovery.h); the
+     * bucket fills on first use. recovery_busy counts what it refused. */
+    uint32_t recovery_budget_tokens;
+    uint64_t recovery_budget_at_ms;
+    int      recovery_budget_live;
+    uint64_t recovery_busy;
     uint64_t decoy_pins;
     uint64_t refused_no_address;   /* Req 12: a preamble that carried no client */
     uint64_t refused_rate;         /* the limiter said no */

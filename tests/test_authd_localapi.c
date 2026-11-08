@@ -425,6 +425,16 @@ static void test_revocation_closes_sessions(void)
     }
     CHECK(!still, "revoke: the live session was CLOSED, not just the row updated (Req 9)");
 
+    /* V4-79, F157: the login code the device was given before the revoke --
+     * still within its 60 s -- does not exchange for a token after it. */
+    { char hexcode[80];
+      hx(hexcode, sizeof hexcode, code, sizeof code);
+      snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=device-revoked"),
+            "revoke: a login code issued before the revoke is refused `device-revoked` (F157)");
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
+            "revoke: ...and it is spent"); }
+
     snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
           "revoke: revoking again is still OK (idempotent at the API)");
@@ -452,8 +462,8 @@ static void test_disable_closes_sessions(void)
           "disable: fixture -- a second user with a device");
 
     h_client_t c1, c2;
-    uint8_t code[32];
-    CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c1, code) == 0,
+    uint8_t code[32], code_u1[32];
+    CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c1, code_u1) == 0,
           "disable: u1 logs in");
     CHECK(h_login(&d, &c2, H5, sizeof H5, &kp2) == 0 && h_get_login_code(&d, &c2, code) == 0,
           "disable: u3 logs in");
@@ -471,6 +481,21 @@ static void test_disable_closes_sessions(void)
           "disable: the disabled user's live session was CLOSED, not just the row updated (Req 9)");
     CHECK(serving_for(&d, U3, sizeof U3) == 1u,
           "disable: another user's live session is untouched");
+
+    /* V4-79, F157: u1's login code from before the disable does not become a
+     * token -- not while disabled, and not after a re-enable either. */
+    { int site = h_dial_unix(d.site_path);
+      char hexcode[80];
+      hx(hexcode, sizeof hexcode, code_u1, sizeof code_u1);
+      char xreq[256];
+      snprintf(xreq, sizeof xreq, "EXCHANGE code=%s state=", hexcode);
+      CHECK(site >= 0 && h_local_cmd(&d, site, xreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-disabled"),
+            "disable: a login code issued before the disable is refused `user-disabled` (F157)");
+      snprintf(req, sizeof req, "ENABLE-USER user=%s", uh);
+      CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK") &&
+            h_local_cmd(&d, site, xreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
+            "disable: ...and after ENABLE-USER it is spent, not revived");
+      (void)close(site); }
 
     (void)close(adm);
     h_client_close(&c1);
@@ -1594,6 +1619,87 @@ static void test_revoke_tokens_scope(void)
 }
 
 
+/* V4-79, F158: a handshake whose pinned key stops being the handle's active key
+ * between its ClientHello and its ClientAuth -- a rotation, here, as a second
+ * session would do it -- gets no login code. */
+static void test_key_changed_mid_handshake(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp, kp_new;
+    CHECK(h_start(&d, g_dir, "midhs.sqlite3", 1) == 0, "midhs: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    CHECK(mldsa_keypair_generate(&kp_new) == 0, "midhs: the new key");
+
+    h_client_t c;
+    memset(&c, 0, sizeof c);
+    keystore_init(&c.pins);
+    CHECK(keystore_add(&c.pins, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key) == KEYSTORE_OK,
+          "midhs: client pins the server");
+    c.fd = h_dial(d.port);
+    CHECK(c.fd >= 0 && H_PUMP_UNTIL(&d, evloop_active(&d.ev) >= 1u), "midhs: a protocol connection");
+    CHECK(handshake_initiator_init(&c.hs, HANDLE1, sizeof HANDLE1, &kp, &c.pins,
+                                   H_SERVER_ID, sizeof H_SERVER_ID) == HANDSHAKE_OK, "midhs: initiator");
+    uint8_t buf[AUTHD_FRAME_MAX];
+    size_t n = 0, sh = 0;
+    CHECK(handshake_initiator_create_client_hello(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+          h_send_frame(c.fd, buf, n) == 0 && h_recv_frame(&d, c.fd, buf, sizeof buf, &sh) == 0 &&
+          handshake_initiator_verify_server_hello(&c.hs, buf, sh) == HANDSHAKE_OK,
+          "midhs: the ClientHello is answered under the current key (the pin is taken)");
+
+    static const uint8_t HSID[STORE_HSID_BYTES] = { 7 };
+    CHECK(store_rotate_key(d.store, HANDLE1, sizeof HANDLE1, kp_new.public_key, kp.public_key,
+                           HSID, sizeof HSID, 0, d.app.now_unix, NULL, NULL) == STORE_OK,
+          "midhs: the handle's key rotates before this handshake's ClientAuth");
+
+    const uint64_t issued = d.app.logins_issued;
+    CHECK(handshake_initiator_create_client_auth(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+          h_send_frame(c.fd, buf, n) == 0, "midhs: ClientAuth under the old key is sent");
+    CHECK(H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u) && d.app.logins_issued == issued,
+          "midhs: the connection is closed and NO login code is issued (F158)");
+
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&kp_new);
+    h_stop(&d);
+}
+
+/* V4-78, F155: RECOVERY-USE on site.sock has a daemon-wide budget, taken before
+ * any lookup or hashing, at the daemon's own rate and burst. */
+static void test_recovery_budget(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery-budget.sqlite3", 1) == 0, "budget: daemon starts");
+    d.app.recovery_use_per_sec = RECOVERY_USE_PER_SEC;
+    d.app.recovery_use_burst = RECOVERY_USE_BURST;
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "budget: connect to site.sock and admin.sock");
+    char req[256], resp[4096], h[64];
+    static const uint8_t GHOST[] = "nobody";
+    hx(h, sizeof h, GHOST, sizeof GHOST - 1u);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", h);
+    int ok = 1;
+    for (unsigned i = 0; i < RECOVERY_USE_BURST; i++) {
+        ok &= h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid");
+    }
+    CHECK(ok, "budget: the burst's attempts are served (refused `invalid`, each with its computation)");
+    const uint64_t kdf = d.app.recovery_kdf_calls;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=busy") &&
+          d.app.recovery_kdf_calls == kdf && d.app.recovery_busy == 1u,
+          "budget: one past the burst is `busy`, with NO Argon2id");
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "budget: admin.sock is not counted");
+    d.app.now_ms += 1000u / RECOVERY_USE_PER_SEC - 1u;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=busy"),
+          "budget: one ms before a token has accrued, still `busy`");
+    d.app.now_ms += 1u;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "budget: once one has accrued, one attempt is served");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=busy"),
+          "budget: ...and only one");
+    (void)close(fd); (void)close(adm);
+    h_stop(&d);
+}
+
 /* V4-76, F143: every RECOVERY-USE costs exactly one Argon2id computation,
  * whatever the user's state, so the time of the answer says nothing about
  * whether the user exists, how many codes it has, or its role. Counted, not
@@ -1779,6 +1885,8 @@ int main(void)
     test_revoke_tokens_scope();
     test_local_close_spares_proto();
     test_recovery_uniform_cost();
+    test_recovery_budget();
+    test_key_changed_mid_handshake();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

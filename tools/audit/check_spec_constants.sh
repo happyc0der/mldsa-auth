@@ -139,7 +139,8 @@ grep -q 'RECOVERY_MEM_SPEC == crypto_pwhash_MEMLIMIT_INTERACTIVE' $REC \
 for pair in "recovery_ops=RECOVERY_OPS_SPEC" "recovery_mem=RECOVERY_MEM_SPEC" \
             "recovery_lock_threshold=RECOVERY_LOCK_THRESHOLD" \
             "recovery_lock_seconds=RECOVERY_LOCK_SECONDS" \
-            "ticket_ttl_s=RECOVERY_TICKET_TTL_S"; do
+            "ticket_ttl_s=RECOVERY_TICKET_TTL_S" \
+            "recovery_use_per_sec=RECOVERY_USE_PER_SEC" "recovery_use_burst=RECOVERY_USE_BURST"; do
   f="${pair%%=*}"; c="${pair##*=}"
   if grep -qE "app\.$f[[:space:]]*=[[:space:]]*$c;" apps/authd/authd_main.c; then
     printf '  ok    %-34s %s\n' "daemon assigns $f" "$c"

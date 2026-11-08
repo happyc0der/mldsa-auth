@@ -1709,6 +1709,9 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
     int64_t expires = 0;
     uint8_t stored_state[STORE_HASH_BYTES];
     size_t n_state = 0;
+    /* Read whatever the caller asked for; the status check below needs both. */
+    uint8_t uid[STORE_ID_MAX], hnd[STORE_ID_MAX];
+    size_t uid_len = 0, hnd_len = 0;
 
     if (sqlite3_bind_blob(st, 1, code_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
@@ -1716,8 +1719,8 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
         const int rc = sqlite3_step(st);
         if (rc == SQLITE_ROW) {
             found = 1;
-            if (user_id_out != NULL) { r = copy_blob_col(st, 0, user_id_out, user_id_cap, user_id_len_out); }
-            if (r == STORE_OK && handle_out != NULL) { r = copy_blob_col(st, 1, handle_out, handle_cap, handle_len_out); }
+            r = copy_blob_col(st, 0, uid, sizeof uid, &uid_len);
+            if (r == STORE_OK) { r = copy_blob_col(st, 1, hnd, sizeof hnd, &hnd_len); }
             if (r == STORE_OK) { r = copy_blob_col(st, 2, stored_state, sizeof stored_state, &n_state); }
             expires = sqlite3_column_int64(st, 3);
             used = (sqlite3_column_type(st, 4) != SQLITE_NULL);
@@ -1738,6 +1741,42 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
         return STORE_OK;
     }
 
+    /* THE DEVICE AND THE USER MUST STILL BE ACTIVE (V4-79, F157). A code lives
+     * 60 s, and revoking a device or disabling a user deletes their tokens but
+     * not a code already issued: before this check, a stolen device's code
+     * held across the owner's `RECOVERY-USE revoke=all` still exchanged for a
+     * token, enough to mint new recovery codes and take the account back. In
+     * this transaction, so nothing can change between the check and the spend.
+     * A refused code is spent too, so a later re-enable cannot revive it. */
+    store_code_verdict_t inactive = STORE_CODE_OK;
+    st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT d.status, u.status FROM devices d JOIN users u ON u.user_id = d.user_id"
+            " WHERE d.handle=?1 AND d.user_id=?2 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        tx_rollback(s);
+        return STORE_ERR_DB;
+    }
+    if (sqlite3_bind_blob(st, 1, hnd, (int)hnd_len, SQLITE_TRANSIENT) != SQLITE_OK ||
+        sqlite3_bind_blob(st, 2, uid, (int)uid_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+    } else {
+        const int rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) {
+            const unsigned char *ds = sqlite3_column_text(st, 0), *us = sqlite3_column_text(st, 1);
+            if (us == NULL || strcmp((const char *)us, "active") != 0) {
+                inactive = STORE_CODE_USER_DISABLED;
+            } else if (ds == NULL || strcmp((const char *)ds, "active") != 0) {
+                inactive = STORE_CODE_DEVICE_REVOKED;
+            }
+        } else if (rc == SQLITE_DONE) {
+            inactive = STORE_CODE_DEVICE_REVOKED;      /* no such device any more */
+        } else {
+            r = STORE_ERR_DB;
+        }
+    }
+    sqlite3_finalize(st);
+    if (r != STORE_OK) { tx_rollback(s); return r; }
+
     st = NULL;
     if (sqlite3_prepare_v2(s->db, "UPDATE login_codes SET used_at=?2 WHERE code_hash=?1;", -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
@@ -1752,8 +1791,21 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
     if (r != STORE_OK) { tx_rollback(s); return r; }
 
     r = tx_commit(s);
-    if (r == STORE_OK) { *verdict = STORE_CODE_OK; }
-    return r;
+    if (r != STORE_OK) { return r; }
+    *verdict = inactive;
+    if (inactive == STORE_CODE_OK) {
+        if (user_id_out != NULL) {
+            if (uid_len > user_id_cap) { return STORE_ERR_ARG; }
+            memcpy(user_id_out, uid, uid_len);
+            if (user_id_len_out != NULL) { *user_id_len_out = uid_len; }
+        }
+        if (handle_out != NULL) {
+            if (hnd_len > handle_cap) { return STORE_ERR_ARG; }
+            memcpy(handle_out, hnd, hnd_len);
+            if (handle_len_out != NULL) { *handle_len_out = hnd_len; }
+        }
+    }
+    return STORE_OK;
 }
 
 /* The original coarse form, kept because V4-8b's tests pin its behaviour:

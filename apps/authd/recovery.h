@@ -51,6 +51,14 @@
 #define RECOVERY_LOCK_SECONDS   3600                    /* "...lock for one hour" */
 #define RECOVERY_TICKET_TTL_S   600                     /* "valid 10 minutes" */
 #define RECOVERY_TICKET_BYTES   32u                     /* opaque, stored hashed */
+/* V4-78 (F155): RECOVERY-USE on site.sock, daemon-wide, before any hashing. F143
+ * made every refusal cost one Argon2id computation, which removed the bound the
+ * lockout had given: a made-up username never locks. This restores one: at most
+ * RECOVERY_USE_BURST attempts at once and RECOVERY_USE_PER_SEC a second, about
+ * 9% of one core at the spec's cost; past it the answer is `busy`, at no cost
+ * and the same whoever is named. admin.sock is not counted. */
+#define RECOVERY_USE_PER_SEC    2u
+#define RECOVERY_USE_BURST      4u
 
 _Static_assert(RECOVERY_OPS_SPEC == crypto_pwhash_OPSLIMIT_INTERACTIVE,
                "spec §10.3 ops=2 must be libsodium's INTERACTIVE opslimit");

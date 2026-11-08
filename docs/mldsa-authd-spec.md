@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.21, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76 errata)
+# mldsa-authd — deployment specification (v1.23, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -472,14 +472,14 @@ is a build failure, and so is a code defined here that nothing emits.
 | Request | Response |
 |---|---|
 | `ENROLL user= handle= pk= label= via=site\|signup\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|user-exists\|internal`; a byte-identical re-enrollment by the handle's own user is `OK fp= idempotent=1` |
-| `EXCHANGE code= state=` | `OK token= user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|used\|state-mismatch` |
+| `EXCHANGE code= state=` | `OK token= user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|used\|state-mismatch\|device-revoked\|user-disabled` |
 | `VERIFY token=` | `OK user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|idle-expired\|device-revoked\|user-disabled` |
 | `LOGOUT token=` | `OK deleted=0\|1` |
 | `REVOKE-TOKENS user= [handle=]` | `OK count=` |
 | `REVOKE-DEVICE handle= reason=` | `OK` / `ERR code=unknown` |
 | `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` / `ERR code=too-many` |
 | `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) / `ERR code=invalid\|user-disabled\|not-permitted` |
-| `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted` |
+| `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted\|busy` |
 | `PING` | `OK version= schema= uptime=` |
 
 `REVOKE-TOKENS user= handle=` revokes only `user`'s tokens on `handle`: a
@@ -680,7 +680,7 @@ set, which is the "I think this key leaked" path.
 | `DISABLE-USER` | user → `disabled`; every device fails lookup | closed | deleted |
 | `ENABLE-USER` | user → `active`; devices keep their own status | — | — |
 
-Revocation delivers **two separate guarantees**, by two separate mechanisms,
+Revocation delivers **three separate guarantees**, by separate mechanisms,
 and this section used to run them together:
 
 1. **The next handshake fails** (Req 9). The store is authoritative and there
@@ -690,6 +690,11 @@ and this section used to run them together:
    owns both the store and the slots, so revoking a row and closing its
    sessions happen in one process, in one thread, in that order — there is no
    "store hook" and no window.
+3. **Nothing issued before it outlives it** (errata 60, 61). A login code
+   whose device or user is no longer active is refused at `EXCHANGE` and
+   spent, so neither the revocation nor a later re-enable leaves it usable;
+   and a handshake whose pinned key is no longer the handle's active key —
+   a rotation, revocation or disable landing mid-handshake — gets no code.
 
 At the site, a revocation is visible within its `VERIFY` cache TTL, which
 SHOULD be ≤ 30 s or absent.
@@ -706,7 +711,12 @@ valid 10 minutes, which the site presents to `ENROLL … via=recovery`. **Every
 state: an unknown, disabled or locked user, an operator on `site.sock`, and a
 typed string that is not a code each spend one, so the time of an answer says
 nothing about whether the user exists, its role or how many codes it holds
-(erratum 57). Five failures lock recovery for one hour, answering
+(erratum 57). **On `site.sock` attempts share one daemon-wide budget**, 4 at
+once and 2 a second, taken before the user is looked up: past it the answer
+is `ERR code=busy`, at no cost and the same whoever is named. Erratum 57
+removed the bound the lockout gave — an unknown username never locks — and
+this restores one, about 9% of a core at the spec's cost (erratum 59).
+`admin.sock` is not counted. Five failures lock recovery for one hour, answering
 `ERR code=locked`; the lockout is read before the codes are tried, so no
 guess counts while locked. Codes issued before erratum 57 (one
 `crypto_pwhash_str` salt per code) still verify, one computation each, until
@@ -931,8 +941,10 @@ session:** the page logs in again and sends that login's code, and the site
 issues codes only if `EXCHANGE` returns the session's own user (erratum 52).
 **The recovery route answers every refusal the same way**, so it says nothing
 about which usernames exist or their role, and is **limited per client**
-(erratum 57); the reference site keys the limit on the address Caddy states
-in `X-Forwarded-For` (`--trust-proxy`). **A secret field is read once and
+(erratum 57); the reference site keys the limit on the rightmost
+`X-Forwarded-For` entry, the one Caddy added (`--trust-proxy`, erratum 62),
+an IPv6 client by its /64
+(erratum 59). **A secret field is read once and
 emptied** — the passphrase, a recovery code — so it does not stay in the page
 for a script to read (erratum 58). The code is
 never in a URL — so never in a proxy log, a `Referer` or history — and the
@@ -1030,7 +1042,8 @@ The handshake and the session (§6, §7.3):
 ```
 client-hello client-hello-malformed client-hello-rejected
 responder-init-failed decoy-unavailable server-hello-failed
-client-auth-failed client-auth-retryable authenticated-without-identity
+client-auth-failed client-auth-retryable client-auth-key-changed
+authenticated-without-identity
 login-code-issued login-code-failed
 record-refused record-rejected bye
 ```
@@ -1455,3 +1468,17 @@ From the defensive review of the reference site:
 | 56 | 8 | `ENROLL via=signup`: a site enrollment for a new account, refused `user-exists` if the user is known; `ENROLL-OPERATOR` does not take it | a site that enrolled every signup `via=site` let anyone who passed its signup check add a device to another user's account (F145) |
 | 57 | 10.3, 14 | Recovery codes of one issue share a salt and are stored `$mrc1$`; every `RECOVERY-USE` costs exactly one Argon2id computation, a locked user's included; the site's recovery route gives every refusal one reply and is limited per client | a refusal took one computation per unused code and nothing for an unknown user, so one request revealed whether a username existed and how many codes it had, and the site passed the role through (F143) |
 | 58 | 14 | Secret fields are read once and emptied; the honest limits say a script present when the passphrase is typed takes the key | the passphrase stayed in its field after a login, beside the sealed blob in IndexedDB, and the limits said XSS gets only a blob to guess at (F144) |
+
+### Revision v1.22 (V4-78)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 59 | 8, 10.3, 14 | `RECOVERY-USE` on `site.sock` shares a daemon-wide budget (4 at once, 2 a second) taken before any lookup or hashing, answering `busy` past it; the reference site keys an IPv6 client by its /64 | erratum 57 made every refusal cost one Argon2id computation, and an unknown username never locks, so nothing bounded how much hashing anonymous requests could cause; the site's per-address bucket gave one /64 endless buckets (F155) |
+
+### Revision v1.23 (V4-79)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 60 | 8, 10.3 | `EXCHANGE` refuses a code whose device is no longer active (`device-revoked`) or whose user is disabled (`user-disabled`), and spends it | revoking or disabling deleted tokens but not a login code already issued; a stolen device's code held across the owner's `RECOVERY-USE revoke=all` exchanged for a token, minted new recovery codes and took the account back (F157) |
+| 61 | 7.3, 15 | A ClientAuth that verifies gets a login code only if the key pinned at its ClientHello is still the handle's active key, its user unchanged; otherwise the connection closes, logged `client-auth-key-changed` | a ROTATE, revocation or disable landing between ClientHello and ClientAuth did not stop the handshake begun under the old key from getting a code (F158) |
+| 62 | 14 | Behind a proxy the site keys its recovery limit on the rightmost `X-Forwarded-For` entry | the leftmost entry is whatever the client sent, so a client rotating it had a fresh bucket each request (F159); §7.2 refuses the header to the daemon for the same reason |

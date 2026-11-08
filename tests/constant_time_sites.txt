@@ -11,6 +11,8 @@
 apps/authd/authd_conn.c|if (have_len != id_len || sodium_memcmp(have, id, id_len) != 0) {
 apps/authd/authd_conn.c|if (sodium_memcmp(id, c->handle, id_len) != 0) {
 apps/authd/authd_conn.c|sodium_memcmp(m.handle, c->handle, c->handle_len) != 0) {
+apps/authd/authd_conn.c|const int same = (ls == STORE_OK && sodium_memcmp(cur, c->pin_pk, STORE_PK_BYTES) == 0 &&
+apps/authd/authd_conn.c|sodium_memcmp(owner, c->user_id, owner_len) == 0);
 apps/authd/cli_prompt.c|const int same = (st == CLI_PROMPT_OK && n1 == n2 && sodium_memcmp(p1, p2, n1) == 0);
 apps/authd/client_core.c|if (ack.handle_len == cc->hid_len && sodium_memcmp(ack.handle, cc->hid, cc->hid_len) == 0 &&
 apps/authd/client_core.c|sodium_memcmp(ack.fp_new, cc->want_fp, sizeof cc->want_fp) == 0) {

@@ -13,8 +13,8 @@
  * without it every POST is refused as cross-origin. The invite is read from a
  * file because argv is readable by every process on the host (spec 12's rule
  * for passphrases, applied to the site's own secret); --invite remains for
- * tests. --trust-proxy takes the client's address from X-Forwarded-For, which
- * Caddy sets to the real client and does not take from the client (spec 14;
+ * tests. --trust-proxy takes the client's address from the RIGHTMOST
+ * X-Forwarded-For entry, the one the proxy itself added (spec 14;
  * the recovery route's rate limit keys on it); without it the key is the TCP
  * peer, which behind a proxy is the proxy. Behind Caddy, /authd/v1 is routed to the daemon before it reaches
  * this process, so --authd-ws/--authd-ws-unix are used only without a proxy.
@@ -85,6 +85,23 @@ function args(argv) {
   return a;
 }
 
+// The rate limiter's key for a client address (V4-78, F155): an IPv4 address
+// as itself (an IPv4-mapped IPv6 one too), an IPv6 address as its /64, which
+// is what one subscriber is commonly given -- keyed by the full address, one
+// /64 is an endless supply of fresh buckets. Anything else is one key.
+export function limiterKey(addr) {
+  const a = String(addr).replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(a);
+  if (mapped) { return mapped[1]; }
+  if (net.isIPv4(a)) { return a; }
+  if (!net.isIPv6(a)) { return '?'; }
+  let [head, tail] = a.split('::');
+  const h = head ? head.split(':') : [], t = tail !== undefined && tail !== '' ? tail.split(':') : [];
+  if (t.length && net.isIPv4(t[t.length - 1])) { t.splice(-1, 1, '0', '0'); }   // an embedded IPv4 tail
+  const groups = tail === undefined ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
+  return groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16)).join(':') + '::/64';
+}
+
 export async function startSite(opt) {
   const sessions = new Map();       // sid -> { sid, seen, state, user, token, signupUser, ticket }, least recently used first
   const csp = opt.csp ?? CSP;
@@ -106,11 +123,17 @@ export async function startSite(opt) {
   const RECOVER_KEYS_MAX = 10000;
   const recoverBuckets = new Map();
   const clientKey = (req) => {
+    let addr = req.socket.remoteAddress || '';
     if (opt.trustProxy) {
-      const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-      if (xff) { return xff; }
+      // The RIGHTMOST entry (V4-79, F159): the address the proxy itself saw.
+      // Everything to its left is whatever the client sent, so the leftmost
+      // entry let a client choose its own bucket. Rightmost is the proxy's
+      // whether it replaces the header (Caddy's default for an untrusted
+      // client) or appends to it.
+      const parts = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (parts.length) { addr = parts[parts.length - 1]; }
     }
-    return req.socket.remoteAddress || '?';
+    return limiterKey(addr);
   };
   const takeRecoverToken = (req) => {
     const key = clientKey(req), now = Date.now();

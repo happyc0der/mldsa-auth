@@ -230,7 +230,10 @@ int recovery_find_match(const store_t *s, const uint8_t *user_id, size_t user_id
     }
     sodium_memzero(canonical, sizeof canonical);
     /* No code to hash against, or a code that is not a code at all: the same
-     * one computation, so neither shows in the time of the answer. */
+     * one computation. What remains is the store work around it, not the KDF:
+     * a known user's refusal also lists its codes and writes the failure
+     * count, so it is tens of microseconds slower than an unknown user's,
+     * against ~45 ms of Argon2id (V4-78, F156). */
     if (tried == 0u) {
         recovery_spend_one(ops, mem);
         tried = 1u;

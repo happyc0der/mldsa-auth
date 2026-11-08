@@ -248,6 +248,8 @@ int main(int argc, char **argv)
     app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;
     app.recovery_lock_seconds = RECOVERY_LOCK_SECONDS;
     app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
+    app.recovery_use_per_sec = RECOVERY_USE_PER_SEC;
+    app.recovery_use_burst = RECOVERY_USE_BURST;
     app.now_ms = now_ms();
     app.now_unix = (int64_t)time(NULL);
     app.started_ms = app.now_ms;

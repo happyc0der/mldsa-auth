@@ -119,6 +119,10 @@ static inline int h_start_opts(h_daemon_t *d, const char *dir, const char *dbnam
     d->app.recovery_lock_threshold = RECOVERY_LOCK_THRESHOLD;
     d->app.recovery_lock_seconds = RECOVERY_LOCK_SECONDS;
     d->app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
+    /* Raised like the KDF is lowered: a test fires many attempts at one
+     * injected instant. test_recovery_budget sets the daemon's values. */
+    d->app.recovery_use_per_sec = 1000000u;
+    d->app.recovery_use_burst = 1000000u;
 
     d->app.now_ms = 1000u;
     d->app.now_unix = 1700000000;

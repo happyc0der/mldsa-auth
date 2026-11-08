@@ -72,7 +72,7 @@ the most important thing on this page.
 - check `constant_time_sites` "every listed constant-time comparison is still a sodium_memcmp or sodium_is_zero call"
 - mutation `v59 GB8` — the pin lookup's `sodium_memcmp` becomes `memcmp` (the mutation v49c and v52 declined, having no gate)
 - mutation `v59 GB10` — the audit chain's MAC comparison becomes `memcmp`
-**Not established:** the gate pins WHICH function compares, at 26 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
+**Not established:** the gate pins WHICH function compares, at 28 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
 
 ### P4 — Transcript-bound signatures
 - check `test_handshake` "v2-5 H4: another handshake's mlkem_ct spliced into a signed ServerHello -> SIGNATURE, FAILED"

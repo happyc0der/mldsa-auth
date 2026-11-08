@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 154 findings (F0–F154), with severity, evidence and
+   register](../v4/audit.md). 160 findings (F0–F160), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 58 errata, each
+3. The two specifications. The deployment spec's §20 lists 62 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -547,6 +547,24 @@ site gives every refusal one reply under a per-client limit (F143, erratum
 say plainly that a script present while the passphrase is typed takes the
 key (F144, erratum 58). A signup enrolls `via=signup`, which the daemon
 refuses for an existing user (F145, erratum 56).
+
+V4-78 fixed **F155** (Med), which V4-76 introduced and the second review
+round found: with every refusal costing one Argon2id computation and unknown
+usernames never locking, nothing bounded the hashing anonymous requests
+could cause. Recovery attempts on the site socket now share a daemon-wide
+budget, taken before any lookup, and the site keys IPv6 clients by their
+/64 (erratum 59). F156 (Low) records that a known user's refusal is still
+tens of microseconds slower than an unknown user's.
+
+V4-79 fixed **F157 (High)**, found by the second round: a login code issued
+before a revocation still exchanged for a token after it, so a thief holding
+a stolen device's code could take the account back after the owner's
+recovery with `revoke=all`. `EXCHANGE` now refuses, and spends, a code whose
+device or user is no longer active (erratum 60). It also fixed F158 (Low: a
+handshake begun under a key rotated away mid-handshake got a code; erratum
+61) and F159 (Med: V4-76's limiter keyed on the client-supplied end of
+`X-Forwarded-For`; erratum 62). F160 (Info) records the WebSocket upgrade's
+missing Origin check. F157's fix is on a branch until the owner reviews it.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

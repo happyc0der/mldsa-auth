@@ -796,7 +796,9 @@ int main(void)
         memset(ch, 0x11, sizeof ch);
         memset(stateh, 0x22, sizeof stateh);
         memset(wrong, 0x33, sizeof wrong);
-        CHECK(store_add_login_code(s, ch, U1, sizeof U1, H1, sizeof H1, NULL, 0, stateh, 100, 200) == STORE_OK,
+        /* H3, the active device: H1 was revoked above, and since V4-79 a code
+         * whose device is not active is refused (the checks after this). */
+        CHECK(store_add_login_code(s, ch, U1, sizeof U1, H3, sizeof H3, NULL, 0, stateh, 100, 200) == STORE_OK,
               "add_login_code");
         CHECK(store_consume_login_code(s, ch, wrong, 150, NULL, 0, NULL, NULL, 0, NULL) == STORE_ERR_CONFLICT,
               "a login code presented with the WRONG state is refused (login-CSRF binding)");
@@ -806,6 +808,28 @@ int main(void)
                 "a login code with the right state is consumed, and returns its user"); }
         CHECK(store_consume_login_code(s, ch, stateh, 150, NULL, 0, NULL, NULL, 0, NULL) == STORE_ERR_NOT_FOUND,
               "a login code is single-use");
+
+        /* V4-79, F157: a code issued before its device was revoked, or before
+         * its user was disabled, is refused and spent, so it cannot outlive
+         * the revocation or come back with a re-enable. */
+        { uint8_t c2[STORE_HASH_BYTES], c3[STORE_HASH_BYTES];
+          memset(c2, 0x44, sizeof c2);
+          memset(c3, 0x55, sizeof c3);
+          store_code_verdict_t v = STORE_CODE_OK;
+          CHECK(store_add_login_code(s, c2, U1, sizeof U1, H1, sizeof H1, NULL, 0, stateh, 100, 200) == STORE_OK &&
+                store_consume_login_code_ex(s, c2, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
+                v == STORE_CODE_DEVICE_REVOKED,
+                "a code whose device was revoked after it was issued is refused DEVICE_REVOKED (F157)");
+          CHECK(store_consume_login_code_ex(s, c2, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
+                v == STORE_CODE_USED, "...and it is spent");
+          CHECK(store_add_login_code(s, c3, U1, sizeof U1, H3, sizeof H3, NULL, 0, stateh, 100, 200) == STORE_OK &&
+                store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK &&
+                store_consume_login_code_ex(s, c3, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
+                v == STORE_CODE_USER_DISABLED,
+                "a code whose user was disabled after it was issued is refused USER_DISABLED (F157)");
+          CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK &&
+                store_consume_login_code_ex(s, c3, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
+                v == STORE_CODE_USED, "...and a re-enable does not revive it"); }
         store_close(s);
     }
 
