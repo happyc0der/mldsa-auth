@@ -164,6 +164,15 @@ static void test_ids(void)
           "ids: full writes id=<identifier>");
     free(c.buf);
 
+    /* V4-72 (F141): a space or '=' in an identifier cannot forge a field. */
+    { static const uint8_t forged[] = "x event=login-code-issued id=op1";
+      cap_begin(&c);
+      authd_log_slot_id(AUTHD_LOG_INFO, "client-hello", 0u, forged, sizeof forged - 1u);
+      out = cap_end(&c);
+      CHECK(strcmp(out, "info event=client-hello slot=0 id=x.event.login-code-issued.id.op1\n") == 0,
+            "ids: a space or '=' in an identifier is escaped, so it adds no field");
+      free(c.buf); }
+
     /* HASHED: idh=<16 hex> from the callback, and the identifier nowhere */
     CHECK(authd_log_set_privacy(AUTHD_LOG_IDS_HASHED, AUTHD_LOG_IP_FULL, fake_pseudonym, NULL) == 0,
           "ids: set hashed");

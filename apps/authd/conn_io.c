@@ -90,18 +90,31 @@ static uint32_t be32(const uint8_t *p)
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-/* LINE mode's only structural rule: a line must terminate within
- * AUTHD_LINE_MAX bytes. Buffering past that without an LF is a protocol error
- * and is sticky, exactly as an illegal frame length is -- otherwise a peer
- * could hold a slot open forever by never sending a terminator. */
+/* LINE mode's only structural rule: a line, its LF included, is at most
+ * AUTHD_LINE_MAX bytes (spec 8). Breaking it is a protocol error and is
+ * sticky, exactly as an illegal frame length is -- otherwise a peer could hold
+ * a slot open forever by never sending a terminator.
+ *
+ * EVERY line in the buffer is measured, complete or not. Until V4-72 (F140)
+ * this returned OK as soon as any LF was present and checked only a buffer
+ * with none, so a line that arrived in reads smaller than the cap, its LF in
+ * the last, was never measured: 12,000 bytes in three writes was served,
+ * 9,000 in one was refused. */
 static conn_io_status_t note_line_cap(conn_io_t *c)
 {
+    size_t start = 0;
     for (size_t i = 0; i < c->in_len; i++) {
         if (c->in[i] == (uint8_t)'\n') {
-            return CONN_IO_OK;          /* a complete line is present */
+            if (i + 1u - start > AUTHD_LINE_MAX) {
+                c->failed = 1;
+                return CONN_IO_ERR_PROTOCOL;
+            }
+            start = i + 1u;
         }
     }
-    if (c->in_len >= AUTHD_LINE_MAX) {
+    /* The unterminated tail: at the cap without an LF, no LF can still come
+     * within it. */
+    if (c->in_len - start >= AUTHD_LINE_MAX) {
         c->failed = 1;
         return CONN_IO_ERR_PROTOCOL;
     }

@@ -12697,3 +12697,26 @@ from this project. The results and their caveats are in `bench/results.md`,
 run by hand and are not committed: they belong in `bench/` only once they
 are a CTest-runnable tool with a demonstrated failure mode, like every
 other script here.
+
+## V4-72 — F140 and F141: the line cap, and fields in a logged identity
+
+**Context.** Two Lows from V4-69's parsing lane, both reproduced by it. The
+loop fixes Lows without waiting for the owner.
+
+**F140.** `note_line_cap` now measures every line in the input buffer against
+spec §8's 8192 bytes, LF included, and the unterminated tail as before. The
+spec already said this; the code now does it however the bytes arrive.
+
+**F141.** The log's identity field and command field escape a space and `=`
+as `.`, as they already escaped bytes outside printable ASCII. That changes
+what §15 says an escaped `id` looks like, so it is erratum 55, which also
+makes §3 point to §15 instead of naming the demo's `\xHH` escape for the
+same field.
+
+**Verification.** Each test was shown to fail on the old code. The second
+hand control first looked like a failure of the FIXED code: the restored
+source had the same mtime second as the hand control's object, so make
+kept the stale object (memory: build-currency trap). After `touch`,
+`check_build_current.sh` reproduced every object from scratch (fingerprint
+`92d84538e7d3110f`), and the suite was 51/53 with the two usual skips.
+gcc-16 `-O2` was clean on the four changed files.

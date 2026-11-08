@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.19, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68 errata)
+# mldsa-authd — deployment specification (v1.20, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -100,8 +100,9 @@ free-form UTF-8, ≤ 64 bytes, shown to the user ("work laptop"); it is never
 compared and never on the wire. `role` is `operator` or `user`.
 
 Identities and labels are **attacker-influenced strings**. Anywhere they are
-logged or displayed they are escaped exactly as `apps/demo_app.c`'s
-`format_id` does: printable ASCII as-is, everything else as `\xHH`.
+logged or displayed they are escaped. The daemon's log escapes them as §15
+states; the demo apps' `format_id` (`apps/demo_app.c`) writes printable
+ASCII as-is and everything else as `\xHH` (erratum 55).
 
 ## 4. Trust model
 
@@ -949,9 +950,10 @@ event slot cmd uid pid id idh fp src detail
 accepted closed codes count logins need port revoked superseded tickets tokens
 ```
 
-`id` is escaped — any byte outside printable ASCII becomes `.` and the field
-is truncated to 64 bytes — so a hostile identifier can neither inject a
-newline nor smuggle binary. `idh` replaces it under `log_identities = hashed`
+`id` is escaped — any byte outside printable ASCII, and the space and `=`
+that delimit fields, becomes `.`, and the field is truncated to 64 bytes —
+so a hostile identifier can neither inject a newline, nor add a field to its
+line, nor smuggle binary (erratum 55). `idh` replaces it under `log_identities = hashed`
 (below): 16 hex characters, or `unavailable`. `fp` is a 32-byte public-key
 fingerprint in hex and nothing else: its prototype fixes the width. `src` is a
 client address from §7.2, rendered so it can contain only `[0-9a-f.:/]` or the
@@ -1414,3 +1416,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 54 | 14 | A login and a rotation use the server key pinned at enrollment and refuse a page offering another; and the browser's dependence on TLS for the page's own code is stated | the client stored the pin but logged in with whatever key the page offered, and the threat model credited the browser with protection against an attacker inside TLS that only the CLI has (F137) |
+
+### Revision v1.20 (V4-72)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 55 | 3, 15 | A logged identity's space and `=` are escaped as `.` too; §3 points to §15 for the log's escaping instead of naming `format_id`'s `\xHH` | an identity could add fields to its own log line (`id=x event=login-code-issued id=op1`, F141), and §3 and §15 named two different escapes for the same field |

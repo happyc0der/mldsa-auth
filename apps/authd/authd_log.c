@@ -211,11 +211,12 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
     size_t n = (id_len > ID_FIELD_MAX) ? ID_FIELD_MAX : id_len;
     size_t j = 0;
     for (size_t i = 0; i < n && id != NULL; i++) {
-        /* Escape everything outside printable ASCII. A peer controls these
-         * bytes, so without this an identifier could carry a newline and forge
-         * a second log line. */
+        /* Escape everything outside printable ASCII, and the two printable
+         * bytes that delimit fields. A peer controls these bytes: a newline
+         * would forge a second log line, and a space or '=' a second FIELD in
+         * this one (`id=x event=login-code-issued id=op1`, V4-72, F141). */
         const uint8_t c = id[i];
-        field[j++] = (c >= 0x20u && c <= 0x7eu) ? (char)c : '.';
+        field[j++] = (c > 0x20u && c <= 0x7eu && c != (uint8_t)'=') ? (char)c : '.';
     }
     if (id_len > ID_FIELD_MAX) {
         field[j++] = '~';                  /* marks truncation */
@@ -240,7 +241,7 @@ void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
     size_t j = 0;
     for (size_t i = 0; cmd != NULL && cmd[i] != '\0' && j + 1u < sizeof safe; i++) {
         const unsigned char ch = (unsigned char)cmd[i];
-        safe[j++] = (ch >= 0x20u && ch <= 0x7eu && ch != ' ') ? (char)ch : '.';
+        safe[j++] = (ch > 0x20u && ch <= 0x7eu && ch != '=') ? (char)ch : '.';
     }
     safe[j] = '\0';
     if (pid > 0) {

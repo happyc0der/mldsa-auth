@@ -278,6 +278,43 @@ static void test_conn_io(void)
         CHECK(conn_io_queue(&c, body, sizeof body) == CONN_IO_OK, "io: a new reply can be queued after flush");
         CHECK(conn_io_queue(&c, body, 0) == CONN_IO_ERR_ARG, "io: a zero-length reply is rejected");
     }
+
+    /* V4-72 (F140): spec 8's cap -- a line, its LF included, is at most
+     * AUTHD_LINE_MAX bytes -- whatever the reads that deliver it. The first
+     * two pushes stay under the cap, so only the line's own length can refuse
+     * it; before V4-72 any LF in the buffer passed the check. */
+    {
+        static uint8_t ln[AUTHD_LINE_MAX + 4u];
+        const size_t a = 4096u, b = 4095u;
+        for (int over = 0; over <= 1; over++) {
+            const size_t total = AUTHD_LINE_MAX + (size_t)over;   /* LF included */
+            memset(ln, ' ', total);
+            ln[total - 1u] = '\n';
+            conn_io_reset(&c);
+            conn_io_set_mode(&c, CONN_IO_MODE_LINE);
+            const int first = (conn_io_push(&c, ln, a) == CONN_IO_OK) &&
+                              (conn_io_push(&c, ln + a, b) == CONN_IO_OK);
+            const conn_io_status_t last = conn_io_push(&c, ln + a + b, total - a - b);
+            if (!over) {
+                const uint8_t *p = NULL; size_t n = 0;
+                CHECK(first && last == CONN_IO_OK && conn_io_next_line(&c, &p, &n) == 1,
+                      "io: a line of exactly 8192 bytes, LF included, in three reads, is served");
+            } else {
+                CHECK(first && last == CONN_IO_ERR_PROTOCOL,
+                      "io: a line of 8193 bytes, LF included, in three reads under the cap, is refused");
+            }
+        }
+        /* The same rule for a second line behind a complete first one. */
+        conn_io_reset(&c);
+        conn_io_set_mode(&c, CONN_IO_MODE_LINE);
+        memset(ln, ' ', AUTHD_LINE_MAX + 3u);
+        ln[0] = 'P'; ln[1] = '\n';                       /* a 2-byte first line */
+        ln[2u + AUTHD_LINE_MAX] = '\n';                  /* a second of 8193 */
+        const int ok1 = conn_io_push(&c, ln, 4096u) == CONN_IO_OK;
+        CHECK(ok1 && conn_io_push(&c, ln + 4096u, AUTHD_LINE_MAX + 3u - 4096u) == CONN_IO_ERR_PROTOCOL,
+              "io: an over-cap line behind a complete one is refused too");
+        conn_io_reset(&c);
+    }
 }
 
 /* ------------------------------------------------------------------ evloop */
