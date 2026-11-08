@@ -44,6 +44,12 @@ const serverauth, clientauth, hsidlabel, c2s, s2c: bitstring.
 const opLOGIN, opROTATE: bitstring.
 const rotold, rotnew: bitstring.
 
+(* The initiator's pins (V4-75, F147): spec-v2 6.3 resolves sig_B's key by the
+   responder id RECEIVED, after checking it is the one dialed, as
+   src/protocol/handshake.c does. A table of two pinned servers is what lets
+   the model see that check: with one server there is no other id to receive. *)
+table pins(id, pkey).
+
 event initEstablished(id, id, nonce, nonce, key).
 event respSentServerHello(id, id, nonce, nonce).
 event respEstablished(id, id, nonce, nonce, key).
@@ -81,8 +87,10 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   event loginStart(A, state);
   out(c, (ch, state));
   in(c, (shu: bitstring, sigB: bitstring));
-  let (=B, epkB: G, ct: bitstring, nB: nonce, =sid) = shu in
-  let m = checksign(sigB, pkB) in
+  let (bid: id, epkB: G, ct: bitstring, nB: nonce, =sid) = shu in
+  if bid = B then                                             (* CONTROL:peerid *)
+  get pins(=bid, pkX) in
+  let m = checksign(sigB, pkX) in
   if m = hash((serverauth, ch, shu)) then
   let sh = (shu, sigB) in
   let th = hash((clientauth, ch, sh)) in                     (* CONTROL:nb (via sh) *)
@@ -145,8 +153,10 @@ let site() =
   event siteLoggedIn(dev, exstate).
 
 process
-  new skA: skey; new skB: skey; new A: id; new B: id;
-  out(c, (A, B, pk(skA), pk(skB)));
+  new skA: skey; new skB: skey; new skC: skey; new A: id; new B: id; new C: id;
+  out(c, (A, B, C, pk(skA), pk(skB), pk(skC)));
+  insert pins(B, pk(skB)); insert pins(C, pk(skC));
   ( !(new st: bitstring; out(c, st); initiator(A, skA, B, pk(skB), st))
   | !responder(B, skB, A, pk(skA))
+  | !responder(C, skC, A, pk(skA))
   | !site() )

@@ -12757,3 +12757,23 @@ covers the keys under any handler: libsodium's `MADV_DONTDUMP` on every
 `sodium_malloc` region. `prctl(PR_SET_DUMPABLE, 0)` in the daemon was
 considered and not done: it would also stop LeakSanitizer's ptrace, which
 the Linux ASan jobs depend on. `tests/deploy_checks.sh` passes.
+
+## V4-75 — F147: the model sees the check that the server is the one dialed
+
+**Context.** V4-69's protocol lane showed that `formal/authd.pv` verified
+`sig_B` under the dialed server's key, while the code resolves the key by
+the responder id it received and then relies on an explicit comparison. With
+one server in the model, deleting that comparison left every query true.
+
+**Decision.** The model now does what the code does: a `pins` table holds
+two honest servers, B and C, each with its own responder process; the
+initiator checks the received id against B and only then looks its key up by
+that id. A ninth control, `ctl_peerid`, removes the check, and mutual
+agreement becomes false (the attack: A accepts C's validly signed
+ServerHello as B's). The model adopted is the review's `v2_faithful_check`,
+reviewed line by line: four edits to the initiator and the main process.
+
+**Shown.** `formal/run.sh` with ProVerif 2.05: base, the three resilience
+runs and all six controls as required, in 6.8 s. The old model with the
+check removed proved all seven queries, which is the blind spot itself.
+The nightly's `formal` job runs the same script.

@@ -81,7 +81,7 @@ the most important thing on this page.
 - mutation `v24 M5` — the TH_server_auth label left at v1
 - mutation `v24 M3` — the transcript digest left out of the KDF info
 - fuzz `wire` — each transcript helper equals a digest built independently with raw SHA-256 and literal labels
-- ci `ProVerif model + controls` — injective agreement on (A, B, session_id, nonce_B, key); the `ctl_sigb` control makes it unprovable
+- ci `ProVerif model + controls` — injective agreement on (A, B, session_id, nonce_B, key), with two pinned servers and the initiator resolving sig_B's key by the id it received (V4-75, F147); the `ctl_sigb` control (sig_B without the responder's fields) and the `ctl_peerid` control (no check that the responder is the one dialed) each make it unprovable
 - check `test_handshake` "v2-5 H1: the initiator completes against a hand-built responder"
 - check `test_handshake` "v2-5 H2: the responder verifies the hand-built ClientAuth -> ESTABLISHED"
 - mutation `v59 GB6` — TH_server_auth hashes the ClientHello without its nonce, in BOTH roles, so the library stays self-consistent

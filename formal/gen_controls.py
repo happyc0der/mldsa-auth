@@ -21,6 +21,12 @@ def make(name, *edits):
 make("sigb",
      ("hash((serverauth, ch, shu))", "hash((serverauth, ch))"))
 
+# V4-75 (F147): the initiator must check that the responder it reached is the
+# one it dialed. Without the check, a ServerHello validly signed by the OTHER
+# pinned server is accepted; mutual agreement must break.
+make("peerid",
+     ("  if bid = B then                                             (* CONTROL:peerid *)\n", ""))
+
 # The hybrid KDF must use BOTH secrets. Two ablations, each with the OTHER
 # secret handed to the attacker, so the key must become recoverable.
 make("kdf_nodh",

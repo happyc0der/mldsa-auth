@@ -17,7 +17,7 @@ carries a comment citing the specification line it mirrors.
 
 ## Why the controls exist
 
-A proof that cannot fail proves nothing. `gen_controls.py` derives eight
+A proof that cannot fail proves nothing. `gen_controls.py` derives nine
 variants from `authd.pv` by exact string replacement, each asserting the edit
 changed the file:
 
@@ -26,7 +26,10 @@ changed the file:
   two are the hybrid claim, checked rather than asserted: either KEX half
   surviving is enough.
 - **controls** (must become unprovable): sign only `ClientHello` (mutual
-  agreement breaks); ablate one half of the KDF while leaking the other (the
+  agreement breaks); drop the initiator's check that the responder it
+  reached is the one it dialed (mutual agreement breaks: the model has two
+  pinned servers and resolves `sig_B`'s key by the id received, as the code
+  does — V4-75, F147); ablate one half of the KDF while leaking the other (the
   key becomes recoverable — so both halves are load-bearing); drop
   `handshake_id` from the rotation digest, or skip the outgoing-key signature,
   while leaking the record key (rotation is no longer bound to its session).

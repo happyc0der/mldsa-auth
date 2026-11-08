@@ -43,6 +43,7 @@ broken() { # label, file, query-substring
 }
 echo "-- controls: each MUST make its target property unprovable --"
 broken ctl_sigb        controls/sigb.pv       "inj-event(initEstablished(a,b,s,nb,k)) ==> inj-event(respSentServerHello(a,b,s,nb))"
+broken ctl_peerid      controls/peerid.pv     "inj-event(initEstablished(a,b,s,nb,k)) ==> inj-event(respSentServerHello(a,b,s,nb))"
 broken ctl_kdf_nodh    controls/kdf_nodh.pv   "event(initEstablished(a,b,s,nb,k)) && attacker(k))"
 broken ctl_kdf_nokem   controls/kdf_nokem.pv  "event(initEstablished(a,b,s,nb,k)) && attacker(k))"
 broken ctl_rot_hsid    controls/rot_hsid.pv   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
