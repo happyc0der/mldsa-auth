@@ -777,18 +777,21 @@ store_status_t store_enroll_device_ex(store_t *s,
 
 /* V4-80 (F161, F162, F163): spends what was issued before a security event,
  * inside that event's own transaction. `handle` non-NULL: that device's unused
- * login codes. `user` non-NULL: that user's unused login codes, and, when
- * `tickets`, its unused enrollment tickets. Spec 10.3's third guarantee --
+ * login codes. `user` non-NULL: when `user_codes`, that user's unused login
+ * codes, and when `tickets`, its unused enrollment tickets -- separately,
+ * because a re-issue ends tickets but not another device's login in flight
+ * (V4-81). Spec 10.3's third guarantee --
  * nothing issued before it outlives it -- held for a code PRESENTED during a
  * disable (F157) but not for one held across it, nor for tickets at all. */
 static store_status_t spend_outstanding_locked(store_t *s,
                                                const uint8_t *user, size_t user_len,
                                                const uint8_t *handle, size_t handle_len,
-                                               int tickets, int64_t now)
+                                               int user_codes, int tickets, int64_t now)
 {
     struct { const char *sql; const uint8_t *key; size_t len; int on; } q[3] = {
         { "UPDATE login_codes SET used_at=?2 WHERE used_at IS NULL AND handle=?1;", handle, handle_len, handle != NULL },
-        { "UPDATE login_codes SET used_at=?2 WHERE used_at IS NULL AND user_id=?1;", user, user_len, user != NULL },
+        { "UPDATE login_codes SET used_at=?2 WHERE used_at IS NULL AND user_id=?1;", user, user_len,
+          user != NULL && user_codes },
         { "UPDATE enroll_tickets SET used_at=?2 WHERE used_at IS NULL AND user_id=?1;", user, user_len,
           user != NULL && tickets },
     };
@@ -846,7 +849,7 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
      * a re-enable revives none of them (F162). drop_tokens is set exactly for
      * a disable; an enable deletes and spends nothing. */
     if (r == STORE_OK && drop_tokens) {
-        r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 1, now);
+        r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 1, 1, now);
     }
     if (r == STORE_OK && drop_tokens) {
         sqlite3_stmt *dt = NULL;
@@ -1290,7 +1293,7 @@ store_status_t store_rotate_key(store_t *s,
     if (drop_tokens) {
         /* The old key leaked: its outstanding login codes go with its tokens
          * (F163), or one held from before the rotation still becomes one. */
-        r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, now);
+        r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, 0, now);
         if (r != STORE_OK) { tx_rollback(s); return r; }
         sqlite3_stmt *dt = NULL;
         if (sqlite3_prepare_v2(s->db, "DELETE FROM tokens WHERE handle=?1;", -1, &dt, NULL) != SQLITE_OK) {
@@ -1337,8 +1340,35 @@ static store_status_t revoke_device_locked(store_t *s,
 {
     /* Its outstanding login codes are spent with it (F157 refuses them at
      * EXCHANGE as well; this leaves none to refuse). */
-    store_status_t r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, now);
+    store_status_t r = spend_outstanding_locked(s, NULL, 0u, handle, handle_len, 0, 0, now);
     if (r != STORE_OK) { return r; }
+
+    /* An already-revoked device is left as it is (V4-81): revoking it again
+     * answered OK and overwrote the first revocation's time, actor and
+     * reason -- the record a stolen-device recovery leaves. Still OK, so the
+     * API stays idempotent; nothing is written and nothing audited. */
+    {
+        sqlite3_stmt *q = NULL;
+        int revoked = -1;
+        if (sqlite3_prepare_v2(s->db, "SELECT status FROM devices WHERE handle=?1 LIMIT 1;", -1, &q, NULL) != SQLITE_OK) {
+            return STORE_ERR_DB;
+        }
+        if (sqlite3_bind_blob(q, 1, handle, (int)handle_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+            r = STORE_ERR_DB;
+        } else {
+            const int rc = sqlite3_step(q);
+            if (rc == SQLITE_ROW) {
+                const unsigned char *v = sqlite3_column_text(q, 0);
+                revoked = (v != NULL && strcmp((const char *)v, "revoked") == 0) ? 1 : 0;
+            } else if (rc != SQLITE_DONE) {
+                r = STORE_ERR_DB;
+            }
+        }
+        sqlite3_finalize(q);
+        if (r != STORE_OK) { return r; }
+        if (revoked == -1) { return STORE_ERR_NOT_FOUND; }
+        if (revoked == 1) { return STORE_OK; }
+    }
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
@@ -1989,7 +2019,7 @@ store_status_t store_recovery_replace(store_t *s, const uint8_t *user_id, size_t
 
     /* A new generation ends the tickets the old one minted (F161): a ticket
      * from a superseded code would otherwise still enroll for its 10 minutes. */
-    r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 1, now);
+    r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 0, 1, now);   /* tickets only */
     if (r != STORE_OK)  { tx_rollback(s); return r; }
 
     /* Supersede the previous generation. Marked, never deleted (§10.3), and
@@ -2106,7 +2136,7 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
      * user had outstanding goes, BEFORE this recovery's own ticket is
      * inserted (F161). */
     if (revoke_all) {
-        r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 1, now);
+        r = spend_outstanding_locked(s, user_id, user_id_len, NULL, 0u, 1, 1, now);
         if (r != STORE_OK) { tx_rollback(s); return r; }
     }
 

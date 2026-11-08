@@ -845,6 +845,13 @@ int main(void)
               "audit: enroll");
         CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK, "audit: revoke");
         CHECK(store_audit_verify(s) == STORE_OK, "a well-formed audit chain verifies");
+        /* V4-81: revoking an already-revoked device answers OK and writes
+         * nothing -- the first revocation's record, and the chain, stand. */
+        { uint8_t m1[STORE_AUDIT_MAC_BYTES], m2[STORE_AUDIT_MAC_BYTES];
+          CHECK(store_audit_head_mac(s, m1) == STORE_OK &&
+                store_revoke_device(s, H1, sizeof H1, "local-api", (const uint8_t *)"again", 5) == STORE_OK &&
+                store_audit_head_mac(s, m2) == STORE_OK && memcmp(m1, m2, sizeof m1) == 0,
+                "audit: a second revoke of a revoked device is OK and writes nothing (V4-81)"); }
 
         uint8_t head_before[STORE_AUDIT_MAC_BYTES];
         CHECK(store_audit_head_mac(s, head_before) == STORE_OK, "head mac readable");

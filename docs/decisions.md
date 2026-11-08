@@ -12920,3 +12920,14 @@ burst of 2, because a full bucket resets the clock and hid it at 1). Suite
 51/53 with the two usual skips; `check_build_current.sh` fingerprint
 `9921abb1b04d39d1`; gcc-16 full compile at -O0 and -O2 clean on all 14
 changed C files.
+
+## V4-81 — the fourth round's Lows (F167–F171)
+
+The fourth round's logic lane found no High or Medium; V4-80's spends were
+scoped exactly and all-or-nothing under the store's write-fault sweep. Of
+its five Lows and Infos: F167 (a re-issue spent login codes too) and F170 (a
+repeat revoke overwrote the first record) are fixed, each with a test and a
+hand control; F168 and F169 are erratum 64's text; F171 is the owner's. The
+helper now takes a user's codes and its tickets as separate switches, since
+the events differ in which they end. Suite 51/53, tree proven current
+(`001b8fefd3c43c1f`), gcc-16 full compile clean on all 14 changed C files.

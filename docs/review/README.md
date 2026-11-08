@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 166 findings (F0–F166), with severity, evidence and
+   register](../v4/audit.md). 171 findings (F0–F171), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 63 errata, each
+3. The two specifications. The deployment spec's §20 lists 64 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -574,6 +574,12 @@ key's login codes usable. Each of those events now spends what it ends, in
 its own transaction (erratum 63). F165 (Info) fixed a refill rounding in
 the recovery budget. F164 (Med, codes minted from a stolen device outliving
 its revocation) is open for the owner; F166 (Low) is recorded.
+
+The fourth round found no High or Medium. V4-81 fixed its two Lows that
+were defects -- a re-issue spent other devices' login codes (F167), a
+repeat revoke overwrote the first revocation's record (F170) -- documented
+two consequences of erratum 63 (F168, F169; erratum 64) and recorded F171,
+a site's ability to revoke an operator's devices, for the owner.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

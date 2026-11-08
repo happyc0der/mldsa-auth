@@ -1729,6 +1729,25 @@ static void test_codes_outlive(void)
       mldsa_keypair_free(&kp);
       h_stop(&d); }
 
+    /* 4b. V4-81: a RECOVERY-ISSUE ends tickets, not another device's login in
+     * flight -- the code held here still exchanges. */
+    { h_daemon_t d; mldsa_keypair_t kp; h_client_t c; uint8_t code[32];
+      CHECK(h_start(&d, g_dir, "outlive4.sqlite3", 1) == 0, "outlive: daemon starts (re-issue)");
+      enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+      int fd = h_dial_unix(d.site_path);
+      CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c, code) == 0,
+            "outlive: a login code is held (re-issue)");
+      h_client_close(&c);
+      snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "outlive: codes re-issued");
+      hx(hexcode, sizeof hexcode, code, sizeof code);
+      snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK token="),
+            "outlive: a RECOVERY-ISSUE leaves another login's code usable (V4-81)");
+      (void)close(fd);
+      mldsa_keypair_free(&kp);
+      h_stop(&d); }
+
     /* 5. A login code held across a rotation that drops tokens (the key leaked). */
     { h_daemon_t d; mldsa_keypair_t kp, kp2; h_client_t c; uint8_t code[32];
       CHECK(h_start(&d, g_dir, "outlive3.sqlite3", 1) == 0, "outlive: daemon starts (rotate)");

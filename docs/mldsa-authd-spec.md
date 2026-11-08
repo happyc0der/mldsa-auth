@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.24, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80 errata)
+# mldsa-authd — deployment specification (v1.25, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -694,8 +694,14 @@ and this section used to run them together:
    own transaction spends what it ends: `REVOKE-DEVICE` and a rotation that
    drops tokens spend the device's unused login codes; `DISABLE-USER` spends
    the user's login codes and enrollment tickets, so `ENABLE-USER` revives
-   none; `RECOVERY-ISSUE` spends the user's tickets; `revoke=all` spends the
-   user's tickets and codes before inserting its own ticket. A code whose
+   none; `RECOVERY-ISSUE` spends the user's tickets and nothing else — so a
+   re-issue before a recovery's enrollment ends that recovery, whose code is
+   already spent, while other devices' logins in flight continue; `revoke=all`
+   spends the user's tickets and codes before inserting its own ticket. A
+   token-dropping `ROTATE` spends the rotating session's own login code too,
+   if the site has not exchanged it yet, so the client logs in again
+   (erratum 64). Revoking an already-revoked device answers `OK` and changes
+   nothing, so the first revocation's record stands. A code whose
    device or user is no longer active is refused at `EXCHANGE` and spent
    whatever wrote it; and a handshake whose pinned key is no longer the
    handle's active key gets no code.
@@ -1492,3 +1498,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 63 | 10.3 | Disable, revoke, a token-dropping rotation, a re-issue and `revoke=all` each spend, in their own transaction, the login codes and enrollment tickets issued before them | a ticket stayed valid for its ten minutes through a re-issue, a `revoke=all` and a disable (re-enabling revived it), and a login code survived a disable it was not presented during and a rotation for a leaked key (F161, F162, F163) |
+
+### Revision v1.25 (V4-81)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 64 | 10.3 | A re-issue spends tickets only; what a re-issue and a token-dropping rotation end is stated; a second revoke of a revoked device changes nothing | the re-issue also spent other devices' login codes in flight, against erratum 63's own text (F167); a repeat revoke overwrote the first revocation's record (F170); two consequences of erratum 63 were unstated (F168, F169) |
