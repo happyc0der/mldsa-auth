@@ -1570,6 +1570,69 @@ static void test_revoke_tokens_scope(void)
     h_stop(&d);
 }
 
+
+/* V4-70, F139: a local-API connection closing leaves the login that holds the
+ * protocol slot with the same index alone. The two pools both number their
+ * slots from 0, and the close callback used to map ANY slot to conns[index]. */
+static void test_local_close_spares_proto(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "pools.sqlite3", 1) == 0, "pools: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    h_client_t c;
+    memset(&c, 0, sizeof c);
+    keystore_init(&c.pins);
+    CHECK(keystore_add(&c.pins, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key) == KEYSTORE_OK,
+          "pools: client pins the server");
+    c.fd = h_dial(d.port);
+    CHECK(c.fd >= 0 && H_PUMP_UNTIL(&d, evloop_active(&d.ev) >= 1u), "pools: a protocol connection");
+    CHECK(handshake_initiator_init(&c.hs, HANDLE1, sizeof HANDLE1, &kp, &c.pins,
+                                   H_SERVER_ID, sizeof H_SERVER_ID) == HANDSHAKE_OK, "pools: initiator");
+    uint8_t buf[AUTHD_FRAME_MAX];
+    size_t n = 0, sh = 0;
+    CHECK(handshake_initiator_create_client_hello(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+          h_send_frame(c.fd, buf, n) == 0 && h_recv_frame(&d, c.fd, buf, sizeof buf, &sh) == 0 &&
+          handshake_initiator_verify_server_hello(&c.hs, buf, sh) == HANDSHAKE_OK,
+          "pools: ClientHello answered with a ServerHello that verifies");
+
+    size_t p = d.nslots;
+    for (size_t i = 0; i < d.nslots; i++) {
+        if (d.slots[i].state == SLOT_ACTIVE) { p = i; }
+    }
+    CHECK(p < d.nslots && d.conns[p].stage == CONN_STAGE_AWAIT_CA,
+          "pools: the login waits for its ClientAuth (canary)");
+
+    /* A site.sock connection that takes the local slot with the SAME index,
+     * is served, and closes. */
+    int fd = h_dial_unix(d.site_path);
+    char resp[256];
+    CHECK(fd >= 0 && h_local_cmd(&d, fd, "PING", resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "pools: a site.sock PING is served");
+    CHECK(p < H_MAX_LOCAL && d.local_slots[p].state == SLOT_ACTIVE,
+          "pools: it holds the local slot with the login's index (canary)");
+    (void)close(fd);
+    CHECK(H_PUMP_UNTIL(&d, d.local_slots[p].state == SLOT_FREE), "pools: the site.sock connection is released");
+
+    CHECK(d.conns[p].stage == CONN_STAGE_AWAIT_CA,
+          "pools: the login is still waiting for its ClientAuth after the local slot closed");
+    CHECK(handshake_initiator_create_client_auth(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+          h_send_frame(c.fd, buf, n) == 0 && handshake_initiator_finish(&c.hs) == HANDSHAKE_OK,
+          "pools: ClientAuth sent");
+    session_limits_t lim;
+    session_default_limits(&lim);
+    lim.pad_bucket = 256u;
+    uint8_t code[32];
+    CHECK(session_init_from_handshake(&c.sess, &c.hs, &lim, NULL, NULL) == SESSION_OK &&
+          h_get_login_code(&d, &c, code) == 0,
+          "pools: ...and the login completes with a login code");
+
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1602,6 +1665,7 @@ int main(void)
     test_req7_logged();
     test_enroll_other_users_handle();
     test_revoke_tokens_scope();
+    test_local_close_spares_proto();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

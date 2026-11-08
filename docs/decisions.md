@@ -12657,3 +12657,25 @@ from `max_slots` and `max_conns_per_addr`.
 skips; `test_authd_evloop` 186 checks and `test_authd_conn` 223 checks;
 gcc-16 `-O2` on the four changed files. The other trees were left as they
 were, because the review's agents were running their binaries.
+
+## V4-70 — F139: a local-API slot is never a protocol connection
+
+**Context.** V4-69's parsing lane reproduced, against the ASan daemon, that a
+site.sock connection closing reset the login in the protocol slot with the
+same index: `authd_conn_on_close` mapped any slot to `conns[slot->index]`,
+and the local pool numbers its slots from 0 too.
+
+**Decision.** `conn_of` returns a connection only for a `SLOT_KIND_PROTO`
+slot. The close callback still runs for a local slot, for what is common to
+both (the rate limiter's release, which a local slot never holds, and
+`slot->user`). The fix sits in the mapping, not in `evloop_close_slot`, so
+every caller of `conn_of` gets it.
+
+**Shown.** `test_authd_localapi` holds a login at AWAIT_CA in protocol slot
+p, serves and closes a site.sock connection on local slot p (both canaries
+checked: the stage, and that the local slot really has the login's index),
+and the login then completes with a login code. With the kind check removed
+the test fails at "the login is still waiting for its ClientAuth after the
+local slot closed". Suite 51/53 (the two usual skips); gcc-16 `-O2` clean.
+This also closes the path by which a reset slot kept F138's `established`
+marker.

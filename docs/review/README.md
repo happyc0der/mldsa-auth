@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 138 findings (F0–F138), with severity, evidence and
+   register](../v4/audit.md). 139 findings (F0–F139), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 54 errata, each
    citing the finding that forced it.
@@ -519,6 +519,12 @@ for. A handshake that never completed could keep its connection slot past
 the 10 s handshake deadline: serving any frame re-armed the slot to the 60 s
 idle deadline. The idle deadline now applies only once the handshake has
 completed.
+
+V4-70 fixed **F139** (Med), found by the same review. When a connection on
+the site or admin socket closed, the daemon also reset the login in the
+protocol slot with the same number, so ordinary site traffic made
+concurrent logins fail at random. A local slot now never maps to a
+protocol connection.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

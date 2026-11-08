@@ -19,7 +19,11 @@ uint64_t authd_app_clock(void *ctx)
 
 static authd_conn_t *conn_of(authd_app_t *app, authd_slot_t *slot)
 {
-    if (app == NULL || slot == NULL || slot->index >= app->n_conns) {
+    /* Only a PROTOCOL slot has a connection. The local-API pool numbers its
+     * slots from 0 too, so without the kind check a site.sock connection
+     * closing reset whichever login held the protocol slot with its index
+     * (V4-70, F139). */
+    if (app == NULL || slot == NULL || slot->kind != SLOT_KIND_PROTO || slot->index >= app->n_conns) {
         return NULL;
     }
     return &app->conns[slot->index];
