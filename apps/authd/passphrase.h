@@ -21,9 +21,14 @@
  *   COMMON       the passphrase, or its core with leading/trailing digits and
  *                symbols stripped, is in a pinned list of 9,913 common
  *                passwords (passphrase_common.c), compared case-insensitively
+ *                and, since V4-85, with common letter substitutions undone
+ *                (p@ssw0rd is password)
  *   PREDICTABLE  the estimate is under PP_MIN_BITS: repeated characters,
  *                runs (abc, 321), keyboard rows (qwerty, asdf) and a string
- *                made of one repeated unit count for almost nothing
+ *                made of one repeated unit count for almost nothing; and,
+ *                since V4-85 (F150, the owner's choice of a strict policy),
+ *                a word from the list counts as one choice from it, about 13
+ *                bits, not as its letters (letmeinplease is two words)
  */
 
 #include <stddef.h>
@@ -31,7 +36,7 @@
 
 #define PP_MIN_CODE_POINTS 12u
 #define PP_MAX_BYTES       1024u
-#define PP_MIN_BITS        50u
+#define PP_MIN_BITS        60u   /* 50 until V4-85 (F150: the owner asked for a strict policy) */
 
 typedef enum {
     PP_OK = 0,
@@ -49,6 +54,7 @@ typedef enum {
 #define PP_R_KEYBOARD      0x04u   /* a run along a keyboard row */
 #define PP_R_REPEATED_UNIT 0x08u   /* the whole thing is one unit repeated */
 #define PP_R_ONE_CLASS     0x10u   /* only lower case, or only digits, or ... */
+#define PP_R_WORDS         0x20u   /* made of words from the common list (V4-85) */
 
 typedef struct {
     uint32_t code_points;

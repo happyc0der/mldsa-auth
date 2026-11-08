@@ -31,7 +31,7 @@ LOOKUP = ("    if (store_lookup_active(app->store, handle, handle_len, pk, user_
 T0 = "    const int timed = (now(&t0) == 0);\n"
 
 M = {
-    "FL1": [(CH, "#define AUTHD_PIN_FLOOR_NS 50000u\n",
+    "FL1": [(CH, "#define AUTHD_PIN_FLOOR_NS 10000u\n",
                  "#define AUTHD_PIN_FLOOR_NS 0u /* MUTATION FL1 */\n")],
     "FL2": [(CC, "        while (t - t0 < AUTHD_PIN_FLOOR_NS && now(&t) == 0) {\n"
                  "            /* wait */\n"

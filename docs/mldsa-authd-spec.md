@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.28, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84 errata)
+# mldsa-authd — deployment specification (v1.29, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -409,16 +409,17 @@ handshake code.
 an active identity's lookup does more work than any other: it joins three
 tables and copies the key and the user id, where every other outcome ends at
 the first index probe. Measured, an active handle's ServerHello came about half
-a microsecond later (audit F135). So the daemon does not proceed until **50 µs**
+a microsecond later (audit F135). So the daemon does not proceed until **10 µs**
 after the lookup began, on the monotonic clock, whichever way it went. The
 floor only waits: what is pinned, and every byte and outcome after it, are
 unchanged. It hides only lookups that finish within it; a lookup slower than
-the floor (a cold page, a contended store) is not hidden. 50 µs is ten times
-the lookup's 99th percentile in a Release build on the machine that measured
-it, and over three times its median in a Debug build under AddressSanitizer,
-so a slower host should still finish within it. The wait is busy, and the
-daemon-wide rate limit bounds what it costs: at the default 50 handshakes a
-second, 0.25 % of a core.
+the floor (a cold page, a contended store) is not hidden. 10 µs is twice the
+lookup's 99th percentile in a Release build on the machine that measured it;
+a Debug build under AddressSanitizer (median 14–15 µs) and a host much slower
+than that machine overrun it, and it hides nothing for them (erratum 68: the
+owner's choice, after V4-67's 50 µs). The wait is busy, and the daemon-wide
+rate limit bounds what it costs: at the default 50 handshakes a second,
+0.05 % of a core.
 
 **An authenticated login is not a probe** (erratum 38). Every connection pays
 one token from its address's bucket at admission (§7.2), before any signature.
@@ -975,9 +976,12 @@ nothing else. `examples/site-node/server.mjs` is the reference.
 
 **The passphrase policy** (erratum 35), enforced inside the module so a page
 cannot seal around it: at least 12 characters (code points, not bytes); not a
-listed common password, nor one with digits or symbols wrapped around it
-(9,913 entries, pinned by hash); and an estimate of at least 50 bits, in which
-repeats, runs, keyboard walks and one repeated unit count for almost nothing.
+listed common password, nor one with digits or symbols wrapped around it, nor
+one with common letter substitutions (p@ssw0rd) (9,913 entries, pinned by
+hash); and an estimate of at least 60 bits, in which repeats, runs, keyboard
+walks and one repeated unit count for almost nothing, and a word from the
+list counts as one choice from it, about 13 bits, not as its letters
+(erratum 69; it was 50 bits, with words counted as letters).
 It refuses the obviously weak; it does not certify strength, and the page says
 so. `apps/authd/passphrase.h` is normative for the details.
 
@@ -1196,7 +1200,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
 | Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
-| The pin's time floor | 50 µs from the start of the lookup, not configurable | §7.3 |
+| The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
 The last four are **operator policy with a documented default**, not protocol
 constants: this document fixes no rate limit, and a deployment that wants
@@ -1532,3 +1536,10 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 67 | 14 | A site that proxies `/authd/v1` refuses an upgrade carrying another origin's `Origin` | the reference site checked `Origin` on POSTs only, so a page on another origin could open the daemon's socket through it (F160); behind the reference Caddyfile, `/authd/v1` goes to the daemon directly and this is unchanged |
+
+### Revision v1.29 (V4-85)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 68 | 7.3, 17 | The pin's time floor is 10 µs, not 50 µs | the owner's choice, between hiding a slower host's lookups (50 µs) and spending less of each handshake waiting (10 µs, twice the Release build's 99th percentile); a lookup slower than the floor is not hidden either way (F151) |
+| 69 | 14 | The passphrase policy undoes common substitutions before the list check, counts a listed word as one choice (about 13 bits), and requires an estimate of 60 bits, not 50 | the owner asked for a strict policy: compounds of listed words and their substituted forms (`letmeinplease`, `P@ssw0rd2024!`) were rated 61–100 bits and accepted (F150) |

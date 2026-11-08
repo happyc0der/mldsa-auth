@@ -12974,3 +12974,28 @@ and revoke used fixtures holding no recovery codes, tickets or login codes,
 so the statements V4-80 and V4-82 added ran against nothing. Three more
 sweeps run the same calls over `sw_expired` (codes, a ticket, a token, a
 login code): every fault leaves the database as it was.
+
+## V4-85 — the owner's three: a 10 µs floor, a strict passphrase policy, the CI dependency cache
+
+**The floor (F151, erratum 68).** Back to 10 µs, the owner's choice after
+V4-67's 50 µs. Twice the Release build's 99th percentile; a Debug ASan
+build and a much slower host overrun it, and an overrun is not hidden.
+Mutation v87's FL1 is re-anchored and its expected checks renamed.
+
+**The passphrase policy (F150, erratum 69).** Strict, the owner's word.
+Common substitutions are undone before the list check -- on the core first,
+stripped of leading and trailing digits and symbols as typed, because
+undoing them on the whole turned a trailing year into letters and
+`P@ssw0rd2024!` stopped matching. A second, word-wise estimate counts a
+listed word as one choice from the list (13.3 bits) and is taken when it is
+lower. The floor is 60 bits. Not done: an English dictionary, so a phrase of
+unlisted words still counts as letters. Every passphrase the repo's tests
+and tools use still passes; the lowest rates 68 bits. One hand control
+first looked like a kill but the mutant had not compiled (`unleet` unused
+under -Werror): the test had run the previous control's binary. Re-done
+with a mutant that compiles.
+
+**The CI cache (F175).** Described in the register. `actions/cache` is
+pinned by commit, v6.1.0 (`55cc834`, released 2026-06-26). macOS's
+LibreSSL 3.3.6 cannot compute SQLite's SHA3-256 pin, so the action puts
+Homebrew's OpenSSL first there.

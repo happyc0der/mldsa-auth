@@ -61,8 +61,10 @@ int main(int argc, char **argv)
     CHECK(v("correct horse battery staple", &r) == PP_OK && r.code_points == 28u && r.est_bits >= PP_MIN_BITS,
           "ok: a four-word passphrase");
     CHECK(v("Tr0ub4dor&3xy", &r) == PP_OK, "ok: 13 characters from all four ASCII classes");
-    CHECK(v("qmxvhbtrnzlw", &r) == PP_OK && r.est_bits == 56u && (r.reasons & PP_R_ONE_CLASS) != 0u,
-          "ok: 12 lower-case letters with no pattern (56 bits), flagged one-class but accepted");
+    CHECK(v("qmxvhbtrnzlw", &r) == PP_PREDICTABLE && r.est_bits == 56u && (r.reasons & PP_R_ONE_CLASS) != 0u,
+          "predictable: twelve random lower-case letters estimate 56 bits, under V4-85's 60 (F150)");
+    CHECK(v("qmxvhbtrnzlwk", &r) == PP_OK && (r.reasons & PP_R_ONE_CLASS) != 0u,
+          "ok: thirteen of them clear 60 bits");
 
     /* ---- length, in code points ---- */
     CHECK(v("Tr0ub4dor&3", &r) == PP_TOO_SHORT && r.code_points == 11u,
@@ -100,6 +102,20 @@ int main(int argc, char **argv)
     CHECK(v("!!Password1234!!", &r) == PP_COMMON, "common: case and surrounding symbols do not hide it");
     CHECK(v("1234monkey5678", &r) == PP_COMMON, "common: digits on both sides do not hide it");
     CHECK(v("monkey9ab1234", &r) != PP_COMMON, "common: a listed word INSIDE other text is not a match");
+    /* V4-85, F150 (a strict policy, the owner's choice): substitutions are
+     * undone, and words from the list count as words. */
+    CHECK(v("P@ssw0rd2024!", &r) == PP_COMMON, "common: p@ssw0rd is password, with a year after it");
+    CHECK(v("m0nk3y1234567", &r) == PP_COMMON, "common: m0nk3y is monkey");
+    CHECK(v("letmeinplease", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u && r.est_bits < 30u,
+          "predictable: two listed words run together count as two words, not thirteen letters");
+    CHECK(v("iloveyouforever", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u,
+          "predictable: iloveyou + forever");
+    CHECK(v("sunshine monkey dragon", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u,
+          "predictable: three listed words with spaces, about 41 bits");
+    CHECK(v("summer2024summer", &r) == PP_PREDICTABLE, "predictable: a word, a year, the word again");
+    CHECK(v("correcthorsebattery", &r) == PP_PREDICTABLE, "predictable: three words run together, under 60 bits");
+    CHECK(v("tidal-harbor-quilted-lantern", &r) == PP_OK && r.est_bits >= PP_MIN_BITS,
+          "ok: four uncommon words with separators");
 
     /* ---- predictable ---- */
     CHECK(v("zzzzzzzzzzzz", &r) == PP_PREDICTABLE && (r.reasons & PP_R_REPEATS) != 0u && r.est_bits < PP_MIN_BITS,

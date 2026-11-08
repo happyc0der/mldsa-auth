@@ -486,7 +486,7 @@ static void test_revoked(void)
 
 /* The floor spec 7.3 states. The tree's constant is checked against it, so a
  * floor quietly lowered fails here, not only in the spec gate. */
-#define SPEC_PIN_FLOOR_NS 50000u
+#define SPEC_PIN_FLOOR_NS 10000u
 /* A pin lookup prepares and runs a three-table query, several microseconds on
  * every machine this suite has run on. A resolution whose time before the
  * wait is under this did not start the floor's clock before the lookup. */
@@ -536,7 +536,7 @@ static void test_pin_floor(void)
     enroll(&d, HANDLE_REV, sizeof HANDLE_REV, &rev);
     CHECK(store_revoke_device(d.store, HANDLE_REV, sizeof HANDLE_REV, "test", NULL, 0) == STORE_OK,
           "floor: the second device is revoked");
-    CHECK(AUTHD_PIN_FLOOR_NS == SPEC_PIN_FLOOR_NS, "floor: the tree's floor is spec 7.3's 50 us");
+    CHECK(AUTHD_PIN_FLOOR_NS == SPEC_PIN_FLOOR_NS, "floor: the tree's floor is spec 7.3's 10 us");
 
     /* (1) Through the daemon: three ClientHellos for the enrolled handle and
      * three for an unknown one, each resolving its pin through the floor. */
@@ -557,7 +557,7 @@ static void test_pin_floor(void)
     CHECK(g_pins.calls == 6 && g_pins.decoys == 3,
           "floor: all 6 ClientHellos, 3 enrolled and 3 unknown, resolved their pin through the floor");
     CHECK(g_pins.calls > 0 && g_pins.min_after_ns >= SPEC_PIN_FLOOR_NS,
-          "floor: no resolution, real or decoy, returned before 50 us");
+          "floor: no resolution, real or decoy, returned before 10 us");
     CHECK(g_pins.calls > 0 && g_pins.min_before_ns >= LOOKUP_AT_LEAST_NS,
           "floor: the floor's clock started before the lookup, not after it");
 
@@ -565,11 +565,11 @@ static void test_pin_floor(void)
      * what it must and takes at least the floor. */
     static const struct { const uint8_t *h; size_t hl; int want; const char *what; } cases[] = {
         { HANDLE1, sizeof HANDLE1, 0,
-          "floor: an enrolled handle pins its own key and user, and takes at least 50 us" },
+          "floor: an enrolled handle pins its own key and user, and takes at least 10 us" },
         { HANDLE_UNK, sizeof HANDLE_UNK, 1,
-          "floor: an unknown handle pins the decoy key and no user, and takes at least 50 us" },
+          "floor: an unknown handle pins the decoy key and no user, and takes at least 10 us" },
         { HANDLE_REV, sizeof HANDLE_REV, 1,
-          "floor: a revoked handle pins the decoy key and no user, and takes at least 50 us" },
+          "floor: a revoked handle pins the decoy key and no user, and takes at least 10 us" },
     };
     uint8_t decoy[STORE_PK_BYTES];
     CHECK(store_get_decoy_pk(d.store, decoy) == STORE_OK, "floor: the store's decoy key reads");
@@ -594,8 +594,8 @@ static void test_pin_floor(void)
     authd_conn_arm_pin_clock(stepped_clock);
     authd_conn_arm_pin_observer(pin_observer);
     static const struct { const uint8_t *h; size_t hl; const char *what; } stepped[] = {
-        { HANDLE1, sizeof HANDLE1, "floor: under a stepped clock, an enrolled handle's resolution waits to exactly 50 us" },
-        { HANDLE_UNK, sizeof HANDLE_UNK, "floor: under a stepped clock, an unknown handle's resolution waits to exactly 50 us" },
+        { HANDLE1, sizeof HANDLE1, "floor: under a stepped clock, an enrolled handle's resolution waits to exactly 10 us" },
+        { HANDLE_UNK, sizeof HANDLE_UNK, "floor: under a stepped clock, an unknown handle's resolution waits to exactly 10 us" },
     };
     for (size_t k = 0; k < sizeof stepped / sizeof stepped[0]; k++) {
         uint8_t pk[STORE_PK_BYTES], uid[STORE_ID_MAX];

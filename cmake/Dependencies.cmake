@@ -86,6 +86,13 @@ set(OQS_OPT_TARGET "${MLDSA_OQS_OPT_TARGET}" CACHE STRING "" FORCE)
 # changed, or moved off the pinned commit.
 set(MLDSA_DEPS_CACHE "" CACHE PATH
     "Directory of pre-fetched dependencies for an offline build (see deploy/fetch-deps.sh)")
+# V4-85: or the MLDSA_DEPS_CACHE environment variable, which is how CI hands
+# every configure in a job the cache it restored (.github/actions/deps)
+# without each cmake line naming it. The cache is checked against the same
+# pins either way, so it is never trusted more than a fresh fetch.
+if(NOT MLDSA_DEPS_CACHE AND DEFINED ENV{MLDSA_DEPS_CACHE})
+  set(MLDSA_DEPS_CACHE "$ENV{MLDSA_DEPS_CACHE}")
+endif()
 
 set(_mldsa_oqs_repo "https://github.com/open-quantum-safe/liboqs.git")
 if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/liboqs.git")
@@ -217,8 +224,13 @@ set(LIBSODIUM_PREFIX "${_mldsa_tmp}/mldsa-auth-libsodium-1.0.22-${_mldsa_build_h
 set(LIBSODIUM_INCLUDE_DIR ${LIBSODIUM_PREFIX}/include)
 set(LIBSODIUM_LIBRARY ${LIBSODIUM_PREFIX}/lib/libsodium.a)
 
+# Two places, tried in order (V4-85): GitHub's release, then the project's
+# own mirror, which serves the identical file. URL_HASH below decides what is
+# accepted, so a second source adds availability and no trust -- on
+# 2026-11-08 GitHub's release CDN answered 503 and 504 for hours.
 set(_mldsa_sodium_url
-    "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz")
+    "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz"
+    "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz")
 if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
   set(_mldsa_sodium_url "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
   message(STATUS "libsodium from the offline cache: ${_mldsa_sodium_url}")

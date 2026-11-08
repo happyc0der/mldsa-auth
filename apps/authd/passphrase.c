@@ -29,6 +29,13 @@ static const uint32_t POOL_MILLIBITS[32] = {
  * count. */
 #define REPEAT_COUNT_MILLIBITS 2000u
 
+/* V4-85 (F150): a word from the common list is one choice among
+ * pp_common_count, floor(1000 * log2(9913)) millibits, whatever its length;
+ * a separator between words costs one bit. Words are 3..PP_WORD_MAX long. */
+#define WORD_MILLIBITS 13275u
+#define SEP_MILLIBITS  1000u
+#define PP_WORD_MAX    16u
+
 static const char *const KEYBOARD_ROWS[] = {
     "qwertyuiop", "asdfghjkl", "zxcvbnm", "1234567890", "!@#$%^&*()",
 };
@@ -44,6 +51,7 @@ size_t pp_explain(pp_verdict_t v, const pp_report_t *report, char *out, size_t c
         { PP_R_KEYBOARD,      "a keyboard walk" },
         { PP_R_REPEATED_UNIT, "one piece repeated" },
         { PP_R_ONE_CLASS,     "only one kind of character" },
+        { PP_R_WORDS,         "common words" },
     };
     const uint32_t cps = (report != NULL) ? report->code_points : 0u;
     const uint32_t bits = (report != NULL) ? report->est_bits : 0u;
@@ -146,10 +154,61 @@ static int is_common(const char *w)
     return 0;
 }
 
+/* Undoes the common letter substitutions (V4-85, F150), on a folded ASCII
+ * character: 0 o, 3 e, 4 a, 5 s, 7 t, @ a, $ s, and 1 as `one` ('i' or 'l',
+ * both tried). Anything else is returned as it is. */
+static uint32_t unleet(uint32_t c, uint32_t one)
+{
+    switch (c) {
+    case '0': return 'o';
+    case '1': return one;
+    case '3': return 'e';
+    case '4': return 'a';
+    case '5': return 's';
+    case '7': return 't';
+    case '@': return 'a';
+    case '$': return 's';
+    default:  return c;
+    }
+}
+
+static int common_match_one(const uint32_t *cp, size_t n);
+
+/* The passphrase as typed, then with the substitutions undone (1 read as i,
+ * then as l), each checked the way common_match_one does. */
+static int common_match(const uint32_t *cp, size_t n)
+{
+    if (common_match_one(cp, n)) { return 1; }
+    uint32_t t[PP_MAX_BYTES];
+    int hit = 0;
+    /* The core first -- leading and trailing digits and symbols stripped from
+     * the passphrase AS TYPED, so a year after a word stays a year
+     * ("P@ssw0rd2024!" -> "p@ssw0rd" -> "password") -- then the whole. */
+    size_t a = 0, b = n;
+    while (a < b && (class_of(cp[a]) & (C_DIGIT | C_SYMBOL)) != 0u) { a++; }
+    while (b > a && (class_of(cp[b - 1u]) & (C_DIGIT | C_SYMBOL)) != 0u) { b--; }
+    for (int v = 0; v < 2 && !hit; v++) {
+        const uint32_t one = v ? 'l' : 'i';
+        const size_t spans[2][2] = { { a, b }, { 0u, n } };
+        for (int k = 0; k < 2 && !hit; k++) {
+            const size_t s0 = spans[k][0], s1 = spans[k][1];
+            if (s1 - s0 < 4u) { continue; }
+            int changed = 0;
+            for (size_t i = s0; i < s1; i++) {
+                t[i - s0] = (cp[i] < 0x80u) ? unleet(fold(cp[i]), one) : cp[i];
+                changed |= (t[i - s0] != fold(cp[i]));
+            }
+            hit = changed && common_match_one(t, s1 - s0);
+        }
+    }
+    sodium_memzero(t, sizeof t);
+    return hit;
+}
+
 /* The passphrase, and its core with leading and trailing digits and ASCII
  * symbols stripped ("Password1234!" -> "password"), against the list. Only
  * ASCII can match: the list is ASCII. */
-static int common_match(const uint32_t *cp, size_t n)
+static int common_match_one(const uint32_t *cp, size_t n)
 {
     char w[PP_MAX_BYTES + 1u];
     size_t a = 0, b = n;
@@ -216,6 +275,45 @@ static uint32_t estimate(const uint32_t *cp, size_t n, uint32_t *reasons)
     return total;
 }
 
+/* The estimate read as words (V4-85, F150): the cheapest split of the folded,
+ * substitution-undone passphrase into list words (WORD_MILLIBITS each),
+ * separators (SEP_MILLIBITS) and other characters (`per` each). `one` is how
+ * a 1 is read. Sets *used_words when the cheapest split contains a word. */
+static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32_t one, int *used_words)
+{
+    static uint32_t dp[PP_MAX_BYTES + 1u];
+    static uint8_t  wd[PP_MAX_BYTES + 1u];     /* the best split to here holds a word */
+    char t[PP_MAX_BYTES + 1u];
+    for (size_t i = 0; i < n; i++) {
+        t[i] = (cp[i] < 0x80u) ? (char)unleet(fold(cp[i]), one) : '\x01';   /* never in the list */
+    }
+    dp[0] = 0u;
+    wd[0] = 0u;
+    for (size_t i = 1; i <= n; i++) {
+        const char c = t[i - 1u];
+        const int sep = (c == ' ' || c == '-' || c == '_' || c == '.' || c == ',');
+        dp[i] = dp[i - 1u] + (sep ? SEP_MILLIBITS : per);
+        wd[i] = wd[i - 1u];
+        for (size_t len = 3u; len <= PP_WORD_MAX && len <= i; len++) {
+            const size_t j = i - len;
+            if (dp[j] + WORD_MILLIBITS >= dp[i]) { continue; }
+            char w[PP_WORD_MAX + 1u];
+            memcpy(w, t + j, len);
+            w[len] = '\0';
+            const int hit = is_common(w);
+            sodium_memzero(w, sizeof w);
+            if (hit) {
+                dp[i] = dp[j] + WORD_MILLIBITS;
+                wd[i] = 1u;
+            }
+        }
+    }
+    *used_words = wd[n];
+    const uint32_t total = dp[n];
+    sodium_memzero(t, sizeof t);
+    return total;
+}
+
 pp_verdict_t pp_check(const uint8_t *pass, size_t len, pp_report_t *report)
 {
     pp_report_t r;
@@ -266,6 +364,21 @@ pp_verdict_t pp_check(const uint8_t *pass, size_t len, pp_report_t *report)
             }
             r.reasons |= PP_R_REPEATED_UNIT;
             break;
+        }
+    }
+    /* Read as words (V4-85, F150): a passphrase built from the list's words
+     * is as strong as the number of words, not of letters. */
+    {
+        const uint32_t per = POOL_MILLIBITS[classes & 31u];
+        for (int v = 0; v < 2; v++) {
+            int used = 0;
+            const uint32_t w = word_estimate(cp, (size_t)n, per, v ? 'l' : 'i', &used);
+            if (used) {
+                r.reasons |= PP_R_WORDS;
+            }
+            if (w < millibits) {
+                millibits = w;
+            }
         }
     }
     r.est_bits = millibits / 1000u;

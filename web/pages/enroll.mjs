@@ -4,7 +4,7 @@ import { IdentityStore } from '/client/store.mjs';
 const { client, store } = await boot();
 const meter = document.getElementById('meter');
 const REASONS = { 1: 'repeated characters', 2: 'a run like abc or 321', 4: 'a keyboard walk',
-                  8: 'one piece repeated', 16: 'only one kind of character' };
+                  8: 'one piece repeated', 16: 'only one kind of character', 32: 'common words' };
 document.getElementById('passphrase').addEventListener('input', () => {
   const v = client.checkPassphrase(val('passphrase'));
   const why = Object.entries(REASONS).filter(([bit]) => v.reasons & Number(bit)).map(([, t]) => t);

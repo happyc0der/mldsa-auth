@@ -1,0 +1,41 @@
+# The pinned dependencies, restored from the Actions cache (V4-85).
+#
+# Every job used to download libsodium, SQLite and liboqs from GitHub and
+# sqlite.org on every run, so an outage there turned CI red with nothing wrong
+# in the code: on 2026-11-08 the release CDN's 503s and 504s failed three
+# main-branch jobs and three nightly attempts. This restores the directory
+# deploy/fetch-deps.sh fills, keyed on the files that hold the pins, and on a
+# miss fetches it with retries. The build reads it from MLDSA_DEPS_CACHE (set
+# by each workflow) and checks every artifact against cmake/Dependencies.cmake's
+# pins at configure time, exactly as for a fresh download -- a cache never
+# weakens what the build accepts.
+name: Pinned dependencies
+description: Restore the dependency cache, fetching it with retries on a miss
+runs:
+  using: composite
+  steps:
+    - name: Restore the dependency cache
+      id: deps
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.MLDSA_DEPS_CACHE }}
+        key: mldsa-deps-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'deploy/fetch-deps.sh') }}
+    - name: Fetch the dependencies (cache miss), with retries
+      if: steps.deps.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -u
+        # SQLite is pinned by SHA3-256, which macOS's LibreSSL cannot compute
+        # (3.3.6: no -sha3-256); Homebrew's OpenSSL can, so it goes first.
+        if [ "$RUNNER_OS" = macOS ] && p=$(brew --prefix openssl@3 2>/dev/null) && [ -x "$p/bin/openssl" ]; then
+          export PATH="$p/bin:$PATH"
+        fi
+        openssl version
+        for i in 1 2 3 4 5; do
+          if sh deploy/fetch-deps.sh "$MLDSA_DEPS_CACHE"; then exit 0; fi
+          echo "fetch-deps attempt $i failed; retrying in $((i * 30)) s"
+          rm -rf "$MLDSA_DEPS_CACHE"
+          sleep $((i * 30))
+        done
+        echo "::error::the pinned dependencies could not be fetched after 5 attempts"
+        exit 1

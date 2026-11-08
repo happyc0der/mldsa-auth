@@ -29,6 +29,12 @@ on:
 permissions:
   contents: read
 
+
+# V4-85: where .github/actions/deps restores the pinned dependencies;
+# cmake/Dependencies.cmake reads it from the environment.
+env:
+  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
+
 jobs:
   bench:
     name: bench · ${{ github.event.inputs.repetitions || '5' }} repetitions
@@ -36,6 +42,7 @@ jobs:
     timeout-minutes: 45   # a ceiling; the measured cost is recorded in decisions.md
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner
         run: |

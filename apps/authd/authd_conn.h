@@ -199,14 +199,15 @@ typedef struct {
  * page, a busy store); bench_decoy counts those through the test hook in
  * authd_conn.c.
  *
- * Why 50 us. The lookup's 99th percentile is about 5 us in a Release build on
- * the bench machine (V4-65), but its median is 14-15 us in a Debug ASan build
- * on the same machine (V4-67), and a deployment's host may be slower than
- * either. 10 us, the first value, was below the ASan figure, so it would not
- * have hidden anything on a host that slow. The wait is a busy one: 50 us of
- * one core a handshake, which rate_global_per_sec (default 50 a second) bounds
- * at 0.25 % of a core. */
-#define AUTHD_PIN_FLOOR_NS 50000u
+ * Why 10 us (V4-85, the owner's choice; it was 50 us from V4-67). The
+ * lookup's 99th percentile is about 5 us in a Release build on the bench
+ * machine (V4-65), so 10 us is twice it. Its median is 14-15 us in a Debug
+ * ASan build (V4-67), so in such a build the floor hides nothing, and on a
+ * host twice as slow as the bench machine it hides little: a lookup slower
+ * than the floor is not hidden (F151 counts how often). The wait is a busy
+ * one: 10 us of one core a handshake, which rate_global_per_sec (default 50 a
+ * second) bounds at 0.05 % of a core. */
+#define AUTHD_PIN_FLOOR_NS 10000u
 
 /* Resolves the pin for a claimed identity under the floor above: the active
  * key and its user, or -- for unknown, revoked, superseded and disabled

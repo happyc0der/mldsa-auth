@@ -313,10 +313,10 @@ the most important thing on this page.
 - check `test_authd_store` "damaged store: a decoy_pk one byte short is refused as DAMAGED (store-corrupt), and no handle is returned"
 - mutation `v77 SD5` — a decoy key of the wrong length is accepted at open, so the decoy ServerHello would carry it
 - check `test_authd_conn` "floor: all 6 ClientHellos, 3 enrolled and 3 unknown, resolved their pin through the floor"
-- check `test_authd_conn` "floor: under a stepped clock, an enrolled handle's resolution waits to exactly 50 us"
-- check `test_authd_conn` "floor: under a stepped clock, an unknown handle's resolution waits to exactly 50 us"
+- check `test_authd_conn` "floor: under a stepped clock, an enrolled handle's resolution waits to exactly 10 us"
+- check `test_authd_conn` "floor: under a stepped clock, an unknown handle's resolution waits to exactly 10 us"
 - check `test_authd_conn` "floor: the floor's clock started before the lookup, not after it"
-- check `test_authd_conn` "floor: a revoked handle pins the decoy key and no user, and takes at least 50 us"
+- check `test_authd_conn` "floor: a revoked handle pins the decoy key and no user, and takes at least 10 us"
 - mutation `v87 FL2` — the floor's wait removed
 - mutation `v87 FL3` — the floor's clock started after the lookup, so the lookup's own time is outside it
 - mutation `v87 FL5` — on_client_hello resolves the pin without the floor

@@ -22,6 +22,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false   # a nightly should finish, not be superseded
 
+
+# V4-85: where .github/actions/deps restores the pinned dependencies;
+# cmake/Dependencies.cmake reads it from the environment.
+env:
+  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
+
 jobs:
   # Every campaign anchor still matches its source EXACTLY once, checked
   # statically in seconds.
@@ -38,6 +44,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
       - name: Every anchor matches exactly once, and every mutation is covered
         run: python3 tools/audit/check_mutation_anchors.py "$PWD"
 
@@ -89,6 +96,7 @@ jobs:
                    v49a, v49b, v49c, v49d, v50a, v50b, v50c, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner
         run: |
@@ -143,6 +151,7 @@ jobs:
         campaign: [v35]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner
         run: |
@@ -183,6 +192,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
       - name: Build the ProVerif CLI from source
         run: |
           # opam's proverif package needs GTK (V4-2 S7); the CLI needs only
@@ -211,6 +221,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
       - name: Re-derive every size and diff it against the specification
         run: tools/audit/check_spec_constants.sh "$PWD"
 
@@ -225,6 +236,7 @@ jobs:
                  localapi, authmsg, ws, client]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner
         run: |

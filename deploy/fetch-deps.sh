@@ -25,12 +25,13 @@ DEPS="$HERE/cmake/Dependencies.cmake"
 pin() { sed -n "$1" "$DEPS" | head -1; }
 OQS_COMMIT=$(pin 's/^set(MLDSA_LIBOQS_COMMIT "\([0-9a-f]*\)").*/\1/p')
 OQS_TAG=$(pin 's/^ *GIT_TAG *\([0-9.]*\)$/\1/p')
-SODIUM_URL=$(pin 's|^ *"\(https://github.com/jedisct1/libsodium/[^"]*\)")|\1|p')
+SODIUM_URL=$(pin 's|^ *"\(https://github.com/jedisct1/libsodium/[^"]*\)".*|\1|p')
+SODIUM_MIRROR=$(pin 's|^ *"\(https://download.libsodium.org/[^"]*\)".*|\1|p')
 SODIUM_SHA=$(pin 's/^ *URL_HASH *SHA256=\([0-9a-f]*\)/\1/p')
 SQLITE_URL=$(pin 's|^set(_mldsa_sqlite_url "\(https://sqlite.org/[^"]*\)").*|\1|p')
 SQLITE_SHA3=$(pin 's/^set(MLDSA_SQLITE_SHA3 \([0-9a-f]*\))/\1/p')
 
-for v in OQS_COMMIT OQS_TAG SODIUM_URL SODIUM_SHA SQLITE_URL SQLITE_SHA3; do
+for v in OQS_COMMIT OQS_TAG SODIUM_URL SODIUM_MIRROR SODIUM_SHA SQLITE_URL SQLITE_SHA3; do
     eval "val=\$$v"
     [ -n "$val" ] || { echo "FAIL: could not read $v from cmake/Dependencies.cmake"; exit 1; }
 done
@@ -59,11 +60,16 @@ sha256_of() {
     else sha256sum "$1" | cut -d' ' -f1; fi
 }
 
-fetch_verified() { # url, destination, expected, hasher
-    url="$1"; out="$2"; want="$3"; hasher="$4"
+fetch_verified() { # urls (space-separated, tried in order), destination, expected, hasher
+    urls="$1"; out="$2"; want="$3"; hasher="$4"
     if [ ! -f "$out" ]; then
         echo "--- downloading $(basename "$out")"
-        curl -fsSL -o "$out.part" "$url"
+        got_it=0
+        for url in $urls; do
+            if curl -fsSL -o "$out.part" "$url"; then got_it=1; break; fi
+            echo "    $url failed; trying the next source"
+        done
+        [ "$got_it" -eq 1 ] || { rm -f "$out.part"; echo "FAIL: no source served $(basename "$out")"; exit 1; }
         mv "$out.part" "$out"
     fi
     got=$($hasher "$out")
@@ -75,7 +81,7 @@ fetch_verified() { # url, destination, expected, hasher
     echo "ok   $(basename "$out")"
 }
 
-fetch_verified "$SODIUM_URL" "$DEST/libsodium-1.0.22.tar.gz" "$SODIUM_SHA" sha256_of
+fetch_verified "$SODIUM_URL $SODIUM_MIRROR" "$DEST/libsodium-1.0.22.tar.gz" "$SODIUM_SHA" sha256_of
 
 # sqlite is pinned by SHA3-256, which neither shasum nor sha256sum computes.
 # openssl does, and it is on every host that has a TLS proxy.

@@ -23,6 +23,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+
+# V4-85: where .github/actions/deps restores the pinned dependencies;
+# cmake/Dependencies.cmake reads it from the environment.
+env:
+  MLDSA_DEPS_CACHE: ${{ github.workspace }}/../mldsa-deps
+
 jobs:
   suite:
     name: ${{ matrix.os }}·${{ matrix.cc }}·${{ matrix.config }}
@@ -43,6 +49,7 @@ jobs:
           - { os: macos-26, cc: clang, config: ubsan }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -136,6 +143,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -168,6 +176,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -209,6 +218,7 @@ jobs:
         cc: [gcc, clang]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -279,6 +289,7 @@ jobs:
       CHROME_SHA256: ceee2972074d441ea7c4ba8bcc0eaab77e7e87680f6653d73d3065851fe10302  # chrome-linux64.zip (MD5 matches the bucket)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -354,6 +365,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
@@ -403,6 +415,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps   # V4-85: pinned deps from the Actions cache
 
       - name: Record the runner (the label's meaning changes over time)
         run: |
