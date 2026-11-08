@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.23, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79 errata)
+# mldsa-authd — deployment specification (v1.24, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -690,11 +690,15 @@ and this section used to run them together:
    owns both the store and the slots, so revoking a row and closing its
    sessions happen in one process, in one thread, in that order — there is no
    "store hook" and no window.
-3. **Nothing issued before it outlives it** (errata 60, 61). A login code
-   whose device or user is no longer active is refused at `EXCHANGE` and
-   spent, so neither the revocation nor a later re-enable leaves it usable;
-   and a handshake whose pinned key is no longer the handle's active key —
-   a rotation, revocation or disable landing mid-handshake — gets no code.
+3. **Nothing issued before it outlives it** (errata 60, 61, 63). The event's
+   own transaction spends what it ends: `REVOKE-DEVICE` and a rotation that
+   drops tokens spend the device's unused login codes; `DISABLE-USER` spends
+   the user's login codes and enrollment tickets, so `ENABLE-USER` revives
+   none; `RECOVERY-ISSUE` spends the user's tickets; `revoke=all` spends the
+   user's tickets and codes before inserting its own ticket. A code whose
+   device or user is no longer active is refused at `EXCHANGE` and spent
+   whatever wrote it; and a handshake whose pinned key is no longer the
+   handle's active key gets no code.
 
 At the site, a revocation is visible within its `VERIFY` cache TTL, which
 SHOULD be ≤ 30 s or absent.
@@ -1482,3 +1486,9 @@ From the defensive review of the reference site:
 | 60 | 8, 10.3 | `EXCHANGE` refuses a code whose device is no longer active (`device-revoked`) or whose user is disabled (`user-disabled`), and spends it | revoking or disabling deleted tokens but not a login code already issued; a stolen device's code held across the owner's `RECOVERY-USE revoke=all` exchanged for a token, minted new recovery codes and took the account back (F157) |
 | 61 | 7.3, 15 | A ClientAuth that verifies gets a login code only if the key pinned at its ClientHello is still the handle's active key, its user unchanged; otherwise the connection closes, logged `client-auth-key-changed` | a ROTATE, revocation or disable landing between ClientHello and ClientAuth did not stop the handshake begun under the old key from getting a code (F158) |
 | 62 | 14 | Behind a proxy the site keys its recovery limit on the rightmost `X-Forwarded-For` entry | the leftmost entry is whatever the client sent, so a client rotating it had a fresh bucket each request (F159); §7.2 refuses the header to the daemon for the same reason |
+
+### Revision v1.24 (V4-80)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 63 | 10.3 | Disable, revoke, a token-dropping rotation, a re-issue and `revoke=all` each spend, in their own transaction, the login codes and enrollment tickets issued before them | a ticket stayed valid for its ten minutes through a re-issue, a `revoke=all` and a disable (re-enabling revived it), and a login code survived a disable it was not presented during and a rotation for a leaked key (F161, F162, F163) |

@@ -12890,3 +12890,33 @@ property held, where at fb257f9 the thief ended owning the account. Suite
 51/53 with the two usual skips, `check_build_current.sh` reproduced the tree
 (`afc704bfbb992f49`), gcc-16 `-O2` clean on the seven changed C files. F157
 is a High: it stays on its branch until the owner has seen it.
+
+## V4-80 — F161–F166: what each security event spends
+
+**Context.** Round 3's logic lane listed five gaps from reading; its own test
+program was stopped before it ran. V4-80 turned each into a test first, ran
+it against fec0bff, and all five failed there -- the reproductions -- before
+any fix.
+
+**Decision.** One store helper, `spend_outstanding_locked`, called inside the
+transaction of each event, marks used what that event ends: a device's
+login codes (revoke, token-dropping rotation), a user's login codes and
+tickets (disable, `revoke=all` before its own ticket), a user's tickets
+(re-issue). Spending in each event's transaction, rather than refusing at
+redemption by comparing timestamps, keeps the rule exact: a timestamp in
+seconds cannot order a `revoke=all` and the ticket it mints in the same
+second. F157's check at `EXCHANGE` stays as the backstop for a code written
+any other way; its tests now present codes that exist only after the event.
+The recovery test that re-issued codes after minting its ticket continues
+with the ticket its own recovery minted.
+
+**Open for the owner: F164.** Whether a device revocation should end the
+user's recovery codes (and the owner's own with them), or codes should be
+bound to the device that minted them, is a design choice.
+
+**Shown.** Five reproductions, now passing; a hand control per spend site,
+each killed by its own test; F165's test fails on the old rounding (a
+burst of 2, because a full bucket resets the clock and hid it at 1). Suite
+51/53 with the two usual skips; `check_build_current.sh` fingerprint
+`9921abb1b04d39d1`; gcc-16 full compile at -O0 and -O2 clean on all 14
+changed C files.

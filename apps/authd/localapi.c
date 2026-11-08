@@ -1064,7 +1064,11 @@ static int recovery_budget_take(authd_app_t *app)
         if (add > 0u) {
             const uint64_t t = (uint64_t)app->recovery_budget_tokens + add;
             app->recovery_budget_tokens = (t > app->recovery_use_burst) ? app->recovery_use_burst : (uint32_t)t;
-            app->recovery_budget_at_ms += add * 1000u / app->recovery_use_per_sec;
+            /* Rounded UP (V4-80, F165): at a rate above 1000 a second the
+             * floor was 0, the clock never advanced, and the same elapsed
+             * millisecond refilled again on every call. Never past `now`:
+             * add <= elapsed * rate / 1000. */
+            app->recovery_budget_at_ms += (add * 1000u + app->recovery_use_per_sec - 1u) / app->recovery_use_per_sec;
         }
     }
     if (app->recovery_budget_tokens == app->recovery_use_burst) {

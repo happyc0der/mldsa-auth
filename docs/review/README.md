@@ -47,9 +47,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 160 findings (F0–F160), with severity, evidence and
+   register](../v4/audit.md). 166 findings (F0–F166), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 62 errata, each
+3. The two specifications. The deployment spec's §20 lists 63 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -565,6 +565,15 @@ handshake begun under a key rotated away mid-handshake got a code; erratum
 61) and F159 (Med: V4-76's limiter keyed on the client-supplied end of
 `X-Forwarded-For`; erratum 62). F160 (Info) records the WebSocket upgrade's
 missing Origin check. F157's fix is on a branch until the owner reviews it.
+
+V4-80 took the third round's findings. **F161 (High):** a recovery ticket
+stayed valid for its ten minutes through a re-issue and through the
+owner's `revoke=all`; F162 and F163 (Med): a disable and re-enable revived
+a held ticket or login code, and a rotation for a leaked key left the old
+key's login codes usable. Each of those events now spends what it ends, in
+its own transaction (erratum 63). F165 (Info) fixed a refill rounding in
+the recovery budget. F164 (Med, codes minted from a stolen device outliving
+its revocation) is open for the owner; F166 (Low) is recorded.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

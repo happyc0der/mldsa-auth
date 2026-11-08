@@ -430,10 +430,8 @@ static void test_revocation_closes_sessions(void)
     { char hexcode[80];
       hx(hexcode, sizeof hexcode, code, sizeof code);
       snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
-      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=device-revoked"),
-            "revoke: a login code issued before the revoke is refused `device-revoked` (F157)");
       CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
-            "revoke: ...and it is spent"); }
+            "revoke: a login code issued before the revoke does not exchange -- the revoke spent it (F157, V4-80)"); }
 
     snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
@@ -489,8 +487,8 @@ static void test_disable_closes_sessions(void)
       hx(hexcode, sizeof hexcode, code_u1, sizeof code_u1);
       char xreq[256];
       snprintf(xreq, sizeof xreq, "EXCHANGE code=%s state=", hexcode);
-      CHECK(site >= 0 && h_local_cmd(&d, site, xreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-disabled"),
-            "disable: a login code issued before the disable is refused `user-disabled` (F157)");
+      CHECK(site >= 0 && h_local_cmd(&d, site, xreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
+            "disable: a login code issued before the disable does not exchange -- the disable spent it (F157, V4-80)");
       snprintf(req, sizeof req, "ENABLE-USER user=%s", uh);
       CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK") &&
             h_local_cmd(&d, site, xreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
@@ -1090,6 +1088,9 @@ static void test_recovery(void)
             CHECK(buf != NULL && sodium_hex2bin(tk, sizeof tk, t2, strlen(t2), NULL, &tkn, NULL) == 0 &&
                       tkn == sizeof tk && !log_holds_window(buf, "the ticket", tk, sizeof tk, 0),
                   "recovery: no window of the enrollment TICKET in any form -- hex, base64, an escaped id= field (V4-29)"); }
+          /* The RECOVERY-ISSUE above ended the first ticket (V4-80, F161), so
+           * the enrollment below presents the one this block's recovery minted. */
+          if (strlen(t2) == 64u) { memcpy(ticket_hex, t2, 65u); }
           free(buf); fclose(lf); } }
 
     /* single use */
@@ -1619,6 +1620,137 @@ static void test_revoke_tokens_scope(void)
 }
 
 
+/* V4-80: what was issued before a security event must not outlive it (spec
+ * 10.3's third guarantee). Recovery tickets and login codes, across the events
+ * that are meant to end them: a re-issue of recovery codes, a `revoke=all`, a
+ * disable and re-enable, and a rotation that drops tokens. */
+static int ticket_of(const char *resp, char out[80])
+{
+    const char *p = strstr(resp, "ticket=");
+    if (p == NULL) { return -1; }
+    p += 7;
+    size_t n = 0;
+    while (n < 79u && p[n] != '\0' && p[n] != ' ' && p[n] != '\n') { out[n] = p[n]; n++; }
+    out[n] = '\0';
+    return (n == 64u) ? 0 : -1;
+}
+
+static int fresh_device_req(char *req, size_t cap, const char *uh, const char *tag, const char *ticket)
+{
+    mldsa_keypair_t k;
+    if (mldsa_keypair_generate(&k) != 0) { return -1; }
+    static char pkh[4000];
+    char hh[64];
+    hx(pkh, sizeof pkh, k.public_key, sizeof k.public_key);
+    hx(hh, sizeof hh, (const uint8_t *)tag, strlen(tag));
+    snprintf(req, cap, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, hh, pkh, ticket);
+    mldsa_keypair_free(&k);
+    return 0;
+}
+
+static void test_issued_before_outlives(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "outlive.sqlite3", 1) == 0, "outlive: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "outlive: connect");
+    static char req[9000], resp[16384];
+    char uh[160], c1[BASE32_CODE_CHARS + 1u], c2[BASE32_CODE_CHARS + 1u], t1[80], t2[80];
+    hx(uh, sizeof uh, U1, sizeof U1);
+
+    /* 1. A ticket from before a RECOVERY-ISSUE. */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "outlive: codes issued");
+    first_code(resp, c1);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, c1);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && ticket_of(resp, t1) == 0, "outlive: a ticket");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "outlive: codes re-issued");
+    nth_code(resp, 0u, c1); nth_code(resp, 1u, c2);
+    CHECK(fresh_device_req(req, sizeof req, uh, "dA", t1) == 0 &&
+          h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
+          "outlive: a ticket from before a RECOVERY-ISSUE does not enroll after it");
+
+    /* 2. A ticket from before a revoke=all (the stolen-device path). */
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, c1);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && ticket_of(resp, t1) == 0, "outlive: a ticket (2)");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s revoke=all", uh, c2);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && ticket_of(resp, t2) == 0, "outlive: revoke=all's own ticket");
+    CHECK(fresh_device_req(req, sizeof req, uh, "dB", t1) == 0 &&
+          h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
+          "outlive: a ticket from before a revoke=all does not enroll after it");
+    CHECK(fresh_device_req(req, sizeof req, uh, "dC", t2) == 0 &&
+          h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+          "outlive: ...while revoke=all's own ticket does (the canary)");
+
+    /* 3. A ticket held across DISABLE-USER and ENABLE-USER. */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "outlive: codes (3)");
+    first_code(resp, c1);
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, c1);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && ticket_of(resp, t1) == 0, "outlive: a ticket (3)");
+    snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "outlive: disabled");
+    snprintf(req, sizeof req, "ENABLE-USER user=%s", uh);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "outlive: re-enabled");
+    CHECK(fresh_device_req(req, sizeof req, uh, "dD", t1) == 0 &&
+          h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
+          "outlive: a ticket held across a disable does not enroll after the re-enable");
+
+    (void)close(fd); (void)close(adm);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+static void test_codes_outlive(void)
+{
+    char uh[160], req[512], resp[4096], hexcode[80];
+    hx(uh, sizeof uh, U1, sizeof U1);
+
+    /* 4. A login code held across DISABLE-USER and ENABLE-USER, never shown in between. */
+    { h_daemon_t d; mldsa_keypair_t kp; h_client_t c; uint8_t code[32];
+      CHECK(h_start(&d, g_dir, "outlive2.sqlite3", 1) == 0, "outlive: daemon starts (codes)");
+      enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+      int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+      CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c, code) == 0,
+            "outlive: a login code is held");
+      h_client_close(&c);
+      snprintf(req, sizeof req, "DISABLE-USER user=%s", uh);
+      CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "outlive: disabled (codes)");
+      snprintf(req, sizeof req, "ENABLE-USER user=%s", uh);
+      CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "outlive: re-enabled (codes)");
+      hx(hexcode, sizeof hexcode, code, sizeof code);
+      snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR"),
+            "outlive: a login code held across a disable and re-enable does not exchange");
+      (void)close(fd); (void)close(adm);
+      mldsa_keypair_free(&kp);
+      h_stop(&d); }
+
+    /* 5. A login code held across a rotation that drops tokens (the key leaked). */
+    { h_daemon_t d; mldsa_keypair_t kp, kp2; h_client_t c; uint8_t code[32];
+      CHECK(h_start(&d, g_dir, "outlive3.sqlite3", 1) == 0, "outlive: daemon starts (rotate)");
+      enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+      CHECK(mldsa_keypair_generate(&kp2) == 0, "outlive: new key");
+      int fd = h_dial_unix(d.site_path);
+      CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c, code) == 0,
+            "outlive: a login code is held (rotate)");
+      h_client_close(&c);
+      static const uint8_t HSID[STORE_HSID_BYTES] = { 9 };
+      CHECK(store_rotate_key(d.store, HANDLE1, sizeof HANDLE1, kp2.public_key, kp.public_key,
+                             HSID, sizeof HSID, 1, d.app.now_unix, NULL, NULL) == STORE_OK,
+            "outlive: the key rotates, dropping tokens (it leaked)");
+      hx(hexcode, sizeof hexcode, code, sizeof code);
+      snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR"),
+            "outlive: a login code from before a token-dropping rotation does not exchange");
+      (void)close(fd);
+      mldsa_keypair_free(&kp); mldsa_keypair_free(&kp2);
+      h_stop(&d); }
+}
+
 /* V4-79, F158: a handshake whose pinned key stops being the handle's active key
  * between its ClientHello and its ClientAuth -- a rotation, here, as a second
  * session would do it -- gets no login code. */
@@ -1696,6 +1828,19 @@ static void test_recovery_budget(void)
           "budget: once one has accrued, one attempt is served");
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=busy"),
           "budget: ...and only one");
+    /* V4-80 (F165): a rate above 1000 a second must not refill again within
+     * the same millisecond. */
+    d.app.recovery_use_per_sec = 1500u;
+    d.app.recovery_use_burst = 2u;    /* 2: a full bucket resets the clock, which would hide it */
+    d.app.recovery_budget_live = 0;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid") &&
+          h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "budget: at 1500/s, the burst of two is served");
+    d.app.now_ms += 1u;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "budget: at 1500/s, a millisecond later one more has accrued");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=busy"),
+          "budget: at 1500/s, but not a second one in the same millisecond (F165)");
     (void)close(fd); (void)close(adm);
     h_stop(&d);
 }
@@ -1887,6 +2032,8 @@ int main(void)
     test_recovery_uniform_cost();
     test_recovery_budget();
     test_key_changed_mid_handshake();
+    test_issued_before_outlives();
+    test_codes_outlive();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

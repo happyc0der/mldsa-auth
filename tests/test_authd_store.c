@@ -822,11 +822,14 @@ int main(void)
                 "a code whose device was revoked after it was issued is refused DEVICE_REVOKED (F157)");
           CHECK(store_consume_login_code_ex(s, c2, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
                 v == STORE_CODE_USED, "...and it is spent");
-          CHECK(store_add_login_code(s, c3, U1, sizeof U1, H3, sizeof H3, NULL, 0, stateh, 100, 200) == STORE_OK &&
-                store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK &&
+          /* Since V4-80 a disable spends the codes already issued, so the
+           * exchange-time check is pinned with a code that exists only after
+           * the disable (as a row written by anything else would). */
+          CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK &&
+                store_add_login_code(s, c3, U1, sizeof U1, H3, sizeof H3, NULL, 0, stateh, 100, 200) == STORE_OK &&
                 store_consume_login_code_ex(s, c3, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
                 v == STORE_CODE_USER_DISABLED,
-                "a code whose user was disabled after it was issued is refused USER_DISABLED (F157)");
+                "a code whose user is disabled when it is presented is refused USER_DISABLED (F157)");
           CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK &&
                 store_consume_login_code_ex(s, c3, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
                 v == STORE_CODE_USED, "...and a re-enable does not revive it"); }
