@@ -43,3 +43,14 @@ export function report(ok, text) {
   document.body.dataset.result = ok ? 'ok' : `error: ${text}`;
 }
 export const val = (id) => document.getElementById(id).value;
+// A secret field -- the passphrase, a recovery code -- read ONCE and emptied in
+// the same step (V4-76, F144). Left in the field, the passphrase sat in the DOM
+// after the login for any script on the origin to read next to the sealed key
+// in IndexedDB, which together are the key. Clearing does not stop a script
+// that is present while the passphrase is typed; nothing on the page can.
+export const secret = (id) => {
+  const el = document.getElementById(id);
+  const v = el.value;
+  el.value = '';
+  return v;
+};

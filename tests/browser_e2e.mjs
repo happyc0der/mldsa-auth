@@ -143,6 +143,11 @@ try {
   requests.length = 0;
   r = await act(b, 'login.html', { passphrase: PASS });
   check(r.result === 'ok' && /Logged in as alice/.test(r.status), `login: ${r.status}`);
+  // V4-76, F144: the passphrase does not stay in the page after it is used, where
+  // any script on the origin could read it beside the sealed key.
+  { const left = await b.eval("document.getElementById('passphrase').value");
+    const ac = await b.eval("document.getElementById('passphrase').getAttribute('autocomplete')");
+    check(left === '' && ac === 'off', `login: the passphrase field is empty after the login, autocomplete=${ac} (F144)`); }
   const post = requests.find((q) => q.method === 'POST' && q.url.endsWith('/api/login'));
   const code = post ? JSON.parse(post.body).code : null;
   check(!!code && code.length === 43, 'hand-off: the login code reaches the site in the POST body, base64url');

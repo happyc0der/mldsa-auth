@@ -1,4 +1,4 @@
-import { boot, session, post, report, val, bytesToHex, hexToBytes } from './common.mjs';
+import { boot, session, post, report, val, bytesToHex, hexToBytes, secret } from './common.mjs';
 import { IdentityStore } from '/client/store.mjs';
 
 const { client, store } = await boot();
@@ -18,7 +18,7 @@ document.getElementById('go').addEventListener('click', async () => {
   try {
     const sess = await session();
     if (!sess.recovering) { await post('/api/signup', { user: val('user'), invite: val('invite') }); }
-    const id = client.newIdentity(val('passphrase'));          // refused inside wasm if the policy says no
+    const id = client.newIdentity(secret('passphrase'));          // refused inside wasm if the policy says no
     await store.create({ handle: id.handle, serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub),
                          envelope: id.envelope });
     const r = await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) });

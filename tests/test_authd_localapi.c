@@ -517,6 +517,29 @@ static void test_enroll(void)
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
           "enroll: via=recovery without a ticket is malformed (the ticket is the authorisation)");
 
+    /* V4-76, F145: via=signup is a NEW account. It enrolls a user who does not
+     * exist, and refuses `user-exists` for one who does -- the user U1 above --
+     * leaving the store as it was. */
+    { mldsa_keypair_t kp3; char pk3h[4000], nh[160], h3h[160];
+      static const uint8_t NEWU[] = { 'f','r','e','s','h' }, H3[] = { 'd','3','c','c' };
+      CHECK(mldsa_keypair_generate(&kp3) == 0, "signup: a key");
+      hx(pk3h, sizeof pk3h, kp3.public_key, sizeof kp3.public_key);
+      hx(nh, sizeof nh, NEWU, sizeof NEWU);
+      hx(h3h, sizeof h3h, H3, sizeof H3);
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=signup", uh, h3h, pk3h);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-exists"),
+            "signup: via=signup naming an existing user is refused `user-exists`");
+      { uint8_t cur[STORE_PK_BYTES], own[STORE_ID_MAX]; size_t ol = 0;
+        CHECK(store_lookup_active(d.store, H3, sizeof H3, cur, own, sizeof own, &ol, NULL) == STORE_ERR_NOT_FOUND,
+              "signup: ...and the refused device was not enrolled"); }
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=signup", nh, h3h, pk3h);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+            "signup: via=signup for a new user enrolls it");
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=signup ticket=00", nh, h3h, pk3h);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+            "signup: via=signup with a ticket is malformed");
+      mldsa_keypair_free(&kp3); }
+
     /* F47: a REFUSED enrollment must leave the store exactly as it was. The
      * original order created the user first and checked the handle after, so
      * naming a fresh user with an already-taken handle answered
@@ -943,8 +966,8 @@ static void test_recovery(void)
      * scanning only the database would be a vacuous pass. The canary below is
      * what makes that impossible -- it failed exactly this way when written. */
     { const size_t got = read_store_files("recovery.sqlite3", g_blob, sizeof g_blob);
-      CHECK(memmem(g_blob, got, "$argon2id$", 10) != NULL,
-            "recovery: the store holds an Argon2id hash (the present canary)");
+      CHECK(memmem(g_blob, got, "$mrc1$", 6) != NULL,
+            "recovery: the store holds the code's $mrc1$ Argon2id hash (the present canary)");
       CHECK(!any_code_in(g_blob, got, gen),
             "recovery: the plaintext code is NOT in the store (Req 4)"); }
 
@@ -995,7 +1018,7 @@ static void test_recovery(void)
             "recovery: the store holds the ticket's SHA-256 (the present canary)");
       CHECK(secret_absent(g_blob, n, ticket), "recovery: the plaintext ticket is NOT in the store (Req 4)");
       const size_t nb = backup_and_read(&d, "recovery-backup.sqlite3", g_blob, sizeof g_blob);
-      CHECK(secret_hash_present(g_blob, nb, ticket) && memmem(g_blob, nb, "$argon2id$", 10) != NULL,
+      CHECK(secret_hash_present(g_blob, nb, ticket) && memmem(g_blob, nb, "$mrc1$", 6) != NULL,
             "recovery: a backup holds the ticket's SHA-256 and the code's Argon2id hash (the present canary)");
       CHECK(secret_absent(g_blob, nb, ticket) && !any_code_in(g_blob, nb, gen),
             "recovery: neither the ticket nor the code is in a backup of the store (Req 4)");
@@ -1135,8 +1158,8 @@ static void test_recovery_policy(void)
     snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, old_code);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
           "policy: a code from the PREVIOUS generation is refused after re-issue");
-    CHECK(d.app.recovery_kdf_calls - before == 2u,
-          "policy: only the current generation is tried -- the loop stays bounded at `count`");
+    CHECK(d.app.recovery_kdf_calls - before == 1u,
+          "policy: one Argon2id for the attempt -- the current generation hashed once, the superseded one not at all (F143)");
 
     snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, new_code);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
@@ -1154,8 +1177,8 @@ static void test_recovery_policy(void)
     snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, wrong);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=locked"),
           "policy: the sixth attempt is refused with `locked` (§10.3)");
-    CHECK(d.app.recovery_kdf_calls == kdf_at_lock,
-          "policy: a LOCKED user's attempt performs ZERO Argon2id -- the lockout is checked first");
+    CHECK(d.app.recovery_kdf_calls == kdf_at_lock + 1u,
+          "policy: a LOCKED user's attempt costs exactly the ONE Argon2id every refusal costs (F143)");
 
     /* Even the right code is refused while locked. */
     snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
@@ -1571,6 +1594,95 @@ static void test_revoke_tokens_scope(void)
 }
 
 
+/* V4-76, F143: every RECOVERY-USE costs exactly one Argon2id computation,
+ * whatever the user's state, so the time of the answer says nothing about
+ * whether the user exists, how many codes it has, or its role. Counted, not
+ * timed: recovery_kdf_calls is the computations actually performed. */
+static void test_recovery_uniform_cost(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery-cost.sqlite3", 1) == 0, "cost: daemon starts");
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "cost: connect to site.sock and admin.sock");
+    static const uint8_t U_NONE[] = "none", U_ONE[] = "one", U_SIXTEEN[] = "sixteen",
+                         U_OFF[] = "off", U_OP[] = "op", U_LOCK[] = "lock", U_GHOST[] = "ghost";
+    CHECK(store_add_user(d.store, U_NONE, sizeof U_NONE - 1u, STORE_ROLE_USER) == STORE_OK &&
+          store_add_user(d.store, U_ONE, sizeof U_ONE - 1u, STORE_ROLE_USER) == STORE_OK &&
+          store_add_user(d.store, U_SIXTEEN, sizeof U_SIXTEEN - 1u, STORE_ROLE_USER) == STORE_OK &&
+          store_add_user(d.store, U_OFF, sizeof U_OFF - 1u, STORE_ROLE_USER) == STORE_OK &&
+          store_add_user(d.store, U_OP, sizeof U_OP - 1u, STORE_ROLE_OPERATOR) == STORE_OK &&
+          store_add_user(d.store, U_LOCK, sizeof U_LOCK - 1u, STORE_ROLE_USER) == STORE_OK,
+          "cost: the users exist");
+    char req[512], resp[16384], h[160];
+    struct { const uint8_t *u; size_t n; const char *count; int admin; } issue[] = {
+        { U_ONE, sizeof U_ONE - 1u, "1", 0 }, { U_SIXTEEN, sizeof U_SIXTEEN - 1u, "16", 0 },
+        { U_OFF, sizeof U_OFF - 1u, "3", 0 }, { U_OP, sizeof U_OP - 1u, "3", 1 },
+        { U_LOCK, sizeof U_LOCK - 1u, "3", 0 } };
+    int issued = 1;
+    for (size_t i = 0; i < sizeof issue / sizeof issue[0]; i++) {
+        hx(h, sizeof h, issue[i].u, issue[i].n);
+        snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=%s", h, issue[i].count);
+        issued &= (h_local_cmd(&d, issue[i].admin ? adm : fd, req, resp, sizeof resp) == 0 &&
+                   starts(resp, "OK codes="));
+    }
+    CHECK(issued, "cost: codes issued (1, 16, and 3 to the users that will refuse)");
+    hx(h, sizeof h, U_OFF, sizeof U_OFF - 1u);
+    snprintf(req, sizeof req, "DISABLE-USER user=%s", h);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "cost: one user disabled");
+    hx(h, sizeof h, U_LOCK, sizeof U_LOCK - 1u);
+    for (int i = 0; i < RECOVERY_LOCK_THRESHOLD; i++) {
+        snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", h);
+        (void)h_local_cmd(&d, fd, req, resp, sizeof resp);
+    }
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", h);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=locked"),
+          "cost: one user locked (canary)");
+
+    struct { const uint8_t *u; size_t n; const char *code; const char *want; const char *what; } c[] = {
+        { U_GHOST, sizeof U_GHOST - 1u, "0000000000000000", "ERR code=invalid", "an unknown user" },
+        { U_NONE, sizeof U_NONE - 1u, "0000000000000000", "ERR code=invalid", "a user with no codes" },
+        { U_ONE, sizeof U_ONE - 1u, "0000000000000000", "ERR code=invalid", "a user with one code" },
+        { U_SIXTEEN, sizeof U_SIXTEEN - 1u, "0000000000000000", "ERR code=invalid", "a user with sixteen codes" },
+        { U_SIXTEEN, sizeof U_SIXTEEN - 1u, "not-a-code", "ERR code=invalid", "a string that is not a code" },
+        { U_OFF, sizeof U_OFF - 1u, "0000000000000000", "ERR code=user-disabled", "a disabled user" },
+        { U_OP, sizeof U_OP - 1u, "0000000000000000", "ERR code=not-permitted", "an operator, from site.sock" },
+        { U_LOCK, sizeof U_LOCK - 1u, "0000000000000000", "ERR code=locked", "a locked user" },
+    };
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        hx(h, sizeof h, c[i].u, c[i].n);
+        snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", h, c[i].code);
+        const uint64_t before = d.app.recovery_kdf_calls;
+        const int ok = h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, c[i].want);
+        char what[160];
+        snprintf(what, sizeof what, "cost: %s is refused with exactly ONE Argon2id", c[i].what);
+        CHECK(ok && d.app.recovery_kdf_calls - before == 1u, what);
+    }
+
+    /* A generation issued before V4-76 -- crypto_pwhash_str, a salt per code --
+     * still verifies, one computation per code, until it is re-issued. */
+    { static const uint8_t U_OLD[] = "old";
+      CHECK(store_add_user(d.store, U_OLD, sizeof U_OLD - 1u, STORE_ROLE_USER) == STORE_OK, "cost: a legacy user");
+      static const char *const codes[2] = { "0123456789ABCDEF", "GHJKMNPQRSTVWXYZ" };
+      char hs[2][crypto_pwhash_STRBYTES];
+      const char *hp[2] = { hs[0], hs[1] };
+      int made = 1;
+      for (int i = 0; i < 2; i++) {
+          made &= crypto_pwhash_str(hs[i], codes[i], BASE32_CODE_CHARS, d.app.recovery_ops,
+                                    d.app.recovery_mem) == 0;
+      }
+      CHECK(made && store_recovery_replace(d.store, U_OLD, sizeof U_OLD - 1u, hp, 2, d.app.now_unix, NULL) == STORE_OK,
+            "cost: two legacy $argon2id$ codes stored");
+      hx(h, sizeof h, U_OLD, sizeof U_OLD - 1u);
+      snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", h, codes[1]);
+      const uint64_t before = d.app.recovery_kdf_calls;
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket=") &&
+            d.app.recovery_kdf_calls - before == 2u,
+            "cost: a legacy code still recovers, one verification per legacy code"); }
+
+    (void)close(fd); (void)close(adm);
+    h_stop(&d);
+}
+
 /* V4-70, F139: a local-API connection closing leaves the login that holds the
  * protocol slot with the same index alone. The two pools both number their
  * slots from 0, and the close callback used to map ANY slot to conns[index]. */
@@ -1666,6 +1778,7 @@ int main(void)
     test_enroll_other_users_handle();
     test_revoke_tokens_scope();
     test_local_close_spares_proto();
+    test_recovery_uniform_cost();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

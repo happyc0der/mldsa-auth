@@ -1,7 +1,7 @@
 G1|^test_authd_localapi$|a lower-case, hyphenated, O-for-0 code is ACCEPTED
 G2|^test_authd_localapi$|the confusables O and i normalise to 0 and 1
 G3|^test_authd_localapi$|values 0..31 render as Crockford's alphabet, in order
-G4|^test_authd_localapi$|a LOCKED user's attempt performs ZERO Argon2id
+G4|^test_authd_localapi$|a LOCKED user's attempt costs exactly the ONE Argon2id every refusal costs (F143)
 G5|^test_authd_localapi$|the sixth attempt is refused with `locked`
 G6|^test_authd_store$|a SUCCESS clears the accumulated failure count
 G7|^test_authd_store$|a half-consume is impossible

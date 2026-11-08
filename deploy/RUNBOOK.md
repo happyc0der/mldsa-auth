@@ -329,7 +329,7 @@ sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \
      --authd-ws-unix /run/mldsa-authd/p.sock \
      --server-id authd --server-pub /var/lib/mldsa-authd/server.pub \
      --module-dir /opt/mldsa-site/module \
-     --invite-file /etc/mldsa-authd/invite --port 9080 --secure
+     --invite-file /etc/mldsa-authd/invite --port 9080 --secure --trust-proxy
 ```
 
 It prints `{"port":9080}`. Run it under your process manager. Keep the layout:
@@ -340,9 +340,16 @@ repository.
   `Origin: https://…`, and without the flag the site expects `http://` and
   refuses every POST as cross-origin — sign-up, login, everything — while
   the pages still load.
+- **`--trust-proxy` belongs behind Caddy and nowhere else.** The recovery
+  route is rate-limited per client, keyed on the address in
+  `X-Forwarded-For`, which Caddy sets to the real client and does not take
+  from it. Without a proxy in front the header is whatever the client says,
+  so leave the flag off and the key is the TCP peer.
 - **The invite is the reference site's stand-in for your account check.**
-  Whoever holds it can create an account; a real site uses what it already
-  trusts, such as a verified e-mail. It is read from a file because argv is
+  Whoever holds it can create an account, but not join an existing one: a
+  signup enrolls `via=signup`, which the daemon refuses for a known user
+  (F145). A real site uses what it already trusts, such as a verified
+  e-mail. It is read from a file because argv is
   visible to every process on the host.
 - `site_uids` in `authd.conf` must be this process's uid (step 7).
 

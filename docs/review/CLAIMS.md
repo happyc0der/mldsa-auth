@@ -72,7 +72,7 @@ the most important thing on this page.
 - check `constant_time_sites` "every listed constant-time comparison is still a sodium_memcmp or sodium_is_zero call"
 - mutation `v59 GB8` — the pin lookup's `sodium_memcmp` becomes `memcmp` (the mutation v49c and v52 declined, having no gate)
 - mutation `v59 GB10` — the audit chain's MAC comparison becomes `memcmp`
-**Not established:** the gate pins WHICH function compares, at 25 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
+**Not established:** the gate pins WHICH function compares, at 26 sites; it does not measure how long a comparison takes, and nothing does -- the constant-time property itself is libsodium's. The plain `memcmp`/`strcmp` sites stay a report (the inventory) with a judgement (audit F18); none of the 29 plain `memcmp` lines compares a secret (audit row 4.3, V4-15b).
 
 ### P4 — Transcript-bound signatures
 - check `test_handshake` "v2-5 H4: another handshake's mlkem_ct spliced into a signed ServerHello -> SIGNATURE, FAILED"
@@ -255,7 +255,7 @@ the most important thing on this page.
 
 ### D4 — Tokens, login codes, recovery codes and enrollment tickets are never stored in the clear
 - check `test_authd_localapi` "recovery: the plaintext code is NOT in the store (Req 4)"
-- check `test_authd_localapi` "recovery: the store holds an Argon2id hash (the present canary)"
+- check `test_authd_localapi` "recovery: the store holds the code's $mrc1$ Argon2id hash (the present canary)"
 - check `test_authd_conn` "login: the code is bound to the right user and handle"
 - check `test_authd_localapi` "verify: a fresh token verifies"
 - mutation `v48b C2` — the login code stored raw instead of as SHA-256

@@ -147,6 +147,36 @@ try {
     check(devices.startsWith('OK count=1'), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
   }
 
+  // V4-76, F143: /api/recover gives every refusal ONE reply, so it does not say
+  // which usernames exist; and it is rate-limited per client.
+  {
+    const ghost = await post('/api/recover', { user: 'nobody-by-this-name', code: '0000000000000000' });
+    const wrong = await post('/api/recover', { user, code: '0000000000000000' });
+    const gb = await ghost.json(), wb = await wrong.json();
+    check(ghost.status === 403 && wrong.status === 403 && gb.error === 'recover-failed' && wb.error === 'recover-failed',
+          `recover: an unknown user and a wrong code get the same reply (${gb.error}, ${wb.error})`);
+    const lim = await start({ recoverBurst: 2, recoverRefillMs: 60 * 60 * 1000 });
+    const lbase = `http://127.0.0.1:${lim.port}`;
+    const lpost = (obj) => fetch(`${lbase}/api/recover`, { method: 'POST', body: JSON.stringify(obj),
+                                                           headers: { Origin: lbase, 'Content-Type': 'application/json' } });
+    const st = [];
+    for (let i = 0; i < 3; i++) { st.push((await lpost({ user: 'nobody-by-this-name', code: '0000000000000000' })).status); }
+    check(st[0] === 403 && st[1] === 403 && st[2] === 429, `recover: the third attempt past a burst of two is 429 (${st.join(', ')})`);
+  }
+
+  // V4-76, F145: a signup naming an EXISTING user cannot add a device to it.
+  {
+    const su = await post('/api/signup', { user, invite: 'the-invite' });
+    const sid = idOf(su);
+    check(su.status === 200 && sid !== undefined, 'signup: the invite passes the site\'s check (the canary)');
+    const atk = client.newIdentity('an attacker passphrase, long enough');
+    const en = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage) }, sid);
+    const eb = await en.json();
+    check(en.status === 403 && eb.error === 'user-exists', `signup: enrolling into an existing account is refused (${en.status} ${eb.error})`);
+    const devices = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
+    check(devices.startsWith('OK count=1'), 'signup: the existing account still has exactly one device');
+  }
+
   // Logout forgets the session and the cookie.
   {
     const lo = await post('/api/logout', {}, fresh);

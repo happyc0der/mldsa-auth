@@ -51,8 +51,9 @@ ST  = "apps/authd/store/store.c"
 M = {
  # G1 -- the typed code is hashed as typed, so only a perfectly transcribed
  # code works. Every happy-path test still passes; the mistyped one does not.
- "G1": (REC, [("    match_ctx_t ctx = { canonical, 0, 0, 0u };",
-               "    match_ctx_t ctx = { typed, 0, 0, 0u }; /* MUTATION G1: hashed before normalisation */")]),
+ # Re-anchored in V4-76 (F143): the generation is hashed once, in mrc1_hash.
+ "G1": (REC, [("                    if (mrc1_hash(done_h[nd], canonical, salt, o, m) != 0) {",
+               "                    if (mrc1_hash(done_h[nd], typed, salt, o, m) != 0) { /* MUTATION G1: hashed before normalisation */")]),
 
  # G2 -- the confusables are dropped, so O/I/l are rejected rather than folded.
  "G2": (B32, [('    if (c == \'O\') { return 0; }          /* the letter read as the digit */\n'
@@ -65,8 +66,13 @@ M = {
                'static const char ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"; /* MUTATION G3 */')]),
 
  # G4 -- the lockout is enforced AFTER the verify loop. Same error code, same
- # refusal; the difference is a second of a single-threaded daemon per guess.
+ # refusal; the difference is the codes tried for a locked user. Re-authored in
+ # V4-76 (F143): every refusal now costs exactly one computation, so the mutant
+ # is seen as a locked attempt costing two -- the generation's and the
+ # refusal's -- where the lockout read first costs one.
  "G4": (LA, [("""    if (locked) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }
@@ -74,14 +80,18 @@ M = {
     int64_t code_id = 0;
     size_t tried = 0;
     const int m = recovery_find_match(app->store, user, user_len,
-                                      (const char *)code->val, code->val_len, &code_id, &tried);
+                                      (const char *)code->val, code->val_len,
+                                      app->recovery_ops, app->recovery_mem, &code_id, &tried);
     app->recovery_kdf_calls += (uint64_t)tried;""",
               """    int64_t code_id = 0;
     size_t tried = 0;
     const int m = recovery_find_match(app->store, user, user_len,
-                                      (const char *)code->val, code->val_len, &code_id, &tried);
+                                      (const char *)code->val, code->val_len,
+                                      app->recovery_ops, app->recovery_mem, &code_id, &tried);
     app->recovery_kdf_calls += (uint64_t)tried;
     if (locked) {   /* MUTATION G4: lockout enforced after the KDF, not before */
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }""")]),

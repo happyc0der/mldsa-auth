@@ -12777,3 +12777,50 @@ reviewed line by line: four edits to the initiator and the main process.
 runs and all six controls as required, in 6.8 s. The old model with the
 check removed proved all seven queries, which is the blind spot itself.
 The nightly's `formal` job runs the same script.
+
+## V4-76 — F143, F144, F145: the reference site's three Mediums
+
+**Context.** The owner said yes to all three proposed fixes (2026-11-07).
+
+**F143 — recovery.** Padding every refusal to sixteen computations was
+rejected: the daemon is single-threaded, and a refusal costing 0.8 s would
+let any visitor stall every login. Instead every code of one issue shares a
+salt (`$mrc1$<ops>$<mem>$<salt>$<hash>`), so an attempt hashes the typed
+code once and compares it, constant-time and without an early exit, with
+every unused code; and each refusal that has nothing to hash (unknown,
+disabled, locked, an operator on `site.sock`, a string that is not a code)
+spends one computation. The worst case falls sixteen-fold (F39's 0.82 s
+becomes about 50 ms); the best case rises from nothing to one computation.
+The cost of the shared salt: one offline guess against a stolen store tests
+a whole generation, at most 16 codes, and 80 bits less 4 is still the
+defence. Legacy `crypto_pwhash_str` codes keep verifying, one computation
+each, until the next issue supersedes them. The site answers every refusal
+`recover-failed` and limits the route per client (5, one more a minute),
+keyed on Caddy's `X-Forwarded-For` under `--trust-proxy`. The lockout is
+unchanged, so anyone can still spend a user's five attempts, now at that
+rate: whether the lockout should be per user at all is a design question
+left recorded.
+
+**F144 — the passphrase field.** `secret(id)` reads a field and empties it
+in the same step; the passphrase and the recovery code use it, and the
+passphrase fields are `autocomplete="off"` (advisory: browsers may still
+offer to save). The documents now say what clearing cannot do: a script
+present while the passphrase is typed reads it.
+
+**F145 — signup.** `ENROLL via=signup` (erratum 56) rather than a census
+call from the site: the check and the write happen in one daemon request,
+which the event loop serves alone, so no second signup can create the user
+in between. `user-exists` tells a caller that a name is taken, which any
+signup form does.
+
+**Shown.** `test_authd_localapi` 339 checks (eight kinds of refusal cost
+exactly one computation; a legacy generation still recovers; `via=signup`
+both ways); `site_sessions` (one reply, 429 past the burst, `user-exists`
+and still one device); `browser_e2e` (the field is empty after a login, in
+Chrome 155). Hand controls: the unknown user's and the locked user's
+computation removed, hashing once per code, `via=site` for signups, the
+daemon's codes passed through, the field left filled: each fails its test.
+Campaign v49d: G1 re-anchored and G4 re-authored for the new code, both
+KILLED (15 and 3 named checks), sources restored, clean suite 51/51 with
+the two usual skips. gcc-16 `-O2` clean. The constant-time inventory gained
+the new comparison (26 sites).

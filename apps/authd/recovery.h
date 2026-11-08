@@ -29,7 +29,14 @@
  *     generation supersedes the previous one (store_recovery_replace);
  *   - at most RECOVERY_LOCK_THRESHOLD attempts before RECOVERY_LOCK_SECONDS of
  *     lockout;
- *   - the lockout is read BEFORE any hashing, so a locked user costs nothing.
+ *   - since V4-76 (F143), ONE Argon2id computation per attempt, whatever the
+ *     user's state: every code of a generation shares its salt, so the typed
+ *     code is hashed once and compared with all of them, and a refusal that
+ *     has no code to hash against (an unknown, disabled, locked or operator
+ *     user, or a typed string that is not a code) spends one computation
+ *     anyway. Until then the time of a refusal was one computation per
+ *     unused code, and nothing for an unknown user: one request told anyone
+ *     whether a username existed and how many codes it had.
  * Remove any one of those and the bound is gone; each has a mutation.
  */
 
@@ -52,28 +59,41 @@ _Static_assert(RECOVERY_MEM_SPEC == crypto_pwhash_MEMLIMIT_INTERACTIVE,
 _Static_assert(RECOVERY_TICKET_BYTES == STORE_HASH_BYTES,
                "the ticket and its SHA-256 are both 32 bytes; see the note in localapi.c");
 
+/* A generation's salt: every code issued together shares it (F143). */
+void recovery_new_salt(uint8_t salt[crypto_pwhash_SALTBYTES]);
+
 /* One fresh code: BASE32_CODE_BYTES of randomness rendered canonically into
- * `code_out`, and its Argon2id hash into `hash_out`. The plaintext exists only
- * in `code_out`, which the caller must wipe once it is in the reply.
+ * `code_out`, and its stored form into `hash_out`:
+ * "$mrc1$<ops>$<mem>$<salt hex>$<Argon2id13 hash hex>". The plaintext exists
+ * only in `code_out`, which the caller must wipe once it is in the reply.
  * Returns 0 on success, -1 on argument or KDF failure (both outputs zeroed). */
 int recovery_make_code(char code_out[BASE32_CODE_CHARS + 1u],
                        char hash_out[crypto_pwhash_STRBYTES],
+                       const uint8_t salt[crypto_pwhash_SALTBYTES],
                        unsigned long long ops, size_t mem);
+
+/* One Argon2id computation at `ops`/`mem`, its result discarded: what a
+ * refusal that has nothing to verify spends, so that it takes as long as one
+ * that has (F143). */
+void recovery_spend_one(unsigned long long ops, size_t mem);
 
 /* A fresh ticket and its stored hash. */
 void recovery_make_ticket(uint8_t ticket_out[RECOVERY_TICKET_BYTES],
                           uint8_t hash_out[STORE_HASH_BYTES]);
 
 /* Finds the user's unused recovery code matching `typed`, normalising it
- * first. Returns 1 on a match (with *code_id_out set), 0 if none matched, and
- * -1 on a store error or an unnormalisable code.
+ * first. Returns 1 on a match (with *code_id_out set), 0 if none matched or
+ * `typed` is not a code, and -1 on a store error.
  *
- * `*tried_out` receives the number of Argon2id verifications actually
- * performed. It exists so a test can assert that a LOCKED user costs zero --
- * a check that cannot be written against the error code alone, because a
- * lockout that is enforced too late returns exactly the same code. */
+ * `*tried_out` receives the number of Argon2id computations actually
+ * performed: one per generation of codes (one, once re-issuing has
+ * superseded the last), one per code issued before V4-76, and one -- at
+ * `ops`/`mem` -- when there is nothing to hash against. It exists so a test
+ * can assert the cost of every kind of refusal, which the error code alone
+ * cannot show. */
 int recovery_find_match(const store_t *s, const uint8_t *user_id, size_t user_id_len,
                         const char *typed, size_t typed_len,
+                        unsigned long long ops, size_t mem,
                         int64_t *code_id_out, size_t *tried_out);
 
 #endif /* MLDSA_AUTHD_RECOVERY_H */

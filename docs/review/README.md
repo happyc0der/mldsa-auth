@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 154 findings (F0–F154), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 55 errata, each
+3. The two specifications. The deployment spec's §20 lists 58 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -539,6 +539,14 @@ codes' count and lets anyone lock a user's recovery (F143); a script on the
 site takes the device key, because the passphrase stays in its field (F144);
 and an invite holder can add a device to an existing account (F145). The
 rest are Lows and Infos, each recorded with its disposition.
+
+V4-76 fixed those three with the owner's go. Every recovery attempt now
+costs exactly one Argon2id computation, whatever the user's state, and the
+site gives every refusal one reply under a per-client limit (F143, erratum
+57). Secret fields are emptied the moment they are read, and the documents
+say plainly that a script present while the passphrase is typed takes the
+key (F144, erratum 58). A signup enrolls `via=signup`, which the daemon
+refuses for an existing user (F145, erratum 56).
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one

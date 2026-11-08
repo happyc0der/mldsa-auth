@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.20, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72 errata)
+# mldsa-authd — deployment specification (v1.21, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -471,7 +471,7 @@ is a build failure, and so is a code defined here that nothing emits.
 
 | Request | Response |
 |---|---|
-| `ENROLL user= handle= pk= label= via=site\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|internal`; a byte-identical re-enrollment by the handle's own user is `OK fp= idempotent=1` |
+| `ENROLL user= handle= pk= label= via=site\|signup\|recovery [ticket=]` | `OK fp=` / `ERR code=exists-different-key\|pk-in-use\|user-disabled\|ticket-invalid\|role-mismatch\|user-exists\|internal`; a byte-identical re-enrollment by the handle's own user is `OK fp= idempotent=1` |
 | `EXCHANGE code= state=` | `OK token= user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|used\|state-mismatch` |
 | `VERIFY token=` | `OK user= handle= role= issued= expires=` / `ERR code=unknown\|expired\|idle-expired\|device-revoked\|user-disabled` |
 | `LOGOUT token=` | `OK deleted=0\|1` |
@@ -486,8 +486,16 @@ is a build failure, and so is a code defined here that nothing emits.
 handle that belongs to another user revokes nothing and answers `OK count=0`
 (erratum 50). Without `handle=` it revokes every token of `user`.
 
+`ENROLL via=signup` is a site enrollment for a **new** account: it is refused
+`user-exists` if the user is already known, whatever its role or status, and
+nothing is written (erratum 56). `via=site` is the site vouching for a person,
+an existing one included (§10's lost device with no codes), so a site's
+signup uses `via=signup`, and only a site that has authenticated the existing
+person uses `via=site` for them. `ENROLL-OPERATOR` does not take
+`via=signup`.
+
 `ENROLL`'s `ticket=` is **required** when `via=recovery` and **refused** when
-`via=site`: a request carrying a ticket that would be ignored is `malformed`,
+`via=site` or `via=signup`: a request carrying a ticket that would be ignored is `malformed`,
 because a caller who believes it is redeeming a ticket and is not has been
 told something false.
 
@@ -602,7 +610,8 @@ administrator runs `authd_admin enroll-operator`. The secret never moves.
 
 **End users (B).** The browser generates the handle and keypair, seals the key
 under a passphrase, and POSTs the public key to the site over the site's own
-authenticated TLS session; the site calls `ENROLL … via=site`. The site is
+authenticated TLS session; the site calls `ENROLL … via=signup` for a new
+account, or `ENROLL … via=site` for a person it has authenticated (erratum 56). The site is
 already the authority on who may have an account, so making it the enroller
 adds no trust. An unauthenticated enrollment flow at the daemon is **not**
 provided: it would require an anonymous identity mode the protocol does not
@@ -687,13 +696,21 @@ SHOULD be ≤ 30 s or absent.
 
 **Recovery codes.** `RECOVERY-ISSUE` generates 1..16 codes of 10 random bytes
 rendered as 16 base32 characters (80 bits), returned once and stored as
-`crypto_pwhash_str` (Argon2id, ops 2, memory 64 MiB — the entropy is the
-defence; the KDF bounds server memory per verification). `RECOVERY-USE`
-verifies against each unused code, marks it used (never deletes it), and
-returns a single-use **enrollment ticket** valid 10 minutes, which the site
-presents to `ENROLL … via=recovery`. Five failures lock recovery for one hour,
-answering `ERR code=locked`; the lockout is read **before** any Argon2id work,
-so a locked user costs nothing to refuse.
+Argon2id13 hashes (ops 2, memory 64 MiB — the entropy is the defence; the
+KDF bounds server memory per verification), `$mrc1$<ops>$<mem>$<salt>$<hash>`,
+**every code of one issue under one salt**. `RECOVERY-USE` hashes the typed
+code **once** and compares it with every unused code, marks the match used
+(never deletes it), and returns a single-use **enrollment ticket**
+valid 10 minutes, which the site presents to `ENROLL … via=recovery`. **Every
+`RECOVERY-USE` costs exactly one Argon2id computation**, whatever the user's
+state: an unknown, disabled or locked user, an operator on `site.sock`, and a
+typed string that is not a code each spend one, so the time of an answer says
+nothing about whether the user exists, its role or how many codes it holds
+(erratum 57). Five failures lock recovery for one hour, answering
+`ERR code=locked`; the lockout is read before the codes are tried, so no
+guess counts while locked. Codes issued before erratum 57 (one
+`crypto_pwhash_str` salt per code) still verify, one computation each, until
+the next `RECOVERY-ISSUE` supersedes them.
 
 **Re-issuing supersedes.** A second `RECOVERY-ISSUE` marks the previous
 generation used (`used_from='superseded'`, never deleted) in the same
@@ -911,7 +928,13 @@ at a signup and a recovery (erratum 49). The site's session table is bounded:
 idle sessions expire, a logout removes its session, and sessions nobody has
 logged into are capped. **New recovery codes need a login, not only a
 session:** the page logs in again and sends that login's code, and the site
-issues codes only if `EXCHANGE` returns the session's own user (erratum 52). The code is
+issues codes only if `EXCHANGE` returns the session's own user (erratum 52).
+**The recovery route answers every refusal the same way**, so it says nothing
+about which usernames exist or their role, and is **limited per client**
+(erratum 57); the reference site keys the limit on the address Caddy states
+in `X-Forwarded-For` (`--trust-proxy`). **A secret field is read once and
+emptied** — the passphrase, a recovery code — so it does not stay in the page
+for a script to read (erratum 58). The code is
 never in a URL — so never in a proxy log, a `Referer` or history — and the
 token never reaches page script. Pages are served under a CSP of
 `script-src 'self' 'wasm-unsafe-eval'` and `connect-src 'self'` with no inline
@@ -927,9 +950,11 @@ It refuses the obviously weak; it does not certify strength, and the page says
 so. `apps/authd/passphrase.h` is normative for the details.
 
 **Honest limits, which the enrollment page states, not only this document:**
-an XSS on the origin can read wasm memory while the key is unlocked and can
-exfiltrate the sealed blob for offline guessing (Argon2id slows that; a weak
-passphrase still loses, so a minimum length is enforced); there is no hardware
+an XSS on the origin can read wasm memory while the key is unlocked, and **a
+script present when the passphrase is typed reads it, which with the sealed
+blob is the key** (erratum 58); a blob taken without the passphrase can be
+guessed at offline (Argon2id slows that; a weak passphrase still loses, so a
+minimum length is enforced); there is no hardware
 backing; browsers may evict storage; a copied blob is an undetectable clone
 (ML-DSA is stateless and no signature counter exists). An OS passkey store
 cannot hold an ML-DSA key today.
@@ -1422,3 +1447,11 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 55 | 3, 15 | A logged identity's space and `=` are escaped as `.` too; §3 points to §15 for the log's escaping instead of naming `format_id`'s `\xHH` | an identity could add fields to its own log line (`id=x event=login-code-issued id=op1`, F141), and §3 and §15 named two different escapes for the same field |
+
+### Revision v1.21 (V4-76)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 56 | 8 | `ENROLL via=signup`: a site enrollment for a new account, refused `user-exists` if the user is known; `ENROLL-OPERATOR` does not take it | a site that enrolled every signup `via=site` let anyone who passed its signup check add a device to another user's account (F145) |
+| 57 | 10.3, 14 | Recovery codes of one issue share a salt and are stored `$mrc1$`; every `RECOVERY-USE` costs exactly one Argon2id computation, a locked user's included; the site's recovery route gives every refusal one reply and is limited per client | a refusal took one computation per unused code and nothing for an unknown user, so one request revealed whether a username existed and how many codes it had, and the site passed the role through (F143) |
+| 58 | 14 | Secret fields are read once and emptied; the honest limits say a script present when the passphrase is typed takes the key | the passphrase stayed in its field after a login, beside the sealed blob in IndexedDB, and the limits said XSS gets only a blob to guess at (F144) |

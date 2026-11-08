@@ -313,8 +313,19 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
         return send_err(slot, "malformed");
     }
     const int via_recovery = (via->val_len == 8u && memcmp(via->val, "recovery", 8) == 0);
-    const int via_site     = (via->val_len == 4u && memcmp(via->val, "site", 4) == 0);
+    /* via=signup (V4-76, F145): a site enrollment for a NEW account, refused
+     * `user-exists` if the user is already known. via=site stays what spec 10
+     * makes it -- the site vouching for an existing person too, a lost device
+     * with no codes among them -- so a site that cannot tell a signup from
+     * that would otherwise let anyone who passes its signup check add a
+     * device to somebody else's account. An operator is never a signup. */
+    const int via_signup   = (via->val_len == 6u && memcmp(via->val, "signup", 6) == 0);
+    const int via_site     = via_signup ||
+                             (via->val_len == 4u && memcmp(via->val, "site", 4) == 0);
     if (!via_recovery && !via_site) {
+        return send_err(slot, "malformed");
+    }
+    if (via_signup && role != STORE_ROLE_USER) {
         return send_err(slot, "malformed");
     }
     /* `ticket` belongs to via=recovery and to nothing else. Until V4-9d it was
@@ -411,6 +422,13 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
     const store_status_t us = store_get_user(app->store, user, user_len, &existing, status, sizeof status);
     if (us != STORE_OK && us != STORE_ERR_NOT_FOUND) {
         return send_err(slot, "internal");
+    }
+    /* Whatever the existing user's role or status: a signup learns only that
+     * the name is taken, which a signup form tells anyone anyway. The event
+     * loop serves one request at a time, so nothing can create the user
+     * between this check and the enrollment below. */
+    if (via_signup && us == STORE_OK) {
+        return send_err(slot, "user-exists");
     }
     if (us == STORE_OK) {
         if (existing != role) {
@@ -991,8 +1009,10 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
     resp_t r;
     resp_init(&r);
     size_t made = 0;
+    uint8_t salt[crypto_pwhash_SALTBYTES];
+    recovery_new_salt(salt);                 /* one per generation (F143) */
     for (; made < count; made++) {
-        if (recovery_make_code(codes[made], hashes[made], app->recovery_ops, app->recovery_mem) != 0) {
+        if (recovery_make_code(codes[made], hashes[made], salt, app->recovery_ops, app->recovery_mem) != 0) {
             act = send_err(slot, "internal");
             goto done;
         }
@@ -1053,12 +1073,27 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         }
     }
 
+    /* EVERY REFUSAL COSTS ONE ARGON2ID COMPUTATION (V4-76, F143), the same as a
+     * verification: an unknown user, a disabled one, an operator on the site
+     * socket, a locked one. Until V4-76 these answered at once while a user
+     * with codes cost one computation per code, so the time of one request
+     * told anyone which usernames existed and how many codes each had. One
+     * computation, not RECOVERY_CODES_MAX: the daemon is single-threaded, and
+     * a refusal costing sixteen would let any visitor stall it. */
     store_role_t role = STORE_ROLE_USER;
     char status[16] = {0};
     const store_status_t us = store_get_user(app->store, user, user_len, &role, status, sizeof status);
-    if (us == STORE_ERR_NOT_FOUND) { return send_err(slot, "invalid"); }
-    if (us != STORE_OK)            { return send_err(slot, "internal"); }
-    if (strcmp(status, "active") != 0) { return send_err(slot, "user-disabled"); }
+    if (us != STORE_OK && us != STORE_ERR_NOT_FOUND) { return send_err(slot, "internal"); }
+    if (us == STORE_ERR_NOT_FOUND) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
+        return send_err(slot, "invalid");
+    }
+    if (strcmp(status, "active") != 0) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
+        return send_err(slot, "user-disabled");
+    }
     /* Req 11, extended to recovery. RECOVERY-ISSUE and RECOVERY-USE live in
      * the SITE table because the site is what a locked-out user reaches -- but
      * an OPERATOR's recovery is an administrative act. Without this, a
@@ -1070,13 +1105,16 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
      * ever minted. Discloses nothing new: the site socket can already learn a
      * user's role from ENROLL's role-mismatch. */
     if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
         return send_err(slot, "not-permitted");
     }
 
-    /* THE LOCKOUT IS CHECKED FIRST, before any Argon2id work. Enforced after
-     * the loop it would return the same code while costing the same second of
-     * a single-threaded daemon's time -- which is the whole point of having it
-     * (§10.3). recovery_kdf_calls is what makes the difference observable. */
+    /* THE LOCKOUT IS CHECKED FIRST, before the code is looked at: a locked user
+     * is refused without its codes being tried, so no guess counts. It costs
+     * the one computation every refusal costs (F143) -- a locked user that
+     * answered at once would tell anyone the account exists -- and no more.
+     * recovery_kdf_calls is what makes the cost observable. */
     int locked = 0;
     int64_t locked_until = 0;
     if (store_recovery_lock_state(app->store, user, user_len, app->now_unix,
@@ -1084,6 +1122,8 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         return send_err(slot, "internal");
     }
     if (locked) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }
@@ -1091,7 +1131,8 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     int64_t code_id = 0;
     size_t tried = 0;
     const int m = recovery_find_match(app->store, user, user_len,
-                                      (const char *)code->val, code->val_len, &code_id, &tried);
+                                      (const char *)code->val, code->val_len,
+                                      app->recovery_ops, app->recovery_mem, &code_id, &tried);
     app->recovery_kdf_calls += (uint64_t)tried;
     if (m < 0) {
         return send_err(slot, "internal");

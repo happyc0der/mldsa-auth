@@ -194,13 +194,16 @@ export async function logout(authd, token) {
  *  the user has lost the old one; without it this is an ordinary site-driven
  *  enrollment. The two are not interchangeable: `via=site` with a ticket, and
  *  `via=recovery` without one, are both refused as malformed. */
-export async function enroll(authd, { user, handle, pk, label, ticket }) {
+// `signup: true` is a NEW account (via=signup, V4-76, F145): the daemon refuses
+// it `user-exists` if the user is known. Without it and without a ticket the
+// enrollment is via=site, the site vouching for an existing person (spec 10).
+export async function enroll(authd, { user, handle, pk, label, ticket, signup }) {
   const f = fields(ensureOk(await authd.request('ENROLL', {
     user: hex(Buffer.from(user, 'utf8')),
     handle: hex(Buffer.from(handle, 'utf8')),
     pk: hex(pk),
     label: label ? hex(Buffer.from(label, 'utf8')) : undefined,
-    via: ticket ? 'recovery' : 'site',
+    via: ticket ? 'recovery' : (signup ? 'signup' : 'site'),
     ticket: ticket || undefined,
   })));
   return { fp: f.fp, idempotent: f.idempotent === '1' };

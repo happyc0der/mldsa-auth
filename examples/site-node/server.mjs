@@ -6,14 +6,17 @@
  *                   --authd-ws 127.0.0.1:8443   (or --authd-ws-unix /run/.../p.sock)
  *                   --server-id authd --server-pub server.pub \
  *                   --module-dir build-wasm/web --invite-file <0600 file> \
- *                   [--port 0] [--secure]
+ *                   [--port 0] [--secure] [--trust-proxy]
  *
  * --secure is REQUIRED behind a TLS proxy: it marks the cookie Secure and makes
  * the Origin check expect https://, which is what a browser sends there --
  * without it every POST is refused as cross-origin. The invite is read from a
  * file because argv is readable by every process on the host (spec 12's rule
  * for passphrases, applied to the site's own secret); --invite remains for
- * tests. Behind Caddy, /authd/v1 is routed to the daemon before it reaches
+ * tests. --trust-proxy takes the client's address from X-Forwarded-For, which
+ * Caddy sets to the real client and does not take from the client (spec 14;
+ * the recovery route's rate limit keys on it); without it the key is the TCP
+ * peer, which behind a proxy is the proxy. Behind Caddy, /authd/v1 is routed to the daemon before it reaches
  * this process, so --authd-ws/--authd-ws-unix are used only without a proxy.
  *
  * (opt.host and opt.onTiming exist for tools/phone_timing.mjs only.)
@@ -71,7 +74,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; ch
                '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm',
                '.css': 'text/css; charset=utf-8' };
 
-const FLAGS = new Set(['secure']);
+const FLAGS = new Set(['secure', 'trust-proxy']);
 function args(argv) {
   const a = {};
   for (let i = 0; i < argv.length; i++) {
@@ -91,6 +94,39 @@ export async function startSite(opt) {
     '/': join(REPO, 'web', 'pages'),
     '/client/': join(REPO, 'web', 'client'),
     '/module/': resolve(opt.moduleDir),
+  };
+
+  // /api/recover answers anyone, so it is limited per client (V4-76, F143): a
+  // bucket of RECOVER_BURST attempts that refills one per RECOVER_REFILL_MS,
+  // in a table bounded like the session table. It is not what stops guessing
+  // -- 80-bit codes and the daemon's lockout do -- but it bounds how fast one
+  // client can spend the daemon's Argon2id time or a user's five attempts.
+  const RECOVER_BURST = opt.recoverBurst ?? 5;
+  const RECOVER_REFILL_MS = opt.recoverRefillMs ?? 60 * 1000;
+  const RECOVER_KEYS_MAX = 10000;
+  const recoverBuckets = new Map();
+  const clientKey = (req) => {
+    if (opt.trustProxy) {
+      const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+      if (xff) { return xff; }
+    }
+    return req.socket.remoteAddress || '?';
+  };
+  const takeRecoverToken = (req) => {
+    const key = clientKey(req), now = Date.now();
+    let b = recoverBuckets.get(key);
+    if (b) {
+      recoverBuckets.delete(key);       // re-inserted below: the Map's order is least recently used first
+      b.tokens = Math.min(RECOVER_BURST, b.tokens + Math.floor((now - b.at) / RECOVER_REFILL_MS));
+      if (b.tokens < RECOVER_BURST) { b.at += Math.floor((now - b.at) / RECOVER_REFILL_MS) * RECOVER_REFILL_MS; } else { b.at = now; }
+    } else {
+      b = { tokens: RECOVER_BURST, at: now };
+    }
+    recoverBuckets.set(key, b);
+    if (recoverBuckets.size > RECOVER_KEYS_MAX) { recoverBuckets.delete(recoverBuckets.keys().next().value); }
+    if (b.tokens <= 0) { return false; }
+    b.tokens--;
+    return true;
   };
 
   const withAuthd = async (fn) => {
@@ -270,7 +306,8 @@ export async function startSite(opt) {
       const img = Buffer.from(pub, 'hex');
       const pk = img.subarray(9 + img[8]);            // MLDSAPK1: magic(8) id_len(1) id pk
       try {
-        await withAuthd((a) => enroll(a, { user, handle, pk, ticket: s.ticket ? s.ticket.ticket : undefined }));
+        await withAuthd((a) => enroll(a, { user, handle, pk, ticket: s.ticket ? s.ticket.ticket : undefined,
+                                           signup: !s.ticket }));   // F145: a signup is a NEW account
         s.signupUser = null; s.ticket = null;
         send(res, 200, { user, handle });
       } catch (e) { send(res, 403, { error: e.code || 'enroll-failed' }); }
@@ -297,11 +334,17 @@ export async function startSite(opt) {
     },
     'POST /api/recover': async (req, res, s) => {
       const { user, code } = await body(req);
+      if (!takeRecoverToken(req)) { return send(res, 429, { error: 'rate-limited' }); }
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code));
         rotate(res, s).ticket = { user, ticket: t.ticket };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
-      } catch (e) { send(res, 403, { error: e.code || 'recover-failed' }); }
+      } catch (e) {
+        // ONE reply for every refusal (V4-76, F143). The daemon's codes --
+        // invalid, locked, user-disabled, not-permitted -- told anyone which
+        // usernames exist and which are operators; the daemon logs which it was.
+        send(res, 403, { error: 'recover-failed' });
+      }
     },
   };
 
@@ -373,7 +416,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { port } = await startSite({
     authdSite: a['authd-site'], authdWs: a['authd-ws'], authdWsUnix: a['authd-ws-unix'],
     serverId: a['server-id'], serverPub: pubImage, moduleDir: a['module-dir'], invite,
-    port: a.port ? Number(a.port) : 0, secure: a.secure === true,
+    port: a.port ? Number(a.port) : 0, secure: a.secure === true, trustProxy: a['trust-proxy'] === true,
   });
   console.log(JSON.stringify({ port }));
 }

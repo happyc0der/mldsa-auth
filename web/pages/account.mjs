@@ -1,4 +1,4 @@
-import { boot, session, loginParams, post, report, val, b64url } from './common.mjs';
+import { boot, session, loginParams, post, report, val, b64url, secret } from './common.mjs';
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
@@ -10,7 +10,7 @@ document.getElementById('rotate').addEventListener('click', async () => {
   try {
     if (!me) { throw new Error('log in first'); }
     const sess = await session();
-    await flows.rotate(client, store, loginParams(sess, me.handle, val('passphrase')));
+    await flows.rotate(client, store, loginParams(sess, me.handle, secret('passphrase')));
     report(true, 'Rotated: this device has a new key, and the old one no longer authenticates');
   } catch (e) { report(false, e.message); }
 });
@@ -20,7 +20,7 @@ document.getElementById('codes').addEventListener('click', async () => {
     // V4-62: minting codes needs a login, not only this session -- log in
     // again with this device's key and the passphrase, and send that code.
     const sess = await session();
-    const s = await flows.login(client, store, loginParams(sess, me.handle, val('passphrase')));
+    const s = await flows.login(client, store, loginParams(sess, me.handle, secret('passphrase')));
     const code = b64url(s.code);
     await s.close();
     const { codes } = await post('/api/recovery-codes', { code });
