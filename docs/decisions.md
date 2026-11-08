@@ -12720,3 +12720,30 @@ kept the stale object (memory: build-currency trap). After `touch`,
 `check_build_current.sh` reproduced every object from scratch (fingerprint
 `92d84538e7d3110f`), and the suite was 51/53 with the two usual skips.
 gcc-16 `-O2` was clean on the four changed files.
+
+## V4-73 — the review's remaining findings, recorded (F142–F154)
+
+**Context.** V4-69's four-lane adversarial review produced, besides F138–F141,
+three Mediums, three Lows and seven Infos. The register records every
+finding with its evidence and disposition; a review whose findings live only
+in a scratch report is one a later reader cannot check.
+
+**Decision.**
+- **F142 (Low) is fixed here as documentation.** The threat model's
+  "Compromised Caddy" and "Identity enumeration" rows now say that the
+  handshake's identities travel in the clear. Identity hiding is not a
+  property the protocol claims; the rows had implied it.
+- **F143, F144 and F145 (Med, the reference site) are open for the owner.**
+  Each fix involves a choice the owner makes: what the recovery route may
+  reveal and who may trigger its lockout (F143), what the pages promise a
+  user about scripts on the site (F144), and how a site decides that a
+  signup is new (F145).
+- **The rest are recorded with their dispositions.** F146 is a spec-v2
+  wording change (the owner's). F147 (the ProVerif model) and F154 (core
+  dumps) are taken up next. F148, F149, F152 and F153 are recorded. F150's
+  strictness and F151's floor are product decisions.
+
+**Two leads from the daemon lane were not reproduced and are not findings:**
+the daemon-wide rate bucket drained from many addresses (partly §18 and
+F81 already), and IPv4-mapped IPv6 addresses from a proxy keyed as one
+bucket. Each needs a measurement before it is a finding.

@@ -47,7 +47,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 141 findings (F0–F141), with severity, evidence and
+   register](../v4/audit.md). 154 findings (F0–F154), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 55 errata, each
    citing the finding that forced it.
@@ -529,6 +529,16 @@ protocol connection.
 V4-72 fixed two Lows from the same review: the local API's 8192-byte line
 cap now holds however a line's bytes arrive (**F140**), and a logged
 identity can no longer add fields to its line (**F141**, erratum 55).
+
+V4-73 recorded the rest of that review (F142–F154). F142 was a Low in the
+threat model, fixed there: the handshake's identities, the device handle
+among them, travel in the clear, so whoever sees the protocol's bytes
+learns who logs in. Three Mediums in the reference site are **open, for the
+owner's decision**: `/api/recover` reveals usernames and their recovery
+codes' count and lets anyone lock a user's recovery (F143); a script on the
+site takes the device key, because the passphrase stays in its field (F144);
+and an invite holder can add a device to an existing account (F145). The
+rest are Lows and Infos, each recorded with its disposition.
 
 The register also carries older items that were accepted with a stated
 rationale, such as F18's plain `memcmp` sites. F41's fingerprint sink was one
