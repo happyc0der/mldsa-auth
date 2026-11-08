@@ -996,6 +996,7 @@ Median of three run medians (`bench_handshake`, Release).
 |---|---|---|---|---|
 | Apple M4 Pro, performance cores (macOS 27, Apple clang) | NEON | **0.43 ms** | 115 µs | 69 µs |
 | Intel i9-12900HX, WSL2 (Linux 6.18 under Hyper-V, gcc 11.4) | AVX2 | **0.58 ms** | 137 µs | 94 µs |
+| AMD EPYC 7763, GitHub-hosted shared VM (`ubuntu-26.04`, clang; Bench run 42426169611, 5 runs) | AVX2 | **0.95 ms** | 229 µs | 162 µs |
 | Intel i9-12900HX, WSL2, `-DMLDSA_OQS_OPT_TARGET=generic` | portable C | **1.18 ms** | 334 µs | 158 µs |
 | Apple M4 Pro under `taskpolicy -b` (efficiency cores, throttled) | NEON | **2.85 ms** | 700 µs | 487 µs |
 
