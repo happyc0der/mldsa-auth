@@ -135,6 +135,10 @@ jobs:
       # The runner exits nonzero on any SURVIVED verdict, on mutation residue,
       # or on a final fingerprint mismatch -- so the job is red without a wrapper.
       - name: Run the campaign
+        env:
+          # V4-92: one clean suite at the end of the campaign, not one per
+          # mutation; each restore is still proven by its fingerprint.
+          MLDSA_CLEAN_SUITE: once
         run: |
           tools/run_mutations_v2.sh "$PWD" "$RUNNER_TEMP/mut" \
             "tools/mutations/mutate_${{ matrix.campaign }}.py" \
@@ -190,6 +194,10 @@ jobs:
           tools/check_sanitizer_link.sh build-asan asan
 
       - name: Run the campaign
+        env:
+          # V4-92: one clean suite at the end of the campaign, not one per
+          # mutation; each restore is still proven by its fingerprint.
+          MLDSA_CLEAN_SUITE: once
         run: |
           tools/run_mutations_v2.sh "$PWD" "$RUNNER_TEMP/mut" \
             "tools/mutations/mutate_${{ matrix.campaign }}.py" \

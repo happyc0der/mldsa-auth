@@ -13197,3 +13197,26 @@ ccache keys on preprocessed content and the command line, not mtimes, so the
 stale-object trap does not apply to it, and every "restored=clean" and the
 final fingerprint still compare against a real compile. A mutant that fails
 to compile is never cached.
+
+## V4-92 — the nightly runs a campaign's clean suite once, not after every mutation
+
+**The owner's decision** (open since V4-85 as "(c)"). After V4-91, most of
+each mutation's time is the full clean suite run after the restore.
+
+**Why it is sound.** Every mutation edits only `.c`/`.h` files (all 57
+mutate scripts were read; v70's one `.sh` mention is a comment). `restore()`
+copies each snapshotted source back and `cmp`s it; the forced rebuild's
+fingerprint must equal CLEAN over every object and every executable's text.
+When it does, the suite would run exactly the binaries and scripts the
+preflight suite already passed. So with `MLDSA_CLEAN_SUITE=once` a
+mutation whose restore is proven clean prints
+`clean-suite=COVERED(fp=CLEAN)`; one whose restore is not clean still runs
+the suite (and is already BAD); and the campaign ends with one more full
+suite (`final: clean suite PASS`). The default (`each`) is unchanged, so a
+local campaign behaves exactly as before unless asked.
+
+**What is given up.** The per-mutation suites were also a flake detector:
+F84 (authd_e2e's unexplained failure) and F114 (PID-named scratch
+directories) surfaced that way. Each campaign still runs the whole suite
+twice (preflight and final), 114 runs a night across 57 campaigns, so a
+flaky test still shows, only less often.

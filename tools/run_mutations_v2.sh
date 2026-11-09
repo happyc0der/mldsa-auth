@@ -148,7 +148,18 @@ finish_mutation() {
   local M="$1" prov="$2" res="$3" rp cs residue
   restore || { echo "$M: FATAL restore"; exit 4; }
   forced_build "$LOG/$M.rebuild" && [ "$(fp)" = "$CLEAN" ] && rp="restored=clean" || { rp="RESTORED-NOT-CLEAN(BAD)"; overall=1; }
-  ctest --test-dir "$BUILD" --output-on-failure > "$LOG/$M.ctest" 2>&1 && cs="clean-suite=PASS" || { cs="CLEAN-SUITE=FAIL(BAD)"; overall=1; }
+  # V4-92: MLDSA_CLEAN_SUITE=once (the nightly) skips this suite when the
+  # restore is proven clean: every mutation edits only .c/.h files, restore()
+  # checks each one byte-for-byte against the snapshot, and the fingerprint
+  # matches CLEAN over every object and executable -- so the suite would run
+  # the very binaries and scripts the preflight suite passed. It still runs
+  # whenever the restore is NOT clean, and once more at the end of the
+  # campaign. The default ("each") is unchanged.
+  if [ "${MLDSA_CLEAN_SUITE:-each}" = once ] && [ "$rp" = "restored=clean" ]; then
+    cs="clean-suite=COVERED(fp=CLEAN)"
+  else
+    ctest --test-dir "$BUILD" --output-on-failure > "$LOG/$M.ctest" 2>&1 && cs="clean-suite=PASS" || { cs="CLEAN-SUITE=FAIL(BAD)"; overall=1; }
+  fi
   residue=$(grep -rc "MUTATION" $(sources) 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
   printf '%-4s %-19s %-26s | %s | %s | residue=%s\n' "$M" "$prov" "$res" "$rp" "$cs" "$residue"
 }
@@ -219,4 +230,9 @@ restore; forced_build "$LOG/final.build" > /dev/null 2>&1
 echo "---"
 grep -rn "MUTATION" $(sources) 2>/dev/null && { echo "residue found (BAD)"; overall=1; } || echo "residue: none"
 [ "$(fp)" = "$CLEAN" ] && echo "final: all sources restored; all artifacts identical to clean fingerprints" || { echo "final: MISMATCH (BAD)"; overall=1; }
+if [ "${MLDSA_CLEAN_SUITE:-each}" = once ]; then
+  ctest --test-dir "$BUILD" --output-on-failure > "$LOG/final.ctest" 2>&1 \
+    && echo "final: clean suite PASS ($(grep -c ' Passed' "$LOG/final.ctest") passed; MLDSA_CLEAN_SUITE=once)" \
+    || { echo "final: CLEAN SUITE FAIL (BAD)"; overall=1; }
+fi
 exit $overall
