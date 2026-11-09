@@ -13220,3 +13220,27 @@ F84 (authd_e2e's unexplained failure) and F114 (PID-named scratch
 directories) surfaced that way. Each campaign still runs the whole suite
 twice (preflight and final), 114 runs a night across 57 campaigns, so a
 flaky test still shows, only less often.
+
+## V4-93 — every failed ClientAuth closes the connection (F149's second half)
+
+**The owner's decision.** The daemon treated a bad signature, a malformed
+ClientAuth and a handshake-id mismatch as retryable on the same
+connection, up to the library's N = 3 verifies, logged
+`client-auth-retryable`. Spec-v2 §8 item 4 closes on the first failure, and
+the reference apps always did.
+
+**Change.** `on_client_auth` closes on every failure, logged
+`client-auth-failed`; the retryable event is gone from the daemon and from
+§15 (erratum 72, v1.32). The library is unchanged: it still reports those
+three as retryable below its limit, for transports where a forged message
+can arrive beside the genuine one, and its own tests and fuzz oracle still
+check that. The decoy path ends at the same place as a wrong signature, as
+before, so Req 6 holds.
+
+**Tests.** `test_authd_conn` `ca-close`: a wrong-key ClientAuth, and the
+daemon has closed the connection while the client still holds its end
+(before V4-93 it stayed open, so this fails); the client reads end-of-stream;
+the right key still gets its record. `test_authd_ws`'s refund probe now
+waits for `client-auth-failed`. v56's MB14 (a failed ClientAuth refunded)
+anchored on the retryable log line, which is gone; it now anchors on the
+failure line, the same property.

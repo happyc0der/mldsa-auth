@@ -872,12 +872,12 @@ static void test_proxy_through_loop(void)
       /* The prober's side: an unenrolled handle gets the decoy flow, a real
        * ServerHello and no code, and pays. Two probes empty the bucket.
        *
-       * A decoy's ClientAuth fails RETRYABLY, so the daemon keeps the
-       * connection open and says nothing; waiting for a code would sit out the
-       * whole read loop. What matters is that the daemon has PROCESSED the
-       * ClientAuth -- only then is "no refund" a statement about the failure
-       * path rather than about a connection closed too early -- so the pump
-       * runs until the daemon has logged the retryable failure, by count. */
+       * A decoy's ClientAuth fails, and since V4-93 every ClientAuth failure
+       * closes the connection without a word. What matters is that the
+       * daemon has PROCESSED the ClientAuth -- only then is "no refund" a
+       * statement about the failure path rather than about a connection
+       * closed too early -- so the pump runs until the daemon has logged the
+       * failure, by count. */
       static const uint8_t STRANGER[] = { 'd','1','5','7' };
       mldsa_keypair_t skp;
       CHECK(mldsa_keypair_generate(&skp) == 0, "refund: a stranger's key");
@@ -891,7 +891,7 @@ static void test_proxy_through_loop(void)
       for (int i = 0; i < 2 && lf != NULL; i++) {
           h_client_t c;
           if (h_login_on(&d, &c, STRANGER, sizeof STRANGER, &skp, "st9") == 0 &&
-              H_PUMP_UNTIL(&d, (fflush(lf), count_of(lb, "event=client-auth-retryable") == (size_t)i + 1u))) {
+              H_PUMP_UNTIL(&d, (fflush(lf), count_of(lb, "event=client-auth-failed") == (size_t)i + 1u))) {
               probes++;
           }
           h_client_close(&c);

@@ -428,18 +428,17 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
     const handshake_status_t hst = handshake_responder_verify_client_auth(&c->hs, payload, len);
 
     if (hst != HANDSHAKE_OK) {
-        /* The library's retry semantics, honoured rather than reinterpreted:
-         * these three leave the context and the ledger entry usable, so the
-         * handshake is still live and the peer may try again. Everything else
-         * is terminal. A decoy connection always ends here, which is exactly
-         * what makes it indistinguishable from a wrong signature. */
-        const int retryable = (hst == HANDSHAKE_ERR_MALFORMED ||
-                               hst == HANDSHAKE_ERR_HANDSHAKE_ID_MISMATCH ||
-                               hst == HANDSHAKE_ERR_SIGNATURE);
-        if (retryable) {
-            authd_log_slot(AUTHD_LOG_INFO, "client-auth-retryable", slot->index);
-            return EV_ACTION_CONTINUE;
-        }
+        /* EVERY ClientAuth failure closes the connection (V4-93, F149;
+         * spec-v2 §8 item 4). The library still reports a bad signature, a
+         * malformed ClientAuth or a handshake-id mismatch as retryable below
+         * its N = 3 limit -- that is for transports where a forged message
+         * can arrive beside the genuine one -- but this connection is one
+         * stream: whoever can inject bytes into it can already reset it, so
+         * a second ClientAuth would only buy a bad peer more ML-DSA verifies
+         * and more time. Closing wipes the context (the ledger entry and the
+         * retained ss_kem) on the slot's way out. A decoy connection always
+         * ends here too, which is what keeps it indistinguishable from a
+         * wrong signature. */
         authd_log_slot(AUTHD_LOG_INFO, "client-auth-failed", slot->index);
         app->handshakes_failed++;
         return EV_ACTION_CLOSE;

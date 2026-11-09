@@ -21,7 +21,7 @@ value; none deletes a use (F79). Grouped by commit:
     MB11  the refund is not capped at the burst
     MB12  the refund credits two tokens
     MB13  the global bucket is refunded too
-    MB14  a RETRYABLE ClientAuth failure -- the decoy's -- is refunded
+    MB14  a failed ClientAuth -- the decoy's -- is refunded (re-anchored in V4-93: every failure closes)
     MB15  the bucket is not refilled to now before the credit (refilled to a
           time a thousandth of now; first written as `0u`, which left now_ms
           unused and was killed by -Werror, not a test -- F79 again)
@@ -70,9 +70,9 @@ M = {
                 "    e->tokens_milli = (e->tokens_milli + 2000u > cap) ? cap : e->tokens_milli + 2000u; /* MUTATION MB12 */")]),
  "MB13": (RL, [("    r->refunded++;",
                 "    r->refunded++; r->global_tokens_milli += 1000u; /* MUTATION MB13 */")]),
- "MB14": (CN, [('            authd_log_slot(AUTHD_LOG_INFO, "client-auth-retryable", slot->index);',
-                '            authd_log_slot(AUTHD_LOG_INFO, "client-auth-retryable", slot->index);\n'
-                '            if (slot->addr_admitted && app->rl != NULL) { ratelimit_refund(app->rl, conn_io_client_addr(&slot->io), app->now_ms); } /* MUTATION MB14 */')]),
+ "MB14": (CN, [('        authd_log_slot(AUTHD_LOG_INFO, "client-auth-failed", slot->index);',
+                '        authd_log_slot(AUTHD_LOG_INFO, "client-auth-failed", slot->index);\n'
+                '        if (slot->addr_admitted && app->rl != NULL) { ratelimit_refund(app->rl, conn_io_client_addr(&slot->io), app->now_ms); } /* MUTATION MB14 */')]),
  "MB15": (RL, [("    ratelimit_entry_t *e = &r->e[at];\n    refill_addr(r, e, now_ms);",
                 "    ratelimit_entry_t *e = &r->e[at];\n    refill_addr(r, e, now_ms / 1000u); /* MUTATION MB15 */")]),
  "MB16": (PR, [("    quiet.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL);",

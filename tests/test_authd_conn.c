@@ -452,6 +452,48 @@ static void test_uniform_responder(void)
 }
 
 /* Req 9's "next handshake" half: a revoked device fails exactly like unknown. */
+/* V4-93 (F149, spec-v2 §8 item 4): the FIRST failed ClientAuth closes the
+ * connection. Until V4-93 the daemon kept it open after a bad signature, a
+ * malformed ClientAuth or a handshake-id mismatch, for up to N = 3 verifies;
+ * the client below never closes its own end before the checks, so only the
+ * daemon can have ended it. */
+static void test_client_auth_failure_closes(void)
+{
+    daemon_t d;
+    mldsa_keypair_t good, other;
+    CHECK(daemon_start(&d, 4, "cafail.sqlite3") == 0, "ca-close: daemon starts");
+    CHECK(mldsa_keypair_generate(&good) == 0 && mldsa_keypair_generate(&other) == 0, "ca-close: keys");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &good);
+    const uint64_t failed0 = d.app.handshakes_failed;
+
+    client_t c;
+    CHECK(client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &other) == 0,
+          "ca-close: a wrong-key ClientAuth is sent (the client side completes optimistically)");
+    CHECK(PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u),
+          "ca-close: the daemon closes the connection on the FIRST failed ClientAuth, client still open");
+    CHECK(d.app.handshakes_failed == failed0 + 1u,
+          "ca-close: ...and counts one failed handshake");
+    uint8_t b[8];
+    ssize_t r = -1;
+    for (int i = 0; i < 2000; i++) {
+        r = recv(c.fd, b, sizeof b, MSG_DONTWAIT);
+        if (r >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) { break; }
+        daemon_tick(&d);
+    }
+    CHECK(r == 0, "ca-close: the client reads end-of-stream, no record and no alert");
+    client_close(&c);
+
+    /* Canary: the right key still logs in, so the close is about the
+     * failure, not about every ClientAuth. */
+    CHECK(client_handshake(&d, &c, HANDLE1, sizeof HANDLE1, &good) == 0, "ca-close: the right key's handshake");
+    uint8_t rec[AUTHD_MAX_RECORD]; size_t n = 0;
+    CHECK(recv_frame(&d, c.fd, rec, sizeof rec, &n) == 0, "ca-close: ...gets its record (canary)");
+    client_close(&c);
+    mldsa_keypair_free(&good);
+    mldsa_keypair_free(&other);
+    daemon_stop(&d);
+}
+
 static void test_revoked(void)
 {
     daemon_t d; client_t c;
@@ -1576,6 +1618,7 @@ int main(void)
 
     test_login();
     test_uniform_responder();
+    test_client_auth_failure_closes();
     test_revoked();
     test_pin_floor();
     test_not_permitted();

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.31, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89 errata)
+# mldsa-authd — deployment specification (v1.32, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -400,6 +400,13 @@ initialisation whose secret was discarded — and proceeds normally. The
 `ServerHello` is produced and signed as usual; the handshake then fails at
 `ClientAuth` with the same status, the same message count and the same close
 point as a valid identity presenting a wrong signature (Req 6).
+
+**Any failed `ClientAuth` closes the connection** (erratum 72), as spec-v2 §8
+item 4 requires: a bad signature, a malformed `ClientAuth` and a handshake-id
+mismatch included, logged `client-auth-failed`. The library's N = 3 retry
+limit is for transports where a forged message can arrive beside the genuine
+one; on one stream, whoever can inject bytes can already reset it, and a
+second `ClientAuth` would only give a bad peer more verifies and more time.
 
 This costs one signature per probe, which is the rate limiter's problem, and it
 is the only way to close the enumeration channel without changing the verified
@@ -1075,7 +1082,7 @@ The handshake and the session (§6, §7.3):
 ```
 client-hello client-hello-malformed client-hello-rejected
 responder-init-failed decoy-unavailable server-hello-failed
-client-auth-failed client-auth-retryable client-auth-key-changed
+client-auth-failed client-auth-key-changed
 authenticated-without-identity
 login-code-issued login-code-failed
 record-refused record-rejected bye
@@ -1564,3 +1571,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 71 | 8 | A client sends every value as one printable token without a space or `=`, and refuses a value that is not | the reference site forwarded a typed recovery code verbatim, so a line break in it became a second request on the site socket, made with the site's authority (F178) |
+
+### Revision v1.32 (V4-93)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 72 | 7.3, 15 | Every failed `ClientAuth` closes the connection; the `client-auth-retryable` event is gone | the daemon kept a connection open after a bad signature, a malformed `ClientAuth` or a handshake-id mismatch, for up to three verifies, where spec-v2 §8 item 4 closes on the first (F149's second half; the owner's choice) |
