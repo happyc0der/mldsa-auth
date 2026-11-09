@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.30, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88 errata)
+# mldsa-authd — deployment specification (v1.31, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -449,7 +449,13 @@ list     = ("OK" SP "count=" n LF) item* "END" LF
 
 Binary values are lowercase hex (a public key is 3904 hex characters, which is
 why the line limit is 8192). Labels and reasons are hex too, so there are no
-escaping rules at all. Unknown keys, duplicate keys, a missing required key or
+escaping rules at all. **A client MUST send every value as one token** —
+printable ASCII with no space and no `=` — **and MUST refuse, not forward, a
+value that is not** (erratum 71). The recovery code is the one value a site
+takes from a user without encoding it (`RECOVERY-USE` hashes the typed code,
+§10.3): a line
+break in it would end the site's request and begin another, made with the
+site's authority. Unknown keys, duplicate keys, a missing required key or
 a malformed value are `ERR code=malformed`.
 
 A command that does not exist, and a command that exists but is not reachable
@@ -1552,3 +1558,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 70 | 14 | A site not behind a name-matching proxy serves only a `Host` that is an IP address, `localhost`, or a name it was given | the Origin checks compare `Origin` with `Host`, and a page on a name rebound to the site's address sends both as its own name, so it passed them and could drive a loopback site and the daemon behind it (F177) |
+
+### Revision v1.31 (V4-89)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 71 | 8 | A client sends every value as one printable token without a space or `=`, and refuses a value that is not | the reference site forwarded a typed recovery code verbatim, so a line break in it became a second request on the site socket, made with the site's authority (F178) |

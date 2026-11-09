@@ -13124,3 +13124,26 @@ command with a line break are refused, and the next request's reply is its
 own. Control, the check disabled: that test FAILS. Restored byte-for-byte.
 The reproduction re-run against the fix: the account still has one device
 and the second key cannot log in. Suite 58/58 on build-p.
+
+**The sweep for the same class (V4-89b).** Every other place untrusted
+input meets a line or a structured format was read, defensively:
+- the admin CLI (`authd_cli.c`) hex-encodes user, handle, label, reason and
+  path; its one raw option, `--n`, is the operator's own argument on the
+  admin socket;
+- the store builds no SQL from data: `sqlite3_exec` runs only constant
+  statements, and every query binds its values;
+- the daemon's replies carry only hex, numbers and its own fixed words (the
+  revocation reason is stored, never echoed; the audit `detail` is a fixed
+  word or `local-api`);
+- the daemon's parser refuses control bytes, duplicate keys and unknown
+  keys, so only a line break could ever split a request, and only a client
+  can put one there;
+- the pages have no HTML sinks, and the phone tool's rows go through
+  `JSON.stringify`, which escapes line breaks.
+No second instance. What the sweep did find is that §8 told a site author
+there were "no escaping rules at all" while the recovery code is plain
+text: erratum 71 makes the client's duty explicit. Not done, and the
+owner's call: the daemon could also refuse a second line that arrives on a
+site connection before its first reply (§8 already allows one request in
+flight), a second layer that would have stopped F178 without the site's
+help, but that changes the daemon's behaviour for any site that pipelines.
