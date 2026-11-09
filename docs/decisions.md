@@ -13097,3 +13097,30 @@ describes the site's checks, so the rule is erratum 70 (v1.30).
 values classified, a rebound upgrade refused while `localhost` upgrades,
 and a rebound POST answered 421. Control, the check forced open: all three
 FAIL (101; 7/12; 403). Restored byte-for-byte. Suite 58/58 on build-p.
+
+## V4-89 — F178: the site sends each request field as one token
+
+**Found** reviewing the reference site after V4-88. `request()` in
+`authd.mjs` built the site socket's line from the values it was given, and
+`/api/recover` passes the recovery code through as typed (it must not
+normalise it). A value holding a line break was therefore read by the daemon
+as a second request from the site. Reproduced against the test daemon from
+an anonymous client; the public record stays brief.
+
+**The fix is in the site, where the grammar is produced.** Every command
+must be upper-case letters and hyphens, every key lower-case letters and
+underscores, and every value printable ASCII without a space or `=` (empty
+is allowed: an empty `state` is sent today). Anything else is refused with
+`bad-request-field` before a byte is written, so the connection's reply
+order is untouched. `/api/recover` also refuses a non-string `user` or
+`code` with the same single reply as every other refusal (F143). The daemon
+is unchanged: it reads one request per line, as §8 says, and the site is
+its trusted enroller, so a site that writes what an attacker typed is the
+defect. Every value the site sends is hex, digits, a fixed word, or a
+recovery code, all of which pass.
+
+**Verified.** `site_node_handler`'s F178 test: five non-token values and a
+command with a line break are refused, and the next request's reply is its
+own. Control, the check disabled: that test FAILS. Restored byte-for-byte.
+The reproduction re-run against the fix: the account still has one device
+and the second key cannot log in. Suite 58/58 on build-p.

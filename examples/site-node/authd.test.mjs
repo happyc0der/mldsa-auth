@@ -144,6 +144,20 @@ if (!FIXTURE || !existsSync(FIXTURE)) {
     });
   });
 
+  test('a field that is not one token is refused before any socket write (F178)', async () => {
+    await withDaemon(async (authd) => {
+      for (const bad of ['a b', 'a\nPING', 'a\rb', 'a=b', 'caf\u00e9']) {
+        await assert.rejects(() => authd.request('PING', { x: bad }),
+                             (e) => e instanceof AuthdError && e.code === 'bad-request-field', JSON.stringify(bad));
+      }
+      await assert.rejects(() => authd.request('PING\nLIST-USERS'),
+                           (e) => e instanceof AuthdError && e.code === 'bad-request-field');
+      // Nothing was written: the next request's reply is its own.
+      const lines = await authd.request('PING');
+      assert.match(lines[0], /^OK/);
+    });
+  });
+
   test('a malformed login code is rejected client-side, before any socket write', async () => {
     await withDaemon(async (authd) => {
       await assert.rejects(() => exchange(authd, 'AAAA', ''), /32 bytes/);

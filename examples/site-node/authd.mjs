@@ -111,11 +111,24 @@ export class Authd {
   }
 
   /** Sends one request and resolves with its response lines. */
+  // Every command, key and value is ONE printable token (V4-89, F178): the
+  // socket's grammar is space-separated key=value on one line, so a space, an
+  // '=' or a line break inside a value would be read as more of the request,
+  // or as another request made with the site's authority. Values are hex,
+  // digits, a few fixed words, a recovery code as typed, or empty; anything else is
+  // refused here, before a byte is written.
   request(cmd, params = {}) {
+    if (!/^[A-Z][A-Z-]*$/.test(String(cmd))) {
+      return Promise.reject(new AuthdError('bad-request-field'));
+    }
     const parts = [cmd];
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined || v === null) continue;
-      parts.push(`${k}=${v}`);
+      const val = String(v);
+      if (!/^[a-z][a-z_]*$/.test(k) || !/^[\x21-\x3c\x3e-\x7e]*$/.test(val)) {
+        return Promise.reject(new AuthdError('bad-request-field'));
+      }
+      parts.push(`${k}=${val}`);
     }
     const line = parts.join(' ');
     if (line.length + 1 > MAX_LINE) {

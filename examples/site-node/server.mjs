@@ -378,6 +378,9 @@ export async function startSite(opt) {
     'POST /api/recover': async (req, res, s) => {
       const { user, code } = await body(req);
       if (!takeRecoverToken(req)) { return send(res, 429, { error: 'rate-limited' }); }
+      // Strings only (V4-89, F178); authd.mjs refuses anything that is not one
+      // token, and the refusal is the same single reply as every other.
+      if (typeof user !== 'string' || typeof code !== 'string') { return send(res, 403, { error: 'recover-failed' }); }
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code));
         rotate(res, s).ticket = { user, ticket: t.ticket };  // stays on the server, under a new id (F131)
