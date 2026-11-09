@@ -317,7 +317,13 @@ export async function startSite(opt) {
         const r = await withAuthd((a) => exchange(a, code, state));
         authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
-      } catch (e) { send(res, 403, { error: e.code || 'exchange-failed' }); }
+      } catch {
+        // ONE refusal for every reason (V4-96, F166): the daemon's code (a
+        // used, expired or revoked code, a disabled user) is not the
+        // browser's business, and naming it told a code's holder about the
+        // account behind it.
+        send(res, 403, { error: 'login-failed' });
+      }
     },
     'GET /api/me': async (req, res, s) => {
       if (!s.token) { return send(res, 401, { error: 'not logged in' }); }
@@ -368,7 +374,7 @@ export async function startSite(opt) {
       s.state = null;               // one state, one login
       let again;
       try { again = await withAuthd((a) => exchange(a, code, state)); }
-      catch (e) { return send(res, 403, { error: e.code || 'exchange-failed' }); }
+      catch { return send(res, 403, { error: 'login-failed' }); }   // F166, as /api/login
       // The session keeps the token it had; this login's token is not kept.
       try { await withAuthd((a) => logout(a, again.token)); } catch { /* already gone */ }
       if (again.user !== s.user) { return send(res, 403, { error: 'login is another user' }); }

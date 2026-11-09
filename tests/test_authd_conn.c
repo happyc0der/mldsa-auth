@@ -566,6 +566,28 @@ static uint64_t mono_now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
+/* V4-96 (audit F153): the floor's clock ticks finer than 1 us. On macOS
+ * CLOCK_MONOTONIC moved in 1 us steps, which quantized the 10 us floor; the
+ * smallest step seen between two reads that differ must be under that. */
+int authd_conn_pin_clock_now(uint64_t *now_ns);
+static void test_pin_clock_resolution(void)
+{
+    uint64_t min_step = UINT64_MAX;
+    int ok = 1;
+    for (int i = 0; i < 20000 && ok; i++) {
+        uint64_t a = 0, b = 0;
+        ok = (authd_conn_pin_clock_now(&a) == 0);
+        for (int j = 0; j < 100000 && ok; j++) {
+            ok = (authd_conn_pin_clock_now(&b) == 0);
+            if (b != a) { break; }
+        }
+        if (ok && b > a && b - a < min_step) { min_step = b - a; }
+    }
+    CHECK(ok, "floor-clock: the floor's clock reads");
+    CHECK(min_step < 1000u, "floor-clock: its smallest step is under 1 us, so the 10 us floor is not quantized (F153)");
+    if (min_step >= 1000u) { printf("  floor-clock: smallest step %llu ns\n", (unsigned long long)min_step); }
+}
+
 static void test_pin_floor(void)
 {
     static const uint8_t HANDLE_REV[] = { 'd','1','r','r' };
@@ -1620,6 +1642,7 @@ int main(void)
     test_uniform_responder();
     test_client_auth_failure_closes();
     test_revoked();
+    test_pin_clock_resolution();
     test_pin_floor();
     test_not_permitted();
     test_rotate();

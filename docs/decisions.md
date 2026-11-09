@@ -13288,3 +13288,25 @@ and why it is enough: a replayed ClientHello gets a fresh ServerHello under
 the responder's own new ephemerals and nonce, which `sig_A` must cover, so
 it cannot complete. The edit carries an inline amendment note, since
 spec-v2 has no errata section; v1's spec stays frozen. No code changes.
+
+## V4-96 — the pin floor's clock ticks finer than a microsecond on macOS (F153), and the site's login refusals are one word (F166)
+
+Measured on the M-series Mac: `CLOCK_MONOTONIC`'s resolution and smallest
+step are both 1,000 ns, `CLOCK_UPTIME_RAW`'s 42 and 41 ns. So the 10 µs
+floor (§7.3, erratum 53) was ten ticks there, and F135's first macOS run
+saw a false difference. On macOS the floor now reads `CLOCK_UPTIME_RAW`,
+the same monotonic counter at the hardware tick; it stops while the
+machine sleeps, which a 10 µs wait cannot notice. Linux, the deployment
+target, keeps `CLOCK_MONOTONIC`. `test_authd_conn` `floor-clock` reads the
+floor's own clock and requires its smallest step to be under 1 µs; on
+macOS it fails with the old clock. The spec says "the monotonic clock",
+which both are, so it does not change.
+
+**F166, in the same step.** The reference site's `/api/login`, and the
+re-login inside `/api/recovery-codes`, passed the daemon's refusal code to
+the browser, so whoever held a code learned whether its device was revoked
+or its user disabled. Both now answer one `login-failed`; no page read the
+codes. `site_sessions` `refusal`: a login code used a second time is
+refused with exactly `{error: 'login-failed'}`. `/api/enroll`'s
+`user-exists` stays: it is what a signup form tells anyone, and only an
+invite holder reaches it.

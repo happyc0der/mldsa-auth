@@ -103,6 +103,24 @@ try {
   check(rc.status === 401, 'fixation: the planted id cannot mint the visitor\'s recovery codes');
   check(!sessions.has(planted), 'fixation: the pre-login id is gone from the table, not just logged out');
 
+  // V4-96, F166: a refused login answers one word, whatever the daemon's reason.
+  {
+    const s0 = idOf(await get('/api/session'));
+    const st = await (await get('/api/session', s0)).json();
+    const ls = await client.login({ url: `ws://127.0.0.1:${port}/authd/v1?state=${st.state}`, serverId: info.server_id,
+                                    serverPub, handle: vid.handle, passphrase: PASS, envelope: vid.envelope });
+    const code = Buffer.from(ls.code).toString('base64url');
+    await ls.close();
+    const first = await post('/api/login', { code }, s0);
+    const s1 = idOf(first);
+    check(first.status === 200 && s1 !== undefined, 'refusal: a login code logs in once (the canary)');
+    await get('/api/session', s1);                     // a fresh state for the second try
+    const again = await post('/api/login', { code }, s1);
+    const ab = await again.json();
+    check(again.status === 403 && ab.error === 'login-failed' && Object.keys(ab).length === 1,
+          `refusal: the same code again is refused as login-failed, and nothing more (${again.status} ${JSON.stringify(ab)}) (F166)`);
+  }
+
   // A signup and a recovery change what a session may do, so each gets a new id
   // too: a planted id must not carry the visitor's new account or recovery
   // ticket to an attacker who then enrolls a key of their own.

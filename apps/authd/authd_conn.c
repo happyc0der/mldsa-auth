@@ -201,15 +201,30 @@ void authd_conn_arm_pin_clock(authd_pin_clock_t fn) { g_pin_clock = fn; }
 void authd_conn_arm_pin_observer(authd_pin_observer_t fn);
 void authd_conn_arm_pin_observer(authd_pin_observer_t fn) { g_pin_observer = fn; }
 
+/* The floor's clock. On macOS CLOCK_MONOTONIC moves in 1 us steps, so a
+ * 10 us floor was quantized to ten ticks (audit F153); CLOCK_UPTIME_RAW is
+ * the same monotonic counter at the hardware tick (42 ns on the machine that
+ * measured it). It does not advance while the machine sleeps, which no
+ * 10 us wait can notice. Linux keeps CLOCK_MONOTONIC (ns steps). */
+#if defined(__APPLE__) && defined(CLOCK_UPTIME_RAW)
+#define AUTHD_PIN_CLOCK_ID CLOCK_UPTIME_RAW
+#else
+#define AUTHD_PIN_CLOCK_ID CLOCK_MONOTONIC
+#endif
+
 static int mono_ns(uint64_t *out)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    if (clock_gettime(AUTHD_PIN_CLOCK_ID, &ts) != 0) {
         return -1;
     }
     *out = (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
     return 0;
 }
+
+/* Test hook: the floor's own clock, read once (V4-96). */
+int authd_conn_pin_clock_now(uint64_t *now_ns);
+int authd_conn_pin_clock_now(uint64_t *now_ns) { return mono_ns(now_ns); }
 
 int authd_conn_resolve_pin(authd_app_t *app, const uint8_t *handle, size_t handle_len,
                            uint8_t pk[STORE_PK_BYTES],
