@@ -117,6 +117,11 @@ target_compile_definitions(test_net PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(test_net PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 
 add_test(NAME test_net COMMAND test_net)
+# V4-90: CI runs the suite in parallel (CTEST_PARALLEL_LEVEL). test_net is
+# the one test with an UPPER bound on elapsed time (a timeout answered in
+# under 1 s), so it runs alone; every other timing check is a lower bound,
+# which load cannot break.
+set_tests_properties(test_net PROPERTIES RUN_SERIAL TRUE)
 
 add_executable(test_authd_keyfile test_authd_keyfile.c)
 target_link_libraries(test_authd_keyfile PRIVATE mldsa_authd)

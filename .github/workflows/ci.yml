@@ -19,6 +19,12 @@ on:
 permissions:
   contents: read
 
+# V4-90: every ctest call -- the suites, and run_mutations_v2.sh's preflight,
+# targeted and clean-suite runs -- uses four parallel jobs. Locally the ASan
+# suite went from 419 s serial to 114 s. RUN_SERIAL tests still run alone.
+env:
+  CTEST_PARALLEL_LEVEL: 4
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -417,9 +423,27 @@ jobs:
           uname -srm
           docker --version
 
+      # V4-90: the pinned Caddy tarball from the Actions cache, fetched (with
+      # retries) only on a miss. The script still checks it against its pin.
+      - name: Caddy tarball cache
+        id: caddy-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/caddy
+          key: caddy-${{ runner.os }}-${{ hashFiles('tests/caddy_proxy.sh') }}
+      - name: Fetch the Caddy tarball (cache miss)
+        if: steps.caddy-cache.outputs.cache-hit != 'true'
+        run: |
+          v=$(sed -n 's/^CADDY_VERSION=//p' tests/caddy_proxy.sh)
+          mkdir -p "$RUNNER_TEMP/caddy"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o "$RUNNER_TEMP/caddy/caddy.tgz" \
+            "https://github.com/caddyserver/caddy/releases/download/v${v}/caddy_${v}_linux_amd64.tar.gz"
+
       # The script SKIPs when Docker is missing, which is right for a developer
       # and wrong for a gate, so this run is required not to have skipped.
       - name: A real Caddy in front of the daemon
+        env:
+          CADDY_TGZ: ${{ runner.temp }}/caddy/caddy.tgz
         run: |
           sh tests/caddy_proxy.sh 2>&1 | tee caddy.log
           grep -q "^SKIP:" caddy.log && { echo "::error::the Caddy gate skipped"; exit 1; }

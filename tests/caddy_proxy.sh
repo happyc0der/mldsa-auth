@@ -55,11 +55,22 @@ docker volume create mldsa-authd-deps > /dev/null 2>&1 || true
 docker run -d --name "$NAME" -v mldsa-authd-deps:/deps "$IMAGE" sleep 3600 > /dev/null
 
 echo "--- installing the toolchain and Caddy $CADDY_VERSION ($CADDY_ARCH)"
-inc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y \
+# Retries (V4-90): the archive and GitHub's release CDN have each timed out a
+# CI run with nothing wrong in the tree (F175's class).
+inc "apt-get -o Acquire::Retries=5 update -qq && DEBIAN_FRONTEND=noninteractive \
+     apt-get -o Acquire::Retries=5 install -qq -y \
      clang cmake git make curl ca-certificates file > /dev/null" || fail "apt-get failed"
-inc "curl -fsSL -o /tmp/caddy.tgz \
-     https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${CADDY_ARCH}.tar.gz" \
-    || fail "could not download Caddy"
+# CADDY_TGZ names a tarball already on the host (CI keeps one in its cache);
+# it is checked against the same pin below as a downloaded one, so a stale or
+# altered cache fails exactly as a changed release asset would.
+if [ -n "${CADDY_TGZ:-}" ] && [ -f "$CADDY_TGZ" ]; then
+    docker cp "$CADDY_TGZ" "$NAME:/tmp/caddy.tgz" || fail "could not copy $CADDY_TGZ into the container"
+    echo "caddy tarball: from $CADDY_TGZ"
+else
+    inc "curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o /tmp/caddy.tgz \
+         https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_${CADDY_ARCH}.tar.gz" \
+        || fail "could not download Caddy"
+fi
 # The binary is pinned by digest, not trusted by name: a release asset that
 # changed under its tag is exactly the thing a pin exists to notice. Until
 # V4-22b this only printed the digest, for docs/decisions.md to record -- and

@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# V4-90: every ctest call -- the suites, and run_mutations_v2.sh's preflight,
+# targeted and clean-suite runs -- uses four parallel jobs. Locally the ASan
+# suite went from 419 s serial to 114 s. RUN_SERIAL tests still run alone.
+env:
+  CTEST_PARALLEL_LEVEL: 4
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false   # a nightly should finish, not be superseded

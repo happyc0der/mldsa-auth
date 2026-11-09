@@ -13147,3 +13147,28 @@ owner's call: the daemon could also refuse a second line that arrives on a
 site connection before its first reply (§8 already allows one request in
 flight), a second layer that would have stopped F178 without the site's
 help, but that changes the daemon's behaviour for any site that pipelines.
+
+
+## V4-90 — the suite runs in parallel in CI and the nightly; the Caddy job's downloads are cached
+
+**Measured first.** In main's CI on 9dafab6 the slow jobs were slow in their
+test step, not their build (macOS ASan: 73 s build, 500 s tests; Linux ASan:
+39 s, 425 s), and every ctest call was serial. Locally, on a current ASan
+tree, the suite took 419 s serially and 114 s with four jobs, 58/58 both.
+
+**Change.** Both workflows set `CTEST_PARALLEL_LEVEL: 4`, which every ctest
+call inherits, the mutation runner's included. `test_net` is marked
+`RUN_SERIAL`: it is the one test with an upper bound on elapsed time; the
+other timing checks (the pin floor) are lower bounds. ctest's `-V` output
+stays line-whole in parallel (472 check lines either way), which the
+mutation runner's expectation matching relies on.
+
+**The Caddy job** failed twice in a day on downloads (the Ubuntu archive,
+then GitHub's release CDN), F175's class. Its pinned tarball now comes from
+the Actions cache, fetched with retries only on a miss, and apt-get retries;
+the script checks the tarball against the same sha256 pin either way.
+
+**Not done yet.** ccache: builds are a minute per CI job, and installing it
+would add a network fetch. In the nightly each mutation's two forced
+rebuilds become a larger share once tests are parallel, so it is the next
+thing to measure there.
