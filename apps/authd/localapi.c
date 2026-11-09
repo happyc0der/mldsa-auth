@@ -1320,6 +1320,20 @@ ev_action_t localapi_on_line(void *user, authd_slot_t *slot, const uint8_t *line
         return EV_ACTION_CLOSE;
     }
 
+    /* ONE REQUEST IN FLIGHT on the site socket (§8, erratum 73; V4-94). Bytes
+     * already buffered behind this line were sent before its reply, so the
+     * peer is pipelining. A site that is lock-step never does; a site that
+     * forwards a line break inside a value does exactly this (F178), and the
+     * second "request" would run with the site's authority. So neither line
+     * runs: the connection gets one refusal and is closed. Nothing of the
+     * line is logged, as for a malformed one. The admin socket's clients are
+     * the operator's own tools and are not affected. */
+    if (!slot->is_admin && conn_io_line_rest(&slot->io) > 0u) {
+        authd_log_local(AUTHD_LOG_WARN, "local-request", "?", slot->peer.uid, slot->peer.pid, "pipelined");
+        (void)send_err(slot, "pipelined");
+        return EV_ACTION_CLOSE;
+    }
+
     req_t req;
     if (parse_request(line, len, &req) != 0) {
         /* The COMMAND is not logged here: a malformed line is attacker-shaped

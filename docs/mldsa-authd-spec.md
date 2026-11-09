@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.32, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93 errata)
+# mldsa-authd — deployment specification (v1.33, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -446,7 +446,15 @@ Req 6 is untouched. What it does **not** fix is recorded in §18.
 ## 8. Local socket protocol
 
 Two Unix sockets. One request per line, one response per request, at most one
-request in flight per connection.
+request in flight per connection. **On the site socket the daemon enforces
+it** (erratum 73): a line that arrives with bytes already behind it — sent
+before its reply — is not run, nor is anything behind it; the daemon answers
+`ERR code=pipelined` and closes the connection. A site waits for each reply
+before it writes the next request. This is a second layer under the client's
+duty below: a line break smuggled into a value usually arrives in the same
+write as the request it splits, and is refused here even if the site
+forwarded it. It cannot see bytes the daemon has not yet read when the first
+reply goes out, so it does not replace that duty.
 
 ```
 request  = CMD SP key=value (SP key=value)* LF        ≤ 8192 bytes
@@ -1577,3 +1585,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 72 | 7.3, 15 | Every failed `ClientAuth` closes the connection; the `client-auth-retryable` event is gone | the daemon kept a connection open after a bad signature, a malformed `ClientAuth` or a handshake-id mismatch, for up to three verifies, where spec-v2 §8 item 4 closes on the first (F149's second half; the owner's choice) |
+
+### Revision v1.33 (V4-94)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 73 | 8 | The daemon refuses a pipelined request on the site socket: `ERR code=pipelined`, then it closes; the reference site sends one request at a time | §8 allowed one request in flight but the daemon served pipelined lines in turn, so F178's smuggled line ran as a second request; a second layer under erratum 71 (the owner's choice) |

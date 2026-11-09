@@ -246,6 +246,71 @@ static void test_two_tables(void)
     h_stop(&d);
 }
 
+/* V4-94 (erratum 73): one request in flight on the site socket. Two lines in
+ * ONE write -- what a site that forwards a line break inside a value sends
+ * (F178) -- get one refusal and a closed connection; the admin socket and a
+ * lock-step site are unaffected. */
+static int read_to_eof(h_daemon_t *d, int fd, char *out, size_t cap, int *eof)
+{
+    size_t got = 0;
+    out[0] = '\0';
+    *eof = 0;
+    for (int i = 0; i < 5000; i++) {
+        h_tick(d);
+        char buf[512];
+        const ssize_t r = recv(fd, buf, sizeof buf, MSG_DONTWAIT);
+        if (r > 0) {
+            if (got + (size_t)r >= cap) { return -1; }
+            memcpy(out + got, buf, (size_t)r);
+            got += (size_t)r;
+            out[got] = '\0';
+        } else if (r == 0) {
+            *eof = 1;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static void test_pipelined(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "pipe.sqlite3", 1) == 0, "pipelined: daemon starts");
+    char resp[4096];
+    int eof = 0;
+
+    int site = h_dial_unix(d.site_path);
+    CHECK(site >= 0 && h_write_all(&d, site, "PING\nPING\n", 10) == 0,
+          "pipelined: two requests in one write to site.sock");
+    CHECK(read_to_eof(&d, site, resp, sizeof resp, &eof) == 0 && strcmp(resp, "ERR code=pipelined\n") == 0,
+          "pipelined: site.sock answers ONE refusal, ERR code=pipelined, and runs neither line");
+    CHECK(eof, "pipelined: ...and closes the connection");
+    if (site >= 0) { (void)close(site); }
+
+    site = h_dial_unix(d.site_path);
+    CHECK(site >= 0 && h_local_cmd(&d, site, "PING", resp, sizeof resp) == 0 && starts(resp, "OK") &&
+          h_local_cmd(&d, site, "PING", resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "pipelined: a lock-step site, one request per reply, is served (canary)");
+    if (site >= 0) { (void)close(site); }
+
+    int adm = h_dial_unix(d.admin_path);
+    CHECK(adm >= 0 && h_write_all(&d, adm, "PING\nPING\n", 10) == 0,
+          "pipelined: two requests in one write to admin.sock");
+    size_t ok = 0;
+    for (int i = 0; i < 5000 && ok < 2u; i++) {
+        h_tick(&d);
+        char buf[512];
+        const ssize_t r = recv(adm, buf, sizeof buf - 1u, MSG_DONTWAIT);
+        if (r > 0) {
+            buf[r] = '\0';
+            for (const char *q = buf; (q = strstr(q, "OK version=")) != NULL; q++) { ok++; }
+        } else if (r == 0) { break; }
+    }
+    CHECK(ok == 2u, "pipelined: admin.sock still serves both, in turn (the operator's tools are not affected)");
+    if (adm >= 0) { (void)close(adm); }
+    h_stop(&d);
+}
+
 /* ------------------------------------------------- exchange, verify, tokens */
 
 static void test_exchange_verify(void)
@@ -2100,6 +2165,7 @@ int main(void)
 
     test_grammar();
     test_two_tables();
+    test_pipelined();
     test_exchange_verify();
     test_exchange_expiry();
     test_revocation_closes_sessions();

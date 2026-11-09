@@ -158,6 +158,22 @@ if (!FIXTURE || !existsSync(FIXTURE)) {
     });
   });
 
+  test('concurrent requests on one connection are sent one at a time, and all are served (V4-94)', async () => {
+    await withDaemon(async (authd) => {
+      // The daemon refuses a line that arrives behind an unanswered one on the
+      // site socket (erratum 73), so a client that wrote all of these at once
+      // would get ERR code=pipelined and a closed connection.
+      const all = await Promise.all([
+        authd.request('PING'), authd.request('LIST-USERS'), authd.request('PING'),
+        authd.request('PING'), authd.request('PING'),
+      ]);
+      assert.equal(all.length, 5);
+      assert.match(all[0][0], /^OK version=/);
+      assert.match(all[1][0], /^ERR code=not-permitted/);
+      for (const r of all.slice(2)) assert.match(r[0], /^OK version=/);
+    });
+  });
+
   test('a malformed login code is rejected client-side, before any socket write', async () => {
     await withDaemon(async (authd) => {
       await assert.rejects(() => exchange(authd, 'AAAA', ''), /32 bytes/);

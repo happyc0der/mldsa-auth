@@ -330,6 +330,14 @@ int conn_io_next_line(conn_io_t *c, const uint8_t **line, size_t *len)
     return 0;
 }
 
+size_t conn_io_line_rest(const conn_io_t *c)
+{
+    if (c == NULL || c->mode != CONN_IO_MODE_LINE || c->line_total == 0u || c->in_len < c->line_total) {
+        return 0u;
+    }
+    return c->in_len - c->line_total;
+}
+
 void conn_io_consume_line(conn_io_t *c)
 {
     if (c == NULL || c->line_total == 0u || c->in_len < c->line_total) {

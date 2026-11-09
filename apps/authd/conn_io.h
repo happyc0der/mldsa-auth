@@ -172,6 +172,11 @@ int conn_io_next_line(conn_io_t *c, const uint8_t **line, size_t *len);
  * terminator, sliding any following bytes down. */
 void conn_io_consume_line(conn_io_t *c);
 
+/* LINE MODE ONLY. The bytes buffered BEYOND the line most recently returned
+ * by conn_io_next_line, before it is consumed: what the peer sent behind
+ * that request without waiting for its reply (V4-94). 0 when nothing was. */
+size_t conn_io_line_rest(const conn_io_t *c);
+
 /* Queues exactly one outbound frame (header written for you). BUSY if the
  * previous one has not finished sending -- the daemon is half-duplex per slot
  * by design, so this is a caller bug, not a runtime condition.

@@ -13244,3 +13244,35 @@ the right key still gets its record. `test_authd_ws`'s refund probe now
 waits for `client-auth-failed`. v56's MB14 (a failed ClientAuth refunded)
 anchored on the retryable log line, which is gone; it now anchors on the
 failure line, the same property.
+
+## V4-94 — the daemon refuses a pipelined request on the site socket (F178's second layer)
+
+**The owner's decision**, offered in V4-89b. §8 always said one request in
+flight per connection, but the daemon served pipelined lines in turn
+(V4-54, F127, made sure it did), so F178's smuggled line ran as a second
+request with the site's authority.
+
+**Found on the way: our own site pipelined.** `authd.mjs` wrote every
+request at once and queued the promises, so two concurrent HTTP requests
+put two lines on the socket before the first reply. The daemon change alone
+would have broken the reference site under load. So `authd.mjs` now writes
+the next request only when the previous reply has arrived (`#sendHead`),
+and a test sends five requests at once through one connection.
+
+**Daemon.** `localapi_on_line`, before parsing: on the site socket, if bytes
+are already buffered behind the line (`conn_io_line_rest`), they were sent
+before its reply, so neither line runs; the reply is `ERR code=pipelined`
+and the connection closes (logged `local-request` `pipelined`, nothing of
+the line). The admin socket is not affected: its clients are the operator's
+tools, and its two tables are already separate.
+
+**Limits, stated in §8.** The check sees what the daemon has read when it
+serves the line: a smuggled line break usually arrives in the same write
+as the request it splits, and is refused; bytes the daemon reads only after
+the first reply has gone out look like the next lock-step request. So it is
+a second layer, and erratum 71's client duty stays.
+
+**Tests.** `test_authd_localapi` `pipelined`: `PING\nPING\n` in one write
+gets exactly `ERR code=pipelined\n` and end-of-stream; a lock-step site is
+served; admin.sock serves both. `authd.test.mjs`: five concurrent requests
+on one connection are all served.

@@ -98,6 +98,7 @@ export class Authd {
         this.#buf = this.#buf.slice(nl + 1);
         this.#queue.shift();
         pending.resolve([firstLine]);
+        this.#sendHead();
         continue;
       }
       // A list: collect until the END line arrives.
@@ -107,6 +108,19 @@ export class Authd {
       this.#buf = this.#buf.slice(endAt + 5);
       this.#queue.shift();
       pending.resolve(block.split('\n'));
+      this.#sendHead();
+    }
+  }
+
+  // ONE request in flight (spec §8; V4-94): the next line is written only
+  // once the previous reply has arrived. The daemon refuses a line that
+  // arrives behind an unanswered one on the site socket, so concurrent HTTP
+  // requests wait their turn here instead of being pipelined.
+  #sendHead() {
+    const head = this.#queue[0];
+    if (head && !head.sent) {
+      head.sent = true;
+      this.#sock.write(head.line + '\n');
     }
   }
 
@@ -135,8 +149,8 @@ export class Authd {
       return Promise.reject(new AuthdError('request-too-long'));
     }
     return new Promise((resolve, reject) => {
-      this.#queue.push({ resolve, reject, wantList: LIST_COMMANDS.has(cmd) });
-      this.#sock.write(line + '\n');
+      this.#queue.push({ resolve, reject, wantList: LIST_COMMANDS.has(cmd), line, sent: false });
+      this.#sendHead();
     });
   }
 }
