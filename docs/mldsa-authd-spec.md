@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.29, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85 errata)
+# mldsa-authd — deployment specification (v1.30, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -951,7 +951,10 @@ request **body** to the site's own endpoint, on the same origin, carrying the
 site's session cookie (HttpOnly, SameSite=Strict, and behind TLS `Secure`
 with the `__Host-` prefix, so no other host can set it); the site checks the
 `Origin` — on its POSTs, and on a WebSocket upgrade it proxies, which it
-refuses when an `Origin` other than its own is sent (erratum 67) —
+refuses when an `Origin` other than its own is sent (erratum 67); and,
+unless a proxy in front has matched the site's name, it serves only a `Host`
+that is an IP address, `localhost`, or a name it was given, since a
+DNS-rebinding page sends a `Host` and an `Origin` that agree (erratum 70) —
 `EXCHANGE`s the code with the `state` it placed in that session and
 put in the WebSocket URL (§7.1), and keeps the token server-side. **On
 success the site issues a new session id** and drops the old one, as it does
@@ -1543,3 +1546,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 68 | 7.3, 17 | The pin's time floor is 10 µs, not 50 µs | the owner's choice, between hiding a slower host's lookups (50 µs) and spending less of each handshake waiting (10 µs, twice the Release build's 99th percentile); a lookup slower than the floor is not hidden either way (F151) |
 | 69 | 14 | The passphrase policy undoes common substitutions before the list check, counts a listed word as one choice (about 13 bits), and requires an estimate of 60 bits, not 50 | the owner asked for a strict policy: compounds of listed words and their substituted forms (`letmeinplease`, `P@ssw0rd2024!`) were rated 61–100 bits and accepted (F150) |
+
+### Revision v1.30 (V4-88)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 70 | 14 | A site not behind a name-matching proxy serves only a `Host` that is an IP address, `localhost`, or a name it was given | the Origin checks compare `Origin` with `Host`, and a page on a name rebound to the site's address sends both as its own name, so it passed them and could drive a loopback site and the daemon behind it (F177) |

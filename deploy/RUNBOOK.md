@@ -345,6 +345,9 @@ repository.
   entry, the one the proxy added; everything to its left is the client's
   (F159). Without a proxy in front even that entry is the client's, so
   leave the flag off and the key is the TCP peer.
+  It also tells the site that the proxy has already matched its name: without
+  it the site serves only an IP address or `localhost` as the `Host`, and
+  answers 421 to `authd.example.com` (V4-88, F177, against DNS rebinding).
 - **The invite is the reference site's stand-in for your account check.**
   Whoever holds it can create an account, but not join an existing one: a
   signup enrolls `via=signup`, which the daemon refuses for a known user
@@ -488,6 +491,12 @@ not a secure context. An iPhone's WebKit may then run without its JIT, as
 Safari on a Mac does, so read its row with that in mind. For a browser on the build host itself, use `--host 127.0.0.1`,
 which is a secure context; `--auto` starts the page without the tap. The tool
 exits 1 if no result arrived before `--minutes` ran out.
+
+The page is served only under the name you passed as `--host`, an IP
+address, or `localhost` (V4-88, F177: anything else is refused as a
+DNS-rebinding page). If the phone reaches the host under another name, say
+a Tailscale name for an address you passed as `--host`, add
+`--host-name <that name>`.
 
 ---
 

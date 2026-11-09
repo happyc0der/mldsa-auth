@@ -159,13 +159,13 @@ try {
   // V4-84, F160: a WebSocket upgrade from another origin is refused; the
   // site's own origin, and a client that sends no Origin, are upgraded.
   {
-    const upgradeStatus = (origin) => new Promise((resolve) => {
+    const upgradeStatus = (origin, host = `127.0.0.1:${port}`) => new Promise((resolve) => {
       const c = createConnection(port, '127.0.0.1');
       let buf = '';
       c.on('data', (d) => { buf += d; const nl = buf.indexOf('\r\n'); if (nl >= 0) { c.destroy(); resolve(Number(buf.split(' ')[1])); } });
       c.on('error', () => resolve(-1));
       c.on('close', () => resolve(Number(buf.split(' ')[1]) || -1));
-      c.write(`GET /authd/v1?state=00 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      c.write(`GET /authd/v1?state=00 HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
               'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' +
               (origin ? `Origin: ${origin}\r\n` : '') + '\r\n');
     });
@@ -174,6 +174,36 @@ try {
     const none = await upgradeStatus(null);
     check(foreign === 403 && own === 101 && none === 101,
           `ws: a foreign Origin is refused, the site's own and none are upgraded (${foreign}, ${own}, ${none}) (F160)`);
+    // V4-88, F177: a DNS-rebinding page sends Host and Origin both naming
+    // itself, which the Origin check alone passes.
+    const rebound = await upgradeStatus(`http://rebind.example:${port}`, `rebind.example:${port}`);
+    const local = await upgradeStatus(`http://localhost:${port}`, `localhost:${port}`);
+    check(rebound === 403 && local === 101,
+          `ws: a rebound Host is refused, localhost is upgraded (${rebound}, ${local}) (F177)`);
+  }
+
+  // V4-88, F177: the HTTP routes refuse a Host that is neither an IP literal,
+  // localhost, nor the site's own name; Origin agreeing with it does not help.
+  {
+    const { hostAllowed } = await import(pathToFileURL(`${repo}/examples/site-node/server.mjs`).href);
+    const cases = [['127.0.0.1:1', {}, true], ['[::1]:1', {}, true], ['localhost:1', {}, true],
+                   ['a.localhost', {}, true], ['rebind.example:1', {}, false], ['', {}, false],
+                   ['localhost.rebind.example', {}, false], ['127.0.0.1.rebind.example', {}, false],
+                   ['rebind.example', { trustProxy: true }, true], ['mac.ts.net:8099', { host: 'mac.ts.net' }, true],
+                   ['rebind.example', { host: 'mac.ts.net' }, false], ['a.example', { hostNames: ['A.example'] }, true]];
+    const bad = cases.filter(([h, o, w]) => hostAllowed(h, o) !== w);
+    check(bad.length === 0, `host: ${cases.length - bad.length}/${cases.length} Host values classified as expected` +
+          (bad.length ? ` (wrong: ${bad.map(([h]) => JSON.stringify(h)).join(', ')})` : '') + ' (F177)');
+    const { request } = await import('node:http');
+    const rawPost = (host) => new Promise((resolve) => {
+      const r = request({ host: '127.0.0.1', port, path: '/api/recover', method: 'POST',
+                          headers: { Host: host, Origin: `http://${host}`, 'Content-Type': 'application/json' } },
+                        (x) => { x.resume(); x.on('end', () => resolve(x.statusCode)); });
+      r.on('error', () => resolve(-1));
+      r.end(JSON.stringify({ user: 'nobody', code: 'x' }));
+    });
+    const reb = await rawPost(`rebind.example:${port}`);
+    check(reb === 421, `http: a POST whose Host and Origin both name a rebound page is refused, 421 (${reb}) (F177)`);
   }
 
   // V4-76, F143: /api/recover gives every refusal ONE reply, so it does not say

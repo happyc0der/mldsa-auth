@@ -102,6 +102,26 @@ export function limiterKey(addr) {
   return groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16)).join(':') + '::/64';
 }
 
+// Whether a request's Host may be served (V4-88, F177). The Origin checks
+// compare Origin with Host, and a DNS-rebinding page has both set to its own
+// name, so on its own that check passes it. A rebound page's Host is always
+// a DNS name it controls: never an IP literal, never `localhost` (which a
+// browser resolves itself). Behind the proxy (--trust-proxy) the proxy has
+// already matched the site's name, so any Host it forwards is served.
+export function hostAllowed(hostHeader, opt = {}) {
+  if (opt.trustProxy) { return true; }
+  const raw = String(hostHeader ?? '');
+  if (raw === '') { return false; }
+  let name;
+  try { name = new URL(`http://${raw}`).hostname.toLowerCase(); } catch { return false; }
+  name = name.replace(/^\[|\]$/g, '');
+  if (net.isIP(name) !== 0) { return true; }
+  if (name === 'localhost' || name.endsWith('.localhost')) { return true; }
+  const own = String(opt.host ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (own !== '' && name === own) { return true; }
+  return (opt.hostNames ?? []).some((h) => String(h).toLowerCase() === name);
+}
+
 export async function startSite(opt) {
   const sessions = new Map();       // sid -> { sid, seen, state, user, token, signupUser, ticket }, least recently used first
   const csp = opt.csp ?? CSP;
@@ -374,6 +394,7 @@ export async function startSite(opt) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://x');
+      if (!hostAllowed(req.headers.host, opt)) { return send(res, 421, { error: 'unknown host' }); }
       if (req.method === 'POST') {
         const origin = req.headers.origin;
         const self = `${opt.secure ? 'https' : 'http'}://${req.headers.host}`;
@@ -418,7 +439,8 @@ export async function startSite(opt) {
     // client that sends none is not a browser, and the cross-site concern is
     // a browser's. Behind Caddy, /authd/v1 never reaches this handler.
     const origin = req.headers.origin;
-    if (origin !== undefined && origin !== `${opt.secure ? 'https' : 'http'}://${req.headers.host}`) {
+    if (!hostAllowed(req.headers.host, opt) ||
+        (origin !== undefined && origin !== `${opt.secure ? 'https' : 'http'}://${req.headers.host}`)) {
       sock.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return;
     }

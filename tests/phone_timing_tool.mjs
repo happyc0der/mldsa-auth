@@ -60,7 +60,9 @@ try {
 
   // 2. The real run: two results, one per origin.
   const rows = join(work, 'rows.jsonl');
-  tool = runTool(['--count', '2', '--minutes', '4', '--auto', '--out', rows]);
+  // timing.test is mapped to 127.0.0.1 below, so the site must be told the
+  // name (V4-88, F177); unnamed, it refuses it as a rebound Host.
+  tool = runTool(['--count', '2', '--minutes', '4', '--auto', '--out', rows, '--host-name', 'timing.test']);
   await until(() => /^open on the phone:\s+\S+$/m.test(tool.out) || tool.p.exitCode !== null, 'the URL', 30000);
   const url = (/^open on the phone:\s+(\S+)$/m.exec(tool.out) ?? [])[1];
   check(!!url, 'the tool printed a URL');

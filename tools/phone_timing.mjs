@@ -4,6 +4,7 @@
 //   node tools/phone_timing.mjs --fixture build/tests/authd_wasm_fixture \
 //        --module-dir build-wasm/web --host <address the phone can reach> \
 //        [--port 8099] [--count 1] [--minutes 15] [--out phone-timings.json] [--auto]
+//        [--host-name NAME]
 //
 // It starts the test daemon (tests/authd_wasm_fixture, the one wasm_interop
 // and browser_e2e use) and the reference site, bound to --host, and prints a
@@ -49,7 +50,7 @@ if (!args.fixture || !args['module-dir'] || !args.host) {
   const addrs = Object.values(networkInterfaces()).flat()
     .filter((n) => n && n.family === 'IPv4' && !n.internal).map((n) => n.address);
   console.log('usage: phone_timing.mjs --fixture PATH --module-dir DIR --host ADDR [--port N] ' +
-              '[--count N] [--minutes M] [--out FILE] [--auto]');
+              '[--count N] [--minutes M] [--out FILE] [--auto] [--host-name NAME]');
   console.log(`addresses on this machine: ${addrs.join(', ') || '(none)'}`);
   process.exit(2);
 }
@@ -78,6 +79,9 @@ const site = await startSite({
   authdSite: info.site, authdWs: `127.0.0.1:${info.ws_port}`, serverId: info.server_id,
   serverPub: Buffer.from(info.server_pub, 'hex'), moduleDir: args['module-dir'], invite,
   host: args.host, port: Number(args.port ?? 8099),
+  // The site serves a DNS name only when it is --host or named here (V4-88,
+  // F177): a name that resolves to --host but is neither is a rebound page.
+  hostNames: typeof args['host-name'] === 'string' ? [args['host-name']] : [],
   onTiming: (t) => {
     const row = { at: new Date().toISOString(), ...t };
     appendFileSync(outFile, JSON.stringify(row) + '\n');

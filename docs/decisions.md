@@ -13070,3 +13070,30 @@ hold wire frames and the sealed envelope, not a passphrase. No test can
 observe a wiped local, so F176 is verified by reading; the passphrase,
 client and wasm suites pass unchanged, and gcc-16 compiles the file at -O0
 and -O2.
+
+## V4-88 — F177: the site refuses a Host a rebinding page would send
+
+**Found** reading V4-84's WebSocket Origin check: like the POST check
+before it, it compares `Origin` with `Host`, and both come from the
+browser. A DNS-rebinding page has both set to its own name. Reproduced
+against a site on loopback: such a POST reached `/api/recover` and such an
+upgrade got 101.
+
+**The rule.** Without `--trust-proxy`, `hostAllowed` serves a `Host` whose
+name is an IP literal, `localhost` or under `.localhost`, the name the site
+was bound to, or one listed in `hostNames`. A rebinding page's `Host` is a
+DNS name its owner controls, so it is none of these. Everything else gets
+421 (an upgrade, 403). Behind the proxy (`--trust-proxy`) every `Host` is
+served: Caddy has already matched the site block's name, and without that
+flag a production site would now answer 421 to its own name -- the runbook
+says so beside the flag. The phone tool gains `--host-name` for a name the
+phone uses that is not `--host` (its test's second leg maps `timing.test`
+to loopback exactly as a rebinding page would, and now passes it).
+Considered and not done: a required `--host-name` flag for the site, which
+would change the production command for no gain behind Caddy. Spec §14
+describes the site's checks, so the rule is erratum 70 (v1.30).
+
+**Verified.** `site_sessions` gains three F177 checks: twelve `Host`
+values classified, a rebound upgrade refused while `localhost` upgrades,
+and a rebound POST answered 421. Control, the check forced open: all three
+FAIL (101; 7/12; 403). Restored byte-for-byte. Suite 58/58 on build-p.
