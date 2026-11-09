@@ -13054,3 +13054,19 @@ UBSan, gcc-16 -O0/-O2 on every changed C file.
 is the daemon spec's documented `client-auth-retryable`; spec-v2 §8 item 4
 closes on the first failure for the reference apps' transport. Which one
 the daemon should follow is the owner's call.
+
+## V4-87 — F176: the word estimate's tables are wiped
+
+V4-86's review of V4-85's new code read `passphrase.c` as an attacker with
+the client's memory would. `pp_check` wipes every copy of the passphrase it
+makes, but `word_estimate` kept its cost table (`dp`) and its word-split
+flags (`wd`) in `static` arrays that were never wiped: they give the
+passphrase's length and the positions of its separators and listed words,
+and they stayed in the CLI's and the wasm module's memory after the call.
+The two tables are now locals, wiped with `t` before the function returns:
+5 KiB more stack, against the wasm build's 8 MiB. Nothing else in the file
+is static and mutable. `client_cli.c`'s static buffers were read too: they
+hold wire frames and the sealed envelope, not a passphrase. No test can
+observe a wiped local, so F176 is verified by reading; the passphrase,
+client and wasm suites pass unchanged, and gcc-16 compiles the file at -O0
+and -O2.

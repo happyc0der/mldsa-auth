@@ -281,8 +281,11 @@ static uint32_t estimate(const uint32_t *cp, size_t n, uint32_t *reasons)
  * a 1 is read. Sets *used_words when the cheapest split contains a word. */
 static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32_t one, int *used_words)
 {
-    static uint32_t dp[PP_MAX_BYTES + 1u];
-    static uint8_t  wd[PP_MAX_BYTES + 1u];     /* the best split to here holds a word */
+    /* On the stack and wiped (F176): the costs mark where the separators and
+     * the listed words fall, so they are derived from the passphrase like
+     * `t`. They were static, never wiped, and outlived the call. */
+    uint32_t dp[PP_MAX_BYTES + 1u];
+    uint8_t  wd[PP_MAX_BYTES + 1u];     /* the best split to here holds a word */
     char t[PP_MAX_BYTES + 1u];
     for (size_t i = 0; i < n; i++) {
         t[i] = (cp[i] < 0x80u) ? (char)unleet(fold(cp[i]), one) : '\x01';   /* never in the list */
@@ -311,6 +314,8 @@ static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32
     *used_words = wd[n];
     const uint32_t total = dp[n];
     sodium_memzero(t, sizeof t);
+    sodium_memzero(dp, sizeof dp);
+    sodium_memzero(wd, sizeof wd);
     return total;
 }
 
