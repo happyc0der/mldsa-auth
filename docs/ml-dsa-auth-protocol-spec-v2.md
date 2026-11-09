@@ -132,8 +132,15 @@ These apply to every line of code touching key material, without exception.
    contributions — not just a single nonce, to prevent substitution and
    downgrade attacks.
 5. **Replay protection.** Every session enforces strictly increasing
-   sequence numbers; every handshake enforces single-use session IDs and
-   nonces within a bounded replay window.
+   sequence numbers. Every handshake's `handshake_id` (6.3.3) is single-use
+   within the pending entry's lifetime: its `ClientAuth` is accepted at most
+   once. A replayed `ClientHello` is not refused (§9: refusing repeats would
+   let an off-path attacker deny service); it gets a fresh `ServerHello`
+   under the responder's own new ephemerals and nonce, which `sig_A` covers,
+   so a replay cannot complete a handshake. *(Amended in V4-95, audit F146:
+   this item said single-use session ids and nonces; the reference
+   implementation enforces only the `handshake_id`, and the freshness
+   argument above is why nothing more is needed.)*
 6. **Strict input validation.** All wire-format lengths are validated
    against exact expected sizes (ML-DSA-65 pubkey 1952 B, signature
    ≤ 3309 B, X25519 keys 32 B, ML-KEM-768 encapsulation key 1184 B,

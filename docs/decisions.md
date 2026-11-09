@@ -13276,3 +13276,15 @@ a second layer, and erratum 71's client duty stays.
 gets exactly `ERR code=pipelined\n` and end-of-stream; a lock-step site is
 served; admin.sock serves both. `authd.test.mjs`: five concurrent requests
 on one connection are all served.
+
+## V4-95 — spec-v2's replay requirement says what holds (F146)
+
+**The owner's decision.** Security Req 5 (audit F146 called it Req 4.5) said
+"single-use session IDs and nonces"; the code makes only `handshake_id`
+single-use, and §9 says a duplicate ClientHello deliberately creates a
+second pending entry. The code is as designed, and the requirement's
+wording was what disagreed. The item now states the property that holds,
+and why it is enough: a replayed ClientHello gets a fresh ServerHello under
+the responder's own new ephemerals and nonce, which `sig_A` must cover, so
+it cannot complete. The edit carries an inline amendment note, since
+spec-v2 has no errata section; v1's spec stays frozen. No code changes.
