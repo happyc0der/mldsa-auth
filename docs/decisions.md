@@ -13310,3 +13310,23 @@ codes. `site_sessions` `refusal`: a login code used a second time is
 refused with exactly `{error: 'login-failed'}`. `/api/enroll`'s
 `user-exists` stays: it is what a signup form tells anyone, and only an
 invite holder reaches it.
+
+## V4-97 — what V4-91 and V4-92 measured (records only)
+
+V4-91's entry predicted ccache would cut about a third of each mutation's
+time, from one forced rebuild taking ~35 s. Measured, it did not. Nightly
+42695875244 (V4-91 alone) took 84 min and 1,888 runner-minutes against
+84 min and 1,896 before, 72/72, with 99.4 % of v58's compiles served from
+the cache (4,420 of 4,446). The ~35 s was the final step's span, which
+includes the fingerprint and residue checks, not the build alone; the
+time was in the per-mutation suites.
+
+V4-92 (one clean suite per campaign) on top: nightly 42709476541, 72/72,
+**35 min and 930 runner-minutes**; v58 went from ~209 s to ~50 s a
+mutation, every row `clean-suite=COVERED(fp=CLEAN)` and the campaign's
+`final: clean suite PASS`. Main's CI on 8d724c7: 14/14.
+
+What ccache is worth after V4-92 is inferred, not measured: v58's
+preflight (two builds that bypass ccache, plus the suite) took 112 s,
+and a restore cycle that builds through the cache about 25 s. An A/B
+nightly with ccache off would settle it, at ~930 runner-minutes.
