@@ -119,9 +119,16 @@ fp() {
 fp_counts() { echo "$(objects | wc -l | tr -d ' ') objects, $(executables | wc -l | tr -d ' ') executables"; }
 
 restore || exit 3
-forced_build "$LOG/preflight1.build" || { echo "FATAL: clean tree does not build"; exit 3; }
+# V4-91: the nightly compiles through ccache. Both preflight builds bypass it
+# (CCACHE_DISABLE; a no-op without ccache), so CLEAN is a real compile and the
+# determinism check compares two real compiles -- with the cache they would be
+# one compile and two lookups, and the check would be vacuous. Every later
+# build may hit the cache; ccache keys on the preprocessed content and the
+# command line, never on mtimes, so a hit after restore is the clean object,
+# and the "restored=clean" fingerprint comparison against CLEAN proves it.
+CCACHE_DISABLE=1 forced_build "$LOG/preflight1.build" || { echo "FATAL: clean tree does not build"; exit 3; }
 CLEAN=$(fp)
-forced_build "$LOG/preflight2.build" || exit 3
+CCACHE_DISABLE=1 forced_build "$LOG/preflight2.build" || exit 3
 [ "$(fp)" = "$CLEAN" ] || { echo "FATAL: build is not deterministic"; exit 3; }
 # --output-on-failure on both whole-suite runs (audit finding F85): without it
 # a failing test leaves only ctest's one-line summary, and the V4-13a nightly

@@ -106,14 +106,31 @@ jobs:
           cmake --version | head -1
           grep -m1 'model name' /proc/cpuinfo || true
 
+      # V4-91: every mutation forces two full rebuilds of the project (the
+      # mutant, then the restore), and almost every object in them is
+      # unchanged. ccache serves those from a cache local to THIS job: it is
+      # never saved to or restored from the Actions cache, because the flags
+      # say -march=native and a hit from another machine of GitHub's mixed
+      # fleet could carry instructions this CPU lacks (V3-3). The runner's
+      # preflight bypasses ccache, so CLEAN and the determinism check are real
+      # compiles (tools/run_mutations_v2.sh).
+      - name: Install ccache (job-local cache)
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq ccache
+          ccache --version | head -1
+          echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> "$GITHUB_ENV"
+
       # The standing rule: campaigns run against a fresh ASan tree (several
-      # mutations are wipe/leak class, and LSan runs here). No cache: a
+      # mutations are wipe/leak class, and LSan runs here). No cached tree: a
       # -march=native tree cannot be shared across GitHub's mixed fleet (V3-3).
       - name: Fresh ASan tree, instrumentation proven
         run: |
-          cmake -S . -B build-asan -DCMAKE_C_COMPILER=clang -DENABLE_ASAN=ON
+          cmake -S . -B build-asan -DCMAKE_C_COMPILER=clang -DENABLE_ASAN=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build-asan -j
           tools/check_sanitizer_link.sh build-asan asan
+          ccache --zero-stats > /dev/null
 
       # The runner exits nonzero on any SURVIVED verdict, on mutation residue,
       # or on a final fingerprint mismatch -- so the job is red without a wrapper.
@@ -122,7 +139,10 @@ jobs:
           tools/run_mutations_v2.sh "$PWD" "$RUNNER_TEMP/mut" \
             "tools/mutations/mutate_${{ matrix.campaign }}.py" \
             "tools/mutations/spec_${{ matrix.campaign }}.txt" build-asan 2>&1 | tee campaign.log
-          exit "${PIPESTATUS[0]}"
+          rc="${PIPESTATUS[0]}"
+          echo "--- ccache during the campaign (hits are unchanged objects):"
+          ccache --show-stats
+          exit "$rc"
 
       - name: Upload the campaign logs
         if: always()

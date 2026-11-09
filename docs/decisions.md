@@ -13172,3 +13172,28 @@ the script checks the tarball against the same sha256 pin either way.
 would add a network fetch. In the nightly each mutation's two forced
 rebuilds become a larger share once tests are parallel, so it is the next
 thing to measure there.
+
+## V4-91 — the nightly's Linux campaigns compile through a job-local ccache
+
+**Measured first.** In the nightly on efc66cb (parallel suite) the slowest
+campaign, v58, took about 220 s per mutation, and one forced rebuild of
+build-asan took about 35 s (the final rebuild's span), so two per mutation is
+about a third of each mutation's time. Almost every object in those rebuilds
+is unchanged: only the mutated file and what includes it differ.
+
+**Change.** The Linux mutation jobs install ccache (apt-get with retries) and
+configure build-asan with `CMAKE_C_COMPILER_LAUNCHER=ccache`; each job prints
+`ccache --show-stats` after its campaign. The cache lives in `$RUNNER_TEMP`
+and is never saved to or restored from the Actions cache: the flags say
+-march=native, and a hit from another machine of the mixed fleet could carry
+instructions this CPU lacks (V3-3). The macOS v35 job (two mutations) is
+unchanged.
+
+**What keeps the method sound.** The runner's two preflight builds run with
+`CCACHE_DISABLE=1` (a no-op without ccache), so CLEAN and the determinism
+check are two real compiles; through the cache they would be one compile and
+a lookup, and the check would prove nothing. Later builds may hit the cache.
+ccache keys on preprocessed content and the command line, not mtimes, so the
+stale-object trap does not apply to it, and every "restored=clean" and the
+final fingerprint still compare against a real compile. A mutant that fails
+to compile is never cached.
