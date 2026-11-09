@@ -13013,3 +13013,44 @@ post-job save, so every job fell back to fetching. The action now sets the
 path itself, `$RUNNER_TEMP/mldsa-deps`, through `$GITHUB_ENV`, and the
 workflows no longer set it. Verified by two CI runs: the first must log
 "Cache saved", the second "Cache restored".
+
+## V4-86 — F149: the responder probes the initiator's X25519 key before it signs
+
+**The ordering.** The initiator has run an X25519 validation probe before
+signing `ClientAuth` since Step 4; the responder had none, so a ClientHello
+with a low-order ephemeral key from a pinned identity got a signed
+ServerHello and a ledger entry, and failed only after `sig_A` verified. The
+responder now runs the same probe right after it generates its own
+ephemeral, before encapsulation and before `sig_B`: the result is wiped and
+freed at once, and a rejection is `HANDSHAKE_ERR_KEX` with nothing written,
+no signature and no ledger entry. The recomputation in
+`verify_client_auth` stays and is now defensive. Spec-v2 is unchanged: it
+requires a rejected key to be a fatal failure, and it now is one earlier.
+The daemon already logs `server-hello-failed` (detail `kex`) for this
+status, so its vocabulary is unchanged.
+
+**Tests.** `test_handshake` F149 (five checks) takes a low-order
+ClientHello through to the ServerHello and checks the refusal. T29 and T32
+covered the recompute's failure path through a low-order key, which the
+probe now stops earlier; they reach it white-box instead, writing the
+low-order key into the context after a ServerHello made with a valid one,
+and keep all their checks. `fuzz_handshake`'s S0 oracle now wants a
+ServerHello only when the X25519 key is not low-order either (checked with
+a fixed scalar, independent of the responder's ephemeral), and two seeds
+carry the identity point and an order-8 point. `secure_mem_sites.txt`
+lists the probe's allocation, an X25519 shared secret.
+
+**Controls.** Probe disabled: `test_handshake` 4 of F149's checks FAIL and
+the fuzz replay's S0 oracle fails. Oracle without the X25519 term: the
+replay fails on the new seeds. The first run of that second control passed
+falsely: the edit and the build fell in the same second and the stale
+object ran (the build-currency trap); re-run after a one-second gap, it
+failed as predicted. Sources restored byte-for-byte. `fuzz_handshake` under
+libFuzzer for 600 s: 1,371,014 runs, 0 crashes, 0 artifacts. Suite 58/58 on
+build-p (current, fingerprint f3befe5c), the handshake tests under ASan and
+UBSan, gcc-16 -O0/-O2 on every changed C file.
+
+**Not changed.** The daemon's ClientAuth retry (the second half of F149)
+is the daemon spec's documented `client-auth-retryable`; spec-v2 §8 item 4
+closes on the first failure for the reference apps' transport. Which one
+the daemon should follow is the owner's call.

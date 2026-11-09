@@ -220,7 +220,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `test_session` | Record format, exact nonce/AD layout, contiguous sequence policy, terminal receive failures, initiator key confirmation, rekey and expiry limits, key handoff, the KEM-disagreement failure mode end to end, padded-inner sizes and receiver rules at every bucket, and the `pt_cap` sizing rule |
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
-| `secure_mem_sites` | Every secret on the heap — keys, shared secrets, passphrases, plaintext key images — is allocated in libsodium's guarded memory: the 35 `secure_mem_alloc` sites checked both ways against a list, and no raw libsodium allocator outside the wrapper (V4-24b) |
+| `secure_mem_sites` | Every secret on the heap — keys, shared secrets, passphrases, plaintext key images — is allocated in libsodium's guarded memory: the 36 `secure_mem_alloc` sites checked both ways against a list, and no raw libsodium allocator outside the wrapper (V4-24b) |
 | `constant_time_sites` | Every `sodium_memcmp`/`sodium_is_zero` call site checked both ways against a list, so a constant-time comparison swapped for `memcmp` fails by name (V4-15b) |
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |
 | `scratch_dirs` | No test names its scratch directory after its pid: the seven that did make theirs with `mkdtemp`, so a directory a crashed run left behind can no longer fail a later run (V4-28, F114) |

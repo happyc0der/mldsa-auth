@@ -63,6 +63,18 @@ static int ek_passes_modulus_check(const uint8_t ek[WIRE_MLKEM_EK_LEN]) {
     return 1;
 }
 
+/* F149: the responder probes the initiator's X25519 key before it signs.
+ * Independent of the responder's ephemeral: with ANY clamped scalar the
+ * product is all-zero (libsodium rejects it) exactly for a low-order point. */
+static int x25519_key_acceptable(const uint8_t pub[WIRE_X25519_PUB_LEN]) {
+    uint8_t k[crypto_scalarmult_SCALARBYTES];
+    uint8_t out[crypto_scalarmult_BYTES];
+    memset(k, 0x5A, sizeof(k));
+    const int ok = crypto_scalarmult(out, k, pub) == 0;
+    sodium_memzero(out, sizeof(out));
+    return ok;
+}
+
 /* Every per-handshake hybrid secret released (Security Req 4.12). */
 static int hybrid_wiped(const handshake_ctx_t *ctx) {
     return ctx->kem.secret_key == NULL && ctx->ss_kem == NULL;
@@ -122,11 +134,12 @@ static void scenario_client_hello(fuzz_chunks_t *chunks) {
          * can be detected, so the ServerHello step is part of S0's oracle. */
         uint8_t sh[SERVER_HELLO_MAX_ENCODED_LEN];
         size_t shn = 0;
-        const int want_ok = ek_passes_modulus_check(m.mlkem_ek);
+        const int want_ok = ek_passes_modulus_check(m.mlkem_ek) && x25519_key_acceptable(m.ephemeral_pub);
         const handshake_status_t s2 = handshake_responder_create_server_hello(&res, sh, sizeof(sh), &shn);
         FUZZ_ASSERT((s2 == HANDSHAKE_OK) == (want_ok != 0),
-                    "S0: ServerHello succeeds iff the encapsulation key passes the modulus check");
-        FUZZ_ASSERT(want_ok || s2 == HANDSHAKE_ERR_KEX, "S0: a malformed encapsulation key -> KEX");
+                    "S0: ServerHello succeeds iff the encapsulation key passes the modulus check "
+                    "and the X25519 key is not low-order");
+        FUZZ_ASSERT(want_ok || s2 == HANDSHAKE_ERR_KEX, "S0: a malformed encapsulation key or low-order key -> KEX");
         FUZZ_ASSERT(handshake_get_state(&res) ==
                         (want_ok ? HANDSHAKE_STATE_SERVER_HELLO_CREATED : HANDSHAKE_STATE_FAILED),
                     "S0: resulting state after the ServerHello step");
@@ -314,6 +327,27 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
             m1[0] = a;
             l1[0] = an;
             emit_msgs(emit, ctx, "s0-id64", 0, m1, l1, 1);
+        }
+    }
+
+    /* S0 (F149): a genuine ClientHello carrying a low-order X25519 key --
+     * the identity point (all zero) and an order-8 point -- which the
+     * responder's probe must reject as KEX before it signs. */
+    if (decode_client_hello(g->ch, g->ch_len, &chm, &used) == 0) {
+        static const uint8_t order8[WIRE_X25519_PUB_LEN] = {
+            0xe0, 0xeb, 0x7a, 0x7c, 0x3b, 0x41, 0xb8, 0xae, 0x16, 0x56, 0xe3, 0xfa, 0xf1, 0x9f, 0xc4, 0x6a,
+            0xda, 0x09, 0x8d, 0xeb, 0x9c, 0x32, 0xb1, 0xfd, 0x86, 0x62, 0x05, 0x16, 0x5f, 0x49, 0xb8, 0x00};
+        memset(chm.ephemeral_pub, 0, sizeof(chm.ephemeral_pub));
+        if (encode_client_hello(&chm, a, sizeof(a), &an) == 0) {
+            m1[0] = a;
+            l1[0] = an;
+            emit_msgs(emit, ctx, "s0-x25519-zero", 0, m1, l1, 1);
+        }
+        memcpy(chm.ephemeral_pub, order8, sizeof(order8));
+        if (encode_client_hello(&chm, a, sizeof(a), &an) == 0) {
+            m1[0] = a;
+            l1[0] = an;
+            emit_msgs(emit, ctx, "s0-x25519-order8", 0, m1, l1, 1);
         }
     }
 

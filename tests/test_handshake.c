@@ -2949,7 +2949,40 @@ static void test_v25_h7_out_cap_rollback(void) {
     handshake_pending_store_wipe(&store);
 }
 
+/* ---- F149: the responder probes A's X25519 key before it signs ------- */
+
+static void test_f149_responder_probe(void) {
+    static handshake_pending_store_t store;
+    static handshake_ctx_t r;
+    static uint8_t ch[CLIENT_HELLO_MAX_ENCODED_LEN], sh[SERVER_HELLO_MAX_ENCODED_LEN];
+    size_t ch_len = 0, sh_len = 777;
+    mlkem_keypair_t ini_kem; /* valid ek: only the X25519 half is bad */
+    clock_reset();
+    store_fresh(&store, 1);
+    memset(sh, 0xAA, sizeof(sh));
+    if (mlkem_keypair_generate(&ini_kem) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), SMALL_ORDER_POINT, ini_kem.public_key, ch, sizeof(ch),
+                           &ch_len) != 0 ||
+        handshake_responder_init(&r, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
+        fatal("F149 fixture");
+    }
+    CHECK(handshake_responder_accept_client_hello(&r, ch, ch_len) == HANDSHAKE_OK,
+          "F149: a low-order ephemeral passes the wire decoder and identity check");
+    const handshake_status_t st = handshake_responder_create_server_hello(&r, sh, sizeof(sh), &sh_len);
+    CHECK(st == HANDSHAKE_ERR_KEX && handshake_get_state(&r) == HANDSHAKE_STATE_FAILED,
+          "F149: the ServerHello probe rejects it -> KEX, FAILED (before sig_B)");
+    CHECK(sh[0] == 0xAA && sh_len == 777, "F149: no ServerHello (no signature) was written");
+    CHECK(handshake_pending_active_count(&store) == 0, "F149: no ledger entry was created");
+    CHECK(no_keys_exposed(&r) && hybrid_secrets_wiped(&r), "F149: no keys, secrets wiped");
+    handshake_ctx_wipe(&r);
+    mlkem_keypair_free(&ini_kem);
+    handshake_pending_store_wipe(&store);
+}
+
 /* ---- T29 / T32: responder-side low-order X25519 after a valid sig_A --- */
+/* Since F149 the ServerHello probe rejects a low-order key, so this path is
+ * defensive: the test reaches it white-box, by replacing the probed key in
+ * the context after the ServerHello, as a defect or corruption would. */
 
 static void test_step4_responder_low_order(int expire_mid_failure) {
     static handshake_pending_store_t store;
@@ -2964,12 +2997,13 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
     const char *t = expire_mid_failure ? "T32" : "T29";
     char name[200];
     mlkem_keypair_t ini_kem; /* valid ek: the X25519 half is the defect under test */
+    kex_keypair_t ini_eph;   /* a VALID ephemeral, so the ServerHello probe passes */
     clock_reset();
     store_fresh(&store, 1); /* capacity 1: reclamation proven by behaviour */
 
-    /* (a) malicious-but-authentic initiator: real A identity, low-order ephemeral */
-    if (mlkem_keypair_generate(&ini_kem) != 0 ||
-        build_client_hello(ID_A, sizeof(ID_A), SMALL_ORDER_POINT, ini_kem.public_key, ch, sizeof(ch),
+    /* (a) authentic initiator; its ephemeral is swapped for a low-order one after (b) */
+    if (mlkem_keypair_generate(&ini_kem) != 0 || kex_keypair_generate(&ini_eph) != 0 ||
+        build_client_hello(ID_A, sizeof(ID_A), ini_eph.public_key, ini_kem.public_key, ch, sizeof(ch),
                            &ch_len) != 0 ||
         handshake_responder_init(&r, ID_B, sizeof(ID_B), &g_kp_b, &g_ks, &store) != HANDSHAKE_OK) {
         fatal("T29 fixture");
@@ -2977,8 +3011,9 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
     /* (b) */
     const int b_ok = handshake_responder_accept_client_hello(&r, ch, ch_len) == HANDSHAKE_OK &&
                      handshake_responder_create_server_hello(&r, sh, sizeof(sh), &sh_len) == HANDSHAKE_OK;
-    snprintf(name, sizeof(name), "step4 %s(b): low-order ClientHello accepted, ServerHello created, store now full", t);
+    snprintf(name, sizeof(name), "step4 %s(b): ClientHello accepted, ServerHello created, store now full", t);
     CHECK(b_ok && handshake_pending_active_count(&store) == 1, name);
+    memcpy(r.peer_eph_pub, SMALL_ORDER_POINT, sizeof(r.peer_eph_pub)); /* white-box: the defect */
     /* (c) a genuinely valid sig_A over the correct transcript */
     if (!b_ok || build_signed_client_auth(ch, ch_len, sh, sh_len, &g_kp_a, ca, sizeof(ca), &ca_len) != 0) {
         fatal("T29 ClientAuth fixture");
@@ -2990,7 +3025,7 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
     }
     /* (d) */
     const handshake_status_t st = handshake_responder_verify_client_auth(&r, ca, ca_len);
-    snprintf(name, sizeof(name), "step4 %s(d): valid sig_A + low-order ephemeral -> KEX (the root cause)", t);
+    snprintf(name, sizeof(name), "step4 %s(d): valid sig_A + low-order ephemeral -> KEX (defensive recompute)", t);
     CHECK(st == HANDSHAKE_ERR_KEX, name);
     /* (e) */
     snprintf(name, sizeof(name), "step4 %s(e): responder FAILED, no keys, not peer-confirmed", t);
@@ -3013,6 +3048,7 @@ static void test_step4_responder_low_order(int expire_mid_failure) {
 
     pair_wipe(&fresh);
     handshake_ctx_wipe(&r);
+    kex_keypair_free(&ini_eph);
     mlkem_keypair_free(&ini_kem);
     handshake_pending_store_wipe(&store);
 }
@@ -3539,6 +3575,7 @@ static void run_step4_tests(void) {
     test_v25_h5_malformed_ek();                 /* V2-5 H5 */
     test_v25_h6_wipe_matrix();                  /* V2-5 H6 */
     test_v25_h7_out_cap_rollback();             /* V2-5 H7 */
+    test_f149_responder_probe();                /* F149 */
     test_step4_responder_low_order(0);          /* T29 */
     test_step4_wipe_cancels();                  /* T30 */
     test_step4_cancel_semantics();              /* T31 */

@@ -1012,6 +1012,8 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
     size_t unsigned_len = 0;
     size_t full_len = 0;
     size_t sig_len = 0;
+    uint8_t *probe = NULL;
+    int kex_rc = -1;
     pending_status_t ps = PENDING_OK;
     handshake_status_t result = HANDSHAKE_ERR_INTERNAL;
     memset(&sh, 0, sizeof(sh));
@@ -1021,6 +1023,24 @@ handshake_status_t handshake_responder_create_server_hello(handshake_ctx_t *ctx,
     memset(handshake_id, 0, sizeof(handshake_id));
 
     if (kex_keypair_generate(&ctx->eph) != 0) {
+        goto fail;
+    }
+
+    /* VALIDATION PROBE ONLY (F149), mirroring the initiator's: reject an
+     * invalid or low-order initiator ephemeral BEFORE sig_B, so such a key
+     * costs no ML-DSA signature and no ledger entry. The result is wiped
+     * and freed at once; verify_client_auth recomputes the secret only
+     * after sig_A has authenticated the key. */
+    probe = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
+    if (probe == NULL) {
+        result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;
+        goto fail;
+    }
+    kex_rc = kex_shared_secret(probe, &ctx->eph, ctx->peer_eph_pub);
+    secure_mem_free(probe, KEX_SHARED_SECRET_BYTES);
+    probe = NULL;
+    if (kex_rc != 0) {
+        result = HANDSHAKE_ERR_KEX;
         goto fail;
     }
 
@@ -1192,7 +1212,8 @@ handshake_status_t handshake_responder_verify_client_auth(handshake_ctx_t *ctx,
      * signed message, so it is wiped after derivation rather than here. */
 
     /* 6. X25519 into a TEMPORARY buffer -- A's ephemeral key is only used
-     *    now that sig_A has authenticated it. */
+     *    now that sig_A has authenticated it. The ServerHello probe (F149)
+     *    already rejected a low-order key, so a failure here is defensive. */
     shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
     if (shared == NULL) {
         result = HANDSHAKE_ERR_RESOURCE_EXHAUSTED;

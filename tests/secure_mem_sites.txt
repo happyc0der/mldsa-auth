@@ -16,6 +16,7 @@ src/protocol/handshake.c|probe = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|keys = secure_mem_alloc(SESSION_KEYS_LEN);
+src/protocol/handshake.c|probe = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|ctx->ss_kem = secure_mem_alloc(MLKEM_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|shared = secure_mem_alloc(KEX_SHARED_SECRET_BYTES);
 src/protocol/handshake.c|keys = secure_mem_alloc(SESSION_KEYS_LEN);

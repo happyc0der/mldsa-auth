@@ -234,7 +234,7 @@ V4-24b took two gates:
   intent. A new CTest, `ubsan_aborts`, needs a planted signed overflow to
   stop the process: what the compiler did, not only what it was told. Four
   hand controls showed both failing.
-- **P2:** every heap secret's allocation site, 35 of them, is pinned to
+- **P2:** every heap secret's allocation site, 36 of them, is pinned to
   libsodium's guarded memory (`secure_mem_sites`). Campaign v69 shows a key
   moved to `malloc` caught by name.
 
