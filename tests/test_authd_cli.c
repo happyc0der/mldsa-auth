@@ -1336,6 +1336,57 @@ static void test_passphrase_custody(void)
     (void)unlink(lnk); (void)unlink(f); (void)unlink(big); (void)unlink(nl); (void)rmdir(d);
 }
 
+/* V4-99 (erratum 74): systemd's credential, as MEASURED on Ubuntu 26.04 --
+ * root:root, 0440, read by the service user through an ACL -- is accepted
+ * only DIRECTLY inside $CREDENTIALS_DIRECTORY, and only with no group write
+ * and no other bit. The decision is a pure function so the root-owned cases
+ * run without root; the rehearsal (tools/rehearse_runbook.py) is where real
+ * systemd delivers one to the real daemon. */
+static void test_credential_custody(void)
+{
+    const char *cd = "/run/credentials/mldsa-authd.service";
+    const char *in = "/run/credentials/mldsa-authd.service/passphrase";
+    const uid_t me = (uid_t)997;
+#define CC(p, u, g, m, dir) authd_secret_custody((p), (uid_t)(u), (gid_t)(g), (mode_t)(m), me, (dir))
+    CHECK(CC(in, 0, 0, 0100440, cd) == AUTHD_SECRET_OK,
+          "credential custody: systemd's root:root 0440 file in $CREDENTIALS_DIRECTORY is accepted -- the canary");
+    CHECK(CC(in, 0, 0, 0100400, cd) == AUTHD_SECRET_OK && CC(in, 0, 0, 0100600, cd) == AUTHD_SECRET_OK,
+          "credential custody: 0400 and 0600 root:root credentials are accepted");
+    CHECK(CC(in, 0, 0, 0100440, "/run/credentials/mldsa-authd.service/") == AUTHD_SECRET_OK,
+          "credential custody: a trailing slash on $CREDENTIALS_DIRECTORY changes nothing");
+    CHECK(CC(in, 0, 0, 0100440, NULL) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: without $CREDENTIALS_DIRECTORY a root-owned file is not-owned-by-this-user");
+    CHECK(CC("/etc/mldsa-authd/pass", 0, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: a root-owned file OUTSIDE the credentials directory is refused as before");
+    CHECK(CC("/run/credentials/mldsa-authd.serviceX/passphrase", 0, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: a sibling directory sharing the prefix is not the credentials directory");
+    CHECK(CC("/run/credentials/mldsa-authd.serviceXpassphrase", 0, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: a NAME sharing the prefix, with no '/' after it, is not inside the directory");
+    CHECK(CC("/run/credentials/mldsa-authd.service/sub/passphrase", 0, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: a subdirectory of the credentials directory is not the credentials directory");
+    CHECK(CC("/run/credentials/mldsa-authd.service/", 0, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: the directory itself names no file");
+    CHECK(CC("run/credentials/x.service/passphrase", 0, 0, 0100440, "run/credentials/x.service") == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: a relative $CREDENTIALS_DIRECTORY is never trusted");
+    CHECK(CC(in, 0, 5, 0100440, cd) == AUTHD_SECRET_ERR_OWNER && CC(in, 5, 0, 0100440, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: only root:root earns the exception -- another owner or group does not");
+    CHECK(CC(in, 0, 0, 0100460, cd) == AUTHD_SECRET_ERR_PERMISSIONS,
+          "credential custody: a group-writable credential is refused as unsafe-permissions");
+    { const mode_t other[] = {0100444, 0100442, 0100441};
+      int all = 1;
+      for (size_t i = 0; i < sizeof other / sizeof other[0]; i++) {
+          if (CC(in, 0, 0, other[i], cd) != AUTHD_SECRET_ERR_PERMISSIONS) { all = 0; }
+      }
+      CHECK(all, "credential custody: any 'other' bit on a credential is refused as unsafe-permissions"); }
+    CHECK(CC(in, me, 0, 0100400, cd) == AUTHD_SECRET_OK && CC(in, me, 0, 0100440, cd) == AUTHD_SECRET_ERR_PERMISSIONS,
+          "credential custody: a credential chowned to the service user keeps the ordinary 0600-or-tighter rule");
+    CHECK(CC("/home/u/pass", (uid_t)5, me, 0100600, cd) == AUTHD_SECRET_ERR_OWNER,
+          "credential custody: another user's 0600 file is not-owned-by-this-user, credentials directory or not");
+    CHECK(CC("/home/u/pass", me, me, 0100600, cd) == AUTHD_SECRET_OK && CC("/home/u/pass", me, me, 0100640, cd) == AUTHD_SECRET_ERR_PERMISSIONS,
+          "credential custody: an ordinary own file is unchanged -- 0600 accepted, 0640 refused");
+#undef CC
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1361,6 +1412,7 @@ int main(void)
     test_rotate_on_disk();
     test_rotate_reply_refused_or_lost();
     test_passphrase_custody();
+    test_credential_custody();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

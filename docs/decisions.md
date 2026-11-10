@@ -13353,3 +13353,79 @@ jobs slower against 17 faster, is the figure to rely on. The wall-clock
 gap (16 min) exceeds the longest job's (3 min); concurrent-job limits
 pushing work into later waves would explain it, but that is not checked.
 ccache stays. The branch was deleted after the run.
+
+## V4-99 — the runbook, rehearsed on systemd (F179–F187, errata 74–75)
+
+**Why now.** The owner asked for the project to be made ready for real use.
+The deployment runbook said it had been "checked as far as it can be without
+your host", and every piece had been, on its own: the unit by systemd's
+analysers in a container, the offline build, Caddy in a container, the
+backup drill in-process. The whole had never been run as an operator runs it,
+on a host with systemd as PID 1, a service user, a packaged proxy and a site
+user. A GitHub runner is such a host and is thrown away after the job, so it
+is where to try.
+
+**The tool.** `tools/rehearse_runbook.py` extracts every ```bash block under
+each numbered step of `deploy/RUNBOOK.md` and runs it as written. It never
+holds a second copy of the commands. Twelve substitutions are declared, each
+with its reason (an editor, a placeholder, the laptop end of a tunnel, a
+foreground process), and each must match its step's text exactly once:
+`--check-substitutions` checks that without running anything, in CI's spec
+job, and was shown red by a one-word runbook edit. Each step's documented
+output is an EXPECT. It refuses to run without
+`REHEARSAL_HOST_IS_DISPOSABLE=1`.
+
+**What it found**, in the order the runs reached them (runs 42769079909,
+42769899331, 42770745822, 42774314585, 42775280622; green at 42776000320):
+
+1. F179 — step 7's `--check-config` can only fail before the first start.
+2. F180 — the daemon cannot read its own configuration (Medium).
+3. F181 — Ubuntu 26.04's Caddy 2.6.2 refuses `proxy_protocol`.
+4. F182 — the site cannot read `server.pub`, its invite, or reach `site.sock`.
+5. F183 — the daemon refuses systemd's credential (Medium; the one code change).
+6. F184 — admin-socket commands run as the wrong user; no `backups/`.
+7. F185 — `audit-verify` and `pseudonym` cannot open the passphrase.
+
+Plus two Info rows left open: F186 (`io-error` for a refused peer) and F187
+(`io` for an unreadable configuration).
+
+**F183, measured before it was fixed.** The rehearsal started a throwaway
+unit with the same `User=` and `LoadCredentialEncrypted=` and printed what
+systemd delivered: owner 0, group 0, mode 0440, ACL `user:997:r--` with
+`mask::r--`, on a tmpfs mounted `ro,nosuid,nodev,noexec,mode=700`. The fix
+accepts exactly that shape and only there: root:root, no group write, no
+other bit, directly in the absolute directory `$CREDENTIALS_DIRECTORY` names.
+Every other file, a root-owned one elsewhere included, keeps owner == euid and
+`mode & 077 == 0`. Root ownership adds no exposure, since root can read either
+kind. The decision moved into a pure function so the root-owned cases run
+without root. Hand controls: eight, each failing by name. The first round
+lied, which is worth recording: two of five "passed" because a control that
+made a static function unused failed to compile under `-Werror`, the output
+was suppressed, and the previous binary ran. The control script now deletes
+the test executable first and prints a build failure as one. One control (a
+relative `$CREDENTIALS_DIRECTORY`) survived because its test case could not
+match; the case was rewritten. v79 now has 14 mutations, all killed by name
+(local campaign, ASan tree), and PF6 now dies on macOS as well.
+
+**A wrong guess, caught by running it.** I expected `systemd-run` to expand
+systemd's `%d` specifier; it passes it through literally, and `audit-verify`
+was told to open `%d/passphrase`. `sh -c` expands `$CREDENTIALS_DIRECTORY`
+instead.
+
+**The gate.** The rehearsal is now a CI job (`rehearse`, ~4 min, in parallel,
+so CI's wall time is unchanged), and step 18's journal check runs in it: no
+plain `id=` and no full client address under `log_identities = hashed` and
+`log_client_ip = prefix`. That check was vacuous twice before it was
+real, and both are worth keeping in mind for any "count is zero" gate. First,
+no line carried an address at all: the operator's loopback login has none by
+design, so "zero full addresses" held trivially; the rehearsal now opens a
+WebSocket upgrade through Caddy (101) and requires at least one prefixed
+address. Second, that connection's address was IPv6 (`localhost` is `::1`),
+which an IPv4-only pattern could not see, full or prefixed. Run 42783601574:
+`src=::/48`, one prefixed address, no full one, no plain `id=`.
+
+**What this does not establish.** One distribution (Ubuntu 26.04) and one
+systemd. Steps 17 and 18 (another host's TLS, a phone) are not rehearsed. The
+browser login itself is not driven here; CI's `wasm` job does that against
+the daemon fixture. And a rehearsed runbook is not a reviewed protocol: the
+cryptographic review the threat model calls for has not been commissioned.

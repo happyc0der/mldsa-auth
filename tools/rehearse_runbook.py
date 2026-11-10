@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""Rehearse deploy/RUNBOOK.md on a disposable Linux host (V4-99).
+
+The runbook says "each step says what it should print, so you can tell a
+success from a silence" -- but until V4-99 nobody had run it top to bottom on
+a host with systemd, a service user, a packaged Caddy and a site user. This
+tool does, from the runbook's OWN TEXT: it extracts every ```bash block under
+each numbered step and runs it as written. It never carries a second copy of
+the commands, so a runbook edit is rehearsed the next time this runs.
+
+Where a step cannot be run literally (an interactive editor, a placeholder
+like <handle>, a laptop on the far end of an SSH tunnel), a SUBSTITUTION is
+declared below with its reason. Each must match the step's text EXACTLY ONCE,
+or the rehearsal fails: a runbook that drifted out from under a substitution
+is reported, never silently skipped. Lines this tool adds of its own are
+HARNESS lines, printed as such, and never stand in for a runbook command.
+
+Each step's documented output ("must end OK: ...", "prints {"port":9080}") is
+checked as an EXPECT.
+
+It must run on a throwaway machine: it creates system users, installs into
+/usr/local, writes /etc and starts services. It refuses to run unless
+REHEARSAL_HOST_IS_DISPOSABLE=1 is set (the workflow sets it).
+
+  python3 tools/rehearse_runbook.py deploy/RUNBOOK.md [--keep-going]
+  python3 tools/rehearse_runbook.py deploy/RUNBOOK.md --check-substitutions
+
+Exit 0 only if every step ran and every EXPECT held. --check-substitutions
+runs NOTHING: it checks only that every substitution still matches its step's
+text exactly once and that every numbered step with commands is either
+rehearsed or skipped with a reason, so CI can gate a runbook edit cheaply on
+any machine.
+"""
+import os
+import re
+import subprocess
+import sys
+
+SRC = "/opt/build/mldsa-auth"
+STATE = "/tmp/rehearsal.env"
+
+# step -> list of (old, new, reason). old must occur exactly once.
+SUBST = {
+    1: [("sh deploy/fetch-deps.sh /opt/mldsa-deps        # networked machine, once\n"
+         "# carry /opt/mldsa-deps across, then, AS THE USER WHO WILL BUILD:\n"
+         "chown -R \"$(id -un)\" /opt/mldsa-deps\n"
+         "cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...",
+         "# (offline alternative not taken: this host is networked)",
+         "the offline path is an alternative to the block above, not a "
+         "second step; CI's `unit + offline build` job rehearses it")],
+    7: [("sudo -e /etc/mldsa-authd/authd.conf      # set site_uids and proxy_uids",
+         "sudo sed -i -e \"s/^site_uids = .*/site_uids = $(id -u www-data)/\" "
+         "-e \"s/^proxy_uids = .*/proxy_uids = $(id -u caddy)/\" /etc/mldsa-authd/authd.conf",
+         "an interactive editor; the edit the comment asks for, made with sed")],
+    10: [("sudo -e /etc/caddy/Caddyfile          # set your real hostname",
+          "sudo sed -i 's/^authd.example.com {/localhost {/' /etc/caddy/Caddyfile",
+          "an interactive editor; `localhost` gets Caddy's internal CA, no ACME")],
+    11: [("authd_client keygen --dir ~/.mldsa --passphrase-prompt",
+          "HANDLE=$(authd_client keygen --dir ~/.mldsa --passphrase-file ~/op.pass | tail -n 1)\n"
+          "echo \"HANDLE=$HANDLE\" >> " + STATE + "\n"
+          "cp ~/.mldsa/$HANDLE.pub ./$HANDLE.pub",
+          "the prompt cannot be typed at; the runbook names --passphrase-file as "
+          "the scripted equivalent, held to the same policy"),
+         ("--user you --handle <handle> --pub <handle>.pub --label \"laptop\"",
+          "--user you --handle $HANDLE --pub $HANDLE.pub --label \"laptop\"",
+          "the placeholder, filled with what keygen printed"),
+         ("ssh -L 8443:127.0.0.1:8443 your-vps\n", "",
+          "the laptop and the server are one host here; the tunnel's far end is "
+          "the same 127.0.0.1:8443"),
+         ("authd_client login --handle <handle> --key ~/.mldsa/<handle>.ek \\\n"
+          "    --passphrase-prompt",
+          "authd_client login --handle $HANDLE --key ~/.mldsa/$HANDLE.ek \\\n"
+          "    --passphrase-file ~/op.pass",
+          "the placeholder, and the scripted passphrase as above")],
+    15: [("--server-id authd --id alice@example.org'",
+          "--server-id authd --id '\"$HANDLE\"'' | tee /tmp/idh.out",
+          "the device enrolled in step 11, whose login is in the journal "
+          "(event=login-code-issued names the handle), not the example's alice"),
+         ("journalctl -u mldsa-authd | grep -F 'idh=3f09c2d18a7be641'",
+          "journalctl -u mldsa-authd | grep -F \"$(grep -o 'idh=[0-9a-f]*' /tmp/idh.out)\" | tail -n 3",
+          "the pseudonym the first command printed, not the example's")],
+    13: [("emcmake cmake", ". \"$EMSDK_ENV\" && emcmake cmake",
+          "emsdk's environment, which an operator's shell would already have")],
+    14: [("sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \\",
+          "sudo -u www-data nohup node /opt/mldsa-site/examples/site-node/server.mjs \\",
+          "the site runs under a process manager, not in this shell"),
+         ("--invite-file /etc/mldsa-site/invite --port 9080 --secure --trust-proxy",
+          "--invite-file /etc/mldsa-site/invite --port 9080 --secure --trust-proxy "
+          "> /tmp/site.out 2> /tmp/site.err &\n"
+          "for i in $(seq 1 50); do grep -q port /tmp/site.out 2>/dev/null && break; "
+          "sleep 0.2; done; cat /tmp/site.out; cat /tmp/site.err >&2",
+          "backgrounded, and its first line awaited")],
+}
+
+# steps whose blocks are not for this host
+SKIP = {
+    17: "connects to authd.example.com, a host that is not this one",
+    18: "a phone, and the timing tool on the build host",
+}
+
+# Lines the HARNESS runs before a step: the things the runbook says the
+# operator already has ("0. What you need", "copy it to your operators").
+PRE = {
+    1: ["test -d " + SRC],
+    11: ["sudo cp /var/lib/mldsa-authd/server.pub ./server.pub",
+         "openssl rand -base64 33 | tr -d '\\n' > ~/op.pass; chmod 600 ~/op.pass"],
+}
+
+# Checks the HARNESS runs after a step, for what the step says should hold.
+POST = {
+    # Step 18's journal check, made here: with log_identities = hashed and
+    # log_client_ip = prefix, no line may carry a plain id= or a full address.
+    # A count of zero full addresses means nothing if no line carries an
+    # address at all, and the operator's loopback login carries none by
+    # design. So first a connection through Caddy's PROXY v2 path -- a
+    # WebSocket upgrade to /authd/v1, which the daemon accepts and logs with
+    # the preamble's client address -- and then at least one /24 is required.
+    16: ["curl -sk --http1.1 --max-time 3 -o /dev/null -w 'upgrade %{http_code}\\n' "
+         "-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' "
+         "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Origin: https://localhost' "
+         "https://localhost/authd/v1 || true; sleep 1",
+         "sudo journalctl -u mldsa-authd --no-pager > /tmp/j16.txt; "
+         "echo \"plain-ids=$(grep -cE '[[:space:]]id=' /tmp/j16.txt)\"; "
+         # IPv4 AND IPv6: `localhost` is ::1 first, so Caddy's preamble
+         # carries an IPv6 address (V4-99: an IPv4-only pattern saw none).
+         "echo \"full-src=$(grep -cE 'src=[0-9A-Fa-f:.]+([[:space:]]|$)' /tmp/j16.txt)\"; "
+         "echo \"prefix-src=$(grep -cE 'src=[0-9A-Fa-f:.]+/(24|48)([[:space:]]|$)' /tmp/j16.txt)\"; "
+         "grep -F 'event=client-address' /tmp/j16.txt | tail -n 2"],
+    9: ["sleep 1; journalctl -u mldsa-authd --no-pager -n 30 | tee /tmp/j9.txt"],
+    14: [
+        # The pages are served through Caddy, and the site reaches site.sock:
+        # a session is opened, then a bogus code is EXCHANGEd and the DAEMON
+        # refuses it (403 login-failed). A site that cannot reach the socket
+        # answers otherwise.
+        "curl -sk -o /dev/null -w 'login.html %{http_code}\\n' https://localhost/login.html",
+        "curl -sk -c /tmp/cj -b /tmp/cj -o /dev/null -w 'session %{http_code}\\n' https://localhost/api/session",
+        "curl -sk -c /tmp/cj -b /tmp/cj -X POST -H 'Origin: https://localhost' "
+        "-H 'Content-Type: application/json' "
+        "--data '{\"code\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}' "
+        "-w ' login %{http_code}\\n' https://localhost/api/login",
+        # V4-96 made every login failure the same 403, so the site's answer
+        # cannot say whether the DAEMON refused the code or the site never
+        # reached it. The daemon's own journal can: it logs every local
+        # request with the command and the peer's uid.
+        "sleep 0.5; sudo journalctl -u mldsa-authd --no-pager | grep -F 'event=local-request' | tail -n 3",
+    ],
+}
+
+EXPECT = {
+    2: [r"OK: every discovered executable carries the full hardening set \[Linux\]"],
+    5: [r"server\.pub"],
+    9: [r"proxy_protocol=v2", r"event=started", r"event=listening-",
+        r"event=memlock-limit"],
+    11: [r"(?m)^[A-Za-z0-9_-]{43}$"],
+    12: [r"(?i)head"],
+    13: [r"100% tests passed out of 3"],
+    14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
+         r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
+    15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
+    16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]"],
+}
+# patterns that must NOT appear in a step's output
+FORBID = {
+    8: [r"(?i)warning|unknown|invalid"],
+    9: [r"memlock-limit.*level=warn|level=warn.*memlock-limit"],
+}
+# commands whose nonzero exit is the documented result, not a failure
+ALLOW_NONZERO = {16: ["grep"]}
+
+
+def steps(md):
+    """{n: (title, [bash block text, ...])} for '## n. title' headings."""
+    out, cur = {}, None
+    lines = md.split("\n")
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^## (\d+)\. (.*)$", lines[i])
+        if m:
+            cur = int(m.group(1))
+            out[cur] = (m.group(2), [])
+        elif re.match(r"^## |^# ", lines[i]):
+            cur = None
+        elif cur is not None and lines[i].strip() == "```bash":
+            ind = len(lines[i]) - len(lines[i].lstrip())
+            j, blk = i + 1, []
+            while lines[j].strip() != "```":
+                blk.append(lines[j][ind:])
+                j += 1
+            out[cur][1].append("\n".join(blk))
+            i = j
+        i += 1
+    return out
+
+
+def check_substitutions(st):
+    bad = []
+    for n, subs in sorted(SUBST.items()):
+        if n not in st:
+            bad.append("step %d has substitutions but no longer exists" % n)
+            continue
+        text = "\n".join(st[n][1]) + "\n"
+        for old, _new, _why in subs:
+            c = text.count(old)
+            if c != 1:
+                bad.append("step %d: substitution matches %d times: %r" % (n, c, old[:70]))
+    for n in sorted(set(SKIP) | set(PRE) | set(POST) | set(EXPECT)):
+        if n not in st:
+            bad.append("step %d is configured here but not in the runbook" % n)
+    for b in bad:
+        print("STALE: " + b)
+    rehearsed = [n for n in sorted(st) if st[n][1] and n not in SKIP]
+    print("%s: REHEARSAL: %d substitutions checked; steps rehearsed %s, skipped %s"
+          % ("FAIL" if bad else "PASS", sum(len(v) for v in SUBST.values()),
+             rehearsed, sorted(SKIP)))
+    return 1 if bad else 0
+
+
+def main():
+    if "--check-substitutions" in sys.argv:
+        return check_substitutions(steps(open(sys.argv[1]).read()))
+    if os.environ.get("REHEARSAL_HOST_IS_DISPOSABLE") != "1":
+        sys.exit("refusing: this creates users and services; set "
+                 "REHEARSAL_HOST_IS_DISPOSABLE=1 on a throwaway host only")
+    keep = "--keep-going" in sys.argv
+    md = open(sys.argv[1]).read()
+    st = steps(md)
+    open(STATE, "w").close()
+    results, ok_all = [], True
+    for n in sorted(st):
+        title, blocks = st[n]
+        if n in SKIP:
+            results.append((n, title, "SKIP", SKIP[n]))
+            continue
+        if not blocks:
+            continue
+        text = "\n".join(blocks) + "\n"
+        problems = []
+        for old, new, why in SUBST.get(n, []):
+            c = text.count(old)
+            if c != 1:
+                problems.append("substitution stale (%d matches): %r" % (c, old[:60]))
+                continue
+            text = text.replace(old, new)
+            print("[step %d] SUBST (%s)" % (n, why))
+        if problems:
+            ok_all = False
+            results.append((n, title, "FAIL", "; ".join(problems)))
+            print("\n".join(problems))
+            if not keep:
+                break
+            continue
+        allow = ALLOW_NONZERO.get(n, [])
+        trap = ("trap 'rc=$?; case \"$BASH_COMMAND\" in %s) ;; *) "
+                "echo \"REHEARSAL-CMD-FAILED rc=$rc: $BASH_COMMAND\" >&2; exit 1;; esac' ERR\n"
+                % ("|".join("*%s*" % a for a in allow) or "__never__"))
+        pre = "".join("echo 'HARNESS: %s'\n%s\n" % (c.replace("'", ""), c) for c in PRE.get(n, []))
+        post = "".join("echo 'HARNESS: %s'\n%s\n" % (c.replace("'", "")[:90], c) for c in POST.get(n, []))
+        script = ("set -o pipefail\ncd %s\n. %s\n%s%s%s\n%s\nexit 0\n"
+                  % (SRC, STATE, trap, pre, text, post))
+        print("\n===== step %d. %s =====" % (n, title))
+        print(text)
+        print("----- output -----", flush=True)
+        p = subprocess.run(["bash", "-c", script], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
+        out = p.stdout
+        print(out, flush=True)
+        why = []
+        if p.returncode != 0:
+            why.append("exit %d" % p.returncode)
+        for rx in EXPECT.get(n, []):
+            if not re.search(rx, out):
+                why.append("EXPECT missing: /%s/" % rx)
+        for rx in FORBID.get(n, []):
+            if re.search(rx, out):
+                why.append("FORBID present: /%s/" % rx)
+        status = "FAIL" if why else "PASS"
+        results.append((n, title, status, "; ".join(why)))
+        print("[step %d] %s %s" % (n, status, "; ".join(why)), flush=True)
+        if why:
+            ok_all = False
+            if not keep:
+                break
+    print("\n===== rehearsal summary =====")
+    for n, title, s, why in results:
+        print("%-4s step %2d  %-45s %s" % (s, n, title[:45], why))
+    print("PASS: REHEARSAL: every step ran as written" if ok_all
+          else "FAIL: REHEARSAL: see the steps above")
+    return 0 if ok_all else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

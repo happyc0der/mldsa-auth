@@ -25,15 +25,24 @@ Wants=network.target
 Type=simple
 User=mldsa-authd
 Group=mldsa-authd
+# --check-config at every start, here because only here does it see what it
+# checks: the credential under /run/credentials/ and RuntimeDirectory= exist
+# only while systemd starts the service, so run by hand beforehand it can
+# only fail (V4-99). Its line of resolved settings is the first thing in the
+# journal; a configuration it refuses stops the start there, with the reason.
+ExecStartPre=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf --check-config
 ExecStart=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf
 Restart=on-failure
 RestartSec=2s
 
 # The passphrase that opens the MLDSAEK1 server key (spec §12). systemd
-# decrypts it into $CREDENTIALS_DIRECTORY as a 0400 file owned by this service
-# — which is exactly the shape authd_secret.c already requires, so the config's
-# key_passphrase_file points there and nothing else changes. Never an
-# environment variable, never argv: both are readable by other processes.
+# decrypts it into $CREDENTIALS_DIRECTORY. MEASURED (V4-99, Ubuntu 26.04): the
+# file is root:root, mode 0440, read by this service's user through an ACL, on
+# a private read-only tmpfs. This comment used to say "a 0400 file owned by
+# this service", and the daemon refused the real thing; authd_secret.c now
+# accepts exactly that shape, and only inside $CREDENTIALS_DIRECTORY (spec §12,
+# erratum 74). Never an environment variable, never argv: both are readable by
+# other processes.
 #
 #   systemd-creds encrypt --name=passphrase /var/lib/mldsa-authd/pass -
 # and paste the output as SetCredentialEncrypted=, or keep the file and use

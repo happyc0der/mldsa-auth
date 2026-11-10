@@ -3,5 +3,12 @@ PF2|^test_authd_cli$|passphrase custody: a directory is refused as not-a-regular
 PF3|^test_authd_cli$|passphrase custody: a file with any one group or other bit set is refused as unsafe-permissions
 PF4|^test_authd_cli$|passphrase custody: a file one byte over AUTHD_PASSPHRASE_MAX is refused as empty-or-too-large
 PF5|^test_authd_cli$|passphrase custody: only ONE trailing newline is stripped; a second is part of the passphrase
-PF6|^authd_e2e$|a passphrase file owned by another user
+PF6|^test_authd_cli$|credential custody: another user's 0600 file is not-owned-by-this-user, credentials directory or not
 PF7|^test_authd_cli$|passphrase custody: a file holding only a newline is refused as empty
+PF8|^test_authd_cli$|credential custody: systemd's root:root 0440 file in $CREDENTIALS_DIRECTORY is accepted -- the canary
+PF9|^test_authd_cli$|credential custody: a NAME sharing the prefix, with no '/' after it, is not inside the directory
+PF10|^test_authd_cli$|credential custody: a subdirectory of the credentials directory is not the credentials directory
+PF11|^test_authd_cli$|credential custody: any 'other' bit on a credential is refused as unsafe-permissions
+PF12|^test_authd_cli$|credential custody: only root:root earns the exception -- another owner or group does not
+PF13|^test_authd_cli$|credential custody: a relative $CREDENTIALS_DIRECTORY is never trusted
+PF14|^test_authd_cli$|credential custody: a group-writable credential is refused as unsafe-permissions

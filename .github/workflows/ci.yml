@@ -170,6 +170,12 @@ jobs:
       - name: Every campaign anchor matches once, and the stated counts agree
         run: python3 tools/audit/check_mutation_anchors.py "$PWD"
 
+      # V4-99: the runbook rehearsal's substitutions still match the runbook's
+      # text (each exactly once), so an edit to deploy/RUNBOOK.md that the
+      # rehearsal would silently stop exercising fails here, in seconds.
+      - name: The runbook rehearsal still matches the runbook
+        run: python3 tools/rehearse_runbook.py deploy/RUNBOOK.md --check-substitutions
+
   fuzz-and-scan:
     name: fuzz smoke + secret scan (Linux only)
     runs-on: ubuntu-26.04
@@ -449,3 +455,87 @@ jobs:
           grep -q "^SKIP:" caddy.log && { echo "::error::the Caddy gate skipped"; exit 1; }
           grep -q "^PASS: CADDY: all checks" caddy.log || {
             echo "::error::the Caddy gate did not report all checks passing"; exit 1; }
+
+  # V4-99: deploy/RUNBOOK.md, run top to bottom as an operator would, on a
+  # host with systemd as PID 1, a service user, a packaged Caddy running as
+  # `caddy`, and a site running as `www-data`. The runner is such a host and
+  # is thrown away after the job. tools/rehearse_runbook.py runs the
+  # runbook's own ```bash blocks, as written, and checks what each step says
+  # it prints. Its first run found seven defects that stopped a deployment
+  # cold; every one was invisible to the per-piece checks above.
+  rehearse:
+    name: deploy/RUNBOOK.md, top to bottom (Linux, systemd)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      EMSDK_COMMIT: 5eb0bde7585670252e8ba05e9d361627bffd08b5   # emsdk tag 6.0.9
+      EMSCRIPTEN_VERSION: "6.0.9"
+      NODE_VERSION: v24.21.0
+      NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/deps
+
+      - name: Record the runner
+        run: |
+          . /etc/os-release && echo "$PRETTY_NAME"
+          uname -srm
+          systemd-analyze --version | head -1
+          ps -p 1 -o comm=
+
+      # "0. What you need": a TLS proxy (Caddy, as packaged, running as
+      # `caddy`), Node for the reference site, and the source at a path
+      # without spaces. The site user `www-data` is the distribution's own.
+      - name: What the runbook says you need
+        run: |
+          sudo apt-get -o Acquire::Retries=5 update -qq
+          sudo apt-get -o Acquire::Retries=5 install -y -qq caddy
+          # The packaged unit and user, with Caddy's own release binary: the
+          # distribution's 2.6.2 is older than the 2.7 the runbook requires.
+          # Pinned and checked like tests/caddy_proxy.sh's.
+          v=$(sed -n 's/^CADDY_VERSION=//p' tests/caddy_proxy.sh)
+          h=$(sed -n 's/^CADDY_SHA256_amd64=//p' tests/caddy_proxy.sh)
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/caddy.tgz" \
+            "https://github.com/caddyserver/caddy/releases/download/v${v}/caddy_${v}_linux_amd64.tar.gz"
+          echo "$h  $RUNNER_TEMP/caddy.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/caddy.tgz" -C "$RUNNER_TEMP" caddy
+          sudo install -m 0755 "$RUNNER_TEMP/caddy" "$(command -v caddy)"
+          sudo systemctl restart caddy
+          caddy version; id caddy; id www-data
+          systemctl is-active caddy
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/node.tar.xz" \
+            "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz"
+          echo "$NODE_SHA256  $RUNNER_TEMP/node.tar.xz" | sha256sum -c -
+          sudo tar -xJf "$RUNNER_TEMP/node.tar.xz" -C /usr/local --strip-components=1
+          node --version
+          git clone --quiet https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          git -C "$RUNNER_TEMP/emsdk" checkout --quiet --detach "$EMSDK_COMMIT"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSCRIPTEN_VERSION" > /dev/null
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION" > /dev/null
+          echo "EMSDK_ENV=$RUNNER_TEMP/emsdk/emsdk_env.sh" >> "$GITHUB_ENV"
+          sudo install -d -o "$(id -un)" /opt/build
+          cp -a "$GITHUB_WORKSPACE" /opt/build/mldsa-auth
+
+      - name: Rehearse
+        env:
+          REHEARSAL_HOST_IS_DISPOSABLE: "1"
+        run: python3 tools/rehearse_runbook.py deploy/RUNBOOK.md --keep-going
+
+      # What systemd actually delivers as a credential to a service with
+      # User= -- owner, mode, ACL, filesystem -- measured in a throwaway unit
+      # with the same two directives, rather than assumed (V4-99, R5).
+      - name: The credential systemd delivers, measured
+        if: always()
+        run: |
+          sudo apt-get -o Acquire::Retries=5 install -y -qq acl > /dev/null || true
+          id mldsa-authd || true
+          sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+            -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred \
+            sh -c 'echo "euid=$(id -u)"; ls -lan "$CREDENTIALS_DIRECTORY";
+                   stat -c "%u %g %a %n" "$CREDENTIALS_DIRECTORY" "$CREDENTIALS_DIRECTORY/passphrase";
+                   getfacl -n "$CREDENTIALS_DIRECTORY/passphrase" 2>&1;
+                   findmnt -n -o FSTYPE,OPTIONS -T "$CREDENTIALS_DIRECTORY"' || true
+
+      - name: The daemon's journal, whatever happened
+        if: always()
+        run: sudo journalctl -u mldsa-authd -u caddy --no-pager -n 200 || true

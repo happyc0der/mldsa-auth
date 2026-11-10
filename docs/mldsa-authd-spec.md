@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.33, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94 errata)
+# mldsa-authd — deployment specification (v1.34, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -848,7 +848,18 @@ self-test. The passphrase and derived key are wiped immediately.
 **Server passphrase delivery** on a headless host: 32 random bytes from
 `authd_admin init`, delivered by systemd `LoadCredentialEncrypted`
 (TPM-bound where available), with `LoadCredential` as the fallback. Never an
-environment variable, never argv. Argon2id is then a wrapper around an already
+environment variable, never argv.
+
+**The passphrase file's custody has one exception, for that delivery**
+(erratum 74). systemd hands the service its credential as a file owned
+**root:root**, mode 0440, which the service user reads through an ACL entry —
+the group bits are the ACL mask — on a private read-only tmpfs it mounts for
+the one service (measured on Ubuntu 26.04, V4-99). A file **directly** in the
+directory `$CREDENTIALS_DIRECTORY` names (absolute; no subdirectory; the
+prefix bounded by `/`) is therefore also accepted when it is root:root, no one
+but its owner may write it, and it has no "other" bit. Every other file,
+including a root-owned one anywhere else, is held to owner == euid and
+`mode & 077 == 0`. The key file's custody is unchanged. Argon2id is then a wrapper around an already
 uniform secret, not the defence — which is why the honest claim is narrow:
 encryption at rest keeps the key out of **disk images, snapshots and backups**,
 and does nothing against root on a running host.
@@ -1145,8 +1156,9 @@ one key, without learning whose.
 
 User `mldsa-authd`, never root. `/var/lib/mldsa-authd/` mode 0700 holds
 `store.sqlite3`, `server.ek`, `server.pub` and `backups/`;
-`/run/mldsa-authd/` — mode **0750**, owner `mldsa-authd`, group = the proxy's
-group, created by systemd's `RuntimeDirectory=` — holds the three sockets:
+`/run/mldsa-authd/` — mode **0750**, owner and group `mldsa-authd`, created by
+systemd's `RuntimeDirectory=`, with the proxy's and the site's users added to
+that group — holds the three sockets:
 
 | Socket | Mode | Reachable by |
 |---|---|---|
@@ -1171,8 +1183,13 @@ is shorter than the 255 bytes the configuration parser otherwise allows. A path
 that passes every byte-level check and no kernel can bind is refused by
 `--check-config` rather than at start-up.
 
-Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`
-mode 0600, validated by `--check-config` before the service starts.
+Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`,
+mode 0600 **owned by the service user**, which reads it; `/etc/mldsa-authd/`
+is root-owned, mode 0750, group `mldsa-authd`; the unit's `ProtectSystem=strict`
+keeps `/etc` read-only to the service, so it cannot change its own
+configuration. It is validated by `--check-config` as the unit's
+`ExecStartPre=`, because the passphrase credential and `/run/mldsa-authd/` that
+it checks exist only while systemd starts the service (erratum 75).
 
 The systemd unit sets `NoNewPrivileges`, `ProtectSystem=strict`,
 `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
@@ -1591,3 +1608,10 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 73 | 8 | The daemon refuses a pipelined request on the site socket: `ERR code=pipelined`, then it closes; the reference site sends one request at a time | §8 allowed one request in flight but the daemon served pipelined lines in turn, so F178's smuggled line ran as a second request; a second layer under erratum 71 (the owner's choice) |
+
+### Revision v1.34 (V4-99)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 74 | 12 | A passphrase file directly in `$CREDENTIALS_DIRECTORY` may be root:root, with no group write and no other bit | systemd delivers its credential that way (root:root 0440, read through an ACL), not as "a 0400 file owned by the service user" as the code and unit assumed; the daemon refused its own deployment path, found by the first rehearsal of the runbook on systemd |
+| 75 | 16 | The configuration is the service user's (0600), in a root-owned 0750 directory of its group; `--check-config` runs as `ExecStartPre=`; `/run/mldsa-authd/` is the daemon's group, with the proxy and the site in it | a 0600 root file in a 0700 root directory could not be read by a daemon that runs as `mldsa-authd`, and `--check-config` run before the first start can only fail; both found by the same rehearsal |

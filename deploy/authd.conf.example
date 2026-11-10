@@ -1,7 +1,13 @@
 # mldsa-authd configuration (spec §16). Install at /etc/mldsa-authd/authd.conf,
-# mode 0600, owned by root. Validate before starting the service:
+# mode 0600, owned by the service user mldsa-authd, which reads it (a root-owned
+# 0600 file stops the daemon at start with `authd.conf: io`; V4-99). The unit
+# validates it at every start, as ExecStartPre=:
 #
 #   mldsa-authd --config /etc/mldsa-authd/authd.conf --check-config
+#
+# Run by hand before the service has ever started, that check can only fail:
+# the passphrase credential and /run/mldsa-authd/ exist only while systemd is
+# starting the service (deploy/RUNBOOK.md step 7).
 #
 # The parser is strict on purpose: an unknown key, a duplicate key, a value out
 # of range or a missing required key is a refusal, never a silent default. It

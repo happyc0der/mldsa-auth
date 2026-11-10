@@ -6,12 +6,19 @@ through an SSH tunnel. One host, systemd, root available for the install.
 people enrolling and logging in from a browser, phones included, through your
 site behind the TLS proxy. Do Part I first; Part II only adds to it.
 
-Everything below has been checked as far as it can be without your host: the
-unit passes systemd's own analysers, the hardened binary is built and gated on
-x86_64 Linux in CI, the offline build is proven with the network switched off,
-and the backup/restore drill runs end to end. **What has not been checked is
-your machine.** The steps are the part only you can run; each says what it
-should print, so you can tell a success from a silence.
+**This runbook is rehearsed on every push.** CI's `rehearse` job takes a fresh
+Ubuntu 26.04 host with systemd, runs every command block in steps 1–16 below
+**as written** (`tools/rehearse_runbook.py`), and checks what each step says it
+prints: a real operator login, a verified audit chain, the site's code
+exchange reaching the daemon, and a journal with no plain identifier or
+address in it. Where a step cannot be run literally — an editor, a
+placeholder, the laptop end of a tunnel — the substitution is declared in that
+tool with its reason, and CI fails if the runbook's text drifts from under it.
+Its first run, in V4-99, found seven defects that stopped a deployment cold;
+before then each piece had been checked on its own and the whole never had.
+**What has not been checked is your machine**, nor steps 17 and 18 (another
+host, a phone). Each step says what it should print, so you can tell a success
+from a silence.
 
 ---
 
@@ -20,6 +27,12 @@ should print, so you can tell a success from a silence.
 - A Linux host with systemd ≥ 250 (`systemd-analyze --version`) and root.
 - A TLS proxy. Caddy is what `deploy/Caddyfile.example` is written and tested
   for; anything that speaks **PROXY protocol v2 to a Unix upstream** works.
+  **Caddy 2.7 or later**: `proxy_protocol` in an upstream transport is new in
+  2.7. A distribution's own package can be older — Ubuntu 26.04 ships 2.6.2,
+  whose `caddy validate` refuses this Caddyfile with `unrecognized
+  subdirective proxy_protocol` (V4-99) — so install from Caddy's own apt
+  repository (caddyserver.com/docs/install), which also creates the `caddy`
+  user and unit the steps below assume. CI tests 2.10.2.
 - A build host — the same machine is fine. **The build path must not contain
   spaces** (libsodium's libtool cannot handle them; this is unpatchable, and it
   is why `/opt/build/mldsa-auth` appears below rather than anything prettier).
@@ -88,19 +101,32 @@ Installs `mldsa-authd`, `authd_admin`, `authd_client` into
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin mldsa-authd
 sudo install -d -o mldsa-authd -g mldsa-authd -m 0700 /var/lib/mldsa-authd
-sudo install -d -o root -g root -m 0700 /etc/mldsa-authd
+sudo install -d -o mldsa-authd -g mldsa-authd -m 0700 /var/lib/mldsa-authd/backups
+sudo install -d -o root -g mldsa-authd -m 0750 /etc/mldsa-authd
 ```
+
+`/etc/mldsa-authd` is group `mldsa-authd` because the daemon runs as that user
+and must read its configuration there (step 7); a 0700 root directory stops it
+at start with `authd.conf: io` (V4-99). Nobody else needs in: the credential in
+it is read by systemd, as root.
 
 `/run/mldsa-authd/` is **not** created here: systemd's `RuntimeDirectory=`
 makes it at start and removes it at stop, so a crash never leaves a stale
 directory with the wrong mode.
 
 Add the proxy's user to the daemon's group so it can reach the 0660 socket
-(Caddy usually runs as `caddy`):
+(Caddy usually runs as `caddy`), and, for Part II, the site's user so it can
+reach `site.sock` (the reference site runs as `www-data`):
 
 ```bash
 sudo usermod -aG mldsa-authd caddy
+sudo usermod -aG mldsa-authd www-data
 ```
+
+The group lets them reach the sockets in `/run/mldsa-authd/` (0750); each
+socket still checks the peer's uid against its own allowlist. A running process
+keeps the groups it started with, so a proxy that is already running must be
+**restarted**, not reloaded, before it can use this (step 10).
 
 ## 5. Create the identity and the store
 
@@ -135,16 +161,23 @@ no recovery path — losing it makes `server.ek` and the store unopenable.
 ## 7. Configure
 
 ```bash
-sudo cp /usr/local/share/mldsa-authd/authd.conf.example /etc/mldsa-authd/authd.conf
-sudo chmod 0600 /etc/mldsa-authd/authd.conf
+sudo install -o mldsa-authd -g mldsa-authd -m 0600 \
+     /usr/local/share/mldsa-authd/authd.conf.example /etc/mldsa-authd/authd.conf
 sudo -e /etc/mldsa-authd/authd.conf      # set site_uids and proxy_uids
-sudo mldsa-authd --config /etc/mldsa-authd/authd.conf --check-config
 ```
 
-The last command prints the settings it resolved. **Read the
-`proxy_protocol=` field.** If it says `none`, your proxy-facing listener has no
-client address and the rate limiter is off — which is a passing check and a
-broken deployment (audit finding F63).
+The file is the service user's, mode 0600, because the daemon reads it as that
+user. It cannot change it: the unit's `ProtectSystem=strict` makes `/etc`
+read-only to the service.
+
+**`--check-config` runs at every start, not here.** It checks that the key,
+its passphrase and the socket directories exist, and two of those — the
+credential in `/run/credentials/mldsa-authd.service/` and `/run/mldsa-authd/`
+itself — exist only while systemd is starting the service. Run by hand at this
+point it can only fail (`key_passphrase_file … does not exist`, exit 3;
+V4-99). So the unit runs it as `ExecStartPre=`, where they do exist, and a
+configuration it refuses stops the start with the reason in the journal.
+Step 9 reads what it resolved.
 
 `site_uids` must be the uid your site process runs as: `id -u www-data`.
 `proxy_uids` must be the proxy's: `id -u caddy`.
@@ -184,7 +217,11 @@ sudo systemctl enable --now mldsa-authd
 journalctl -u mldsa-authd -n 30
 ```
 
-You want `event=started`, one `event=listening-*` per configured listener, and
+First in the journal is `--check-config`'s line of resolved settings
+(step 7). **Read its `proxy_protocol=` field.** If it says `none`, your
+proxy-facing listener has no client address and the rate limiter is off — which
+is a passing check and a broken deployment (audit finding F63). Then you want
+`event=started`, one `event=listening-*` per configured listener, and
 `event=memlock-limit`. **If `memlock-limit` is at `warn`**, the limit is below
 the requirement and the daemon's secrets can be swapped to disk — fix
 `LimitMEMLOCK` and restart. Nothing else reports this: libsodium hands back
@@ -196,8 +233,12 @@ unlocked memory without an error.
 sudo cp /usr/local/share/mldsa-authd/Caddyfile.example /etc/caddy/Caddyfile
 sudo -e /etc/caddy/Caddyfile          # set your real hostname
 sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
+sudo systemctl restart caddy
 ```
+
+`restart`, not `reload`: a reload keeps the process, and with it the groups it
+started with, so Caddy would not yet be in `mldsa-authd` (step 4) and could
+not reach the socket.
 
 `proxy_protocol v2` in the upstream transport is load-bearing: without it the
 daemon has no client address and refuses every connection (Req 12).
@@ -219,7 +260,7 @@ person's passphrase is a copy of it at rest, so prefer the prompt.)
 Send the printed handle and `<handle>.pub` to the server. There:
 
 ```bash
-sudo -u mldsa-authd authd_admin enroll-operator \
+sudo authd_admin enroll-operator \
      --socket /run/mldsa-authd/admin.sock \
      --user you --handle <handle> --pub <handle>.pub --label "laptop"
 ```
@@ -238,24 +279,39 @@ A 43-character base64url login code means the whole path works.
 ## 12. Backups, and proving they are intact
 
 ```bash
-sudo -u mldsa-authd authd_admin backup \
+sudo authd_admin backup \
      --socket /run/mldsa-authd/admin.sock \
      --path /var/lib/mldsa-authd/backups/$(date +%F).sqlite3
 ```
 
-`--path` must be absolute: the daemon resolves it, not your shell. The backup
-is 0600, like the store.
+`admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
+plain `sudo`; as any other user the daemon closes the connection at accept and
+the tool says `io-error` (V4-99). `--path` must be absolute: the daemon
+resolves it, not your shell, and writes it into `backups/` (step 4) as the
+service user. The backup is 0600, like the store.
 
 Verify the audit chain — on the live store or on any backup, with the daemon
 running or stopped:
 
 ```bash
-sudo -u mldsa-authd authd_admin audit-verify \
+sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+     -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred \
+     sh -c 'exec authd_admin audit-verify \
      --store /var/lib/mldsa-authd/store.sqlite3 \
      --key /var/lib/mldsa-authd/server.ek \
-     --passphrase-file /run/credentials/mldsa-authd.service/passphrase \
-     --server-id authd
+     --passphrase-file "$CREDENTIALS_DIRECTORY/passphrase" \
+     --server-id authd'
 ```
+
+The passphrase exists only as the encrypted credential (step 6), so the tool
+runs the way the daemon does: as the service user, with systemd decrypting the
+credential for it into `$CREDENTIALS_DIRECTORY`. The `sh -c` is what expands
+that name: systemd's own `%d` is expanded only in unit files, and passed to
+`systemd-run` it reaches the tool literally (V4-99).
+Pointed at the daemon's own `/run/credentials/mldsa-authd.service/passphrase`
+it is refused (`not-owned-by-this-user`), because outside the service that file
+is not a credential delivered to it; and with the daemon stopped the file is
+not there at all (V4-99).
 
 It prints the head MAC and an entry count. **Record the head MAC somewhere off
 this host** — the chain detects tampering, but only if you have something to
@@ -323,14 +379,23 @@ sudo install -d -o root -g root -m 0755 /opt/mldsa-site/examples /opt/mldsa-site
 sudo cp -r web /opt/mldsa-site/web
 sudo cp -r examples/site-node /opt/mldsa-site/examples/site-node
 sudo cp build-wasm/web/mldsa_client.mjs build-wasm/web/mldsa_client.wasm /opt/mldsa-site/module/
-head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | sudo install -o www-data -m 0600 /dev/stdin /etc/mldsa-authd/invite
+sudo install -o root -g root -m 0644 /var/lib/mldsa-authd/server.pub /opt/mldsa-site/server.pub
+sudo install -d -o www-data -g www-data -m 0700 /etc/mldsa-site
+head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | sudo install -o www-data -m 0600 /dev/stdin /etc/mldsa-site/invite
 sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \
      --authd-site /run/mldsa-authd/site.sock \
      --authd-ws-unix /run/mldsa-authd/p.sock \
-     --server-id authd --server-pub /var/lib/mldsa-authd/server.pub \
+     --server-id authd --server-pub /opt/mldsa-site/server.pub \
      --module-dir /opt/mldsa-site/module \
-     --invite-file /etc/mldsa-authd/invite --port 9080 --secure --trust-proxy
+     --invite-file /etc/mldsa-site/invite --port 9080 --secure --trust-proxy
 ```
+
+The site gets its own copy of `server.pub` and its own directory for the
+invite because the daemon's are closed to it: `/var/lib/mldsa-authd/` is 0700
+and `/etc/mldsa-authd/` admits only the daemon's group. Pointed at the
+daemon's copy, the site stops at start with `EACCES … server.pub` (V4-99).
+`server.pub` is public — every client pins it — so a world-readable copy is
+fine; the invite is a secret, so its directory is the site user's alone.
 
 It prints `{"port":9080}`. Run it under your process manager. Keep the layout:
 the server finds `web/` two directories above itself, as it does in the
@@ -383,20 +448,23 @@ log_client_ip  = prefix
 | `log_client_ip = prefix` | `src=203.0.113.0/24` (IPv6: `/48`) |
 | `log_client_ip = off` | nothing |
 
-`--check-config` prints both (step 7). To find one person's lines, compute
+`--check-config` prints both (step 9). To find one person's lines, compute
 their pseudonym — it needs the server passphrase, which is exactly who should
 be able to:
 
 ```bash
-sudo -u mldsa-authd authd_admin pseudonym \
+sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+     -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred \
+     sh -c 'exec authd_admin pseudonym \
      --store /var/lib/mldsa-authd/store.sqlite3 \
      --key /var/lib/mldsa-authd/server.ek \
-     --passphrase-file /run/credentials/mldsa-authd.service/passphrase \
-     --server-id authd --id alice@example.org
+     --passphrase-file "$CREDENTIALS_DIRECTORY/passphrase" \
+     --server-id authd --id alice@example.org'
 journalctl -u mldsa-authd | grep -F 'idh=3f09c2d18a7be641'
 ```
 
-The first command prints `idh=…`; grep for it. Nothing is lost by hashing:
+The first command prints `idh=…` (run as step 12's `audit-verify` is, for the
+same reason); grep for it. Nothing is lost by hashing:
 the store's audit chain (step 12) records the real identifiers under every
 setting, and the rate limiter keys on the full address in memory.
 
@@ -517,11 +585,16 @@ Common ones, and what they actually are:
   mode 0600 or tighter, owned by the service user. A `LoadCredentialEncrypted`
   credential is 0400 and owned correctly; a file you copied by hand may not be.
 - **`unix listener …: path`** — a socket path longer than `sun_path` (104–108
-  bytes). `--check-config` catches this before systemd does.
+  bytes). The unit's `ExecStartPre=` check catches this before the daemon
+  tries to bind it.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
+- **`authd.conf: io`** — the daemon cannot read its configuration: it runs
+  as `mldsa-authd`, so the file must be that user's and `/etc/mldsa-authd`
+  must admit its group (steps 4 and 7).
 - **Everything starts, no client can connect** — check `proxy_protocol` in
-  `--check-config` output and the proxy's uid in `proxy_uids`.
+  the `--check-config` line at the top of the journal and the proxy's uid in
+  `proxy_uids`.
 
 ## What this deployment does not do
 
