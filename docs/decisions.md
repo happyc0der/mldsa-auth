@@ -13330,3 +13330,26 @@ What ccache is worth after V4-92 is inferred, not measured: v58's
 preflight (two builds that bypass ccache, plus the suite) took 112 s,
 and a restore cycle that builds through the cache about 25 s. An A/B
 nightly with ccache off would settle it, at ~930 runner-minutes.
+
+## V4-98 — the ccache A/B nightly (records only)
+
+V4-97 left ccache's worth after V4-92 inferred. Measured: branch
+`ab-noccache` (bb91f2f, main 7376ee9 plus one line appending
+`CCACHE_DISABLE=1` to `$GITHUB_ENV`, so every step ran unchanged and ccache
+passed compiles through) ran nightly 42755289019, 72/72.
+
+| | ccache on (42709476541) | ccache off (42755289019) |
+|---|---|---|
+| first job start to last job end | 35.6 min | 51.5 min |
+| runner-minutes (sum of job spans) | 930 | 1,030 |
+| longest job | 34.0 min | 37.0 min |
+
+ccache saves ~100 runner-minutes a nightly (~10 %), concentrated in the
+long Linux campaigns: v58 20.6 → 37.0 min with it off, v49b 19.8 → 33.9,
+v26 10.9 → 20.8. The macOS job, which does not use ccache, moved +0.3 min.
+One run each: 17 of 72 jobs were faster with ccache off, by up to 5.2 min,
+so a single job's difference is noise at about ±5 min; the total, with 39
+jobs slower against 17 faster, is the figure to rely on. The wall-clock
+gap (16 min) exceeds the longest job's (3 min); concurrent-job limits
+pushing work into later waves would explain it, but that is not checked.
+ccache stays. The branch was deleted after the run.
