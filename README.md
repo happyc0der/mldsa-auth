@@ -136,8 +136,8 @@ cmake --install build-release --prefix /usr/local --component mldsa-authd
 ```
 
 That installs `mldsa-authd`, `authd_admin` and `authd_client`, plus the service
-unit and the example configs under `share/mldsa-authd/` — six files, and
-nothing else. `x86-64-v3` is the x86_64 choice; on arm64 name an arm64 CPU
+unit, the audit-verification unit and its timer, and the example configs
+under `share/mldsa-authd/` — eight files, and nothing else. `x86-64-v3` is the x86_64 choice; on arm64 name an arm64 CPU
 (`-DMLDSA_OQS_OPT_TARGET=neoverse-n1`, say). What matters is that it is
 *named*: the `auto` default tunes for the building machine and the binary may
 fault on an older CPU of the same family. **Pass `--component`**: liboqs is vendored with FetchContent and

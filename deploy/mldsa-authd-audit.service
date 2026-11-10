@@ -1,0 +1,63 @@
+# mldsa-authd's audit chain, verified on a timer (V4-102; spec §9.2, §18).
+#
+# Runs `authd_admin audit-verify` against the live store as the service user,
+# with the SAME encrypted credential the daemon gets, and prints the chain's
+# head MAC and entry count into the journal. Started hourly by
+# mldsa-authd-audit.timer. A chain that does not verify exits non-zero, so the
+# unit fails and `systemctl --failed` shows it.
+#
+# The head MAC is only worth something OFF this host (spec §9.2's second
+# trust domain): forward this unit's journal lines somewhere root on this host
+# cannot rewrite, and compare them over time. That forwarding is the
+# deployment's; this unit makes sure there is a line to forward.
+#
+# Edit --server-id if yours is not `authd` (it must match server_id in
+# authd.conf). See deploy/RUNBOOK.md step 12.
+
+[Unit]
+Description=mldsa-authd audit chain verification
+Documentation=https://github.com/happyc0der/mldsa-auth
+
+[Service]
+Type=oneshot
+User=mldsa-authd
+Group=mldsa-authd
+LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred
+# %d is systemd's name for this unit's credentials directory; it is expanded
+# here, in a unit file (it is NOT expanded on a systemd-run command line).
+ExecStart=/usr/local/bin/authd_admin audit-verify \
+    --store /var/lib/mldsa-authd/store.sqlite3 \
+    --key /var/lib/mldsa-authd/server.ek \
+    --passphrase-file %d/passphrase \
+    --server-id authd
+# The store is in WAL mode, so even a reader writes its -shm file.
+StateDirectory=mldsa-authd
+StateDirectoryMode=0700
+LimitMEMLOCK=32M
+
+# --- the daemon's hardening, less what a one-shot reader does not need -----
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+LimitCORE=0
+ProtectHostname=yes
+ProtectClock=yes
+RestrictRealtime=yes

@@ -155,6 +155,8 @@ install(TARGETS mldsa_authd_bin authd_admin_bin authd_client_bin
         COMPONENT mldsa-authd)
 install(FILES
           ${CMAKE_SOURCE_DIR}/deploy/mldsa-authd.service
+          ${CMAKE_SOURCE_DIR}/deploy/mldsa-authd-audit.service
+          ${CMAKE_SOURCE_DIR}/deploy/mldsa-authd-audit.timer
           ${CMAKE_SOURCE_DIR}/deploy/authd.conf.example
           ${CMAKE_SOURCE_DIR}/deploy/Caddyfile.example
         DESTINATION ${CMAKE_INSTALL_DATADIR}/mldsa-authd

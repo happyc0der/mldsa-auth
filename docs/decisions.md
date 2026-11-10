@@ -13508,3 +13508,23 @@ note's exact class. And one control run used a stale object: the source was
 restored inside the same second the mutant built, and make's one-second
 timestamps called the tree current; `check_build_current.sh` plus a `touch`
 after a one-second sleep is now part of the control script.
+
+## V4-102 — the audit chain verified on a timer (erratum 76)
+
+Spec §18 listed "periodic publication of the audit head MAC is not
+implemented", and the runbook said "a timer is your job". V4-99 showed what a
+step left to the operator turns into, so the install now ships one:
+`deploy/mldsa-authd-audit.service` (a oneshot running `authd_admin
+audit-verify` as `mldsa-authd` with the daemon's own `LoadCredentialEncrypted=`;
+`%d` IS expanded in a unit file, unlike on a `systemd-run` command line; the
+daemon's hardening plus `PrivateNetwork=yes` and `AF_UNIX` only, since it
+talks to nothing) and `mldsa-authd-audit.timer` (hourly, `Persistent=true`, a
+5-minute randomized delay). A chain that does not verify fails the unit. The
+install is eight files now, and CI's install-tree check says so.
+
+The runbook's step 12 installs, `systemd-analyze verify`s, enables and runs it
+once, and reads its journal; the rehearsal requires `head=` with 64 hex digits
+and "the audit chain verifies", and forbids any analyser diagnostic that names
+either audit unit. What it does not do: send the head anywhere. That is still
+the deployment's, and §18 now says exactly that instead of saying nothing
+exists.

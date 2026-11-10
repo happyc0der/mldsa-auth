@@ -1,0 +1,13 @@
+# Hourly verification of mldsa-authd's audit chain (V4-102). See
+# mldsa-authd-audit.service and deploy/RUNBOOK.md step 12.
+
+[Unit]
+Description=Hourly mldsa-authd audit chain verification
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

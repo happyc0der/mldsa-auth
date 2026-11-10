@@ -257,8 +257,8 @@ jobs:
       - name: The install tree is exactly what ships
         run: |
           find stage -type f | sort | tee installed.txt
-          test "$(wc -l < installed.txt)" -eq 6 || {
-            echo "::error::the install tree is not the six files that ship"; exit 1; }
+          test "$(wc -l < installed.txt)" -eq 8 || {
+            echo "::error::the install tree is not the eight files that ship"; exit 1; }
 
       # THE gate this job exists for. It is meaningful here and much weaker on
       # macOS, where RELRO and BIND_NOW are reported n/a because they are ELF

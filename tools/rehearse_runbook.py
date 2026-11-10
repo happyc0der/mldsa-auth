@@ -180,7 +180,8 @@ EXPECT = {
     9: [r"proxy_protocol=v2", r"event=started", r"event=listening-",
         r"event=memlock-limit"],
     11: [r"(?m)^[A-Za-z0-9_-]{43}$"],
-    12: [r"(?i)head"],
+    12: [r"(?i)head", r"mldsa-authd-audit.*head=[0-9a-f]{64}",
+         r"mldsa-authd-audit.*the audit chain verifies \(\d+ entries\)"],
     13: [r"100% tests passed out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
@@ -193,6 +194,9 @@ EXPECT = {
 }
 # patterns that must NOT appear in a step's output
 FORBID = {
+    # systemd-analyze verify on the audit units: any diagnostic that names
+    # them (the host's OTHER units may warn; those are not this file's).
+    12: [r"mldsa-authd-audit\.(service|timer):\d+"],
     8: [r"(?i)warning|unknown|invalid"],
     9: [r"memlock-limit.*level=warn|level=warn.*memlock-limit"],
 }

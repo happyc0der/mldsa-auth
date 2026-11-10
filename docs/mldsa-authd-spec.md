@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.34, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99 errata)
+# mldsa-authd — deployment specification (v1.35, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1259,9 +1259,12 @@ different numbers sets them. The rest are normative.
   much that is, and it is ~100× a single site's need).
 - **`ERROR 0x04` cannot be emitted** (§6.5): every `ERROR` is a sealed record
   and a pre-session refusal has no session. The code point is reserved.
-- **Periodic publication of the audit head MAC to the journal is not
-  implemented** (§9.2). `authd_admin audit-verify` is the operator's means of
-  checking the chain, and running it on a timer is the deployment's job.
+- **The daemon does not publish the audit head MAC itself** (§9.2). Since
+  V4-102 the install ships `mldsa-authd-audit.timer`, which runs
+  `authd_admin audit-verify` hourly with the daemon's credential and puts the
+  head MAC and entry count in the journal (erratum 76). Getting those lines
+  OFF the host, which is what makes them a second trust domain, remains the
+  deployment's job.
 - **Users behind one shared address can be locked out by one of them** (§7.3).
   The refund stops honest logins from draining a carrier-NAT address, but a
   prober behind the same address still drains it, and every neighbour is then
@@ -1615,3 +1618,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 74 | 12 | A passphrase file directly in `$CREDENTIALS_DIRECTORY` may be root:root, with no group write and no other bit | systemd delivers its credential that way (root:root 0440, read through an ACL), not as "a 0400 file owned by the service user" as the code and unit assumed; the daemon refused its own deployment path, found by the first rehearsal of the runbook on systemd |
 | 75 | 16 | The configuration is the service user's (0600), in a root-owned 0750 directory of its group; `--check-config` runs as `ExecStartPre=`; `/run/mldsa-authd/` is the daemon's group, with the proxy and the site in it | a 0600 root file in a 0700 root directory could not be read by a daemon that runs as `mldsa-authd`, and `--check-config` run before the first start can only fail; both found by the same rehearsal |
+
+### Revision v1.35 (V4-102)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 76 | 18 | The limitation "periodic publication of the audit head MAC is not implemented" now reads: the install ships an hourly timer that verifies the chain and journals the head MAC; shipping it off-host is the deployment's | §18 left the timer to every operator, and V4-99's rehearsal showed how much a runbook step left to the operator could go wrong; the timer is now part of what is rehearsed |

@@ -93,8 +93,8 @@ sudo cmake --install build-release --prefix /usr/local --component mldsa-authd
 ```
 
 Installs `mldsa-authd`, `authd_admin`, `authd_client` into
-`/usr/local/bin/`, and the unit, config and Caddyfile examples into
-`/usr/local/share/mldsa-authd/`.
+`/usr/local/bin/`, and the unit, the audit unit and its timer (step 12), and the
+config and Caddyfile examples into `/usr/local/share/mldsa-authd/`.
 
 ## 4. The service user and its directories
 
@@ -316,8 +316,28 @@ not there at all (V4-99).
 
 It prints the head MAC and an entry count. **Record the head MAC somewhere off
 this host** — the chain detects tampering, but only if you have something to
-compare against; that is the "second trust domain" spec §9.2 asks for. Running
-this on a timer and mailing the output is enough.
+compare against; that is the "second trust domain" spec §9.2 asks for.
+
+The install ships a timer that does this every hour (V4-102). Install it, run
+it once now, and read what it wrote:
+
+```bash
+sudo cp /usr/local/share/mldsa-authd/mldsa-authd-audit.service \
+        /usr/local/share/mldsa-authd/mldsa-authd-audit.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemd-analyze verify /etc/systemd/system/mldsa-authd-audit.service \
+     /etc/systemd/system/mldsa-authd-audit.timer
+sudo systemctl enable --now mldsa-authd-audit.timer
+sudo systemctl start mldsa-authd-audit.service
+journalctl -u mldsa-authd-audit -n 5 --no-pager
+```
+
+The journal shows `head=…` and `the audit chain verifies (N entries)`. A chain
+that does not verify fails the unit, and `systemctl --failed` lists it.
+Forwarding those lines off the host — your log shipper, or a mail on failure —
+is what turns them into the second trust domain; the timer only guarantees
+there is a line to forward. If your `server_id` is not `authd`, edit
+`--server-id` in the audit unit to match.
 
 **Restoring.** Stop the service, remove the store's write-ahead log, put the
 backup in place, start it, then run `audit-verify` (above) before you trust it:
@@ -620,8 +640,8 @@ Common ones, and what they actually are:
 - No HSM or TPM key custody: root on this host can read the server key from
   memory. `systemd-creds` protects it at rest, not at runtime.
 - One host. No replication, no failover; the store is a single SQLite file.
-- The head MAC is not published anywhere automatically (spec §18) — step 12 is
-  manual, and a timer is your job.
+- The head MAC is journaled hourly by the audit timer (step 12), not sent
+  anywhere: getting it off this host is your log shipping's job (spec §18).
 - Server identity-key rotation is not specified: changing it means
   redistributing `server.pub` to every client. Browsers pin the key at
   enrollment and refuse another (F137), so every browser identity must be
