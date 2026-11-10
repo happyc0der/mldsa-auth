@@ -27,18 +27,18 @@ const PASS = 'rehearsal: correct horse battery staple, deployed';
 let fail = 0;
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}: BROWSER: ${what}`); if (!ok) { fail = 1; } };
 
-async function act(b, page, fields) {
+async function act(b, page, fields, button = 'go') {
   await b.navigate(`${origin}/${page}`);
   await b.waitFor("document.body.dataset.ready === '1'", `${page} ready`);
   await b.eval(`(() => { delete document.body.dataset.result; ${Object.entries(fields).map(([k, v]) =>
     `document.getElementById(${JSON.stringify(k)}).value = ${JSON.stringify(v)};`).join(' ')}
-    document.getElementById('go').click(); })()`);
+    document.getElementById(${JSON.stringify(button)}).click(); })()`);
   await b.waitFor('!!document.body.dataset.result', `${page} result`, 90000);
   return { result: await b.eval('document.body.dataset.result'),
            status: await b.eval("document.getElementById('status').textContent") };
 }
 
-let b = null;
+let b = null, b2 = null;
 try {
   b = await Browser.launch(browserPath, ['--ignore-certificate-errors']);
   const ws = [];
@@ -54,10 +54,45 @@ try {
   check(ws.length > 0 && ws.every((u) => u.startsWith('wss://')), `every WebSocket was wss (${ws.length}: ${ws[0] || 'none'})`);
   const me = await b.eval("fetch('/api/me').then((r) => r.text())");
   check(new RegExp(user).test(me) && !/token/i.test(me), 'the site knows who logged in, and never says the token');
+
+  // ---- recovery, through the deployment (V4-106) ----
+  // Codes need a login, not only the session (V4-62): the page logs in again.
+  r = await act(b, 'account.html', { passphrase: PASS }, 'codes');
+  const codes = (await b.eval("document.getElementById('codelist').textContent")).split('\n').filter(Boolean);
+  check(r.result === 'ok' && codes.length === 5, `recovery: five codes are issued after a fresh login (${codes.length})`);
+  // A fresh browser -- a lost device's replacement -- recovers with one.
+  b2 = await Browser.launch(browserPath, ['--ignore-certificate-errors']);
+  await b2.navigate(`${origin}/recover.html`);
+  await b2.waitFor("document.body.dataset.ready === '1'", 'recover.html ready');
+  await b2.eval(`document.getElementById('user').value = ${JSON.stringify(user)};
+                 document.getElementById('code').value = ${JSON.stringify(codes[0] || '')};
+                 document.getElementById('go').click();`);
+  await b2.waitFor("location.pathname === '/enroll.html' && document.body.dataset.ready === '1'",
+                   'the redirect to enroll after the recovery code is accepted', 60000);
+  r = await act(b2, 'enroll.html', { passphrase: PASS });
+  const enrolled = r.result === 'ok' && new RegExp(`Enrolled ${user}`).test(r.status);
+  r = await act(b2, 'login.html', { passphrase: PASS });
+  const loggedIn = r.result === 'ok' && new RegExp(`Logged in as ${user}`).test(r.status);
+  check(enrolled && loggedIn, `recovery: the new device enrolled (${enrolled}) and logged in (${loggedIn})`);
+  // The same code again is refused: a code is single-use.
+  await b2.navigate(`${origin}/recover.html`);
+  await b2.waitFor("document.body.dataset.ready === '1'", 'recover.html ready again');
+  await b2.eval(`delete document.body.dataset.result;
+                 document.getElementById('user').value = ${JSON.stringify(user)};
+                 document.getElementById('code').value = ${JSON.stringify(codes[0] || '')};
+                 document.getElementById('go').click();`);
+  await b2.waitFor('!!document.body.dataset.result', 'the reused code\'s result', 60000);
+  const again = await b2.eval('document.body.dataset.result');
+  check(again !== 'ok' && (await b2.eval('location.pathname')) === '/recover.html',
+        `recovery: the same code a second time is refused (${again})`);
+  if (enrolled && loggedIn && again !== 'ok') {
+    console.log('PASS: BROWSER: recovery: a fresh browser recovered with a code, enrolled a new device and logged in');
+  }
 } catch (e) {
   check(false, `the browser run stopped: ${e && e.message}`);
 } finally {
   if (b) { await b.close(); }
+  if (b2) { await b2.close(); }
 }
 console.log(fail ? 'FAIL: BROWSER: see above' : 'PASS: BROWSER: a person enrolled and logged in through the deployed stack');
 process.exit(fail);

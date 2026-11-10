@@ -13612,3 +13612,20 @@ Caddyfile — and not the site's rightmost rule, which matters only behind a
 proxy that appends (nginx's `$proxy_add_x_forwarded_for`, say) and which
 V4-79's unit tests cover. The probe's comment says exactly that, and the
 control branch was deleted.
+
+## V4-106 — recovery through the deployment
+
+The last public-user path not driven through the deployed stack was recovery.
+`tools/rehearsal_browser.mjs` now continues after its login: the account page
+logs in again and issues five codes (V4-62's rule); a second, fresh browser
+profile — a lost device's replacement — recovers with one, is sent on to
+enroll, enrolls a new device and logs in; and the same code a second time is
+refused. All of it through Caddy, the site as `www-data`, and the daemon under
+systemd, on both Ubuntus.
+
+V4-105's forged-header probe moved after this, because both spend from the
+same per-client recovery bucket (burst 5, one a minute) and the probe would
+otherwise have emptied it seconds before the browser needed it. With the
+bucket possibly below five when the probe starts, only its sixth attempt is
+certain, and that is what it now requires: refused, whatever address it
+claims.

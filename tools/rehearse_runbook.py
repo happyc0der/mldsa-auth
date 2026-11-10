@@ -169,6 +169,20 @@ POST = {
          # daemon is killed (and stopped inside RestartSec, so systemd does
          # not restart it and checkpoint the WAL), the store is restored as
          # the runbook says, and the browser user must be GONE.
+         # (after the browser's own recovery, which spends from the same bucket)
+         # V4-105: the recovery route's per-client limit, through the REAL
+         # proxy, against a client that forges X-Forwarded-For: six attempts,
+         # each claiming a different address, and the sixth is 429 (burst 5).
+         # What this proves is the DEPLOYMENT's property -- forging the header
+         # does not escape the limit here -- and not the site's rightmost-entry
+         # rule (F159): a control keyed on the LEFTMOST entry passed too
+         # (CI 42839894252), because Caddy replaces a client's X-Forwarded-For
+         # rather than appending to it, so the forged value never arrives. The
+         # rightmost rule is for proxies that append; its unit tests are V4-79's.
+         "for i in 1 2 3 4 5 6; do curl -sk -c /tmp/cj -b /tmp/cj -o /dev/null -w \"recover $i %{http_code}\\n\" "
+         "-X POST -H 'Origin: https://localhost' -H 'Content-Type: application/json' "
+         "-H \"X-Forwarded-For: 198.51.100.$i\" "
+         "--data '{\"user\":\"nobody\",\"code\":\"AAAA-AAAA-AAAA-AAAA\"}' https://localhost/api/recover; done",
          "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.before",
          "sudo systemctl kill -s KILL mldsa-authd; sudo systemctl stop mldsa-authd; "
          "sudo ls -l /var/lib/mldsa-authd/ | sed 's/^/  /'",
@@ -199,19 +213,6 @@ POST = {
         # reached it. The daemon's own journal can: it logs every local
         # request with the command and the peer's uid.
         "sleep 0.5; sudo journalctl -u mldsa-authd --no-pager | grep -F 'event=local-request' | tail -n 3",
-        # V4-105: the recovery route's per-client limit, through the REAL
-        # proxy, against a client that forges X-Forwarded-For: six attempts,
-        # each claiming a different address, and the sixth is 429 (burst 5).
-        # What this proves is the DEPLOYMENT's property -- forging the header
-        # does not escape the limit here -- and not the site's rightmost-entry
-        # rule (F159): a control keyed on the LEFTMOST entry passed too
-        # (CI 42839894252), because Caddy replaces a client's X-Forwarded-For
-        # rather than appending to it, so the forged value never arrives. The
-        # rightmost rule is for proxies that append; its unit tests are V4-79's.
-        "for i in 1 2 3 4 5 6; do curl -sk -c /tmp/cj -b /tmp/cj -o /dev/null -w \"recover $i %{http_code}\\n\" "
-        "-X POST -H 'Origin: https://localhost' -H 'Content-Type: application/json' "
-        "-H \"X-Forwarded-For: 198.51.100.$i\" "
-        "--data '{\"user\":\"nobody\",\"code\":\"AAAA-AAAA-AAAA-AAAA\"}' https://localhost/api/recover; done",
     ],
 }
 
@@ -229,8 +230,7 @@ EXPECT = {
          r"Finished mldsa-authd-audit\.service"],
     13: [r"100% tests passed(, 0 tests failed)? out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
-         r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE",
-         r"(?m)^recover 5 403$", r"(?m)^recover 6 429$"],
+         r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
     15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
     19: [r"(?m)^[A-Za-z0-9_-]{43}$", r"(?m)^old-key-refused$"],
     20: [r"(?m)^disabled-user-refused$"],
@@ -239,6 +239,10 @@ EXPECT = {
          r"event=started", r"(?m)^[A-Za-z0-9_-]{43}$"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
+         r"PASS: BROWSER: recovery: a fresh browser recovered with a code, enrolled a new device and logged in",
+         # the bucket may start below 5 (the browser's recovery spends from
+         # it), so only the sixth is certain: refused, whatever it claims.
+         r"(?m)^recover 6 429$",
          r"event=login-code-issued slot=\d+ idh=[0-9a-f]{16}",
          r"event=client-address slot=\d+ src=[0-9A-Fa-f:.]+/(24|48) detail=admitted",
          r"(?m)^browser-user-before=1 after-restore=0$"],
