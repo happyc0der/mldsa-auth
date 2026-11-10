@@ -13591,3 +13591,24 @@ ran locally (58/58, ASan 53/53) before the next push.
 The same CI run lost the offline-build job to its container's toolchain
 install (`cannot install the toolchain`), which passed on V4-103's run and is
 infrastructure; it is re-run with this commit.
+
+## V4-105 — the recovery limit against a forged X-Forwarded-For, through Caddy
+
+The reference site limits `/api/recover` per client, keyed on the rightmost
+`X-Forwarded-For` entry behind a proxy (V4-79, F159). Whether a client that
+forges the header can escape the limit in the deployed stack had not been
+tried. The rehearsal now sends six recovery attempts through Caddy, each with a
+different forged `X-Forwarded-For`, and requires the sixth to be refused 429
+(burst 5): CI 42839887313, `recover 1..5 403`, `recover 6 429`, on both
+systemds.
+
+**The control changed what this proves.** A branch keyed the limiter on the
+LEFTMOST entry, the pre-F159 bug, and the probe still passed (42839894252):
+Caddy 2.10's default replaces a client-supplied `X-Forwarded-For` rather than
+appending to it, so the forged value never reaches the site and leftmost and
+rightmost are the same address. So the rehearsal proves the deployment's
+property — forging the header does not escape the limit behind this
+Caddyfile — and not the site's rightmost rule, which matters only behind a
+proxy that appends (nginx's `$proxy_add_x_forwarded_for`, say) and which
+V4-79's unit tests cover. The probe's comment says exactly that, and the
+control branch was deleted.

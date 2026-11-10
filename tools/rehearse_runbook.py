@@ -200,10 +200,14 @@ POST = {
         # request with the command and the peer's uid.
         "sleep 0.5; sudo journalctl -u mldsa-authd --no-pager | grep -F 'event=local-request' | tail -n 3",
         # V4-105: the recovery route's per-client limit, through the REAL
-        # proxy. Six attempts, each forging a different X-Forwarded-For: a
-        # limiter keyed on the client's entry would give each its own bucket
-        # and never refuse; keyed on the proxy's (rightmost, F159) the sixth
-        # is 429 (burst 5).
+        # proxy, against a client that forges X-Forwarded-For: six attempts,
+        # each claiming a different address, and the sixth is 429 (burst 5).
+        # What this proves is the DEPLOYMENT's property -- forging the header
+        # does not escape the limit here -- and not the site's rightmost-entry
+        # rule (F159): a control keyed on the LEFTMOST entry passed too
+        # (CI 42839894252), because Caddy replaces a client's X-Forwarded-For
+        # rather than appending to it, so the forged value never arrives. The
+        # rightmost rule is for proxies that append; its unit tests are V4-79's.
         "for i in 1 2 3 4 5 6; do curl -sk -c /tmp/cj -b /tmp/cj -o /dev/null -w \"recover $i %{http_code}\\n\" "
         "-X POST -H 'Origin: https://localhost' -H 'Content-Type: application/json' "
         "-H \"X-Forwarded-For: 198.51.100.$i\" "
