@@ -217,6 +217,8 @@ sudo systemctl enable --now mldsa-authd
 journalctl -u mldsa-authd -n 30
 ```
 
+The unit is `Type=notify`: `systemctl` returns once the daemon says it is
+ready — key unsealed, every listener bound — not when the process starts.
 First in the journal is `--check-config`'s line of resolved settings
 (step 7). **Read its `proxy_protocol=` field.** If it says `none`, your
 proxy-facing listener has no client address and the rate limiter is off — which
@@ -676,8 +678,10 @@ The store, the key and the configuration are untouched by an install. The
 install refreshes the example unit in `/usr/local/share/mldsa-authd/` but not
 the copy in `/etc/systemd/system/`: if the `diff` shows a change, read it, copy
 the new unit over (keeping your own `LimitMEMLOCK`, step 8), and run
-`sudo systemctl daemon-reload` before the restart. The journal should show
-`event=started` again, and an existing device logs in as before.
+`sudo systemctl daemon-reload` before the restart. `restart` returns when the
+new daemon is listening (`Type=notify`, V4-104: as `Type=simple` it returned at
+fork, and a login sent straight after found nothing listening). The journal
+should show `event=started` again, and an existing device logs in as before.
 
 ## Changing the server passphrase — not yet
 

@@ -22,7 +22,11 @@ After=network.target
 Wants=network.target
 
 [Service]
-Type=simple
+# Type=notify (V4-104): the daemon says READY=1 once its key is unsealed and
+# every listener is bound, so `systemctl start`/`restart` return only then.
+# As Type=simple they returned at fork, and a login sent straight after a
+# restart found nothing listening -- unsealing the key is a 256 MiB Argon2id.
+Type=notify
 User=mldsa-authd
 Group=mldsa-authd
 # --check-config at every start, here because only here does it see what it

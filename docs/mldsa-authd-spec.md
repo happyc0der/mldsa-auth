@@ -1191,7 +1191,9 @@ configuration. It is validated by `--check-config` as the unit's
 `ExecStartPre=`, because the passphrase credential and `/run/mldsa-authd/` that
 it checks exist only while systemd starts the service (erratum 75).
 
-The systemd unit sets `NoNewPrivileges`, `ProtectSystem=strict`,
+The systemd unit is `Type=notify` — the daemon sends `READY=1` to
+`$NOTIFY_SOCKET` once its key is unsealed and every listener is bound, so
+`systemctl start` returns only then (erratum 78) — and sets `NoNewPrivileges`, `ProtectSystem=strict`,
 `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
 `ProtectControlGroups`, `ProtectProc=invisible`, `RestrictAddressFamilies=AF_UNIX AF_INET`,
 `RestrictNamespaces`, `RestrictSUIDSGID`, `LockPersonality`,
@@ -1634,3 +1636,4 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 77 | 18 | A known limitation: a server-passphrase change (`rewrap`) breaks the audit chain's verification and changes every pseudonym | both keys are HKDF of the envelope KEK (§9.2, §15) and a new passphrase is a new KEK; measured, an untouched store then fails `audit-verify` as `audit-chain-corrupt` (F190) |
+| 78 | 16 | The unit is `Type=notify`; the daemon sends `READY=1` after its listeners are bound | as `Type=simple`, `systemctl restart` returned at fork, before the 256 MiB Argon2id unseal and the binds, and the rehearsal's login straight after a restart found nothing listening (F191) |

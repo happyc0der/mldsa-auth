@@ -13570,3 +13570,18 @@ says not to change the passphrase of a store you want to keep verifying, and
 to record the head under the old one if a leak forces it, and §18 lists it
 (erratum 77). Part III has no command block for it, so nothing rehearses a
 procedure nobody should follow yet.
+
+**F191, found by step 22's first run.** `systemctl restart` came back before
+the new daemon was listening: the unit was `Type=simple`, and the daemon
+spends about a second in Argon2id unsealing its key before it binds. The
+rehearsal's login straight after the restart failed `cannot connect`. The
+unit is now `Type=notify`, and the daemon sends `READY=1` to
+`$NOTIFY_SOCKET` right after `event=started`, in 50 lines of its own
+(`sdnotify.c`) rather than a libsystemd dependency: a path socket or an
+abstract `@name`, anything else refused. A failed notification goes to
+stderr, not to the gated log vocabulary, and systemd then times the start out
+rather than calling a deaf daemon started. Erratum 78.
+
+The same CI run lost the offline-build job to its container's toolchain
+install (`cannot install the toolchain`), which passed on V4-103's run and is
+infrastructure; it is re-run with this commit.

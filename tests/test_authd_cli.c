@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include "authd_cli.h"
 #include "authd_config.h"
 #include "authd_harness.h"
+#include "sdnotify.h"
 #include "authd_secret.h"
 #include "child_exit.h"
 #include "key_windows.h"
@@ -1444,6 +1446,56 @@ static void test_credential_custody(void)
 #undef CC
 }
 
+/* V4-104: readiness for systemd's Type=notify. A datagram socket stands in
+ * for systemd's: READY=1 must arrive, verbatim, at the path $NOTIFY_SOCKET
+ * names; unset is "not under systemd" (0, nothing sent); a relative path and
+ * an over-long one are refused, not guessed at. Linux also gets the abstract
+ * namespace, which is what systemd actually uses there. */
+static void test_sd_notify(void)
+{
+    char sp[sizeof g_dir + 16u];
+    (void)snprintf(sp, sizeof sp, "%s/notify.sock", g_dir);
+    struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX;
+    const size_t spn = strlen(sp);
+    const int fits = spn < sizeof a.sun_path;
+    if (fits) { memcpy(a.sun_path, sp, spn + 1u); }
+    const int rs = socket(AF_UNIX, SOCK_DGRAM, 0);
+    CHECK(fits && rs >= 0 && bind(rs, (struct sockaddr *)&a, sizeof a) == 0,
+          "sd_notify: a datagram socket standing in for systemd's");
+    (void)unsetenv("NOTIFY_SOCKET");
+    CHECK(authd_sd_notify("READY=1") == 0, "sd_notify: without NOTIFY_SOCKET it does nothing and says so (0)");
+    (void)setenv("NOTIFY_SOCKET", "", 1);
+    CHECK(authd_sd_notify("READY=1") == 0, "sd_notify: an empty NOTIFY_SOCKET is the same as none");
+    (void)setenv("NOTIFY_SOCKET", sp, 1);
+    CHECK(authd_sd_notify("READY=1") == 1, "sd_notify: with NOTIFY_SOCKET set, the datagram is sent (1)");
+    { char got[64] = {0};
+      const ssize_t n = rs >= 0 ? recv(rs, got, sizeof got - 1u, MSG_DONTWAIT) : -1;
+      CHECK(n == 7 && memcmp(got, "READY=1", 7u) == 0, "sd_notify: systemd's socket receives exactly READY=1"); }
+    (void)setenv("NOTIFY_SOCKET", "relative/notify", 1);
+    CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a relative NOTIFY_SOCKET is refused (-1), not guessed at");
+    { char longp[200]; memset(longp, 'x', sizeof longp - 1u); longp[0] = '/'; longp[sizeof longp - 1u] = '\0';
+      (void)setenv("NOTIFY_SOCKET", longp, 1);
+      CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a NOTIFY_SOCKET longer than sun_path is refused (-1)"); }
+#ifdef __linux__
+    { const int as = socket(AF_UNIX, SOCK_DGRAM, 0);
+      struct sockaddr_un b; memset(&b, 0, sizeof b); b.sun_family = AF_UNIX;
+      char name[64]; (void)snprintf(name, sizeof name, "mldsa-notify-%d", (int)getpid());
+      const size_t nl = strlen(name);
+      memcpy(b.sun_path + 1, name, nl);           /* sun_path[0] = 0: abstract */
+      const socklen_t bl = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1u + nl);
+      char env[80]; (void)snprintf(env, sizeof env, "@%s", name);
+      (void)setenv("NOTIFY_SOCKET", env, 1);
+      char got[64] = {0};
+      const int ok = as >= 0 && bind(as, (struct sockaddr *)&b, bl) == 0 && authd_sd_notify("READY=1") == 1 &&
+                     recv(as, got, sizeof got - 1u, MSG_DONTWAIT) == 7 && memcmp(got, "READY=1", 7u) == 0;
+      CHECK(ok, "sd_notify: an abstract NOTIFY_SOCKET (@name), as systemd uses on Linux, receives READY=1");
+      if (as >= 0) { (void)close(as); } }
+#endif
+    (void)unsetenv("NOTIFY_SOCKET");
+    if (rs >= 0) { (void)close(rs); }
+    (void)unlink(sp);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1470,6 +1522,7 @@ int main(void)
     test_rotate_reply_refused_or_lost();
     test_passphrase_custody();
     test_credential_custody();
+    test_sd_notify();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -24,6 +24,7 @@
 
 #include "authd_config.h"
 #include "authd_conn.h"
+#include "sdnotify.h"
 #include "authd_log.h"
 #include "authd_secret.h"
 #include "conn_io.h"
@@ -439,6 +440,13 @@ int main(int argc, char **argv)
     }
 
     authd_log_event(AUTHD_LOG_INFO, "started");
+    /* V4-104: tell systemd (Type=notify) that the listeners are up, so
+     * `systemctl start`/`restart` return only now. Not under systemd, this is
+     * nothing; a failure is said on stderr, and systemd then times the start
+     * out rather than calling a deaf daemon started. */
+    if (authd_sd_notify("READY=1") < 0) {
+        fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET\n");
+    }
 
     int draining = 0;
     for (;;) {

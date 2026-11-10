@@ -89,6 +89,7 @@ add_library(mldsa_authd STATIC
   evloop.c
   listener.c
   authd_log.c
+  sdnotify.c
 )
 target_include_directories(mldsa_authd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/store)
 # sqlite3 is PRIVATE: the store's API is pure C types, so no consumer of
