@@ -180,8 +180,12 @@ EXPECT = {
     9: [r"proxy_protocol=v2", r"event=started", r"event=listening-",
         r"event=memlock-limit"],
     11: [r"(?m)^[A-Za-z0-9_-]{43}$"],
-    12: [r"(?i)head", r"mldsa-authd-audit.*head=[0-9a-f]{64}",
-         r"mldsa-authd-audit.*the audit chain verifies \(\d+ entries\)"],
+    # The audit unit's lines come from authd_admin[pid], not from the unit's
+    # name; `journalctl -u mldsa-authd-audit` is what scopes them to it.
+    12: [r"(?i)head",
+         r"authd_admin\[\d+\]: \S*authd_admin audit-verify: head=[0-9a-f]{64}",
+         r"authd_admin\[\d+\]: \S*authd_admin audit-verify: the audit chain verifies \(\d+ entries\)",
+         r"Finished mldsa-authd-audit\.service"],
     13: [r"100% tests passed out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
