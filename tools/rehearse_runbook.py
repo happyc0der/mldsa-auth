@@ -79,6 +79,9 @@ SUBST = {
          ("journalctl -u mldsa-authd | grep -F 'idh=3f09c2d18a7be641'",
           "journalctl -u mldsa-authd | grep -F \"$(grep -o 'idh=[0-9a-f]*' /tmp/idh.out)\" | tail -n 3",
           "the pseudonym the first command printed, not the example's")],
+    12: [("BACKUP=/var/lib/mldsa-authd/backups/YYYY-MM-DD.sqlite3    # the one to restore",
+          "BACKUP=/var/lib/mldsa-authd/backups/$(date +%F).sqlite3",
+          "the placeholder, filled with the backup this step just took")],
     13: [("emcmake cmake", ". \"$EMSDK_ENV\" && emcmake cmake",
           "emsdk's environment, which an operator's shell would already have")],
     14: [("sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \\",
@@ -125,7 +128,32 @@ POST = {
          # carries an IPv6 address (V4-99: an IPv4-only pattern saw none).
          "echo \"full-src=$(grep -cE 'src=[0-9A-Fa-f:.]+([[:space:]]|$)' /tmp/j16.txt)\"; "
          "echo \"prefix-src=$(grep -cE 'src=[0-9A-Fa-f:.]+/(24|48)([[:space:]]|$)' /tmp/j16.txt)\"; "
-         "grep -F 'event=client-address' /tmp/j16.txt | tail -n 2"],
+         "grep -F 'event=client-address' /tmp/j16.txt | tail -n 2",
+         # V4-100: a person in a browser, through Caddy, the site and the
+         # daemon as deployed (tools/rehearsal_browser.mjs).
+         "sudo cat /etc/mldsa-site/invite > /tmp/invite",
+         "node tools/rehearsal_browser.mjs https://localhost /tmp/invite browser-user \"$CHROME\"",
+         # Step 18's check, on that login: the journal names it by pseudonym
+         # and prefix only.
+         "sleep 1; sudo journalctl -u mldsa-authd --no-pager | grep -E 'event=(login-code-issued|client-address)' | tail -n 4",
+         # V4-100: the restore drill, after a CRASH -- the case a restore is
+         # for. step 12 took the backup before the browser user existed. The
+         # daemon is killed (and stopped inside RestartSec, so systemd does
+         # not restart it and checkpoint the WAL), the store is restored as
+         # the runbook says, and the browser user must be GONE.
+         "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.before",
+         "sudo systemctl kill -s KILL mldsa-authd; sudo systemctl stop mldsa-authd; "
+         "sudo ls -l /var/lib/mldsa-authd/ | sed 's/^/  /'",
+         # The runbook's OWN restore and audit-verify blocks (step 12), not a
+         # copy of them: @runbook:STEP:MARKER is that step's block holding
+         # MARKER, with the step's substitutions applied.
+         "@runbook:12:sudo systemctl stop mldsa-authd",
+         "sleep 1; systemctl is-active mldsa-authd",
+         "@runbook:12:audit-verify",
+         "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.after",
+         # list-users prints ids in hex
+         "U=$(printf browser-user | od -An -tx1 | tr -d ' \\n'); "
+         "echo \"browser-user-before=$(grep -c \"user=$U \" /tmp/users.before) after-restore=$(grep -c \"user=$U \" /tmp/users.after)\""],
     9: ["sleep 1; journalctl -u mldsa-authd --no-pager -n 30 | tee /tmp/j9.txt"],
     14: [
         # The pages are served through Caddy, and the site reaches site.sock:
@@ -157,7 +185,11 @@ EXPECT = {
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
     15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
-    16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]"],
+    16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
+         r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
+         r"event=login-code-issued slot=\d+ idh=[0-9a-f]{16}",
+         r"event=client-address slot=\d+ src=[0-9A-Fa-f:.]+/(24|48) detail=admitted",
+         r"(?m)^browser-user-before=1 after-restore=0$"],
 }
 # patterns that must NOT appear in a step's output
 FORBID = {
@@ -192,6 +224,27 @@ def steps(md):
     return out
 
 
+def runbook_block(st, ref):
+    """@runbook:STEP:MARKER -> that step's one block holding MARKER, with the
+    step's substitutions applied. Exactly one block must hold it."""
+    _, step, marker = ref.split(":", 2)
+    step = int(step)
+    hits = [b for b in st[step][1] if marker in b]
+    if len(hits) != 1:
+        raise SystemExit("%s: %d blocks of step %d hold the marker" % (ref, len(hits), step))
+    text = hits[0]
+    for old, new, _why in SUBST.get(step, []):
+        text = text.replace(old, new)
+    return text
+
+
+def post_line(st, c):
+    if c.startswith("@runbook:"):
+        text = runbook_block(st, c)
+        return "echo 'HARNESS: again, the runbook block %s:'\n%s\n" % (c[9:].replace("'", ""), text)
+    return "echo 'HARNESS: %s'\n%s\n" % (c.replace("'", "")[:90], c)
+
+
 def check_substitutions(st):
     bad = []
     for n, subs in sorted(SUBST.items()):
@@ -206,6 +259,13 @@ def check_substitutions(st):
     for n in sorted(set(SKIP) | set(PRE) | set(POST) | set(EXPECT)):
         if n not in st:
             bad.append("step %d is configured here but not in the runbook" % n)
+    for n, cmds in POST.items():
+        for c in cmds:
+            if c.startswith("@runbook:"):
+                try:
+                    runbook_block(st, c)
+                except SystemExit as e:
+                    bad.append(str(e))
     for b in bad:
         print("STALE: " + b)
     rehearsed = [n for n in sorted(st) if st[n][1] and n not in SKIP]
@@ -254,7 +314,7 @@ def main():
                 "echo \"REHEARSAL-CMD-FAILED rc=$rc: $BASH_COMMAND\" >&2; exit 1;; esac' ERR\n"
                 % ("|".join("*%s*" % a for a in allow) or "__never__"))
         pre = "".join("echo 'HARNESS: %s'\n%s\n" % (c.replace("'", ""), c) for c in PRE.get(n, []))
-        post = "".join("echo 'HARNESS: %s'\n%s\n" % (c.replace("'", "")[:90], c) for c in POST.get(n, []))
+        post = "".join(post_line(st, c) for c in POST.get(n, []))
         script = ("set -o pipefail\ncd %s\n. %s\n%s%s%s\n%s\nexit 0\n"
                   % (SRC, STATE, trap, pre, text, post))
         print("\n===== step %d. %s =====" % (n, title))

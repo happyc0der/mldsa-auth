@@ -472,6 +472,8 @@ jobs:
       EMSCRIPTEN_VERSION: "6.0.9"
       NODE_VERSION: v24.21.0
       NODE_SHA256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+      CHROME_VERSION: 154.0.8037.57
+      CHROME_SHA256: ceee2972074d441ea7c4ba8bcc0eaab77e7e87680f6653d73d3065851fe10302
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/deps
@@ -513,6 +515,16 @@ jobs:
           "$RUNNER_TEMP/emsdk/emsdk" install "$EMSCRIPTEN_VERSION" > /dev/null
           "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSCRIPTEN_VERSION" > /dev/null
           echo "EMSDK_ENV=$RUNNER_TEMP/emsdk/emsdk_env.sh" >> "$GITHUB_ENV"
+          # V4-100: a person in a browser against the deployment. Chrome for
+          # Testing, pinned as the wasm job pins it; the userns rule is lifted
+          # for its sandbox rather than running it with --no-sandbox.
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/chrome.zip" \
+            "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chrome-linux64.zip"
+          echo "$CHROME_SHA256  $RUNNER_TEMP/chrome.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/chrome.zip" -d "$RUNNER_TEMP"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          "$RUNNER_TEMP/chrome-linux64/chrome" --version
+          echo "CHROME=$RUNNER_TEMP/chrome-linux64/chrome" >> "$GITHUB_ENV"
           sudo install -d -o "$(id -un)" /opt/build
           cp -a "$GITHUB_WORKSPACE" /opt/build/mldsa-auth
 

@@ -13429,3 +13429,50 @@ systemd. Steps 17 and 18 (another host's TLS, a phone) are not rehearsed. The
 browser login itself is not driven here; CI's `wasm` job does that against
 the daemon fixture. And a rehearsed runbook is not a reviewed protocol: the
 cryptographic review the threat model calls for has not been commissioned.
+
+## V4-100 — a browser through the deployment, and a restore after a crash (F188)
+
+**Why.** V4-99 rehearsed the runbook as an operator types it, but the public
+path it exists for — a person in a browser — was still only exercised against
+the in-process fixture (CI's `wasm` job), and the restore advice ("a restore
+is a file copy") had no command block, so nothing ran it.
+
+**The browser, through the deployed stack.** `tools/rehearsal_browser.mjs`
+drives the pinned Chrome for Testing (the `wasm` job's pin) over the DevTools
+protocol at `https://localhost`: Caddy with its own certificate, the reference
+site as `www-data` behind it, the daemon under systemd behind PROXY v2. It
+enrolls a key made in the browser, logs in, and asks the site who is logged
+in. The one concession is `--ignore-certificate-errors`, because Caddy's
+internal CA is not in a throwaway browser's store; the page is still a secure
+context and the WebSocket is still `wss`, and both are checked. Step 18's
+journal check now has that login to look at: `event=login-code-issued` with
+an `idh=` and the connection's `src=::/48`.
+
+**F188, found by the drill.** A change after the backup (that browser user),
+the daemon killed with SIGKILL and stopped inside `RestartSec` so systemd
+does not restart it and checkpoint the log, the store replaced as the runbook
+said, the daemon started: the user was still there. The store is in WAL mode
+and the crash left a 136 KB `store.sqlite3-wal` beside the restored file,
+which SQLite replays on open. Medium: a restore done to undo an enrollment
+would keep it. The runbook's restore is now a command block that removes the
+`-wal` and `-shm` first, and says why. My first harness counted zero users
+both before and after, because `list-users` prints ids in hex; the lists
+themselves showed the bug, and the count now greps the hex.
+
+**No second copy.** The drill runs the runbook's own restore and
+`audit-verify` blocks, picked out by a marker (`@runbook:12:…`) with step 12's
+substitutions applied, and `--check-substitutions` checks that each marker
+names exactly one block. Shown: with the fix (CI 42811776573) the user is gone
+after the restore and the chain verifies with the backup's 2 entries; on a
+control branch without the `rm` line (42811779681) the user is still there and
+the drill fails by name.
+
+**`audit-verify` does not catch this.** In the control run the chain also
+verified, with 4 entries: the replayed log is a consistent store that simply
+includes everything since the backup. Comparing the head MAC with one recorded
+off-host (step 12) would show the store is not the backup; the chain alone
+cannot. So the `rm` is the defence, and the runbook says so.
+
+**Not established.** Only a SIGKILL crash; a power loss is not simulated.
+That the WAL is the only stale state a restore must clear is true of this
+store (no other sidecar files are opened) but is not proven by the drill.

@@ -318,8 +318,25 @@ this host** — the chain detects tampering, but only if you have something to
 compare against; that is the "second trust domain" spec §9.2 asks for. Running
 this on a timer and mailing the output is enough.
 
-A restore is a file copy: stop the service, replace `store.sqlite3`, start it.
-Run `audit-verify` before you trust it.
+**Restoring.** Stop the service, remove the store's write-ahead log, put the
+backup in place, start it, then run `audit-verify` (above) before you trust it:
+
+```bash
+BACKUP=/var/lib/mldsa-authd/backups/YYYY-MM-DD.sqlite3    # the one to restore
+sudo systemctl stop mldsa-authd
+sudo rm -f /var/lib/mldsa-authd/store.sqlite3-wal /var/lib/mldsa-authd/store.sqlite3-shm
+sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
+sudo systemctl start mldsa-authd
+```
+
+**The `rm` is the restore.** The store runs in SQLite's WAL mode, and after a
+crash — the usual reason to restore — the last transactions are in
+`store.sqlite3-wal`, not in `store.sqlite3`. Left beside a restored file, that
+log is replayed into it when the daemon opens it, so the "restored" store comes
+back with everything since the backup: rehearsed (V4-100, F188), a user
+enrolled after the backup was still there after a restore that only replaced
+the file. If you are restoring to undo something — a device you did not
+enrol — that is exactly what would survive.
 
 ---
 
