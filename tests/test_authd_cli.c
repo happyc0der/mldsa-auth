@@ -397,6 +397,16 @@ static void test_keys(void)
     CHECK(RUN_ADMIN("rewrap", "--id", "srv", "--in", ek, "--out", ek2,
                     "--old-passphrase-file", pass, "--new-passphrase-file", pass2) == 0,
           "rewrap: writes a new file under the new passphrase");
+    /* V4-104, F190: and it says, where the operator does it, that a store
+     * written under the old passphrase will not verify under the new one. */
+    { char ek3[400], err[4096];
+      (void)snprintf(ek3, sizeof ek3, "%s.f190", ek2);
+      char *wa[] = { "authd_admin", "rewrap", "--id", "srv", "--in", ek, "--out", ek3,
+                     "--old-passphrase-file", pass, "--new-passphrase-file", pass2, NULL };
+      CHECK(run_admin_capture(wa, err, sizeof err) == 0 && strstr(err, "will NOT verify") != NULL &&
+            strstr(err, "audit-chain-corrupt") != NULL && strstr(err, "F190") != NULL,
+            "rewrap: warns that the store's audit chain and pseudonyms will not survive the new passphrase (F190)");
+      (void)unlink(ek3); }
     {
         mldsa_keypair_t a, b;
         memset(&a, 0, sizeof a);

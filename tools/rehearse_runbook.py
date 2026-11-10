@@ -95,6 +95,23 @@ SUBST = {
           "backgrounded, and its first line awaited")],
 }
 
+# Part III: the placeholder and the prompt, as in step 11.
+SUBST.update({
+    19: [("authd_client rotate --handle <handle> --key ~/.mldsa/<handle>.ek \\\n"
+          "    --passphrase-prompt --server-id authd --server-pub ./server.pub --port 8443",
+          "authd_client rotate --handle $HANDLE --key ~/.mldsa/$HANDLE.ek \\\n"
+          "    --passphrase-file ~/op.pass --server-id authd --server-pub ./server.pub --port 8443",
+          "the placeholder and the scripted passphrase, as in step 11"),
+         ("authd_client login --handle <handle> --key ~/.mldsa/<handle>.ek \\\n"
+          "    --passphrase-prompt --server-id authd --server-pub ./server.pub --port 8443",
+          "authd_client login --handle $HANDLE --key ~/.mldsa/$HANDLE.ek \\\n"
+          "    --passphrase-file ~/op.pass --server-id authd --server-pub ./server.pub --port 8443",
+          "the placeholder and the scripted passphrase, as in step 11")],
+    22: [("git pull --ff-only",
+          "# (git pull: this host already holds the source under test)",
+          "the runner's copy is the commit under test, with nowhere to pull from")],
+})
+
 # steps whose blocks are not for this host
 SKIP = {
     17: "connects to authd.example.com, a host that is not this one",
@@ -104,13 +121,24 @@ SKIP = {
 # Lines the HARNESS runs before a step: the things the runbook says the
 # operator already has ("0. What you need", "copy it to your operators").
 PRE = {
+    # step 19's claim is that the OLD key stops working: keep a copy of it.
+    19: ["cp ~/.mldsa/$HANDLE.ek /tmp/old.ek"],
     1: ["test -d " + SRC],
     11: ["sudo cp /var/lib/mldsa-authd/server.pub ./server.pub",
          "openssl rand -base64 33 | tr -d '\\n' > ~/op.pass; chmod 600 ~/op.pass"],
 }
 
+# The device's login, as step 11 makes it; and the same with the copy of the
+# key step 19 retired.
+LOGIN = "authd_client login --handle $HANDLE --key ~/.mldsa/$HANDLE.ek --passphrase-file ~/op.pass --server-id authd --server-pub ./server.pub --port 8443"
+LOGIN_OLD = LOGIN.replace("--key ~/.mldsa/$HANDLE.ek", "--key /tmp/old.ek")
+
 # Checks the HARNESS runs after a step, for what the step says should hold.
 POST = {
+    19: [LOGIN_OLD + " > /tmp/old.out 2>&1 && echo old-key-ACCEPTED || echo old-key-refused; tail -n 2 /tmp/old.out"],
+    20: [LOGIN + " > /tmp/dis.out 2>&1 && echo disabled-user-ACCEPTED || echo disabled-user-refused; tail -n 2 /tmp/dis.out"],
+    21: [LOGIN],
+    22: [LOGIN],
     # Step 18's journal check, made here: with log_identities = hashed and
     # log_client_ip = prefix, no line may carry a plain id= or a full address.
     # A count of zero full addresses means nothing if no line carries an
@@ -190,6 +218,11 @@ EXPECT = {
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
     15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
+    19: [r"(?m)^[A-Za-z0-9_-]{43}$", r"(?m)^old-key-refused$"],
+    20: [r"(?m)^disabled-user-refused$"],
+    21: [r"(?m)^[A-Za-z0-9_-]{43}$"],
+    22: [r"OK: every discovered executable carries the full hardening set \[Linux\]",
+         r"event=started", r"(?m)^[A-Za-z0-9_-]{43}$"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
          r"event=login-code-issued slot=\d+ idh=[0-9a-f]{16}",

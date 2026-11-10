@@ -608,6 +608,92 @@ a Tailscale name for an address you passed as `--host`, add
 
 ---
 
+# Part III — running it
+
+What an operator does after the first day. Steps 19–22 are rehearsed like
+the rest (V4-104); each says what proves it worked.
+
+## 19. Rotate a device key
+
+A device replaces its own key and keeps its identity (spec §10.2). On the
+laptop, through the tunnel as in step 11:
+
+```bash
+authd_client rotate --handle <handle> --key ~/.mldsa/<handle>.ek \
+    --passphrase-prompt --server-id authd --server-pub ./server.pub --port 8443
+authd_client login --handle <handle> --key ~/.mldsa/<handle>.ek \
+    --passphrase-prompt --server-id authd --server-pub ./server.pub --port 8443
+```
+
+The login prints a code under the **new** key. The old key is now refused:
+the daemon retires it when it acknowledges the rotation, so a copy of the old
+`.ek` file — a backup, a stolen laptop's disk — no longer logs in. A rotation
+interrupted between the two (the laptop sleeps, the tunnel drops) is finished
+by the next `login` or `rotate`, which asks the daemon which key is live.
+
+## 20. Lock a user out
+
+A lost or stolen device, or someone who should no longer have access:
+
+```bash
+sudo authd_admin disable-user --socket /run/mldsa-authd/admin.sock \
+     --user you --reason lost-laptop
+```
+
+Every device of that user stops logging in at once, their tokens are deleted,
+and live connections are closed (spec §10.3). The reason is one word: values
+on the admin socket are single tokens (spec §8).
+
+## 21. Let them back in
+
+```bash
+sudo authd_admin enable-user --socket /run/mldsa-authd/admin.sock --user you
+```
+
+The user's devices log in again. If the device itself was lost, enable the
+user only after they have enrolled a new device, or recovered with a recovery
+code, and the lost one has been revoked: enabling a user re-enables every device they
+had.
+
+## 22. Upgrade the daemon
+
+Build the new source as in step 1, check it as in step 2, install it as in
+step 3, and restart:
+
+```bash
+cd /opt/build/mldsa-auth
+git pull --ff-only
+cmake --build build-release -j"$(nproc)"
+tools/audit/check_hardening.sh build-release --require
+sudo cmake --install build-release --prefix /usr/local --component mldsa-authd
+sudo diff -u /etc/systemd/system/mldsa-authd.service \
+     /usr/local/share/mldsa-authd/mldsa-authd.service && echo "the unit is unchanged"
+sudo systemctl restart mldsa-authd
+journalctl -u mldsa-authd -n 5 --no-pager
+```
+
+The store, the key and the configuration are untouched by an install. The
+install refreshes the example unit in `/usr/local/share/mldsa-authd/` but not
+the copy in `/etc/systemd/system/`: if the `diff` shows a change, read it, copy
+the new unit over (keeping your own `LimitMEMLOCK`, step 8), and run
+`sudo systemctl daemon-reload` before the restart. The journal should show
+`event=started` again, and an existing device logs in as before.
+
+## Changing the server passphrase — not yet
+
+`authd_admin rewrap` re-seals `server.ek` under a new passphrase, and it
+works. **But the store's audit chain and the journal's pseudonyms are keyed
+from the envelope's KEK**, which is derived from the passphrase (spec §9.2,
+§15): under a new one, `audit-verify` reports the existing chain as
+`audit-chain-corrupt`, and every `idh=` changes (audit finding F190, measured
+in V4-104). `rewrap` says so when it runs. Until the key hierarchy is changed
+so that a new passphrase keeps those keys, do not change the server passphrase
+of a store you want to keep verifying. If you must — the passphrase leaked —
+run `audit-verify` and record its head MAC under the OLD passphrase first:
+that head is then the last thing the old chain can vouch for.
+
+---
+
 ## When it will not start
 
 The daemon's exit code says which half is wrong (spec §13):

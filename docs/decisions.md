@@ -13544,3 +13544,29 @@ both. Everything passed on 24.04 except step 13's EXPECT: its CMake 3.28
 prints `100% tests passed, 0 tests failed out of 3` where the runbook quoted
 the newer `100% tests passed out of 3` (F189, Info). Both wordings are now
 in the runbook and the EXPECT.
+
+## V4-104 — running it: Part III of the runbook, and F190
+
+The runbook stopped at day one. The CLIs support rotating a device key,
+disabling and enabling a user, and re-sealing the server key (`rewrap`), and
+the runbook showed none of them, nor how to upgrade the daemon. Part III adds
+steps 19–22, rehearsed like the rest, each with its claim checked from
+outside the step: after `authd_client rotate`, a copy of the OLD key is
+refused and the new one logs in; a disabled user's device is refused and logs
+in again once enabled; after an upgrade (build, hardening gate, install,
+restart) the daemon logs `event=started` and the same device logs in.
+
+**F190, found while writing the passphrase step.** Spec §9.2 and §15 derive the
+audit MAC key and the pseudonym key from the envelope KEK, and `rewrap`
+re-seals under a new passphrase, so a new KEK. Reproduced locally with a real
+daemon: two audit entries, verified; `rewrap`; the untouched store then fails
+`audit-verify` as `audit-chain-corrupt` after 2 entries, and `pseudonym`
+changes. The fix is to derive both keys from something a rewrap keeps — the
+identity's secret key, or a random root key sealed inside the envelope (a
+format change). That is a key-hierarchy decision, so it is the owner's: this
+step mitigates instead. `rewrap` now warns on success, naming F190 (a test,
+shown red by a control that silenced it), the runbook's passphrase section
+says not to change the passphrase of a store you want to keep verifying, and
+to record the head under the old one if a leak forces it, and §18 lists it
+(erratum 77). Part III has no command block for it, so nothing rehearses a
+procedure nobody should follow yet.

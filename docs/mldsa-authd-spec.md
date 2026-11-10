@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.35, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102 errata)
+# mldsa-authd — deployment specification (v1.36, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1250,6 +1250,10 @@ different numbers sets them. The rest are normative.
 ## 18. Known limitations (document, do not silently fix)
 
 - Server identity-key rotation is not specified; it means redistributing pins.
+- **Changing the server passphrase breaks the audit chain and the journal's
+  pseudonyms** (F190, erratum 77): `key_audit` and `key_log` are derived from
+  the envelope KEK, and `rewrap` makes a new one. `rewrap` warns; the key
+  hierarchy that would let a passphrase change keep both keys is not decided.
 - No HSM or TPM key custody; root on the host has the key.
 - A copied browser key blob is an undetectable clone.
 - Traffic analysis is only partially mitigated (inherited from spec-v2 §9).
@@ -1624,3 +1628,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 76 | 18 | The limitation "periodic publication of the audit head MAC is not implemented" now reads: the install ships an hourly timer that verifies the chain and journals the head MAC; shipping it off-host is the deployment's | §18 left the timer to every operator, and V4-99's rehearsal showed how much a runbook step left to the operator could go wrong; the timer is now part of what is rehearsed |
+
+### Revision v1.36 (V4-104)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 77 | 18 | A known limitation: a server-passphrase change (`rewrap`) breaks the audit chain's verification and changes every pseudonym | both keys are HKDF of the envelope KEK (§9.2, §15) and a new passphrase is a new KEK; measured, an untouched store then fails `audit-verify` as `audit-chain-corrupt` (F190) |

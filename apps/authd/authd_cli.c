@@ -410,6 +410,17 @@ static int cmd_rewrap(int argc, char **argv, const char *prog)
     }
     rc = EX_OK;
     printf("%s rewrap: wrote %s (MLDSAEK1, mode 0600); %s was not modified\n", prog, out, in);
+    /* V4-104, F190: the store's audit MAC key and the journal's pseudonym
+     * key are derived from the envelope's KEK (spec 9.2, 15), and a new
+     * passphrase is a new KEK. Measured: a store's untouched chain then fails
+     * audit-verify as audit-chain-corrupt, and every idh= changes. Said here,
+     * where the operator does it, until the key hierarchy is changed. */
+    fprintf(stderr,
+            "%s rewrap: WARNING: a store written under the old passphrase will NOT verify under the\n"
+            "  new one -- the audit chain and the journal's pseudonyms are keyed from this\n"
+            "  envelope's KEK, so audit-verify will report audit-chain-corrupt for its existing\n"
+            "  entries and every idh= changes (audit finding F190). Record the head MAC under the\n"
+            "  old passphrase first, and treat the rewrapped key as starting a new chain.\n", prog);
 done:
     if (img != NULL) {
         secure_mem_free(img, img_len);
