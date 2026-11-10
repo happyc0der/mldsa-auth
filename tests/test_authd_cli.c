@@ -29,6 +29,8 @@
 #include "authd_cli.h"
 #include "authd_config.h"
 #include "authd_harness.h"
+#include <sodium.h>
+
 #include "sdnotify.h"
 #include "authd_secret.h"
 #include "child_exit.h"
@@ -1479,7 +1481,10 @@ static void test_sd_notify(void)
 #ifdef __linux__
     { const int as = socket(AF_UNIX, SOCK_DGRAM, 0);
       struct sockaddr_un b; memset(&b, 0, sizeof b); b.sun_family = AF_UNIX;
-      char name[64]; (void)snprintf(name, sizeof name, "mldsa-notify-%d", (int)getpid());
+      /* A random name, not a pid one: scratch_dirs (F114) refuses those. */
+      uint8_t rnd[8]; randombytes_buf(rnd, sizeof rnd);
+      char hex[2u * sizeof rnd + 1u]; (void)sodium_bin2hex(hex, sizeof hex, rnd, sizeof rnd);
+      char name[64]; (void)snprintf(name, sizeof name, "mldsa-notify-%s", hex);
       const size_t nl = strlen(name);
       memcpy(b.sun_path + 1, name, nl);           /* sun_path[0] = 0: abstract */
       const socklen_t bl = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1u + nl);

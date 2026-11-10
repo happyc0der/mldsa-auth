@@ -13582,6 +13582,12 @@ abstract `@name`, anything else refused. A failed notification goes to
 stderr, not to the gated log vocabulary, and systemd then times the start out
 rather than calling a deaf daemon started. Erratum 78.
 
+My first push of this broke 9 suite jobs and 57 campaigns: the Linux-only
+abstract-socket check named its socket from `getpid()`, and the `scratch_dirs`
+gate (F114) refuses pid-derived names. I had run `test_authd_cli` alone, not
+the suite, after adding it. The name is random bytes now, and the whole suite
+ran locally (58/58, ASan 53/53) before the next push.
+
 The same CI run lost the offline-build job to its container's toolchain
 install (`cannot install the toolchain`), which passed on V4-103's run and is
 infrastructure; it is re-run with this commit.
