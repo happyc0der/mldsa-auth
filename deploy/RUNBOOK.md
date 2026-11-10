@@ -380,7 +380,9 @@ cmake --build build-wasm -j"$(nproc)"
 ctest --test-dir build-wasm
 ```
 
-`ctest` must report `100% tests passed out of 3`: the two known-answer tests
+`ctest` must report all 3 passed — `100% tests passed out of 3`, which older
+CMake (Ubuntu 24.04's 3.28) writes as `100% tests passed, 0 tests failed out of
+3` (V4-103): the two known-answer tests
 and the module gates (its exact export list, and no filesystem or dynamic
 code). The result is `build-wasm/web/mldsa_client.{mjs,wasm}`, about 300 KB together (V4-13d: 288,109 + 13,169 bytes).
 

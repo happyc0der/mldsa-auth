@@ -13537,3 +13537,10 @@ credential: a root-owned file with an ACL, on Ubuntu 26.04. Whether systemd
 the `rehearse` job is now a matrix over `ubuntu-26.04` and `ubuntu-24.04`.
 Both run in parallel, so CI's wall time does not change; the credential the
 runner's systemd delivers is printed by the job's measurement step on each.
+
+Measured on the first run (42821723920): systemd 255 delivers the credential
+exactly as 259 does (root:root 0440, `user:997:r--`), so F183's fix holds on
+both. Everything passed on 24.04 except step 13's EXPECT: its CMake 3.28
+prints `100% tests passed, 0 tests failed out of 3` where the runbook quoted
+the newer `100% tests passed out of 3` (F189, Info). Both wordings are now
+in the runbook and the EXPECT.

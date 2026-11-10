@@ -186,7 +186,7 @@ EXPECT = {
          r"authd_admin\[\d+\]: \S*authd_admin audit-verify: head=[0-9a-f]{64}",
          r"authd_admin\[\d+\]: \S*authd_admin audit-verify: the audit chain verifies \(\d+ entries\)",
          r"Finished mldsa-authd-audit\.service"],
-    13: [r"100% tests passed out of 3"],
+    13: [r"100% tests passed(, 0 tests failed)? out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
     15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
