@@ -464,9 +464,16 @@ jobs:
   # it prints. Its first run found seven defects that stopped a deployment
   # cold; every one was invisible to the per-piece checks above.
   rehearse:
-    name: deploy/RUNBOOK.md, top to bottom (Linux, systemd)
-    runs-on: ubuntu-26.04
+    name: deploy/RUNBOOK.md, top to bottom (${{ matrix.os }}, systemd)
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # V4-103: two systemds. How a credential is delivered (V4-99's F183: an
+    # ACL on a root-owned file) is exactly the kind of fact that moves
+    # between systemd versions; 24.04 ships 255, 26.04 a later one.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, ubuntu-24.04]
     env:
       EMSDK_COMMIT: 5eb0bde7585670252e8ba05e9d361627bffd08b5   # emsdk tag 6.0.9
       EMSCRIPTEN_VERSION: "6.0.9"

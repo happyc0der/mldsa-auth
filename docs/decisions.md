@@ -13528,3 +13528,12 @@ and "the audit chain verifies", and forbids any analyser diagnostic that names
 either audit unit. What it does not do: send the head anywhere. That is still
 the deployment's, and §18 now says exactly that instead of saying nothing
 exists.
+
+## V4-103 — the rehearsal on two systemds
+
+V4-99's worst finding (F183) was a fact about how one systemd delivers a
+credential: a root-owned file with an ACL, on Ubuntu 26.04. Whether systemd
+255 (Ubuntu 24.04, still the most deployed LTS) does the same was unknown, so
+the `rehearse` job is now a matrix over `ubuntu-26.04` and `ubuntu-24.04`.
+Both run in parallel, so CI's wall time does not change; the credential the
+runner's systemd delivers is printed by the job's measurement step on each.
