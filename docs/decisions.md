@@ -13629,3 +13629,11 @@ otherwise have emptied it seconds before the browser needed it. With the
 bucket possibly below five when the probe starts, only its sixth attempt is
 certain, and that is what it now requires: refused, whatever address it
 claims.
+
+## V4-107 — cleanup: the documents catch up with V4-99–V4-106
+
+The third iteration since V4-104, so no new coverage. README's CI row now
+names the rehearsal (two Ubuntus, a browser through the deployment, the
+restore drill) and says ~6 min; `tools/README.md` lists `rehearse_runbook.py`
+and `rehearsal_browser.mjs` with what each found; README's `test_authd_cli` row
+names the checks V4-99–V4-104 added to it.
