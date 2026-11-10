@@ -199,6 +199,15 @@ POST = {
         # reached it. The daemon's own journal can: it logs every local
         # request with the command and the peer's uid.
         "sleep 0.5; sudo journalctl -u mldsa-authd --no-pager | grep -F 'event=local-request' | tail -n 3",
+        # V4-105: the recovery route's per-client limit, through the REAL
+        # proxy. Six attempts, each forging a different X-Forwarded-For: a
+        # limiter keyed on the client's entry would give each its own bucket
+        # and never refuse; keyed on the proxy's (rightmost, F159) the sixth
+        # is 429 (burst 5).
+        "for i in 1 2 3 4 5 6; do curl -sk -c /tmp/cj -b /tmp/cj -o /dev/null -w \"recover $i %{http_code}\\n\" "
+        "-X POST -H 'Origin: https://localhost' -H 'Content-Type: application/json' "
+        "-H \"X-Forwarded-For: 198.51.100.$i\" "
+        "--data '{\"user\":\"nobody\",\"code\":\"AAAA-AAAA-AAAA-AAAA\"}' https://localhost/api/recover; done",
     ],
 }
 
@@ -216,7 +225,8 @@ EXPECT = {
          r"Finished mldsa-authd-audit\.service"],
     13: [r"100% tests passed(, 0 tests failed)? out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
-         r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],
+         r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE",
+         r"(?m)^recover 5 403$", r"(?m)^recover 6 429$"],
     15: [r"(?m)^idh=[0-9a-f]{16}$", r"event=login-code-issued.*idh="],
     19: [r"(?m)^[A-Za-z0-9_-]{43}$", r"(?m)^old-key-refused$"],
     20: [r"(?m)^disabled-user-refused$"],
