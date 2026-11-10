@@ -107,10 +107,14 @@ int main(int argc, char **argv)
     authd_config_t cfg;
     size_t err_line = 0;
     const authd_config_status_t cs = authd_config_load(cfg_path, &cfg, &err_line);
+    const int cfg_errno = errno;
     if (cs != AUTHD_CFG_OK) {
         /* The operator sees the refusal before systemd starts the service --
          * which is the whole reason --check-config exists. */
         fprintf(stderr, "mldsa-authd: %s: %s", cfg_path, authd_config_status_name(cs));
+        if (cs == AUTHD_CFG_ERR_IO) {
+            fprintf(stderr, " (%s)", authd_config_io_cause(cfg_errno));
+        }
         if (err_line > 0u) {
             fprintf(stderr, " at line %zu", err_line);
         }

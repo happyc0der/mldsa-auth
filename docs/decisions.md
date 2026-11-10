@@ -13476,3 +13476,35 @@ cannot. So the `rm` is the defence, and the runbook says so.
 **Not established.** Only a SIGKILL crash; a power loss is not simulated.
 That the WAL is the only stale state a restore must clear is true of this
 store (no other sidecar files are opened) but is not proven by the drill.
+
+## V4-101 — two messages that hid their cause (F186, F187)
+
+The third iteration since V4-98, so fixes and cleanup. Both rows came from the
+V4-99 rehearsal, where each cost a round trip to diagnose.
+
+**F187.** `authd_config_load` returned `AUTHD_CFG_ERR_IO` for any failed
+`open`, `fstat` or `read`, so a daemon that could not read its configuration
+(F180's shape) said `authd.conf: io`. The loader now leaves the cause in
+`errno`, 0 meaning "not a regular file", and the daemon and
+`authd_admin --check-config` print it in parentheses. No status name changes,
+so no vocabulary does. Checks: a missing file, a directory, and (when not
+root) a 0000 file, each through the real CLI with stderr captured. Controls:
+"not a regular file" replaced by another errno, and the cause words replaced,
+both red by name; the third, dropping errno across a failed `fstat`, survived,
+because no test can make `fstat` fail on a descriptor that just opened.
+
+**F186.** The daemon refuses a peer outside a local socket's uid allowlist by
+closing at accept, and the CLI said only `io-error`. Telling a refusal from a
+crash on the wire would be a protocol change, so this is wording: when the
+connection closes before a single byte, `authd_admin` adds that this is what
+the daemon does to a uid outside `admin_uids`/`site_uids`. The test socket
+accepts and closes, as the daemon does; a control that disabled the hint was
+red by name.
+
+**Caught on the way.** gcc-16's full compile found two `-Wformat-truncation`
+errors in the new test that clang let through (a path buffer sized below
+`g_dir` plus its suffix, and an unchecked copy into `sun_path`) — the memory
+note's exact class. And one control run used a stale object: the source was
+restored inside the same second the mutant built, and make's one-second
+timestamps called the tree current; `check_build_current.sh` plus a `touch`
+after a one-second sleep is now part of the control script.

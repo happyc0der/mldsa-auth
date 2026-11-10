@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -442,11 +443,18 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
 
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
-        return AUTHD_CFG_ERR_IO;
+        return AUTHD_CFG_ERR_IO;               /* errno: open's */
     }
     struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (fstat(fd, &st) != 0) {
+        const int e = errno;
         (void)close(fd);
+        errno = e;
+        return AUTHD_CFG_ERR_IO;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        (void)close(fd);
+        errno = 0;                             /* "not a regular file" */
         return AUTHD_CFG_ERR_IO;
     }
     if (st.st_size < 0 || (uintmax_t)st.st_size > (uintmax_t)AUTHD_CONFIG_MAX_BYTES) {
@@ -458,7 +466,9 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
     while (total < (size_t)st.st_size) {
         ssize_t n = read(fd, buf + total, (size_t)st.st_size - total);
         if (n < 0) {
+            const int e = errno;
             (void)close(fd);
+            errno = e;
             return AUTHD_CFG_ERR_IO;
         }
         if (n == 0) {
@@ -468,6 +478,11 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
     }
     (void)close(fd);
     return authd_config_parse(buf, total, out, err_line);
+}
+
+const char *authd_config_io_cause(int e)
+{
+    return e == 0 ? "not a regular file" : strerror(e);
 }
 
 /* ---- filesystem checks (V4-9b) ------------------------------------------ */

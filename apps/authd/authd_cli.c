@@ -442,6 +442,16 @@ static int local_call(const char *prog, const char *sub, const char *sock,
                                                resp, sizeof resp, &len);
     if (st != LOCALCLI_OK) {
         fprintf(stderr, "%s %s: %s: %s\n", prog, sub, sock, localcli_status_name(st));
+        /* V4-101, F186: the daemon refuses a peer whose uid is not in the
+         * socket's allowlist by closing at accept, without a byte -- so the
+         * one thing a closed, silent connection most often means is "wrong
+         * user", and the bare status said nothing of it. */
+        if ((st == LOCALCLI_ERR_IO || st == LOCALCLI_ERR_RESPONSE) && len == 0u) {
+            fprintf(stderr, "%s %s: the daemon closed the connection without answering; it does that "
+                            "to a uid that is not in the socket's allowlist (admin_uids for "
+                            "admin.sock, site_uids for site.sock) -- check who this runs as\n",
+                    prog, sub);
+        }
         return EX_FAIL;
     }
     char code[64];
@@ -826,8 +836,12 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
     authd_config_t cfg;
     size_t err_line = 0;
     const authd_config_status_t cs = authd_config_load(path, &cfg, &err_line);
+    const int cfg_errno = errno;
     if (cs != AUTHD_CFG_OK) {
         fprintf(stderr, "%s: %s: %s", prog, path, authd_config_status_name(cs));
+        if (cs == AUTHD_CFG_ERR_IO) {
+            fprintf(stderr, " (%s)", authd_config_io_cause(cfg_errno));
+        }
         if (err_line > 0u) {
             fprintf(stderr, " at line %zu", err_line);
         }

@@ -134,8 +134,16 @@ void authd_config_defaults(authd_config_t *out);
 authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
                                          authd_config_t *out, size_t *err_line);
 
-/* Reads a file (refusing one over AUTHD_CONFIG_MAX_BYTES) and parses it. */
+/* Reads a file (refusing one over AUTHD_CONFIG_MAX_BYTES) and parses it.
+ * On AUTHD_CFG_ERR_IO, errno holds the cause of the failed open, fstat or
+ * read, or 0 when the path opened but is not a regular file (V4-101, F187:
+ * "io" alone told an operator nothing, and the commonest cause, a daemon that
+ * cannot read its configuration, is a permissions question). */
 authd_config_status_t authd_config_load(const char *path, authd_config_t *out, size_t *err_line);
+
+/* The words for an AUTHD_CFG_ERR_IO cause, from the errno authd_config_load
+ * left: strerror(e), or "not a regular file" for 0. */
+const char *authd_config_io_cause(int e);
 
 const char *authd_config_status_name(authd_config_status_t st);
 

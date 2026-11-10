@@ -107,7 +107,7 @@ sudo install -d -o root -g mldsa-authd -m 0750 /etc/mldsa-authd
 
 `/etc/mldsa-authd` is group `mldsa-authd` because the daemon runs as that user
 and must read its configuration there (step 7); a 0700 root directory stops it
-at start with `authd.conf: io` (V4-99). Nobody else needs in: the credential in
+at start with `authd.conf: io (Permission denied)` (V4-99). Nobody else needs in: the credential in
 it is read by systemd, as root.
 
 `/run/mldsa-authd/` is **not** created here: systemd's `RuntimeDirectory=`
@@ -286,7 +286,8 @@ sudo authd_admin backup \
 
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
 plain `sudo`; as any other user the daemon closes the connection at accept and
-the tool says `io-error` (V4-99). `--path` must be absolute: the daemon
+the tool says `io-error` and that the daemon closed without answering, which
+it does to a uid outside the socket's allowlist (V4-99, V4-101). `--path` must be absolute: the daemon
 resolves it, not your shell, and writes it into `backups/` (step 4) as the
 service user. The backup is 0600, like the store.
 
@@ -606,7 +607,8 @@ Common ones, and what they actually are:
   tries to bind it.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
-- **`authd.conf: io`** — the daemon cannot read its configuration: it runs
+- **`authd.conf: io (Permission denied)`** — the daemon cannot read its
+  configuration (the parenthesis names the cause since V4-101): it runs
   as `mldsa-authd`, so the file must be that user's and `/etc/mldsa-authd`
   must admit its group (steps 4 and 7).
 - **Everything starts, no client can connect** — check `proxy_protocol` in

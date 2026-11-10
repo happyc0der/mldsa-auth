@@ -12,6 +12,7 @@
  * this command's reply end with END?".
  */
 #include <dirent.h>
+#include <errno.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -565,6 +566,52 @@ static void test_check_config(void)
         CHECK(strstr(err, authd_config_status_name(direct)) != NULL,
               "check-config: admin reports the SAME status name the shared parser returned");
     }
+
+    /* V4-101, F187: "io" now says why. A missing file, a directory, and --
+     * when not root, which reads anything -- a file this user cannot read,
+     * the shape that stopped the rehearsed daemon (F180). */
+    { char missing[256], unreadable[256], err[1024];
+      (void)snprintf(missing, sizeof missing, "%s/absent.conf", g_dir);
+      char *a1[] = { "authd_admin", "--check-config", "--config", missing, NULL };
+      CHECK(run_admin_capture(a1, err, sizeof err) == 3 && strstr(err, ": io (") != NULL &&
+            strstr(err, strerror(ENOENT)) != NULL,
+            "check-config: a missing configuration says io and why (No such file or directory)");
+      char *a2[] = { "authd_admin", "--check-config", "--config", g_dir, NULL };
+      CHECK(run_admin_capture(a2, err, sizeof err) == 3 && strstr(err, ": io (not a regular file)") != NULL,
+            "check-config: a directory as the configuration says io (not a regular file)");
+      (void)snprintf(unreadable, sizeof unreadable, "%s/unreadable.conf", g_dir);
+      CHECK(write_file(unreadable, "store_path = /a\n", 0000) == 0, "check-config: an unreadable fixture");
+      if (geteuid() != 0) {
+          char *a3[] = { "authd_admin", "--check-config", "--config", unreadable, NULL };
+          CHECK(run_admin_capture(a3, err, sizeof err) == 3 && strstr(err, strerror(EACCES)) != NULL,
+                "check-config: an unreadable configuration says io (Permission denied) -- F180's shape");
+      }
+      (void)unlink(unreadable); }
+
+    /* V4-101, F186: a socket that closes without a byte -- the daemon's
+     * refusal of a uid outside the allowlist -- is explained, not just
+     * named. A child accepts one connection and closes it. */
+    { char sp[sizeof g_dir + 16u], err[2048];
+      (void)snprintf(sp, sizeof sp, "%s/refuse.sock", g_dir);
+      const int ls = socket(AF_UNIX, SOCK_STREAM, 0);
+      struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX;
+      const size_t spn = strlen(sp);
+      const int fits = spn < sizeof a.sun_path;
+      if (fits) { memcpy(a.sun_path, sp, spn + 1u); }
+      const int ok = fits && ls >= 0 && bind(ls, (struct sockaddr *)&a, sizeof a) == 0 && listen(ls, 1) == 0;
+      CHECK(ok, "refused peer: a listening socket that will close at accept");
+      const pid_t kid = ok ? fork() : -1;
+      if (kid == 0) { const int c = accept(ls, NULL, NULL); if (c >= 0) { (void)close(c); } _exit(0); }
+      if (kid > 0) {
+          char *av[] = { "authd_admin", "list-users", "--socket", sp, NULL };
+          const int rc = run_admin_capture(av, err, sizeof err);
+          (void)waitpid(kid, NULL, 0);
+          CHECK(rc != 0 && strstr(err, "closed the connection without answering") != NULL &&
+                strstr(err, "admin_uids") != NULL,
+                "refused peer: a connection closed without a byte says the uid allowlist is the likely cause (F186)");
+      }
+      if (ls >= 0) { (void)close(ls); }
+      (void)unlink(sp); }
 
     /* And a valid one, whose files exist, passes both halves. */
     char dir[256], cpath[256], text[1024];
