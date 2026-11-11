@@ -67,6 +67,13 @@ const char *store_status_name(store_status_t st);
  * secure memory for the store's lifetime. On any failure *out is NULL. */
 store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
+/* The same, for a tool that reads a store somebody else made (V4-109): it
+ * creates nothing. A path that names no file is STORE_ERR_IO; a file that is
+ * not a store -- no meta table, or no store_id -- is STORE_ERR_DAMAGED. It
+ * waits up to five seconds for a running daemon's lock (store_open: a quarter
+ * of a second). */
+store_status_t store_open_existing(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
+
 /* Closes and frees; wipes key_audit and key_log. Idempotent on NULL. */
 void store_close(store_t *s);
 

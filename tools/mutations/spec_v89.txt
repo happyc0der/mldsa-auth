@@ -1,0 +1,14 @@
+OE1|^test_authd_store$|existing: a path that names no file is an I/O failure (F193)
+OE2|^test_authd_store$|existing: a path that names no file is an I/O failure (F193)
+OE3|^test_authd_store$|existing: and it is left empty (F193)
+OE4|^test_authd_store$|existing: a database with no store id is not a store (F193)
+OE5|^test_authd_store$|busy: store_open_existing waits for the lock instead of failing (F192)
+OE6|^test_authd_store$|busy: the daemon's handle waits out a lock held for 60 ms (F192)
+OE7|^test_authd_store$|busy: the daemon's handle waits only briefly, then reports database-error
+OE8|^test_authd_cli$|audit-verify: a --store that names no file fails (1) as io (F193)
+OE9|^test_authd_cli$|pseudonym: a --store that names no file fails (1) as io (F193)
+OE10|^test_authd_store$|twice: the first disable's time and reason stand (F194)
+OE11|^test_authd_store$|twice: a second disable of a disabled user answers OK
+OE12|^test_authd_store$|twice: a user that does not exist is still NOT_FOUND, for both
+OE13|^test_authd_cli$|init: an existing server.pub is refused up front, by name (F195)
+OE14|^test_authd_cli$|init: says it used the existing directory and reports its real mode (F195)

@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include <sodium.h>
 #include <sqlite3.h>
@@ -73,6 +74,55 @@ static int raw_sql(const char *db, const char *sql)
     if (err) { sqlite3_free(err); }
     sqlite3_close(h);
     return rc == SQLITE_OK ? 0 : -1;
+}
+
+/* One integer and one text column of one row, read by another connection.
+ * Returns 0 and fills both; -1 if there is no row or the read fails. */
+static int raw_row(const char *db, const char *sql, long long *num, char *text, size_t cap)
+{
+    sqlite3 *h = NULL;
+    sqlite3_stmt *st = NULL;
+    int rc = -1;
+    if (sqlite3_open_v2(db, &h, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(h, sql, -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *t = sqlite3_column_text(st, 1);
+        *num = sqlite3_column_int64(st, 0);
+        (void)snprintf(text, cap, "%s", t != NULL ? (const char *)t : "");
+        rc = 0;
+    }
+    sqlite3_finalize(st);
+    if (h) { sqlite3_close(h); }
+    return rc;
+}
+
+/* Another process takes the store's write lock, says so on the pipe, holds it
+ * for `ms` and lets go. Returns its pid, or -1. */
+static pid_t hold_write_lock(const char *db, int ms)
+{
+    int fds[2];
+    if (pipe(fds) != 0) { return -1; }
+    const pid_t pid = fork();
+    if (pid == 0) {
+        sqlite3 *h = NULL;
+        (void)close(fds[0]);
+        if (sqlite3_open_v2(db, &h, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
+            sqlite3_exec(h, "BEGIN IMMEDIATE;", NULL, NULL, NULL) != SQLITE_OK) {
+            _exit(3);
+        }
+        if (write(fds[1], "L", 1) != 1) { _exit(4); }
+        { struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+          (void)nanosleep(&ts, NULL); }
+        (void)sqlite3_exec(h, "ROLLBACK;", NULL, NULL, NULL);
+        sqlite3_close(h);
+        _exit(0);
+    }
+    (void)close(fds[1]);
+    if (pid > 0) {
+        char c = 0;
+        if (read(fds[0], &c, 1) != 1 || c != 'L') { (void)close(fds[0]); (void)waitpid(pid, NULL, 0); return -1; }
+    }
+    (void)close(fds[0]);
+    return pid;
 }
 
 static char g_dir[512];
@@ -833,6 +883,105 @@ int main(void)
           CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK &&
                 store_consume_login_code_ex(s, c3, stateh, 150, &v, NULL, 0, NULL, NULL, 0, NULL) == STORE_OK &&
                 v == STORE_CODE_USED, "...and a re-enable does not revive it"); }
+        store_close(s);
+    }
+
+    /* ---- V4-109: a second disable or enable changes nothing (F194) ------ */
+    {
+        store_t *s = fresh_store("dd.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open dd\n"); return 1; }
+        uint8_t m1[STORE_AUDIT_MAC_BYTES], m2[STORE_AUDIT_MAC_BYTES];
+        long long at = 0;
+        char why[64];
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_disable_user(s, U1, sizeof U1, "admin", (const uint8_t *)"stolen-device", 13u) == STORE_OK,
+              "twice: a user is disabled with a reason");
+        /* the first disable is dated in the past, so a rewrite of its time shows */
+        CHECK(raw_sql(dbp, "UPDATE users SET disabled_at=1000;") == 0 &&
+              store_audit_head_mac(s, m1) == STORE_OK, "twice: the first disable's time and the head are recorded");
+        CHECK(store_disable_user(s, U1, sizeof U1, "local-api", (const uint8_t *)"routine-cleanup", 15u) == STORE_OK,
+              "twice: a second disable of a disabled user answers OK");
+        CHECK(raw_row(dbp, "SELECT disabled_at, CAST(disabled_reason AS TEXT) FROM users;", &at, why, sizeof why) == 0 &&
+              at == 1000 && strcmp(why, "stolen-device") == 0,
+              "twice: the first disable's time and reason stand (F194)");
+        CHECK(store_audit_head_mac(s, m2) == STORE_OK && memcmp(m1, m2, sizeof m1) == 0,
+              "twice: the second disable writes no audit entry (F194)");
+        CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK &&
+              store_audit_head_mac(s, m1) == STORE_OK && memcmp(m1, m2, sizeof m1) != 0,
+              "twice: an enable of a disabled user is audited");
+        CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK &&
+              store_audit_head_mac(s, m2) == STORE_OK && memcmp(m1, m2, sizeof m1) == 0,
+              "twice: a second enable of an enabled user answers OK and writes no audit entry (F194)");
+        CHECK(store_disable_user(s, UX, sizeof UX, "admin", NULL, 0) == STORE_ERR_NOT_FOUND &&
+              store_enable_user(s, UX, sizeof UX, "admin") == STORE_ERR_NOT_FOUND,
+              "twice: a user that does not exist is still NOT_FOUND, for both");
+        CHECK(store_audit_verify(s) == STORE_OK, "twice: the chain verifies");
+        store_close(s);
+    }
+
+    /* ---- V4-109: store_open_existing creates nothing, and waits (F192, F193) */
+    {
+        char miss[600], empty[600];
+        struct stat sb;
+        store_t *s = fresh_store("oe.sqlite3", dbp, sizeof dbp);
+        store_t *t = NULL;
+        uint8_t p1[STORE_PSEUDONYM_BYTES], p2[STORE_PSEUDONYM_BYTES];
+        if (s == NULL) { printf("FAIL: open oe\n"); return 1; }
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_log_pseudonym(s, U1, sizeof U1, p1) == STORE_OK, "existing: a store with one audit entry");
+
+        path(miss, sizeof miss, "oe-typo.sqlite3");
+        (void)unlink(miss);
+        CHECK(store_open_existing(miss, KEK, &t) == STORE_ERR_IO && t == NULL,
+              "existing: a path that names no file is an I/O failure (F193)");
+        CHECK(stat(miss, &sb) != 0, "existing: and no file is created there (F193)");
+
+        path(empty, sizeof empty, "oe-empty.sqlite3");
+        { FILE *f = fopen(empty, "wb"); if (f != NULL) { (void)fclose(f); } }
+        CHECK(store_open_existing(empty, KEK, &t) == STORE_ERR_DAMAGED && t == NULL,
+              "existing: an empty file is not a store (F193)");
+        CHECK(stat(empty, &sb) == 0 && sb.st_size == 0, "existing: and it is left empty (F193)");
+
+        /* a database with the schema and no store id: something made the
+         * tables, and neither init nor the daemon ever opened it */
+        { char noid[600];
+          long long ids = -1;
+          char unused[8];
+          store_t *n = fresh_store("oe-noid.sqlite3", noid, sizeof noid);
+          CHECK(n != NULL, "existing: a second store, to take the store id out of");
+          store_close(n);
+          CHECK(raw_sql(noid, "DELETE FROM meta WHERE key='store_id';") == 0 &&
+                store_open_existing(noid, KEK, &t) == STORE_ERR_DAMAGED && t == NULL,
+                "existing: a database with no store id is not a store (F193)");
+          CHECK(raw_row(noid, "SELECT COUNT(*), '' FROM meta WHERE key='store_id';", &ids, unused, sizeof unused) == 0 &&
+                ids == 0, "existing: and it is not given one (F193)"); }
+
+        CHECK(store_open_existing(dbp, KEK, &t) == STORE_OK && t != NULL &&
+              store_log_pseudonym(t, U1, sizeof U1, p2) == STORE_OK && memcmp(p1, p2, sizeof p1) == 0 &&
+              store_audit_verify(t) == STORE_OK,
+              "existing: a real store opens, with the same pseudonym, and its chain verifies");
+        store_close(t);
+        t = NULL;
+
+        /* Another process holds the write lock for 1.2 s. The daemon's handle
+         * gives up after a quarter of a second; the offline open waits it out. */
+        { const pid_t holder = hold_write_lock(dbp, 1200);
+          int st = 0;
+          CHECK(holder > 0, "busy: another process holds the store's write lock");
+          CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_ERR_DB,
+                "busy: the daemon's handle waits only briefly, then reports database-error");
+          CHECK(store_open_existing(dbp, KEK, &t) == STORE_OK && t != NULL,
+                "busy: store_open_existing waits for the lock instead of failing (F192)");
+          store_close(t);
+          t = NULL;
+          CHECK(holder > 0 && waitpid(holder, &st, 0) == holder && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+                "busy: the lock holder ran to its end"); }
+        { const pid_t holder = hold_write_lock(dbp, 60);
+          int st = 0;
+          CHECK(holder > 0 && store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK,
+                "busy: the daemon's handle waits out a lock held for 60 ms (F192)");
+          CHECK(holder > 0 && waitpid(holder, &st, 0) == holder && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+                "busy: that holder ran to its end too"); }
         store_close(s);
     }
 

@@ -93,7 +93,10 @@ M = {
  "E1": (CLI, [("    const demo_keys_status_t ps = demo_keys_load_public(pubpath, hid, hid_len, pk);",
                "    uint8_t pk_id[64]; size_t pk_id_len = 0; (void)pk_id; (void)pk_id_len;\n    demo_keys_status_t ps = DEMO_KEYS_OK;\n    { FILE *pf = fopen(pubpath, \"rb\"); /* MUTATION E1: trusts the file's own label */\n      if (pf == NULL) { ps = DEMO_KEYS_ERR_IO; }\n      else { uint8_t hdr[9]; (void)fread(hdr, 1u, 9u, pf);\n             uint8_t fid[64]; (void)fread(fid, 1u, hdr[8], pf);\n             (void)fread(pk, 1u, MLDSA_PUBLIC_KEY_BYTES, pf); (void)fclose(pf); } }")]),
  # init no longer refuses an existing store
- "I1": (CLI, [("    const char *clash = path_exists(ek) ? ek : (path_exists(db) ? db : (path_exists(pass_path) ? pass_path : NULL));",
+ "I1": (CLI, [("    const char *clash = path_exists(ek) ? ek\n"
+               "                      : path_exists(pub) ? pub\n"
+               "                      : path_exists(db) ? db\n"
+               "                      : path_exists(pass_path) ? pass_path : NULL;",
                "    const char *clash = NULL; /* MUTATION I1: init over an existing store */")]),
  # a listener failure leaks the decrypted server key and every allocation
  "R1": (MN, [("        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            fprintf(stderr, \"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            goto listener_failed;\n        }",

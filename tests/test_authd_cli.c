@@ -224,8 +224,13 @@ static void test_init(void)
     (void)snprintf(pub, sizeof pub, "%s/i1/server.pub", g_dir);
     (void)snprintf(db, sizeof db, "%s/i1/store.sqlite3", g_dir);
 
-    CHECK(RUN_ADMIN("init", "--dir", dir, "--server-id", "authd", "--passphrase-file", pass) == 0,
+    char said[2048];
+    CHECK(run_admin_capture_stdout((char *[]){ "authd_admin", "init", "--dir", dir, "--server-id", "authd",
+                                               "--passphrase-file", pass, NULL }, said, sizeof said) == 0,
           "init: creates a server key, a store and a passphrase file");
+    CHECK(strstr(said, "init: created ") != NULL && strstr(said, "/i1 (mode 0700)") != NULL &&
+          strstr(said, "used the existing") == NULL,
+          "init: says it created the directory, mode 0700, when it did");
 
     CHECK(mode_of(dir) == 0700, "init: the data directory is 0700 (spec 16)");
     CHECK(mode_of(ek) == 0600, "init: server.ek is 0600");
@@ -320,6 +325,66 @@ static void test_init(void)
         sha256_file(db2, after);
         CHECK(memcmp(before, after, 32) == 0,
               "init: the refused init left the existing store byte-identical");
+    }
+
+    /* V4-109, F195: a public key left behind is found BEFORE anything is
+     * written, and named. It used to be found after the passphrase file and
+     * the sealed key were on disk, with a message that named neither. */
+    {
+        char dir3[256], pub3[256], ek3[256], db3[256], pass3[256], err[1024];
+        (void)snprintf(dir3, sizeof dir3, "%s/i3", g_dir);
+        (void)snprintf(pub3, sizeof pub3, "%s/i3/server.pub", g_dir);
+        (void)snprintf(ek3, sizeof ek3, "%s/i3/server.ek", g_dir);
+        (void)snprintf(db3, sizeof db3, "%s/i3/store.sqlite3", g_dir);
+        (void)snprintf(pass3, sizeof pass3, "%s/i3/pass", g_dir);
+        CHECK(mkdir(dir3, 0700) == 0 && write_file(pub3, "left over\n", 0644) == 0,
+              "init: a directory holding only an old server.pub");
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "init", "--dir", dir3, "--server-id", "authd",
+                                            "--passphrase-file", pass3, NULL }, err, sizeof err) == 1 &&
+              strstr(err, "refusing") != NULL && strstr(err, "/i3/server.pub already exists") != NULL,
+              "init: an existing server.pub is refused up front, by name (F195)");
+        CHECK(access(pass3, F_OK) != 0 && access(ek3, F_OK) != 0 && access(db3, F_OK) != 0 &&
+              file_size(pub3) == 10,
+              "init: and that refusal wrote nothing: no passphrase, key or store (F195)");
+    }
+
+    /* V4-109, F195: a directory that was already there keeps its mode, and
+     * init says what that mode is instead of "created ... (mode 0700)". */
+    {
+        char dir4[256], pass4[256], out[2048];
+        (void)snprintf(dir4, sizeof dir4, "%s/i4", g_dir);
+        (void)snprintf(pass4, sizeof pass4, "%s/i4/pass", g_dir);
+        CHECK(mkdir(dir4, 0750) == 0 && chmod(dir4, 0750) == 0, "init: an empty directory of mode 0750");
+        CHECK(run_admin_capture_stdout((char *[]){ "authd_admin", "init", "--dir", dir4, "--server-id", "authd",
+                                                   "--passphrase-file", pass4, NULL }, out, sizeof out) == 0 &&
+              mode_of(dir4) == 0750,
+              "init: runs in an existing empty directory and leaves its mode alone");
+        CHECK(strstr(out, "init: used the existing ") != NULL && strstr(out, "/i4 (mode 0750)") != NULL &&
+              strstr(out, "init: created ") == NULL,
+              "init: says it used the existing directory and reports its real mode (F195)");
+    }
+
+    /* V4-109, F193: the offline commands read a store, they do not make one.
+     * A mistyped --store used to create an empty store there (mode 0644) and
+     * report "0 entries verified" with exit 0. */
+    {
+        char typo[256], wal[300], err[1024];
+        (void)snprintf(typo, sizeof typo, "%s/i1/store.sqlite", g_dir);
+        (void)snprintf(wal, sizeof wal, "%s-wal", typo);
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", typo, "--key", ek,
+                                            "--passphrase-file", pass, "--server-id", "authd", NULL },
+                                err, sizeof err) == 1 && strstr(err, "store.sqlite: io") != NULL,
+              "audit-verify: a --store that names no file fails (1) as io (F193)");
+        CHECK(access(typo, F_OK) != 0 && access(wal, F_OK) != 0,
+              "audit-verify: and creates nothing at that path (F193)");
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "pseudonym", "--store", typo, "--key", ek,
+                                            "--passphrase-file", pass, "--server-id", "authd", "--id", "alice",
+                                            NULL }, err, sizeof err) == 1 && strstr(err, "store.sqlite: io") != NULL,
+              "pseudonym: a --store that names no file fails (1) as io (F193)");
+        CHECK(access(typo, F_OK) != 0, "pseudonym: and creates nothing at that path (F193)");
+        CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", ek, "--passphrase-file", pass,
+                        "--server-id", "authd") == 0,
+              "audit-verify: the store init made verifies (0)");
     }
 
     CHECK(RUN_ADMIN("init", "--dir", dir, "--server-id") == 2, "init: a missing value is usage (2)");

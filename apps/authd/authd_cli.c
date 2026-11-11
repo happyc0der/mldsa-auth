@@ -152,7 +152,9 @@ static int cmd_init(int argc, char **argv, const char *prog)
         return need(prog, "init", "--dir DIR --server-id ID --passphrase-file PATH");
     }
 
-    /* Refuse if ANY of the three already exists, and name which one.
+    /* Refuse if ANY of the four already exists, and name which one. (The
+     * public key joined the list in V4-109, F195: it was only found after the
+     * passphrase and the sealed key had been written.)
      *
      * This is not tidiness. store_open() succeeds on an existing store and
      * derives key_audit = HKDF(root key, store_id, ...); re-running init would
@@ -160,14 +162,21 @@ static int cmd_init(int argc, char **argv, const char *prog)
      * subsequent audit row would chain under the wrong key, and
      * store_audit_verify() would fail forever -- with nothing reported at the
      * moment of damage. Refusing up front is the only cheap defence. */
-    const char *clash = path_exists(ek) ? ek : (path_exists(db) ? db : (path_exists(pass_path) ? pass_path : NULL));
+    const char *clash = path_exists(ek) ? ek
+                      : path_exists(pub) ? pub
+                      : path_exists(db) ? db
+                      : path_exists(pass_path) ? pass_path : NULL;
     if (clash != NULL) {
         fprintf(stderr, "%s init: refusing: %s already exists (init is not resumable; "
                         "remove the whole directory to start over)\n", prog, clash);
         return EX_FAIL;
     }
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
-        return failed(prog, "init", dir, "cannot-create-directory");
+    int made_dir = 1;
+    if (mkdir(dir, 0700) != 0) {
+        if (errno != EEXIST) {
+            return failed(prog, "init", dir, "cannot-create-directory");
+        }
+        made_dir = 0;
     }
 
     /* Spec 12: the server passphrase is 32 random bytes, delivered by a
@@ -201,8 +210,8 @@ static int cmd_init(int argc, char **argv, const char *prog)
                            KDF_OPS_SERVER, KDF_MEM_256MIB, NULL);
     if (rc != EX_OK) {
         authd_secret_free(pass, pass_len);
-        fprintf(stderr, "%s init: nothing was created beyond %s; remove it before retrying\n",
-                prog, pass_path);
+        fprintf(stderr, "%s init: remove %s, and %s and %s if they exist, before retrying\n",
+                prog, pass_path, ek, pub);
         return rc;
     }
 
@@ -244,7 +253,16 @@ static int cmd_init(int argc, char **argv, const char *prog)
     if (snprintf(aux, sizeof aux, "%s-wal", db) > 0) { (void)chmod(aux, 0600); }
     if (snprintf(aux, sizeof aux, "%s-shm", db) > 0) { (void)chmod(aux, 0600); }
 
-    printf("%s init: created %s (mode 0700)\n", prog, dir);
+    /* Said only when true: a directory that was already there keeps the mode
+     * it had, and this used to print 0700 for it whatever that was (F195). */
+    if (made_dir) {
+        printf("%s init: created %s (mode 0700)\n", prog, dir);
+    } else {
+        struct stat ds;
+        if (stat(dir, &ds) == 0) {
+            printf("%s init: used the existing %s (mode %04o)\n", prog, dir, (unsigned)(ds.st_mode & 07777u));
+        }
+    }
     printf("%s init: %s (MLDSAEK1, ops=%u mem=%llu, mode 0600)\n", prog, ek,
            (unsigned)KDF_OPS_SERVER, (unsigned long long)KDF_MEM_256MIB);
     printf("%s init: %s (MLDSAPK1) -- pin this in every client\n", prog, pub);
@@ -723,7 +741,7 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
     mldsa_keypair_free(&kp);          /* the root key is all this needs */
 
     store_t *store = NULL;
-    const store_status_t so = store_open(db, kek, &store);
+    const store_status_t so = store_open_existing(db, kek, &store);
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (so != STORE_OK) {
         return failed(prog, "audit-verify", db, store_status_name(so));
@@ -817,7 +835,7 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
     mldsa_keypair_free(&kp);          /* the root key is all this needs */
 
     store_t *store = NULL;
-    const store_status_t so = store_open(db, kek, &store);
+    const store_status_t so = store_open_existing(db, kek, &store);
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (so != STORE_OK) {
         return failed(prog, "pseudonym", db, store_status_name(so));

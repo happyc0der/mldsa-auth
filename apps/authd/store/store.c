@@ -458,7 +458,31 @@ static store_status_t meta_put(sqlite3 *db, const char *key, const uint8_t *val,
     return r;
 }
 
-store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out)
+/* How long a handle waits for another connection's lock before a statement
+ * fails (V4-109, F192). The daemon is one thread, so its wait is short: an
+ * offline tool holds the write lock for one small transaction at open. An
+ * offline tool can afford to wait out a busy daemon. Without either, the two
+ * collided as `database-error` on one side and `ERR code=internal` on the
+ * other. */
+#define STORE_BUSY_MS_DAEMON  250
+#define STORE_BUSY_MS_OFFLINE 5000
+
+static store_status_t has_meta_table(sqlite3 *db, int *found)
+{
+    sqlite3_stmt *st = NULL;
+    *found = 0;
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta';",
+                           -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    const int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) { *found = 1; return STORE_OK; }
+    return (rc == SQLITE_DONE) ? STORE_OK : STORE_ERR_DB;
+}
+
+static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BYTES], int existing,
+                                store_t **out)
 {
     if (path == NULL || kek == NULL || out == NULL) {
         return STORE_ERR_ARG;
@@ -474,9 +498,24 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
     }
     store_status_t r = STORE_OK;
 
-    if (sqlite3_open_v2(path, &s->db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
+    /* `existing` (store_open_existing): no SQLITE_OPEN_CREATE, so a path that
+     * names no file is an I/O failure, and a file with no meta table -- an
+     * empty file, some other database -- is refused before the schema below
+     * would turn it into a store (F193). */
+    if (sqlite3_open_v2(path, &s->db,
+                        existing ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),
+                        NULL) != SQLITE_OK) {
         r = STORE_ERR_IO;
         goto fail;
+    }
+    if (sqlite3_busy_timeout(s->db, existing ? STORE_BUSY_MS_OFFLINE : STORE_BUSY_MS_DAEMON) != SQLITE_OK) {
+        r = STORE_ERR_DB;
+        goto fail;
+    }
+    if (existing) {
+        int has = 0;
+        if ((r = has_meta_table(s->db, &has)) != STORE_OK) { goto fail; }
+        if (!has) { r = STORE_ERR_DAMAGED; goto fail; }
     }
     /* Spec §9: WAL, durable commits, foreign keys enforced. */
     if (exec_simple(s->db, "PRAGMA journal_mode=WAL;") != STORE_OK ||
@@ -516,6 +555,10 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
     /* store_id */
     size_t n = 0;
     if ((r = meta_get(s->db, "store_id", s->store_id, sizeof s->store_id, &n, &found)) != STORE_OK) {
+        goto fail_tx;
+    }
+    if (!found && existing) {
+        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */
         goto fail_tx;
     }
     if (!found) {
@@ -590,6 +633,16 @@ fail_tx:
 fail:
     store_close(s);
     return r;
+}
+
+store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out)
+{
+    return open_impl(path, kek, 0, out);
+}
+
+store_status_t store_open_existing(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out)
+{
+    return open_impl(path, kek, 1, out);
 }
 
 void store_close(store_t *s)
@@ -823,7 +876,8 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "UPDATE users SET status=?2, disabled_at=?3, disabled_reason=?4 WHERE user_id=?1;",
+            "UPDATE users SET status=?2, disabled_at=?3, disabled_reason=?4 "
+            "WHERE user_id=?1 AND status<>?2;",
             -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
@@ -839,7 +893,22 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
     } else if (sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
     } else if (sqlite3_changes(s->db) == 0) {
-        r = STORE_ERR_NOT_FOUND;
+        /* No row changed: no such user, or one already in this state. The
+         * second is left exactly as it is -- the first disable's time and
+         * reason stand, nothing is spent, nothing is audited -- and the call
+         * answers OK, as a second revoke of a device does (F194; F170). */
+        sqlite3_stmt *ex = NULL;
+        sqlite3_finalize(st);
+        if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM users WHERE user_id=?1;", -1, &ex, NULL) != SQLITE_OK ||
+            sqlite3_bind_blob(ex, 1, user_id, (int)user_id_len, SQLITE_TRANSIENT) != SQLITE_OK) {
+            r = STORE_ERR_DB;
+        } else {
+            const int rc = sqlite3_step(ex);
+            r = (rc == SQLITE_DONE) ? STORE_ERR_NOT_FOUND : (rc == SQLITE_ROW ? STORE_OK : STORE_ERR_DB);
+        }
+        sqlite3_finalize(ex);
+        tx_rollback(s);
+        return r;
     }
     sqlite3_finalize(st);
 

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.37, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108 errata)
+# mldsa-authd — deployment specification (v1.38, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -543,11 +543,13 @@ reachable only by someone who has already presented a valid recovery code.
 
 **`admin.sock`** — mode 0600, root only: everything above plus
 `ENROLL-OPERATOR user= handle= pk= label= via=site`,
-`DISABLE-USER user= reason=`, `ENABLE-USER user=`, `LIST-USERS`,
+`DISABLE-USER user= [reason=]`, `ENABLE-USER user=`, `LIST-USERS`,
 `AUDIT-TAIL n=`, `BACKUP path=`.
 
 `AUDIT-TAIL` and `LIST-USERS` are lists and carry the same 24-item bound and
-the same `too-many`. `BACKUP`'s `path=` is resolved in the **daemon's**
+the same `too-many`. `DISABLE-USER`'s `reason=` may be left out on the
+socket; `authd_admin disable-user` requires `--reason` (erratum 80).
+`BACKUP`'s `path=` is resolved in the **daemon's**
 working directory, so a caller should give an absolute one.
 
 **The proxy-facing listener** (§7.1) is the third Unix socket: mode **0660**,
@@ -725,7 +727,11 @@ and this section used to run them together:
    token-dropping `ROTATE` spends the rotating session's own login code too,
    if the site has not exchanged it yet, so the client logs in again
    (erratum 64). Revoking an already-revoked device answers `OK` and changes
-   nothing, so the first revocation's record stands. **Revoking a device
+   nothing, so the first revocation's record stands. Likewise a
+   `DISABLE-USER` of a disabled user, and an `ENABLE-USER` of an active one,
+   answers `OK` and changes nothing: the first disable's time and reason
+   stand, nothing is spent and no audit entry is written (erratum 80).
+   **Revoking a device
    ends its user's unused recovery codes** (marked `revoked-device`, never
    deleted): a generation minted on a stolen, unlocked device would otherwise
    outlive it, and the owner mints new codes from a device still trusted. It
@@ -925,6 +931,14 @@ should be destroyed once the new file is verified.
 store, re-computes the whole MAC chain and prints the head MAC and a verdict.
 It needs no running daemon and no §8 command, which is what makes it usable on
 a backup as well as on the live store. Exit 0 means the chain verified.
+
+Both offline commands open a store that **exists** and never create one: a
+`--store` that names no file fails as `io`, and a file that is not a store as
+`store-corrupt`, with nothing written at that path. They wait up to 5 s for a
+lock the daemon holds, and the daemon waits up to 250 ms for theirs, so
+either may run while the other is writing. The store is in WAL mode (§9), so
+its directory must be writable by whoever runs them, a backup's included
+(erratum 80).
 
 `authd_client`: `keygen`, `login`, `rotate`. `login` prints the login code as
 base64url for pasting into the site's form (milestone A has no browser).
@@ -1678,3 +1692,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 79 | 9.2, 12, 13, 15, 18 | `MLDSAEK1` version 2: the server key file seals a 32-byte store root key after the image, and `key_audit` and `key_log` are derived from it rather than from the envelope KEK. `init`, `keygen-server`, `migrate-key` and `rewrap` write version 2; a version-1 file's KEK stands in as its root key and `rewrap` carries it into the version-2 file. The limitation erratum 77 recorded is removed; an older daemon not reading version 2 is recorded in its place | F190: a passphrase change made a new KEK, so an untouched store failed `audit-verify` and every `idh=` changed. The owner chose a sealed root key over deriving both keys from the secret key (2026-11-10); the version-1 rule is what lets an existing store cross over without re-keying |
+
+### Revision v1.38 (V4-109)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 80 | 8, 10.3, 13 | A `DISABLE-USER` of a disabled user or an `ENABLE-USER` of an active one answers `OK` and changes nothing. `audit-verify` and `pseudonym` open an existing store only, and wait up to 5 s for the daemon's lock as the daemon waits 250 ms for theirs; the store's directory must be writable. `DISABLE-USER`'s `reason=` is optional on the socket | a second disable overwrote the first one's time and reason and added an audit entry (F194), as a second revoke once did (erratum 64, F170); a mistyped `--store` made an empty store and reported it verified (F193); the hourly timer and the daemon failed each other as `database-error` and `ERR code=internal` when their writes met (F192); the grammar listed `reason=` as required and the daemon has never required it (F197); §13 said "on a backup" without the directory rule (F198) |

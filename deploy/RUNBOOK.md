@@ -141,8 +141,8 @@ Prints four paths and a NOTE. **`server.pub` is what every client pins** —
 copy it to your operators now; a client that does not pin it will accept any
 server (spec §4).
 
-`init` refuses to run if a key, store or passphrase file already exists, and
-names which. That is deliberate: re-running it against an existing store would
+`init` refuses to run if a key (`server.ek` or `server.pub`), store or
+passphrase file already exists, names which, and writes nothing. That is deliberate: re-running it against an existing store would
 re-derive the audit key and silently break the chain.
 
 ## 6. Move the passphrase into a credential, and delete the plaintext
@@ -294,7 +294,11 @@ resolves it, not your shell, and writes it into `backups/` (step 4) as the
 service user. The backup is 0600, like the store.
 
 Verify the audit chain — on the live store or on any backup, with the daemon
-running or stopped:
+running or stopped. The tool waits up to 5 s if the daemon is writing at that
+moment. It opens only a store that exists: a mistyped `--store` fails as `io`
+and creates nothing. A backup must sit in a directory the service user can
+write to (`backups/` is one), because SQLite keeps its `-wal` and `-shm`
+files beside the store; on read-only media it fails as `database-error`:
 
 ```bash
 sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \

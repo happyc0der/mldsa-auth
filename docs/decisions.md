@@ -13728,3 +13728,76 @@ RK1 (rewrap seals a fresh root) failed step 23 on both runners at the
 runbook's own check of the new pair, `audit-chain-corrupt`, before the swap;
 the branch is deleted. The nightly matrix on the step's commit: 73 jobs
 green, v88 among them.
+
+## V4-109 — the store's offline commands: waiting, typos and repeats (F192–F198)
+
+A read of the store and of `authd_admin`'s offline commands against the
+runbook's own steps. Four behaviours changed, two sentences of the spec were
+wrong or silent, and one question is left to the owner.
+
+**F192: two busy timeouts, not one.** Every handle waited the same time for
+a lock. The daemon's handle is used from its event loop, so a long wait
+there stalls every connection; an operator's `audit-verify` beside a running
+daemon is the opposite case and should wait rather than fail. The daemon now
+waits 250 ms (`STORE_BUSY_MS_DAEMON`) and the offline commands 5 s
+(`STORE_BUSY_MS_OFFLINE`). 250 ms is long against the daemon's own
+transactions, which are a few statements each, and short against a client's
+patience; 5 s is long enough for a checkpoint and short enough that a stuck
+writer is reported, as `database-error`, rather than waited on for ever. The
+test holds a write lock from a forked child: 1,200 ms defeats the daemon's
+handle and not the offline one, 60 ms defeats neither.
+
+**F193: an offline command opens only a store that exists.** `audit-verify`
+and `pseudonym` opened the store the way the daemon does, creating it. A
+mistyped `--store` therefore made a new, empty store beside the real one and
+reported on it: an empty chain verifies. `store_open_existing` opens without
+the create flag and refuses a file with no `meta` table or no store id as
+`store-corrupt`, before any schema statement runs, so an empty or foreign
+file is left exactly as it was. A missing path is `io`. The daemon's own
+`store_open` still creates: at first start that is its job. That a mistyped
+`store_path` in the daemon's configuration starts it on a new empty store is
+read from the code, not reproduced, and not changed here; a non-creating
+open for every start after `init` is a candidate for a later step.
+
+**F194: a repeated DISABLE-USER or ENABLE-USER changes nothing.** A second
+disable rewrote `disabled_at` and the reason and appended an audit record,
+so the record of when and why an account was disabled could be overwritten
+by repeating the command. The UPDATE now carries `AND status<>?2`; with zero
+rows changed the store looks the user up and answers `not-found` or OK.
+Nothing is written, no audit record is appended, and a repeated disable
+spends and deletes nothing. The answer is OK, not an error,
+because the state asked for is the state that holds, and scripts repeat
+commands.
+
+**F195: `init` refuses on any of its four outputs, and says what it did to
+the directory.** The clash check looked at the key file, the store and the
+passphrase file but not at `server.pub`, so an old public key could be
+overwritten by a run that then failed. It now checks all four and names the
+first it finds, before writing anything. `init` also said "created" for a
+directory it had found; it now says whether it created it (mode 0700) or
+used an existing one, and reports that one's real mode.
+
+**Erratum 80 (spec v1.38).** §8 gave `DISABLE-USER user= reason=`; the
+daemon has always accepted the command without a reason, and only the CLI
+requires `--reason` (F197). §10.3 now states the no-op rule. §13 states that
+offline commands open only an existing store, the two waits, and that the
+store's directory must be writable by the command's user, since SQLite
+creates its journal files there (F198); the runbook's step 12 says the same.
+
+**Left to the owner: F196.** The offline commands exit 1 for a `--key` that
+cannot be used and 3 for a missing passphrase file. Both are configuration
+faults and 3 for both is the recommendation, but exit codes are an interface
+scripts may already depend on, so it is not changed here.
+
+**Campaign v89: 14 mutations, 14 named kills.** Its first run reported OE3
+(the `meta`-table check disabled) as SURVIVED(BAD). The test was not blind;
+the prediction was wrong. With that check off, an empty file is still
+refused, by the store-id check, but only after the schema has run, so the
+check that fails is "existing: and it is left empty (F193)", not the refusal
+itself. The spec line now names it and OE3 alone was re-run: killed, 2
+named. The `init` change also moved the text campaign v49b's I1 anchors on;
+the anchors gate reported it and I1 is re-anchored on the new expression.
+Counts: 418 mutations, 59 campaigns, 458 anchors.
+
+**Not changed.** The store schema, the wire protocol, the audit record
+format, and the daemon's own open.
