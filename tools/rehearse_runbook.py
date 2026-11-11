@@ -153,7 +153,13 @@ POST = {
          "@runbook:15:pseudonym",
          "echo \"pseudonym-same=$(cmp -s /tmp/idh.before /tmp/idh.out && grep -cE '^idh=[0-9a-f]{16}$' /tmp/idh.out)\"",
          "sudo od -An -tu1 -j8 -N1 /var/lib/mldsa-authd/server.ek | tr -d ' ' | sed 's/^/ek-version-after=/'",
-         "sudo ls /var/lib/mldsa-authd/ /etc/mldsa-authd/ | grep -cE '\\.(old|new)$' | sed 's/^/leftovers=/'"],
+         # grep -c exits 1 on a count of zero, which under pipefail failed the
+         # step on its first real run (V4-108 bring-up); so the counts go
+         # through echo. A zero means nothing unless the listing worked, so
+         # the two files that must be there are counted from the same listing.
+         "sudo ls /var/lib/mldsa-authd/ /etc/mldsa-authd/ > /tmp/ls23.txt; "
+         "echo \"listed=$(grep -cE '^(server\\.ek|passphrase\\.cred)$' /tmp/ls23.txt)\"; "
+         "echo \"leftovers=$(grep -cE '\\.(old|new)$' /tmp/ls23.txt)\""],
     # Step 18's journal check, made here: with log_identities = hashed and
     # log_client_ip = prefix, no line may carry a plain id= or a full address.
     # A count of zero full addresses means nothing if no line carries an
@@ -258,7 +264,7 @@ EXPECT = {
          # twice: the runbook's own check of the new pair before the swap,
          # and step 12's block after it
          r"(?s)the audit chain verifies \(\d+ entries\).*the audit chain verifies \(\d+ entries\)",
-         r"(?m)^pseudonym-same=1$", r"(?m)^leftovers=0$"],
+         r"(?m)^pseudonym-same=1$", r"(?m)^listed=2$", r"(?m)^leftovers=0$"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
          r"PASS: BROWSER: recovery: a fresh browser recovered with a code, enrolled a new device and logged in",
