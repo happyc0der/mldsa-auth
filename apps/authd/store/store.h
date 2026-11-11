@@ -64,7 +64,8 @@ const char *store_status_name(store_status_t st);
  * store root key keyfile_open returns (the key sealed in a version-2 server
  * key file; for a version-1 file, the envelope KEK): key_audit = HKDF-SHA256(ikm=kek,
  * salt=store_id, info="mldsa-authd/v1/audit-mac") is derived and held in
- * secure memory for the store's lifetime. On any failure *out is NULL. */
+ * secure memory for the store's lifetime. On any failure *out is NULL.
+ * A file this call creates is mode 0600 whatever the umask is (F200). */
 store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
 /* The same, for a tool that reads a store somebody else made (V4-109): it
@@ -73,6 +74,12 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
  * waits up to five seconds for a running daemon's lock (store_open: a quarter
  * of a second). */
 store_status_t store_open_existing(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
+
+/* 1 if the open that returned `s` made the store -- found no store id and
+ * generated one -- and 0 if it found a store already there (F199). The
+ * daemon says so at start: a mistyped store_path is otherwise a daemon that
+ * starts, on a new and empty store beside the real one. */
+int store_was_created(const store_t *s);
 
 /* Closes and frees; wipes key_audit and key_log. Idempotent on NULL. */
 void store_close(store_t *s);

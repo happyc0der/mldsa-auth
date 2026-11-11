@@ -98,7 +98,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-418 committed mutations in 59 campaigns, each a defect the tests must catch
+426 committed mutations in 60 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -117,7 +117,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (458 anchors checked; 418 mutations across 59 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (466 anchors checked; 426 mutations across 60 campaigns)
 ```
 
 ## The formal model
@@ -183,4 +183,4 @@ is not compiled). ADVISORIES.md accounts for every one.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
   ProVerif model and its controls. Run 42973993727 on `ff9faf0`: 74/74, all
-  59 campaigns among them.
+  59 campaigns of that day among them (60 now, so 75 jobs).

@@ -985,6 +985,43 @@ int main(void)
         store_close(s);
     }
 
+    /* ---- V4-111: a store says whether this open made it, and is made 0600
+     * (F199, F200) */
+    {
+        char np[600], wal[640];
+        struct stat sb;
+        store_t *s = NULL, *t = NULL;
+        path(np, sizeof np, "made.sqlite3");
+        (void)unlink(np);
+        const mode_t um = umask(022);
+        const store_status_t st = store_open(np, KEK, &s);
+        (void)umask(um);
+        CHECK(st == STORE_OK && s != NULL && store_was_created(s) == 1,
+              "created: the open that makes a store says so (F199)");
+        CHECK(stat(np, &sb) == 0 && (sb.st_mode & 07777) == 0600,
+              "created: a store made under a umask of 022 is 0600 (F200)");
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK,
+              "created: a write, so the write-ahead log exists");
+        (void)snprintf(wal, sizeof wal, "%s-wal", np);
+        CHECK(stat(wal, &sb) == 0 && (sb.st_mode & 07777) == 0600,
+              "created: and so is its write-ahead log (F200)");
+        CHECK(store_open(np, KEK, &t) == STORE_OK && t != NULL && store_was_created(t) == 0,
+              "created: a second open of the same store does not say so (F199)");
+        store_close(t);
+        t = NULL;
+        CHECK(store_open_existing(np, KEK, &t) == STORE_OK && t != NULL && store_was_created(t) == 0 &&
+              store_was_created(NULL) == 0,
+              "created: nor does store_open_existing, nor a NULL handle");
+        store_close(t);
+        t = NULL;
+        store_close(s);
+        /* A store that is already there keeps the mode its owner gave it. */
+        CHECK(chmod(np, 0640) == 0 && store_open(np, KEK, &t) == STORE_OK && t != NULL &&
+              stat(np, &sb) == 0 && (sb.st_mode & 07777) == 0640,
+              "created: an existing store's mode is left as it was");
+        store_close(t);
+    }
+
     /* ---- audit chain: tamper and truncation are detected ---------------- */
     {
         store_t *s = fresh_store("e.sqlite3", dbp, sizeof dbp);

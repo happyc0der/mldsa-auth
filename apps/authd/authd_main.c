@@ -236,6 +236,16 @@ int main(int argc, char **argv)
         }
     }
 
+    /* F199: store_open creates what it does not find, which is right once --
+     * at the first start after keygen-server -- and wrong ever after, when it
+     * means store_path names the wrong file and every user is unknown. The
+     * daemon cannot tell the two apart, so it says which happened, here and
+     * as a WARN event beside `started`. */
+    const int store_created = store_was_created(store);
+    if (store_created) {
+        fprintf(stderr, "mldsa-authd: %s: created a new, empty store (no store was there)\n", cfg.store_path);
+    }
+
     app.conns = conns;
     app.n_conns = (size_t)cfg.max_slots;
     app.store = store;
@@ -439,6 +449,9 @@ int main(int argc, char **argv)
         goto listener_failed;
     }
 
+    if (store_created) {
+        authd_log_event(AUTHD_LOG_WARN, "store-created");
+    }
     authd_log_event(AUTHD_LOG_INFO, "started");
     /* V4-104: tell systemd (Type=notify) that the listeners are up, so
      * `systemctl start`/`restart` return only now. Not under systemd, this is

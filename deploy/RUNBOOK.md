@@ -229,6 +229,14 @@ the requirement and the daemon's secrets can be swapped to disk — fix
 `LimitMEMLOCK` and restart. Nothing else reports this: libsodium hands back
 unlocked memory without an error.
 
+**`event=store-created` must not be there.** Step 5's `init` made the store,
+so a daemon that says it created one — the journal also has
+`created a new, empty store (no store was there)` with the path — found
+nothing at `store_path` and is serving an empty store beside your real one:
+every login will be refused as an unknown user. Stop it, correct `store_path`,
+delete the empty file it made (and its `-wal` and `-shm`), and start again.
+The same line after any later restart means the same thing.
+
 ## 10. The proxy
 
 ```bash

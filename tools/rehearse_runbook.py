@@ -281,7 +281,29 @@ FORBID = {
     # them (the host's OTHER units may warn; those are not this file's).
     12: [r"mldsa-authd-audit\.(service|timer):\d+"],
     8: [r"(?i)warning|unknown|invalid"],
-    9: [r"memlock-limit.*level=warn|level=warn.*memlock-limit"],
+    # The daemon's line is "<level> event=<name> ...": the level comes FIRST
+    # and has no key. Until V4-111 this pattern looked for "level=warn", which
+    # no line the daemon writes contains, so it could not fail (F201).
+    # store-created: step 5's init made the store, so a daemon that says it
+    # created one was pointed at the wrong path (F199).
+    9: [r"\bwarn event=memlock-limit\b", r"event=store-created",
+        r"created a new, empty store"],
+}
+# What each FORBID pattern is FOR, as the journal would show it. A pattern
+# that matches none of its step's lines here forbids nothing, and
+# --check-substitutions says so (F201). The formats are the daemon's:
+# authd_log.c writes "<level> event=<name>[ key=value]...".
+FORBID_SAMPLE = {
+    8: ["/etc/systemd/system/mldsa-authd.service:12: Unknown key name 'Foo' in section 'Service', ignoring."],
+    9: ["Nov 11 10:00:00 host mldsa-authd[812]: warn event=memlock-limit need=10485760",
+        "Nov 11 10:00:00 host mldsa-authd[812]: warn event=store-created",
+        "Nov 11 10:00:00 host mldsa-authd[812]: mldsa-authd: /var/lib/mldsa-authd/store.sqlite: created a new, empty store (no store was there)"],
+    12: ["/etc/systemd/system/mldsa-authd-audit.service:7: Unknown key name 'Foo' in section 'Service', ignoring."],
+}
+# ...and what each must NOT catch: the same events on a healthy host.
+FORBID_CLEAN = {
+    9: ["Nov 11 10:00:00 host mldsa-authd[812]: info event=memlock-limit need=10485760",
+        "Nov 11 10:00:00 host mldsa-authd[812]: info event=started"],
 }
 # commands whose nonzero exit is the documented result, not a failure
 ALLOW_NONZERO = {16: ["grep"], 23: ["grep"]}
@@ -353,6 +375,13 @@ def check_substitutions(st):
                     runbook_block(st, c)
                 except SystemExit as e:
                     bad.append(str(e))
+    for n, pats in sorted(FORBID.items()):
+        for rx in pats:
+            if not any(re.search(rx, l) for l in FORBID_SAMPLE.get(n, [])):
+                bad.append("step %d: FORBID /%s/ matches none of its sample lines, so it forbids nothing" % (n, rx))
+            for l in FORBID_CLEAN.get(n, []):
+                if re.search(rx, l):
+                    bad.append("step %d: FORBID /%s/ matches a healthy line: %r" % (n, rx, l))
     for b in bad:
         print("STALE: " + b)
     rehearsed = [n for n in sorted(st) if st[n][1] and n not in SKIP]

@@ -190,6 +190,10 @@ while ! grep -q 'event=started' "$TMP/authd.log" 2>/dev/null; do
     sleep 0.05
 done
 echo "PASS: E2E: the daemon started and registered every listener"
+# F199 (V4-111): this store was made by `init`, so the daemon did not make it.
+if grep -q 'store-created\|created a new, empty store' "$TMP/authd.log"; then
+    fail "the daemon said it created a store that init had already made (F199)"
+fi
 
 # Spec 8: site.sock is 0660, admin.sock is 0600. The uid allowlist refuses a
 # stranger either way, so nothing FUNCTIONAL changes if this is wrong -- only a
@@ -311,8 +315,10 @@ printf 'this file is not a database, whatever its name says\n' > "$TMP/su/garbag
 su_conf "$TMP/su/garbage.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
 su_refused "$TMP/su/garbage.sqlite3: database-error" "a store file that is not a database" 1
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
+su_umask=$(umask); umask 022   # F200: the store this start creates must not take this
 "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok.log" 2>&1 &
 SUPID=$!
+umask "$su_umask"
 i=0
 while ! grep -q 'event=started' "$TMP/su-ok.log" 2>/dev/null; do
     i=$((i + 1))
@@ -321,6 +327,33 @@ while ! grep -q 'event=started' "$TMP/su-ok.log" 2>/dev/null; do
     sleep 0.05
 done
 kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+# F199, F200 (V4-111): nothing was at $TMP/su/store.sqlite3, so that start
+# CREATED the store -- the supported first start after keygen-server, and also
+# what a mistyped store_path does. The daemon must say so, on stderr and as a
+# warn event, and the file must be 0600 although that start's umask was 022.
+# The next start finds the store there and says neither.
+grep -qF "$TMP/su/store.sqlite3: created a new, empty store (no store was there)" "$TMP/su-ok.log" \
+    || fail "a daemon that created its store did not say so on stderr (F199): $(cat "$TMP/su-ok.log")"
+grep -q '^warn event=store-created$' "$TMP/su-ok.log" \
+    || fail "a daemon that created its store did not log event=store-created at warn (F199): $(cat "$TMP/su-ok.log")"
+[ "$(sed -n '/event=store-created/=' "$TMP/su-ok.log" | head -1)" -lt "$(sed -n '/event=started/=' "$TMP/su-ok.log" | head -1)" ] \
+    || fail "event=store-created was not logged before event=started (F199)"
+sumode=$(ls -l "$TMP/su/store.sqlite3" | cut -c1-10)
+[ "$sumode" = "-rw-------" ] || fail "the store the daemon created is $sumode, not -rw------- (F200)"
+"$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok2.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/su-ok2.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "the second start on the created store failed: $(cat "$TMP/su-ok2.log")"
+    [ "$i" -gt 400 ] && fail "the second start on the created store never logged event=started"
+    sleep 0.05
+done
+kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+if grep -q 'store-created\|created a new, empty store' "$TMP/su-ok2.log"; then
+    fail "the second start on the same store said it created it again (F199)"
+fi
+echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 
 # ------------------------------------------------- keygen, enroll, login

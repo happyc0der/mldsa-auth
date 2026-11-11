@@ -13820,3 +13820,61 @@ The claim map cited nothing from the last two steps. D10 now cites the
 version-2 key file's checks and four of v88's mutations (the root key is
 sealed, returned, and survives a passphrase change); D14 cites the
 repeated-disable checks and v89 OE10. The map's gate confirms each exists.
+
+## V4-111 — a daemon that creates its store says so (F199–F201)
+
+V4-109 stopped the offline commands from turning a mistyped `--store` into a
+store. The daemon was left as it was, on purpose: `keygen-server` makes a key
+and no store, and the first start after it relies on `store_open` creating
+one. But that leaves the same typo open in `store_path`, and it was
+reproduced: `store.sqlite` for `store.sqlite3` started cleanly, logged
+`started`, and served a store with no user in it. An operator sees every
+login refused and a journal that says nothing is wrong.
+
+The daemon cannot tell a first start from a wrong path, so the fix is that it
+says which of the two things happened. `store_open` records whether this
+call gave the store its id — the one moment a store comes into being —
+and `store_was_created()` reports it. The daemon then prints
+`<path>: created a new, empty store (no store was there)` on standard error
+and logs `store-created` at WARN just before `started`. A start that finds
+its store prints neither, so after the first start the line means exactly
+one thing. It is a new event, so it is spec erratum 81 and the vocabulary
+gate holds it in both directions.
+
+**Not done, and the owner's to decide:** refusing to start without a store.
+That is the stricter rule, and it would close F199 rather than announce it,
+but it removes a supported path (`keygen-server`, then start) and would need
+either a `create-store` command or a configuration key. The warning costs
+nothing and does not foreclose it.
+
+The reproduction showed a second thing. The store the daemon created was
+0644: SQLite creates under the umask, and only `init` chmods afterwards. The
+shipped unit sets `UMask=0077` and the directory is 0700 everywhere the
+documents describe, so no byte was readable; but the mode of the credential
+database should not rest on the caller's umask. `store_open` now creates the
+file itself, `O_EXCL` and 0600, before SQLite opens it — the same pattern as
+the backup's destination since V4-59 — and SQLite gives the write-ahead log
+and shared-memory file the database's mode. `O_EXCL` matters: without it an
+existing store an operator had made group-readable on purpose would be
+chmod-ed at every start (v90 SC4 is that mutation). The `fchmod` after the
+create is for a umask that removes owner bits; it has no mutation, because
+under 022 it changes nothing.
+
+**F201 was found on the way.** Adding `store-created` to the rehearsal's
+forbidden patterns for the start step, the pattern already there read
+`level=warn` beside `memlock-limit`. The daemon writes
+`warn event=memlock-limit need=…`: level first, no key. So since V4-99 the
+rehearsal's "memlock is not at WARN" had been unable to fail — the class of
+gate the V4-99 notes warn about, a zero-count check whose subject cannot
+appear. The pattern is corrected, and `--check-substitutions` now holds every
+forbidden pattern against a sample of the line it exists to catch and
+against a healthy host's lines; the old pattern is reported as forbidding
+nothing. Samples are written by hand, which is weaker than lines from a
+running daemon; `authd_e2e` pins the `store-created` line's exact form, and
+nothing yet pins `memlock-limit`'s at WARN outside the rehearsal.
+
+Campaign v90, eight mutations: the created flag never set or always
+reported, the pre-create removed or without `O_EXCL`, the standard-error
+line or the event omitted, the event at INFO, and a daemon that claims
+creation at every start. 426 mutations in 60 campaigns; the nightly is 75
+jobs.

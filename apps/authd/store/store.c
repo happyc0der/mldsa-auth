@@ -130,6 +130,7 @@ struct store {
     uint8_t *key_log;                         /* secure_mem, STORE_LOG_KEY_BYTES */
     uint8_t store_id[STORE_STORE_ID_BYTES];
     uint8_t decoy_pk[STORE_PK_BYTES];
+    int created;                              /* this open gave the store its id (F199) */
 };
 
 #define AUDIT_LABEL "mldsa-authd/v1/audit-mac"
@@ -502,6 +503,18 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * names no file is an I/O failure, and a file with no meta table -- an
      * empty file, some other database -- is refused before the schema below
      * would turn it into a store (F193). */
+    if (!existing) {
+        /* A store this call creates is 0600 whatever the caller's umask is
+         * (F200): SQLite would create it 0644 under a shell's 022, and give
+         * -wal and -shm the same mode. O_EXCL: a file that is already there
+         * keeps the mode its owner gave it. Any other failure is left for
+         * the open below to report. */
+        const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd >= 0) {
+            (void)fchmod(fd, 0600);
+            (void)close(fd);
+        }
+    }
     if (sqlite3_open_v2(path, &s->db,
                         existing ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),
                         NULL) != SQLITE_OK) {
@@ -564,6 +577,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if (!found) {
         randombytes_buf(s->store_id, sizeof s->store_id);
         if ((r = meta_put(s->db, "store_id", s->store_id, sizeof s->store_id)) != STORE_OK) { goto fail_tx; }
+        s->created = 1;
     } else if (n != sizeof s->store_id) {
         r = STORE_ERR_DAMAGED;
         goto fail_tx;
@@ -664,6 +678,11 @@ void store_close(store_t *s)
     }
     sodium_memzero(s->store_id, sizeof s->store_id);
     free(s);
+}
+
+int store_was_created(const store_t *s)
+{
+    return (s != NULL) ? s->created : 0;
 }
 
 store_status_t store_get_store_id(const store_t *s, uint8_t out[STORE_STORE_ID_BYTES])

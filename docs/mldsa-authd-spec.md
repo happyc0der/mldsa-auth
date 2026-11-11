@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.38, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109 errata)
+# mldsa-authd — deployment specification (v1.39, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1131,7 +1131,7 @@ Adding an event is therefore a change to this document — which is the point.
 Transport and lifecycle:
 
 ```
-started draining stopped loop-failed memlock-limit
+started draining stopped loop-failed memlock-limit store-created
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
 accept-refused-no-slot local-accept-refused-no-slot
@@ -1263,6 +1263,18 @@ than refusing: the failure mode has no symptom of its own — every allocation
 still succeeds and the secrets merely become swappable — so the log line is
 what makes an unconfigured host visible, while refusing would turn a common
 misconfiguration into an outage.
+
+**A daemon that finds no store at `store_path` creates one, and says so**
+(erratum 81). That is the first start of a server whose key came from
+`keygen-server`, and it is also what a `store_path` that is one character
+wrong does: an empty store, with no user in it, that the daemon serves
+without any error. So the start that creates a store prints
+`<store_path>: created a new, empty store (no store was there)` on standard
+error and logs `store-created` at WARN, before `started`; a start that finds
+its store there does neither. After the first start that line means the
+configuration names the wrong file. Whoever creates the store — the daemon
+or `init` — creates it mode 0600 whatever the umask is; an existing store
+keeps the mode it has.
 
 The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 -Wl,-z,noexecstack` and a named CPU target (never `-march=native`), and
@@ -1698,3 +1710,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 80 | 8, 10.3, 13 | A `DISABLE-USER` of a disabled user or an `ENABLE-USER` of an active one answers `OK` and changes nothing. `audit-verify` and `pseudonym` open an existing store only, and wait up to 5 s for the daemon's lock as the daemon waits 250 ms for theirs; the store's directory must be writable. `DISABLE-USER`'s `reason=` is optional on the socket | a second disable overwrote the first one's time and reason and added an audit entry (F194), as a second revoke once did (erratum 64, F170); a mistyped `--store` made an empty store and reported it verified (F193); the hourly timer and the daemon failed each other as `database-error` and `ERR code=internal` when their writes met (F192); the grammar listed `reason=` as required and the daemon has never required it (F197); §13 said "on a backup" without the directory rule (F198) |
+
+### Revision v1.39 (V4-111)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 81 | 15, 16 | The event `store-created`, and a line on standard error, from a start that creates the store; a store is created mode 0600 whatever the umask is | a daemon whose `store_path` was mistyped started normally on a new, empty store and said nothing (F199), and the store it created took the umask's mode — 0644 under 022 — where `init`'s is 0600 (F200) |

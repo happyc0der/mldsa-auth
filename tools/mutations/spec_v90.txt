@@ -1,0 +1,8 @@
+SC1|^test_authd_store$|created: the open that makes a store says so (F199)
+SC2|^test_authd_store$|created: a second open of the same store does not say so (F199)
+SC3|^test_authd_store$|created: a store made under a umask of 022 is 0600 (F200)
+SC4|^test_authd_store$|created: an existing store's mode is left as it was
+SC5|^authd_e2e$|a daemon that created its store did not say so on stderr (F199)
+SC6|^authd_e2e$|a daemon that created its store did not log event=store-created at warn (F199)
+SC7|^authd_e2e$|a daemon that created its store did not log event=store-created at warn (F199)
+SC8|^authd_e2e$|the daemon said it created a store that init had already made (F199)
