@@ -13714,3 +13714,17 @@ not under the test: about one run in 256. The test now reads it with
 `authd_secret_read`, and the helper prints which step failed and its status
 instead of a bare non-zero. Not reproduced on demand (24 further runs
 passed); the mechanism is exact, and a recurrence would now name its step.
+
+**Bring-up: step 23 on real systemd.** The step's first run in CI's
+`rehearse` job (ubuntu-26.04 and 24.04) did what the runbook says: the chain
+verified before and after the swap with the same head, the journal printed
+the same pseudonym, the key file stayed version 2. The job still went red,
+on the harness: its last check piped `grep -c` into `sed`, `grep -c` exits 1
+on a count of zero, and the runner uses pipefail, so the step failed exactly
+when no `.old` or `.new` file was left. The counts now go through `echo`,
+and the same listing must show `server.ek` and `passphrase.cred`, so the
+zero cannot be that of a failed listing. Control: a throwaway branch with
+RK1 (rewrap seals a fresh root) failed step 23 on both runners at the
+runbook's own check of the new pair, `audit-chain-corrupt`, before the swap;
+the branch is deleted. The nightly matrix on the step's commit: 73 jobs
+green, v88 among them.
