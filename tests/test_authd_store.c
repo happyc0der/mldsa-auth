@@ -13,6 +13,7 @@
  * link mldsa_authd, which carries the same object WITHOUT the hook), so the
  * shipped library never contains the fault-injection code.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,20 +97,35 @@ static int raw_row(const char *db, const char *sql, long long *num, char *text, 
 }
 
 /* Another process takes the store's write lock, says so on the pipe, holds it
- * for `ms` and lets go. Returns its pid, or -1. */
-static pid_t hold_write_lock(const char *db, int ms)
+ * for `ms` and lets go. Returns its pid, or -1.
+ *
+ * With `go` given, the `ms` are counted from the moment the caller writes a
+ * byte to *go, not from the moment the lock was taken: a check that needs the
+ * lock HELD must not depend on how soon this process is scheduled. On a fixed
+ * 1.2 s timer, a test process that stalled for a second found the lock gone
+ * and the daemon's write succeeding (V4-117; seen once on a macOS runner). */
+static pid_t hold_write_lock(const char *db, int ms, int *go)
 {
     int fds[2];
+    int gate[2] = { -1, -1 };
     if (pipe(fds) != 0) { return -1; }
+    if (go != NULL && pipe(gate) != 0) { (void)close(fds[0]); (void)close(fds[1]); return -1; }
     const pid_t pid = fork();
     if (pid == 0) {
         sqlite3 *h = NULL;
         (void)close(fds[0]);
+        if (go != NULL) { (void)close(gate[1]); }
         if (sqlite3_open_v2(db, &h, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
             sqlite3_exec(h, "BEGIN IMMEDIATE;", NULL, NULL, NULL) != SQLITE_OK) {
             _exit(3);
         }
         if (write(fds[1], "L", 1) != 1) { _exit(4); }
+        if (go != NULL) {
+            char c = 0;
+            ssize_t n;
+            do { n = read(gate[0], &c, 1); } while (n < 0 && errno == EINTR);
+            if (n != 1) { _exit(5); }       /* the caller went away: do not hold on */
+        }
         { struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
           (void)nanosleep(&ts, NULL); }
         (void)sqlite3_exec(h, "ROLLBACK;", NULL, NULL, NULL);
@@ -117,11 +133,20 @@ static pid_t hold_write_lock(const char *db, int ms)
         _exit(0);
     }
     (void)close(fds[1]);
+    if (go != NULL) { (void)close(gate[0]); }
     if (pid > 0) {
         char c = 0;
-        if (read(fds[0], &c, 1) != 1 || c != 'L') { (void)close(fds[0]); (void)waitpid(pid, NULL, 0); return -1; }
+        if (read(fds[0], &c, 1) != 1 || c != 'L') {
+            (void)close(fds[0]);
+            if (go != NULL) { (void)close(gate[1]); }
+            (void)waitpid(pid, NULL, 0);
+            return -1;
+        }
+    } else if (go != NULL) {
+        (void)close(gate[1]);
     }
     (void)close(fds[0]);
+    if (go != NULL) { *go = pid > 0 ? gate[1] : -1; }
     return pid;
 }
 
@@ -963,20 +988,37 @@ int main(void)
         store_close(t);
         t = NULL;
 
-        /* Another process holds the write lock for 1.2 s. The daemon's handle
-         * gives up after a quarter of a second; the offline open waits it out. */
-        { const pid_t holder = hold_write_lock(dbp, 1200);
+        /* Another process holds the write lock until told to let go. The
+         * daemon's handle gives up after a quarter of a second, however long
+         * that takes to be scheduled; then the holder is given 1.2 s more,
+         * and the offline open waits it out. */
+        { int go = -1;
+          const pid_t holder = hold_write_lock(dbp, 1200, &go);
           int st = 0;
+          store_status_t busy;
+          struct timespec t0, t1;
+          long waited_ms;
           CHECK(holder > 0, "busy: another process holds the store's write lock");
-          CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_ERR_DB,
+          (void)clock_gettime(CLOCK_MONOTONIC, &t0);
+          busy = store_disable_user(s, U1, sizeof U1, "admin", NULL, 0);
+          (void)clock_gettime(CLOCK_MONOTONIC, &t1);
+          waited_ms = (long)(t1.tv_sec - t0.tv_sec) * 1000L + (t1.tv_nsec - t0.tv_nsec) / 1000000L;
+          /* The lock is held throughout, so only the time tells a quarter of a
+           * second from an offline tool's five: under 3 s is "briefly". */
+          if (busy != STORE_ERR_DB || waited_ms >= 3000) {
+              printf("  busy: the daemon's handle returned %d after %ld ms\n", (int)busy, waited_ms);
+          }
+          CHECK(busy == STORE_ERR_DB && waited_ms < 3000,
                 "busy: the daemon's handle waits only briefly, then reports database-error");
+          CHECK(go >= 0 && write(go, "G", 1) == 1, "busy: the holder is told to let go in 1.2 s");
+          if (go >= 0) { (void)close(go); }
           CHECK(store_open_existing(dbp, KEK, &t) == STORE_OK && t != NULL,
                 "busy: store_open_existing waits for the lock instead of failing (F192)");
           store_close(t);
           t = NULL;
           CHECK(holder > 0 && waitpid(holder, &st, 0) == holder && WIFEXITED(st) && WEXITSTATUS(st) == 0,
                 "busy: the lock holder ran to its end"); }
-        { const pid_t holder = hold_write_lock(dbp, 60);
+        { const pid_t holder = hold_write_lock(dbp, 60, NULL);
           int st = 0;
           CHECK(holder > 0 && store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK,
                 "busy: the daemon's handle waits out a lock held for 60 ms (F192)");

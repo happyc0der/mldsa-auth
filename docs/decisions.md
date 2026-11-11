@@ -14044,3 +14044,44 @@ by the script above, on macOS, with two shells; no Linux shell was measured.
 Spec v1.42, erratum 84 (§13).
 
 442 mutations in 64 campaigns; the nightly is 79 jobs.
+
+## V4-117 — a test that needs a lock held does not time the lock
+
+**What happened.** Main's push CI on `3e563b6` (run 43117552270) failed in
+one job of sixteen, `macos-26·clang·debug`, on one check of
+`test_authd_store`: "busy: the daemon's handle waits only briefly, then
+reports database-error". The same commit had passed all sixteen jobs as a
+branch dispatch (run 43110357435). The check is from V4-109 and nothing in
+V4-115 touches the store.
+
+**The defect, in the test.** `hold_write_lock` forked a process that took the
+write lock, said so, and released it 1.2 s later on its own clock. The check
+then needed the daemon's handle to try, wait its quarter second and give up
+while the lock was still held: a margin of about 0.95 s on how soon the test
+process runs. A test process stalled for longer finds the lock free, the
+write succeeds, and the check fails. Adding a 1.3 s sleep at that point
+reproduces the CI output exactly: that one check fails and no other.
+
+What stalled the runner for a second is not known, and the log cannot say:
+the check did not print what the call returned. So the stall is the
+explanation that fits, not one that was observed.
+
+**The change.** The holder now takes a second pipe and counts its `ms` from
+the byte the test writes to it. The busy check runs with the lock held for as
+long as it takes; then the holder is told to let go in 1.2 s and
+`store_open_existing` waits it out as before. With the same 1.3 s and a 2.5 s
+stall injected, the suite passes.
+
+A lock that is held throughout cannot tell a handle that waits 250 ms from
+one that waits 5 s, which is mutation OE7 (campaign v89), so the check also
+times the call and requires under 3 s. That is still a clock, with 2.75 s of
+room on one side and 2 s on the other; a failure now prints the status and
+the time. OE5, OE6 and OE7 were applied by hand and each still fails its
+named check (OE7: "returned 3 after 5290 ms").
+
+One check more (`test_authd_store`: 332). No source change, no finding
+number: the daemon was never wrong.
+
+**Still timed.** The 60 ms holder is unchanged: if the test stalls there the
+lock is gone and the check passes without having waited, which weakens one
+run and fails none.
