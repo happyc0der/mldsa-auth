@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 430 committed defects in 61 campaigns, each of which must be
+- **Mutations**: 432 committed defects in 62 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been

@@ -353,6 +353,33 @@ kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
 if grep -q 'store-created\|created a new, empty store' "$TMP/su-ok2.log"; then
     fail "the second start on the same store said it created it again (F199)"
 fi
+# V4-113: the line the runbook's step 9 and the rehearsal read. A daemon whose
+# RLIMIT_MEMLOCK is below what its slots need must log memlock-limit at WARN,
+# in exactly the form `warn event=memlock-limit need=<bytes>`, and say why on
+# stderr; the unit tests pin the level function, and until now nothing pinned
+# that the daemon's start uses it (the rehearsal's pattern was blind from
+# V4-99 to V4-111, F201). Staged with a 1 MiB soft limit, which the default
+# 256 slots (10485760 B) do not fit. A platform that will not lower the limit
+# is a SKIP, said aloud.
+if (ulimit -S -l 1024) 2>/dev/null; then
+    (ulimit -S -l 1024; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-ml.log" 2>&1 &
+    SUPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/su-ml.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "the daemon did not start under a 1 MiB memlock limit: $(cat "$TMP/su-ml.log")"
+        [ "$i" -gt 400 ] && fail "the daemon under a 1 MiB memlock limit never logged event=started"
+        sleep 0.05
+    done
+    kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+    grep -q '^warn event=memlock-limit need=10485760$' "$TMP/su-ml.log" \
+        || fail "a daemon whose memlock limit is short did not log 'warn event=memlock-limit need=10485760': $(cat "$TMP/su-ml.log")"
+    grep -q 'RLIMIT_MEMLOCK is 1048576 bytes but 256 slots need 10485760' "$TMP/su-ml.log" \
+        || fail "a daemon whose memlock limit is short did not say so on stderr, with both numbers: $(cat "$TMP/su-ml.log")"
+    echo "PASS: E2E: under a 1 MiB memlock limit the daemon starts, logs 'warn event=memlock-limit need=10485760' and names both numbers on stderr"
+else
+    echo "SKIP: E2E: this platform will not lower RLIMIT_MEMLOCK; the memlock-limit WARN line is not staged"
+fi
 echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 

@@ -13922,3 +13922,26 @@ The change rotted an older anchor: v50c O4 (audit-verify blaming the chain
 for a wrong passphrase) matched the `failed(...)` line this step replaced.
 The anchors gate caught it before the commit; O4 is re-anchored on the
 `key_failed` line and v50c was run again, 4 of 4 named kills.
+
+## V4-113 — cleanup: the memlock WARN line is pinned by a test
+
+V4-111's notes ended on a gap: the rehearsal's samples of the
+`memlock-limit` line are written by hand, and nothing ran a daemon to see
+the WARN form. `authd_e2e` now starts the daemon under a 1 MiB soft
+`RLIMIT_MEMLOCK` and requires `warn event=memlock-limit need=10485760`
+exactly, and the standard-error sentence with both numbers. v51 Z4 already
+pinned `memlock_log_level()`; what was unpinned is that the daemon's start
+calls it, and campaign v92 (ML1, ML2) is that. A platform that will not
+lower the limit prints a SKIP; if a nightly runner is one, v92 will survive
+there and say so.
+
+REPRODUCE's cited runs were from `ff9faf0`; they are now the CI and nightly
+of `36dc396` (16/16, 76/76).
+
+Looked at and left alone: the client's command-line tool returns 1 for a
+failed connection or login and 3 where it was asked to prompt and has no
+terminal. Spec §13's rule is about the daemon and the admin tool's
+configured files; the client's passphrase is typed by a person, and a wrong
+one is not a configuration error. No change.
+
+432 mutations in 62 campaigns; the nightly is 77 jobs.

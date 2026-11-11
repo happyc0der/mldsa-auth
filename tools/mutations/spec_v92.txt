@@ -1,0 +1,2 @@
+ML1|^authd_e2e$|a daemon whose memlock limit is short did not log 'warn event=memlock-limit need=10485760'
+ML2|^authd_e2e$|a daemon whose memlock limit is short did not say so on stderr, with both numbers
