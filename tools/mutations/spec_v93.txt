@@ -1,0 +1,4 @@
+MA1|^test_authd_ws$|proxy: two IPv4 clients reported as IPv4-mapped IPv6 do not share a rate-limit bucket (F202)
+MA2|^test_authd_ws$|proxy: an IPv4-mapped source renders as 203.0.113.7 (F202)
+MA3|^test_authd_ws$|proxy: ::fffe:... is not IPv4-mapped and stays IPv6 (F202)
+MA4|^test_authd_ws$|proxy: an address that only ends like a mapped one stays IPv6, keyed on its /64 (F202)

@@ -13945,3 +13945,43 @@ configured files; the client's passphrase is typed by a person, and a wrong
 one is not a configuration error. No change.
 
 432 mutations in 62 campaigns; the nightly is 77 jobs.
+
+## V4-114 — F202: an IPv4-mapped source is the IPv4 client it names
+
+V4-73 set aside a lead: "IPv4-mapped IPv6 addresses from a proxy keyed as
+one bucket … needs a measurement before it is a finding." Both halves are
+now measured, and they point different ways.
+
+- **At the parser it reproduces.** `::ffff:203.0.113.7` and
+  `::ffff:198.51.100.9` in `AF_INET6` blocks came out as family 6 with the
+  same eight-byte key, all zero. Every IPv4 client reported that way would
+  share one bucket: 5 connections a minute, 8 at once, for all of them.
+- **Through Caddy it does not.** `caddy_proxy` has asserted
+  `src=127.0.0.1` since V4-10b, so the proxy the runbook deploys sends an
+  IPv4 client as `AF_INET`. No other proxy was measured: HAProxy is not
+  installed here, and the claim about dual-stack listeners is from the
+  PROXY specification and RFC 4291, not from a run.
+
+So this is Low and a hardening: it does not affect the documented
+deployment, and it would turn the limiter into a site-wide lockout for one
+that put a different proxy in front. The fix is in `settle()`: a source
+whose first twelve bytes are `00×10 ff ff` is handed on as family 4 with its
+last four bytes. Doing it in the parser, not in `authd_addr_key()`, means
+the key, the connection cap, `log_client_ip` in all three modes and the
+`client-address` event agree by construction; there is one address, and it
+is the IPv4 one. The reference site has done the same since V4-78
+(`limiterKey`).
+
+**What was left alone.** The IPv4-compatible form `::a.b.c.d` (deprecated,
+RFC 4291 2.5.5.1), NAT64's `64:ff9b::/96` and 6to4 are not unmapped: a
+proxy does not produce the first, and the other two are real IPv6 paths
+whose /64 is already one translator. The destination address is still not
+read.
+
+Spec v1.41, erratum 83 (§7.1), says what the daemon does and that only
+Caddy was measured. Five named checks in `test_authd_ws`: three failed
+before the fix, and two are canaries for the prefix's neighbours
+(`::fffe:…`, and a global address that ends like a mapped one). Campaign
+v93 (MA1–MA4).
+
+436 mutations in 63 campaigns; the nightly is 78 jobs.

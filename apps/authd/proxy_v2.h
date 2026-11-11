@@ -73,6 +73,9 @@ void authd_addr_str(const authd_addr_t *a, char *out, size_t cap);
 /* The rate-limiting key for `a`: the four bytes of an IPv4 address, or the
  * first EIGHT of an IPv6 one.
  *
+ * An IPv4-mapped IPv6 source (::ffff:a.b.c.d) never reaches this as IPv6: the
+ * parser reports it as family 4 (F202), so it has the key of a.b.c.d.
+ *
  * IPv6 is keyed on the /64 because that is the smallest unit a single customer
  * is routinely given: keying on the full 128 bits would let one host rotate
  * through 2^64 addresses and never meet the limiter at all. Returns the key

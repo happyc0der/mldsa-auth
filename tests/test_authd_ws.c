@@ -388,6 +388,51 @@ static void test_proxy_parse(void)
       CHECK(authd_addr_key(&v4, k) == 4u && memcmp(k, "\x01\x02\x03\x04", 4) == 0,
             "proxy: an IPv4 address is rate-limited on all four of its bytes"); }
 
+    /* F202 (V4-114): a proxy on a dual-stack socket may report an IPv4 client
+     * as ::ffff:a.b.c.d in an AF_INET6 block. Its first eight bytes are zero
+     * for EVERY IPv4 client, so keyed as an IPv6 /64 they would all share one
+     * bucket. The parser hands such an address on as the IPv4 address it is. */
+    { static const uint8_t M1[36] = {
+          0,0,0,0,0,0,0,0, 0,0,0xff,0xff, 203u,0u,113u,7u,       /* ::ffff:203.0.113.7 */
+          0,0,0,0,0,0,0,0, 0,0,0xff,0xff, 10u,0u,0u,1u,
+          0x9cu, 0x40u, 0x00u, 0x50u };
+      uint8_t m2[36];
+      memcpy(m2, M1, sizeof m2);
+      m2[12] = 198u; m2[13] = 51u; m2[14] = 100u; m2[15] = 9u;   /* ::ffff:198.51.100.9 */
+      proxy_v2_t q;
+      uint8_t k1[16], k2[16];
+      proxy_v2_init(&p);
+      n = mk_proxy(buf, 0x21u, 0x21u, M1, sizeof M1, NULL, 0u);
+      const proxy_v2_status_t s1 = proxy_v2_consume(&p, buf, n, &used);
+      proxy_v2_init(&q);
+      n = mk_proxy(buf, 0x21u, 0x21u, m2, sizeof m2, NULL, 0u);
+      const proxy_v2_status_t s2 = proxy_v2_consume(&q, buf, n, &used);
+      const size_t l1 = authd_addr_key(&p.addr, k1), l2 = authd_addr_key(&q.addr, k2);
+      CHECK(s1 == PROXY_V2_OK && s2 == PROXY_V2_OK && l1 == l2 && l1 != 0u &&
+            memcmp(k1, k2, l1) != 0,
+            "proxy: two IPv4 clients reported as IPv4-mapped IPv6 do not share a rate-limit bucket (F202)");
+      CHECK(p.addr.family == 4u && memcmp(p.addr.addr, "\xcb\x00\x71\x07", 4) == 0 &&
+            l1 == 4u && memcmp(k1, V4BLOCK, 4) == 0,
+            "proxy: ::ffff:203.0.113.7 is the IPv4 client 203.0.113.7, with the key its plain form has (F202)");
+      { char s[AUTHD_ADDR_STR_MAX];
+        authd_addr_str(&p.addr, s, sizeof s);
+        CHECK(strcmp(s, "203.0.113.7") == 0,
+              "proxy: an IPv4-mapped source renders as 203.0.113.7 (F202)"); }
+      /* The neighbours of the mapped prefix stay IPv6: ::fffe:... and a
+       * non-zero high half are not IPv4 clients. */
+      uint8_t nb[36];
+      memcpy(nb, M1, sizeof nb); nb[11] = 0xfeu;
+      proxy_v2_init(&q);
+      n = mk_proxy(buf, 0x21u, 0x21u, nb, sizeof nb, NULL, 0u);
+      CHECK(proxy_v2_consume(&q, buf, n, &used) == PROXY_V2_OK && q.addr.family == 6u,
+            "proxy: ::fffe:... is not IPv4-mapped and stays IPv6 (F202)");
+      memcpy(nb, M1, sizeof nb); nb[0] = 0x20u;
+      proxy_v2_init(&q);
+      n = mk_proxy(buf, 0x21u, 0x21u, nb, sizeof nb, NULL, 0u);
+      CHECK(proxy_v2_consume(&q, buf, n, &used) == PROXY_V2_OK && q.addr.family == 6u &&
+            authd_addr_key(&q.addr, k2) == 8u,
+            "proxy: an address that only ends like a mapped one stays IPv6, keyed on its /64 (F202)"); }
+
     /* TLVs are skipped by length and never walked. */
     proxy_v2_init(&p);
     { uint8_t tlv[40];

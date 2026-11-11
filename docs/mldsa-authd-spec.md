@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.40, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112 errata)
+# mldsa-authd — deployment specification (v1.41, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -352,7 +352,11 @@ proxy. Two mechanisms, in order of preference:
 
 1. **PROXY protocol v2**, which the proxy prepends before any client byte.
    The client cannot forge it because it never gets to write first. Measured
-   available in the stock Caddy binary (V4-2 S5).
+   available in the stock Caddy binary (V4-2 S5). **An IPv6 source in
+   `::ffff:0:0/96` is the IPv4 client it names** (erratum 83): a proxy on a
+   dual-stack socket may report `203.0.113.7` as `::ffff:203.0.113.7`, and
+   the daemon limits and logs it as `203.0.113.7`. Caddy was measured sending
+   such a client as plain IPv4; no other proxy has been measured.
 2. **A single proxy-set header** (`X-Real-IP`), used only when the listener is
    a **Unix socket** whose peer credentials identify the proxy (Req 11).
    `X-Forwarded-For` is never used: it is a client-appendable list. Measured:
@@ -1727,3 +1731,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 82 | 13 | `audit-verify`, `pseudonym` and `rewrap` exit 3, not 1, for a server key they are given and cannot use; erratum 51's rule covers files named on a command line | the passphrase file already exited 3 and the key 1, so a script could not tell a wrong `--key` from an audit chain that failed (F196; the owner's decision) |
+
+### Revision v1.41 (V4-114)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 83 | 7.1 | A PROXY v2 source in `::ffff:0:0/96` is treated as the IPv4 address in its last four bytes, for the limiter and for `src=` | as an IPv6 address it was limited by its /64, and the first 64 bits of every IPv4-mapped address are zero, so every IPv4 client a proxy reported that way shared one bucket of 5 a minute (F202) |

@@ -113,8 +113,21 @@ static proxy_v2_status_t settle(proxy_v2_t *p)
         return PROXY_V2_OK;
     }
     if (fam == 0x2u) {
+        /* F202: ::ffff:a.b.c.d (RFC 4291 2.5.5.2) is an IPv4 client seen
+         * through a dual-stack socket. Its first eight bytes are zero whatever
+         * the client, so as an IPv6 address every such client would land in
+         * ONE /64 bucket and be logged as one prefix. It is handed on as the
+         * IPv4 address it is, with the key and the rendering of its plain
+         * form. */
+        static const uint8_t MAPPED[12] = { 0,0,0,0, 0,0,0,0, 0,0,0xffu,0xffu };
+        const uint8_t *src = p->buf + PROXY_V2_HDR_LEN;
+        if (memcmp(src, MAPPED, sizeof MAPPED) == 0) {
+            p->addr.family = 4u;
+            memcpy(p->addr.addr, src + 12, 4);
+            return PROXY_V2_OK;
+        }
         p->addr.family = 6u;
-        memcpy(p->addr.addr, p->buf + PROXY_V2_HDR_LEN, 16);
+        memcpy(p->addr.addr, src, 16);
         return PROXY_V2_OK;
     }
     /* AF_UNIX and AF_UNSPEC: structurally fine, no client address. Treating
