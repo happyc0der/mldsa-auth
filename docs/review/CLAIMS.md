@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 305 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 418 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -447,6 +447,15 @@ the most important thing on this page.
 - check `authd_e2e` "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 - mutation `v81 SU2` — the daemon ignores a server key it refused, and starts without it
 - mutation `v81 SU1` — the daemon ignores a passphrase file it refused
+- check `test_authd_keyfile` "v2: the root key does not appear in the sealed file"
+- check `test_authd_keyfile` "v2: open recovers the identity and returns the sealed root key"
+- check `test_envelope_spec` "code->spec v2: raw libsodium opens it to the exact image followed by the exact root key"
+- check `test_authd_cli` "F190: after a passphrase change the root key and a user's pseudonym are unchanged"
+- check `test_authd_cli` "F190: after a passphrase change the store's audit chain still verifies (audit-verify 0)"
+- mutation `v88 RK2` — `keyfile_open` returns the passphrase-derived key for a version-2 file too
+- mutation `v88 RK12` — `keyfile_open` returns the image's first 32 bytes as the root key
+- mutation `v88 RK1` — rewrap seals a fresh root: the audit chain stops verifying after a passphrase change
+- mutation `v88 RK11` — rewrap writes version 1, dropping the root at the next change
 **Not established:** the window scans read files under the directories the CLI writes to, in raw bytes, for 16 contiguous SECRET bytes -- a window touching `rho` or `tr`, which the public key determines, is not looked for (F105) -- so fewer than 16 contiguous secret bytes would not be seen, nor would a deleted temp file, swap, a core dump or another encoding of the key. Since V4-24c the same scan covers rotation: `test_authd_cli` runs the CLI's own rotate and login against the in-process daemon and looks for every key the device held after an acknowledged rotation, after the login that completes an interrupted one, and after a rotation attempted from a key the daemon has superseded. Since V4-35 a CLI rotation whose session opens but whose reply is refused, or lost, is scanned too. The in-process daemon refuses a real ROTATE after the store's key has moved behind the session, or commits and is cut off before its ACK flushes; campaign v73 shows both scans catching a raw key that passed V4-34's suite; the e2e's real processes still have only its header scan, since the shell holds no plaintext key. The browser is scanned since V4-27:
 - **What is scanned.** `browser_e2e` reads back every envelope its store held, as the test saw each appear: enrollment, a stale pending key, a lost-ACK rotation, the account page's rotation, and a recovered device in a second profile.
 - **How.** It opens each one natively with the test's passphrase (`tests/envelope_key_scan.c`). It then scans the whole Chromium profile, about 15 MB in some 300 files, for the key's secret windows and for the passphrase as UTF-8 and UTF-16.
@@ -563,4 +572,8 @@ the most important thing on this page.
 - check `test_authd_store` "commit(enroll-req7): a failed COMMIT leaves the database as it was, the write lock free and the handle able to write"
 - mutation `v67 FC1` — a failed COMMIT is not rolled back (audit F112 restored): the handle stays inside the transaction and holds the write lock
 - mutation `v67 FC2` — Req 7's refusal path commits around `tx_commit`, keeping F112 on that one path
+- check `test_authd_store` "twice: the first disable's time and reason stand (F194)"
+- check `test_authd_store` "twice: the second disable writes no audit entry (F194)"
+- check `test_authd_store` "twice: a second enable of an enabled user answers OK and writes no audit entry (F194)"
+- mutation `v89 OE10` — the status update matches a user already in that state: a repeated disable rewrites the first one's record
 **Not established:** since V4-22c every writing statement of every mutating primitive is failed in turn -- 23 cases, from one write to twelve (`revoke=all` over two devices) -- and after each, the committed database as another connection reads it is unchanged, and the same handle then completes the call; a transaction left open after a fault would fail that next attempt. The fault is a statement returning an I/O error, not a crash or a torn write; atomicity below the statement is SQLite's. Since V4-23 a failed COMMIT is rolled back (audit F112, fixed): a test hook fails the COMMIT of each of the 18 cases that run a transaction, leaving the transaction open as `SQLITE_BUSY` does, and the database must be unchanged, the write lock free for a second store, and the same handle able to complete the call. That models the BUSY outcome. Real I/O failures at COMMIT were injected once, by hand, through a failing VFS on SQLite 3.45.1 -- SQLite had already rolled each back -- and are not in CI, nor tried on CI's 3.53.4. `store_open`'s schema setup and `store_backup` are outside the sweep. The fault hooks' confinement to the test build is a CTest (`store_fault_hook`) since V4-15a -- before that the tool cited here ran nowhere (audit F99, fixed) -- and the new write hook's symbols fall under the same gate. RECOVERY-USE with `revoke=all` was not one transaction until V4-14c (audit F93, fixed): its revocations now commit with the code and the ticket.

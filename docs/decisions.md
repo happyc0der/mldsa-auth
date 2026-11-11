@@ -13801,3 +13801,22 @@ Counts: 418 mutations, 59 campaigns, 458 anchors.
 
 **Not changed.** The store schema, the wire protocol, the audit record
 format, and the daemon's own open.
+
+## V4-110 — cleanup: the reviewer's pages catch up with V4-108 and V4-109
+
+The third iteration since V4-107, so no new coverage. A sweep of the stated
+numbers found two on pages a reviewer reads first that no gate covered.
+`docs/review/CLAIMS.md`'s legend still said the nightly runs "all 305"
+mutations; it is 418, and the sentence is now the seventeenth count
+`check_mutation_anchors.py` compares with the campaigns (shown failing on
+417). `docs/review/REPRODUCE.md` described CI as 14 jobs and cited runs on
+`71c8fc0`; CI has been 16 jobs since the rehearsal joined it, and the page
+now cites the runs on `ff9faf0`: CI 42979417004, 16/16, and the nightly
+42973993727, 74/74. Those run numbers are a record of one day and will age;
+the job count is not gated, because it is a product of the workflow's
+matrices.
+
+The claim map cited nothing from the last two steps. D10 now cites the
+version-2 key file's checks and four of v88's mutations (the root key is
+sealed, returned, and survives a passphrase change); D14 cites the
+repeated-disable checks and v89 OE10. The map's gate confirms each exists.

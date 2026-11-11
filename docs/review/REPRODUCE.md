@@ -176,9 +176,11 @@ is not compiled). ADVISORIES.md accounts for every one.
   and UBSan on Linux and macOS, gcc, Release with the hardening check, the
   offline build, fuzz smoke and the secret scan, the specification checks
   (since V4-34 the mutation anchors and the stated counts too), the wasm and
-  headless-browser job, and `caddy proxy (Linux, Docker)`. 14 jobs; run
-  39474140277 on main `71c8fc0`: 14/14.
+  headless-browser job, `caddy proxy (Linux, Docker)`, and the runbook
+  rehearsed top to bottom under systemd (V4-99; on two Ubuntus since
+  V4-103). 16 jobs; run
+  42979417004 on main `ff9faf0`: 16/16.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
-  ProVerif model and its controls. Run 39447335408 on `71c8fc0`'s tree: 58/58,
-  with 314 of 314 mutations killed by name (v74, V4-36's, joined after it).
+  ProVerif model and its controls. Run 42973993727 on `ff9faf0`: 74/74, all
+  59 campaigns among them.

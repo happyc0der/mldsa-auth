@@ -160,6 +160,8 @@ STATED = [
     ("docs/review/README.md", r"\*\*Mutations\*\*: (\d+) committed defects", n_mut),
     ("docs/review/README.md", r"committed defects in (\d+) campaigns", n_camp),
     ("README.md", r"plus the (\d+) committed mutations in", n_mut),
+    # V4-110: the claim map's own legend still said 305.
+    ("docs/review/CLAIMS.md", r"the nightly runs all (\d+) \|", n_mut),
 ]
 for doc, pat, want_n in STATED:
     text = (repo/doc).read_text()
