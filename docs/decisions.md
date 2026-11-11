@@ -13985,3 +13985,62 @@ before the fix, and two are canaries for the prefix's neighbours
 v93 (MA1–MA4).
 
 436 mutations in 63 campaigns; the nightly is 78 jobs.
+
+## V4-115 — F203: a stopped prompt asks again, with echo off
+
+**Found by measuring a lead, not by reading.** `cli_prompt.c` caught the
+four signals that end a process and restored the terminal for each. It did
+not catch the three that stop one. The question was what a shell does to the
+terminal in between, and that is not in the source; `tools/prompt_job_control.py`
+asks it of bash 3.2.57 and zsh 5.9 on a pty (macOS 27).
+
+- **Before:** all six scenarios echoed the passphrase typed after the
+  continue. After Ctrl-Z and `fg` (and after Ctrl-Z, `bg`, `fg`) the process
+  resumed its `read` with no prompt and with echo on: both shells put the
+  terminal back to their own settings when they take it, and neither puts
+  the job's back. Started with `&`, the client stopped on its `tcsetattr`,
+  and after `fg` exited `not-a-terminal`, so the line went to the shell.
+- **After:** nothing echoed in any of the six, and the key is written in
+  all of them.
+
+Low: the person has to stop the prompt themselves, and the harm is a
+passphrase on a screen, in scrollback or in a session recording.
+
+**The fix follows OpenBSD's `readpassphrase`.** `SIGTSTP`, `SIGTTIN` and
+`SIGTTOU` are caught. On one of them the prompt restores the terminal, puts
+that signal's previous disposition back, raises it (the process stops
+there), and when it returns re-installs the handler and arms the prompt
+again: settings read, echo off with `TCSAFLUSH`, buffer zeroed, prompt
+shown. Three choices that are ours:
+
+- **What was typed before the stop is discarded**, and the prompt is shown
+  again so the person knows the line starts over. Half a passphrase that
+  survives a stop is half a passphrase the person cannot see or count.
+- **The settings to restore are read each time the prompt is armed**, in
+  the foreground. Reading them once at entry was the first version, and
+  under zsh it hung a prompt started with `&`: from the background
+  `tcgetattr` succeeds and returns the shell's line-editor settings (no
+  `ICANON`, no `ICRNL`), and a prompt built on those never sees a newline.
+  The measurement caught it; the unit test could not have.
+- **A stop signal that is ignored at entry is left ignored.** A shell
+  without job control starts its children that way, and catching the signal
+  there would turn a keystroke that does nothing into one that throws the
+  line away.
+
+`say()` no longer retries a write interrupted by one of the caught signals:
+from the background of a `TOSTOP` terminal that write fails every time, and
+the loop above it has a stop to honour. A stop that lands after the line has
+ended is honoured once the terminal is back; nothing more is read.
+
+**What the tests are.** A stop signal sent to an orphaned process group is
+discarded, so the unit test cannot stop its child for real. A `SIGTSTP`
+handler in the child stands in for the shell: it records whether the
+terminal echoed at the moment the stop was honoured, turns echo on as the
+shells do, and returns, which is the `fg`. Eleven new checks, seven named for F203: five were shown
+red before the fix, and the second-stop and ignored-stop checks were added
+with it. Campaign v94 (JC1–JC6). The real stop is measured only
+by the script above, on macOS, with two shells; no Linux shell was measured.
+
+Spec v1.42, erratum 84 (§13).
+
+442 mutations in 64 campaigns; the nightly is 79 jobs.

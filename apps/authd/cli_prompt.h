@@ -18,6 +18,11 @@
  *     back on every path, including a signal: SIGINT, SIGTERM, SIGHUP and
  *     SIGQUIT are caught for the duration, the terminal restored, and the
  *     signal re-raised with its previous disposition.
+ *   - A stop is not the end of the prompt (F203, V4-115). SIGTSTP, SIGTTIN
+ *     and SIGTTOU are caught as well: the terminal is restored, the process
+ *     stops, and when it is continued echo is turned off AGAIN -- the shell
+ *     that had the terminal in between leaves it on -- what was typed before
+ *     the stop is discarded, and the prompt is shown again.
  *   - The bytes go straight into secure memory (mlocked, wiped on free), are
  *     never written back, and never reach a log. The line's end ("\n", or
  *     "\r\n") is not part of the passphrase -- the file reader strips one

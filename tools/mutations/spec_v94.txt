@@ -1,0 +1,6 @@
+JC1|^test_client_prompt$|read: after a stop and a continue the prompt is shown again (F203)
+JC2|^test_client_prompt$|read: the terminal was restored BEFORE the process stopped (F203)
+JC3|^test_client_prompt$|read: after a stop and a continue echo is OFF again, whatever the shell left (F203)
+JC4|^test_client_prompt$|read: what was typed before the stop is discarded, and the line after it is read (F203)
+JC5|^test_client_prompt$|read: a second stop is handled like the first: the prompt a third time, echo off (F203)
+JC6|^test_client_prompt$|read: an IGNORED SIGTSTP stays ignored: the line typed around it is read whole (F203)

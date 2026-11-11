@@ -31,13 +31,18 @@ const char *cli_prompt_status_name(cli_prompt_status_t st)
     return "unknown";
 }
 
+static volatile sig_atomic_t g_caught = 0;
+
 static void say(int fd, const char *s)
 {
     size_t n = strlen(s);
     while (n > 0u) {
         const ssize_t k = write(fd, s, n);
         if (k < 0) {
-            if (errno == EINTR) { continue; }
+            /* Retried, unless it is one of OUR caught signals: a write from
+             * the background of a TOSTOP terminal fails this way every time,
+             * and the caller has a stop to honour. */
+            if (errno == EINTR && g_caught == 0) { continue; }
             return;
         }
         s += k;
@@ -48,13 +53,20 @@ static void say(int fd, const char *s)
 /* The signals that would otherwise kill the process with the terminal left
  * silent. Caught for the length of one read, WITHOUT SA_RESTART, so the read
  * returns EINTR and the terminal is restored before the signal is honoured. */
-static const int k_sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+/* The stop signals are caught too (F203): a process stopped at the prompt
+ * hands the terminal to a shell that turns echo back on, and one that merely
+ * resumed its read would have the rest of the passphrase typed in clear. */
+static const int k_sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU };
 #define N_SIGS (sizeof k_sigs / sizeof k_sigs[0])
-static volatile sig_atomic_t g_caught = 0;
 
 static void on_signal(int sig)
 {
     g_caught = sig;
+}
+
+static int is_stop(int sig)
+{
+    return sig == SIGTSTP || sig == SIGTTIN || sig == SIGTTOU;
 }
 
 cli_prompt_status_t cli_prompt_read(int fd, const char *prompt, uint8_t **out, size_t *out_len)
@@ -82,32 +94,76 @@ cli_prompt_status_t cli_prompt_read(int fd, const char *prompt, uint8_t **out, s
     sa.sa_flags = 0;                       /* no SA_RESTART: read must return */
     g_caught = 0;
     for (size_t i = 0; i < N_SIGS; i++) {
-        (void)sigaction(k_sigs[i], &sa, &old[i]);
+        (void)sigaction(k_sigs[i], NULL, &old[i]);
+        if (is_stop(k_sigs[i]) && old[i].sa_handler == SIG_IGN) {
+            continue;                      /* no job control here: it stays ignored */
+        }
+        (void)sigaction(k_sigs[i], &sa, NULL);
     }
 
     struct termios quiet = saved;
-    quiet.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL);
     cli_prompt_status_t st = CLI_PROMPT_OK;
-    if (tcsetattr(fd, TCSAFLUSH, &quiet) != 0) {
-        st = CLI_PROMPT_ERR_NOT_TTY;
-    }
-    if (st == CLI_PROMPT_OK && prompt != NULL) {
-        say(fd, prompt);
-    }
 
     size_t len = 0;
     int over = 0, ended = 0;
+    int armed = 0;                         /* echo is off and the prompt is shown */
     while (st == CLI_PROMPT_OK && !ended) {
-        if (g_caught != 0) {               /* arrived between two reads */
+        const int sig = (int)g_caught;     /* during a read, or between two */
+        if (sig != 0 && !is_stop(sig)) {
             st = CLI_PROMPT_ERR_INTERRUPTED;
             break;
+        }
+        if (sig != 0) {
+            /* F203: the terminal back, the stop honoured under the old
+             * disposition, and on the way back echo off AGAIN and the prompt
+             * again: whatever was typed before the stop is discarded
+             * (TCSAFLUSH), so the person starts the line over and knows it. */
+            (void)tcsetattr(fd, TCSANOW, &saved);
+            for (size_t i = 0; i < N_SIGS; i++) {
+                if (k_sigs[i] == sig) { (void)sigaction(sig, &old[i], NULL); }
+            }
+            (void)raise(sig);              /* stops here; returns when continued */
+            (void)sigaction(sig, &sa, NULL);
+            if (is_stop((int)g_caught)) {
+                g_caught = 0;              /* a SIGINT caught meanwhile is kept */
+            }
+            armed = 0;
+            continue;
+        }
+        if (!armed) {
+            /* The first time round as well, so a prompt started in the
+             * background stops on this call (SIGTTOU) and is asked properly
+             * once it is brought forward. The settings to put back are read
+             * HERE, in the foreground: read from the background they are the
+             * shell's own line editor's (zsh: no ICANON, no ICRNL), and a
+             * prompt built on those never sees the end of the line. */
+            if (tcgetattr(fd, &saved) != 0) {
+                st = CLI_PROMPT_ERR_NOT_TTY;
+                break;
+            }
+            quiet = saved;
+            quiet.c_lflag &= (tcflag_t)~(ECHO | ECHOE | ECHOK | ECHONL);
+            if (tcsetattr(fd, TCSAFLUSH, &quiet) != 0) {
+                if (g_caught != 0) {
+                    continue;              /* in the background: stop, or stop again */
+                }
+                st = CLI_PROMPT_ERR_NOT_TTY;
+                break;
+            }
+            sodium_memzero(buf, cap);
+            len = 0;
+            over = 0;
+            if (prompt != NULL) {
+                say(fd, prompt);
+            }
+            armed = 1;
+            continue;
         }
         uint8_t c = 0;
         const ssize_t k = read(fd, &c, 1u);
         if (k < 0) {
             if (errno == EINTR) {
-                if (g_caught != 0) { st = CLI_PROMPT_ERR_INTERRUPTED; }
-                continue;
+                continue;                  /* the top of the loop decides */
             }
             st = CLI_PROMPT_ERR_IO;
         } else if (k == 0) {
@@ -143,6 +199,13 @@ cli_prompt_status_t cli_prompt_read(int fd, const char *prompt, uint8_t **out, s
         } else if (len == 0u) {
             st = CLI_PROMPT_ERR_EMPTY;
         }
+    }
+    if (is_stop((int)g_caught)) {
+        /* A stop that landed after the line ended is still a stop: honoured
+         * now, with the terminal already back; nothing more is read. */
+        const int sig = (int)g_caught;
+        g_caught = 0;
+        (void)raise(sig);
     }
     if (st != CLI_PROMPT_OK) {
         secure_mem_free(buf, cap);

@@ -111,10 +111,32 @@ static int echo_on(int fd)
 
 /* ---------------------------------------------- the prompt, in a child */
 
-typedef struct { int status; size_t len; uint8_t hash[32]; } result_t;
+typedef struct { int status; size_t len; uint8_t hash[32]; int echo_at_stop; } result_t;
+
+/* F203: the job-control shell, played by a handler. A real stop needs a shell
+ * above the process (a stop signal sent to an orphaned process group is
+ * discarded), so the child's own SIGTSTP disposition stands in for one: it
+ * notes whether the terminal echoes at the moment the stop is honoured, turns
+ * echo ON as bash and zsh do when they take the terminal back, and returns,
+ * which is the `fg`. */
+static int g_shell_fd = -1;
+static volatile sig_atomic_t g_echo_at_stop = -1;
+
+static void play_shell(int sig)
+{
+    (void)sig;
+    struct termios tio;
+    if (tcgetattr(g_shell_fd, &tio) == 0) {
+        g_echo_at_stop = (tio.c_lflag & ECHO) != 0;
+        tio.c_lflag |= ECHO;
+        (void)tcsetattr(g_shell_fd, TCSANOW, &tio);
+    }
+}
 
 /* Forks a child that runs `fn` against the slave side and reports the status,
- * the length and the SHA-256 of what it read -- never the bytes. */
+ * the length and the SHA-256 of what it read -- never the bytes. `which` 2 is
+ * cli_prompt_read under play_shell; 3 is cli_prompt_read with SIGTSTP ignored,
+ * as a shell without job control starts its children. */
 static pid_t run_child(int slave, int report_fd, int which)
 {
     const pid_t pid = fork();
@@ -125,6 +147,19 @@ static pid_t run_child(int slave, int report_fd, int which)
     memset(&r, 0, sizeof r);
     uint8_t *p = NULL;
     size_t n = 0;
+    if (which == 2) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = play_shell;
+        sigemptyset(&sa.sa_mask);
+        g_shell_fd = slave;
+        (void)sigaction(SIGTSTP, &sa, NULL);
+        r.status = (int)cli_prompt_read(slave, "Passphrase: ", &p, &n);
+        r.echo_at_stop = (int)g_echo_at_stop;
+    } else if (which == 3) {
+        (void)signal(SIGTSTP, SIG_IGN);
+        r.status = (int)cli_prompt_read(slave, "Passphrase: ", &p, &n);
+    } else
     r.status = (int)((which == 0) ? cli_prompt_read(slave, "Passphrase: ", &p, &n)
                                   : cli_prompt_new(slave, "test keygen", &p, &n));
     r.len = n;
@@ -210,6 +245,56 @@ static void test_read(void)
     CHECK(WIFSIGNALED(ws) && WTERMSIG(ws) == SIGINT,
           "read: SIGINT during the prompt still ends the process with SIGINT");
     CHECK(echo_on(slave), "read: ...and the terminal's echo was restored first");
+    tcflush(slave, TCIOFLUSH);
+
+    /* F203 (V4-115): Ctrl-Z, then fg. The shell takes the terminal back with
+     * echo on; a prompt that only resumed its read would have the rest of the
+     * passphrase typed in clear. */
+    memset(&t, 0, sizeof t);
+    t.master = master;
+    pid = run_child(slave, pr[1], 2);
+    CHECK(term_wait(&t, "Passphrase: ", 1, 5000), "read: prompt for the stop case");
+    term_type(&t, "half-typ");
+    usleep(100000);
+    (void)kill(pid, SIGTSTP);
+    CHECK(term_wait(&t, "Passphrase: ", 2, 5000),
+          "read: after a stop and a continue the prompt is shown again (F203)");
+    CHECK(!echo_on(slave),
+          "read: after a stop and a continue echo is OFF again, whatever the shell left (F203)");
+    /* ...and a second time: the first stop must not have used the handler up */
+    term_type(&t, "more-typ");
+    usleep(100000);
+    (void)kill(pid, SIGTSTP);
+    CHECK(term_wait(&t, "Passphrase: ", 3, 5000) && !echo_on(slave),
+          "read: a second stop is handled like the first: the prompt a third time, echo off (F203)");
+    term_type(&t, GOOD "\n");
+    CHECK(child_result(pr[0], pid, &r, &ws) && r.status == CLI_PROMPT_OK && is_hash_of(&r, GOOD),
+          "read: what was typed before the stop is discarded, and the line after it is read (F203)");
+    CHECK(r.echo_at_stop == 1,
+          "read: the terminal was restored BEFORE the process stopped (F203)");
+    term_drain(&t);
+    CHECK(strstr(t.out, GOOD) == NULL && strstr(t.out, "half-typ") == NULL &&
+          strstr(t.out, "more-typ") == NULL,
+          "read: nothing typed before or after the stop was echoed (F203)");
+    CHECK(echo_on(slave), "read: and echo is back on after the resumed prompt");
+    tcflush(slave, TCIOFLUSH);
+
+    /* Where SIGTSTP is ignored there is no stop to honour, and the prompt
+     * does not take the signal over: the line is not thrown away. */
+    memset(&t, 0, sizeof t);
+    t.master = master;
+    pid = run_child(slave, pr[1], 3);
+    CHECK(term_wait(&t, "Passphrase: ", 1, 5000), "read: prompt for the ignored-stop case");
+    term_type(&t, GOOD);
+    usleep(100000);
+    (void)kill(pid, SIGTSTP);
+    usleep(100000);
+    term_type(&t, "\n");
+    CHECK(child_result(pr[0], pid, &r, &ws) && r.status == CLI_PROMPT_OK && is_hash_of(&r, GOOD),
+          "read: an IGNORED SIGTSTP stays ignored: the line typed around it is read whole (F203)");
+    term_drain(&t);
+    CHECK(term_wait(&t, "Passphrase: ", 1, 0) && !term_wait(&t, "Passphrase: ", 2, 0),
+          "read: ...and the prompt was shown once");
     tcflush(slave, TCIOFLUSH);
 
     /* a descriptor that is not a terminal */
