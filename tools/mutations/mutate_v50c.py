@@ -68,7 +68,7 @@ M = {
  # verification never ran, and the operator is sent looking for an intruder.
  "O4": (CLI, [("""    if (ks != KEYFILE_OK) {
         secure_mem_free(kek, STORE_KEK_BYTES);
-        return failed(prog, "audit-verify", ek, keyfile_status_name(ks));
+        return key_failed(prog, "audit-verify", ek, ks);
     }""",
                """    if (ks != KEYFILE_OK) {
         secure_mem_free(kek, STORE_KEK_BYTES);

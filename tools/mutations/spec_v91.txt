@@ -1,0 +1,4 @@
+KF1|^test_authd_cli$|audit-verify: a --key that names no file is a configuration error (3), by name (F196)
+KF2|^test_authd_cli$|audit-verify: a wrong passphrase is a configuration error (3) (F196)
+KF3|^test_authd_cli$|pseudonym: a --key that names no file is a configuration error (3) (F196)
+KF4|^test_authd_cli$|rewrap: an --in that names no file is a configuration error (3), and nothing is written (F196)

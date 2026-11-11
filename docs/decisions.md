@@ -13878,3 +13878,47 @@ reported, the pre-create removed or without `O_EXCL`, the standard-error
 line or the event omitted, the event at INFO, and a daemon that claims
 creation at every start. 426 mutations in 60 campaigns; the nightly is 75
 jobs.
+
+## V4-112 — an offline command's unusable key is a configuration error (F196)
+
+**The owner decided both open questions on 2026-11-11** ("go with
+recommendations").
+
+*F196: exit 3 for both.* Erratum 51 gave the daemon and the admin tool one
+rule for the passphrase file: unusable is 3, a configuration error, and 1 is
+kept for failures of the work itself. The server key named by `--key` (and
+`rewrap`'s `--in`) was outside it, so `audit-verify` answered 1 both for a
+chain that had been tampered with and for a key path with a typo in it, and
+a script — the shipped `mldsa-authd-audit.service` is one — could not tell
+an incident from a mistake. `key_failed()` now applies the daemon's own rule
+to `audit-verify`, `pseudonym` and `rewrap`: `KEYFILE_ERR_CRYPTO`, an
+internal failure, is 1; every other status (missing, unsafe modes, bad
+format, not opened by the passphrase) is 3. A key that opens and a chain
+that does not verify is still 1, as is a store that cannot be opened: both
+mean the question was asked and the answer was not "verified". Spec §13,
+erratum 82 (v1.40).
+
+Two checks asserted 1 for a wrong passphrase by name; they now assert 3.
+That is a behaviour change for anyone who scripted against exit 1 meaning
+"wrong passphrase"; nothing in the repository did.
+
+Not changed: `init`'s failure to open the key it has just written stays 1
+(nothing the operator configured), and the client's command-line tool, which
+erratum 51 never covered.
+
+*Store creation: the daemon keeps creating a missing store, and says so.*
+V4-111 left "should the daemon refuse to start without a store" to the
+owner, and offered no recommendation to refuse; the recommendation on the
+table was what V4-111 shipped (create, 0600, a line on standard error and a
+WARN `store-created` event, forbidden by the rehearsal's start step). That
+stands. Refusing remains a small change if it is wanted later: the flag
+`store_was_created()` reports is already the condition.
+
+Campaign v91, four mutations: `key_failed`'s rule inverted, and
+each of the three commands reporting its key with `failed()`. 430 mutations
+in 61 campaigns; the nightly is 76 jobs.
+
+The change rotted an older anchor: v50c O4 (audit-verify blaming the chain
+for a wrong passphrase) matched the `failed(...)` line this step replaced.
+The anchors gate caught it before the commit; O4 is re-anchored on the
+`key_failed` line and v50c was run again, 4 of 4 named kills.

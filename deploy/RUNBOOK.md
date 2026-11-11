@@ -332,6 +332,12 @@ It prints the head MAC and an entry count. **Record the head MAC somewhere off
 this host** — the chain detects tampering, but only if you have something to
 compare against; that is the "second trust domain" spec §9.2 asks for.
 
+Its exit code separates the two ways it can fail (since V4-112): **1** means
+the store was read and the chain did not verify, or the store could not be
+opened — treat it as an incident; **3** means the key or the passphrase file
+it was given could not be used (missing, wrong modes, wrong passphrase), so
+nothing was verified — fix the command and run it again.
+
 The install ships a timer that does this every hour (V4-102). Install it, run
 it once now, and read what it wrote:
 

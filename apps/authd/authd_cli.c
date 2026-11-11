@@ -41,6 +41,19 @@
 #define LOCAL_TIMEOUT_MS  10000u
 
 /* Spec 16 fixes these names whatever the server's id happens to be. */
+/* A server key an offline command was given and cannot use (F196, V4-112).
+ * Spec 13, erratum 51 as read by erratum 82: missing, unsafe, malformed, or
+ * not opened by the passphrase is a problem with a file the operator named,
+ * 3 -- the daemon's rule for key_path and this file's own rule for the
+ * passphrase file (read_pass). Only an internal failure is 1. Before V4-112
+ * every one of these was 1, so a script could not tell a wrong --key from a
+ * chain that did not verify. */
+static int key_failed(const char *prog, const char *sub, const char *ek, keyfile_status_t ks)
+{
+    (void)failed(prog, sub, ek, keyfile_status_name(ks));
+    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_CONFIG;
+}
+
 #define SERVER_KEY_NAME  "server.ek"
 #define SERVER_PUB_NAME  "server.pub"
 #define STORE_NAME       "store.sqlite3"
@@ -420,7 +433,7 @@ static int cmd_rewrap(int argc, char **argv, const char *prog)
     }
     const keyfile_status_t ko = keyfile_open(in, id, id_len, (const char *)pa, la, &kp, root);
     if (ko != KEYFILE_OK) {
-        rc = failed(prog, "rewrap", in, keyfile_status_name(ko));
+        rc = key_failed(prog, "rewrap", in, ko);
         goto done;
     }
     img_len = demo_keys_sk2_image_len(id_len);
@@ -736,7 +749,7 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         secure_mem_free(kek, STORE_KEK_BYTES);
-        return failed(prog, "audit-verify", ek, keyfile_status_name(ks));
+        return key_failed(prog, "audit-verify", ek, ks);
     }
     mldsa_keypair_free(&kp);          /* the root key is all this needs */
 
@@ -830,7 +843,7 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         secure_mem_free(kek, STORE_KEK_BYTES);
-        return failed(prog, "pseudonym", ek, keyfile_status_name(ks));
+        return key_failed(prog, "pseudonym", ek, ks);
     }
     mldsa_keypair_free(&kp);          /* the root key is all this needs */
 

@@ -409,8 +409,45 @@ static void test_init(void)
         (void)snprintf(wrong, sizeof wrong, "%s/wrong-pass", g_dir);
         CHECK(write_file(wrong, "not the server passphrase\n", 0600) == 0, "pseudonym: wrong passphrase fixture");
         CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", ek, "--passphrase-file", wrong,
-                        "--server-id", "authd", "--id", "alice") == 1,
-              "pseudonym: a wrong passphrase fails (1): no pseudonym without the key");
+                        "--server-id", "authd", "--id", "alice") == 3,
+              "pseudonym: a wrong passphrase is a configuration error (3): no pseudonym without the key (F196)");
+        /* F196 (V4-112): a --key that cannot be used is the operator's file
+         * to fix, 3, as a --passphrase-file already was -- missing, unsafe or
+         * not opened by the passphrase. 1 is left for an operation that ran
+         * and failed: a chain that does not verify. */
+        char nokey[256], gkey[256], err[512];
+        (void)snprintf(nokey, sizeof nokey, "%s/no-such.ek", g_dir);
+        (void)snprintf(gkey, sizeof gkey, "%s/group.ek", g_dir);
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", db, "--key", nokey,
+                                            "--passphrase-file", pass, "--server-id", "authd", NULL },
+                                err, sizeof err) == 3 &&
+              strstr(err, "/no-such.ek: io-error") != NULL,
+              "audit-verify: a --key that names no file is a configuration error (3), by name (F196)");
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", db, "--key", ek,
+                                            "--passphrase-file", wrong, "--server-id", "authd", NULL },
+                                err, sizeof err) == 3 &&
+              strstr(err, "decryption-failed") != NULL,
+              "audit-verify: a wrong passphrase is a configuration error (3) (F196)");
+        CHECK(RUN_ADMIN("pseudonym", "--store", db, "--key", nokey, "--passphrase-file", pass,
+                        "--server-id", "authd", "--id", "alice") == 3,
+              "pseudonym: a --key that names no file is a configuration error (3) (F196)");
+        { uint8_t buf[8192];
+          size_t n = 0;
+          FILE *f = fopen(ek, "rb");
+          if (f != NULL) { n = fread(buf, 1, sizeof buf, f); (void)fclose(f); }
+          f = fopen(gkey, "wb");
+          if (f != NULL) { (void)fwrite(buf, 1, n, f); (void)fclose(f); }
+          CHECK(n > 0 && chmod(gkey, 0640) == 0 &&
+                run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", db, "--key", gkey,
+                                              "--passphrase-file", pass, "--server-id", "authd", NULL },
+                                  err, sizeof err) == 3 &&
+                strstr(err, "unsafe-permissions") != NULL,
+                "audit-verify: a group-readable --key is a configuration error (3) (F196)");
+          (void)unlink(gkey); }
+        CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", nokey, "--out", gkey,
+                        "--old-passphrase-file", pass, "--new-passphrase-file", wrong) == 3 &&
+              file_size(gkey) < 0,
+              "rewrap: an --in that names no file is a configuration error (3), and nothing is written (F196)");
     }
 }
 
@@ -468,8 +505,8 @@ static void test_keys(void)
     /* rewrap: the OLD passphrase must actually be checked, and --out equal to
      * --in must be impossible rather than merely discouraged. */
     CHECK(RUN_ADMIN("rewrap", "--id", "srv", "--in", ek, "--out", ek2,
-                    "--old-passphrase-file", pass2, "--new-passphrase-file", pass) == 1,
-          "rewrap: the wrong old passphrase is refused");
+                    "--old-passphrase-file", pass2, "--new-passphrase-file", pass) == 3,
+          "rewrap: the wrong old passphrase is refused, as a configuration error (3) (F196)");
     CHECK(file_size(ek2) < 0, "rewrap: nothing was written after a wrong passphrase");
     CHECK(RUN_ADMIN("rewrap", "--id", "srv", "--in", ek, "--out", ek,
                     "--old-passphrase-file", pass, "--new-passphrase-file", pass2) == 1,
@@ -619,8 +656,8 @@ static void test_rewrap_keeps_store(void)
               memcmp(root0, root1, sizeof root0) == 0 && memcmp(ps0, ps1, sizeof ps0) == 0,
           "F190: after a passphrase change the root key and a user's pseudonym are unchanged");
     CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", next, "--passphrase-file", pass,
-                    "--server-id", "authd") == 1,
-          "rewrap/store: the old passphrase does not open the new file (audit-verify 1)");
+                    "--server-id", "authd") == 3,
+          "rewrap/store: the old passphrase does not open the new file (audit-verify 3, F196)");
     CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", next, "--out", third,
                     "--old-passphrase-file", p2, "--new-passphrase-file", p3) == 0 &&
               RUN_ADMIN("audit-verify", "--store", db, "--key", third, "--passphrase-file", p3,
@@ -634,7 +671,7 @@ static void test_rewrap_keeps_store(void)
           "keygen-server: writes MLDSAEK1 version 2");
     CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", other, "--passphrase-file", p2,
                     "--server-id", "authd") == 1,
-          "control: a key file with a different root key fails audit-verify (1) on the same store");
+          "control: a key file with a different root key fails audit-verify (1, not 3: the key opened) on the same store");
 
     /* ---- the legacy path: a version-1 server key, a store keyed from its KEK */
     char ldir[256], l1[300], l2[300], ldb[300], lp[300];

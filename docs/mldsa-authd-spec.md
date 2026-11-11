@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.39, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111 errata)
+# mldsa-authd — deployment specification (v1.40, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -959,7 +959,12 @@ error. Every failure prints a status name from the same enums the daemon logs.
 A file the configuration names that cannot be used as configured -- the
 server key or its passphrase file, missing, unsafe, malformed, or not opened
 by the passphrase -- is a configuration error, 3; an internal failure is 1
-(erratum 51).
+(erratum 51). A server key or passphrase file **named on a command line** is
+held to the same rule (erratum 82): `audit-verify`, `pseudonym` and `rewrap`
+exit 3 for a `--key`, `--in` or passphrase file that is missing, unsafe,
+malformed, or not opened by the passphrase. So for `audit-verify`, 1 means
+the store was opened and read and the chain did **not** verify (or the store
+itself could not be opened), and 3 means it was never asked.
 
 ## 14. Browser client *(B)*
 
@@ -1716,3 +1721,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 81 | 15, 16 | The event `store-created`, and a line on standard error, from a start that creates the store; a store is created mode 0600 whatever the umask is | a daemon whose `store_path` was mistyped started normally on a new, empty store and said nothing (F199), and the store it created took the umask's mode — 0644 under 022 — where `init`'s is 0600 (F200) |
+
+### Revision v1.40 (V4-112)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 82 | 13 | `audit-verify`, `pseudonym` and `rewrap` exit 3, not 1, for a server key they are given and cannot use; erratum 51's rule covers files named on a command line | the passphrase file already exited 3 and the key 1, so a script could not tell a wrong `--key` from an audit chain that failed (F196; the owner's decision) |
