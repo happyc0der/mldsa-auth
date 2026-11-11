@@ -309,6 +309,173 @@ int main(void) {
         free(on); free(s2); }
       free(sb); }
 
+    /* ---- V4-108 (audit F190, spec erratum 79): version 2 -------------------
+     * A version-2 envelope seals a 32-byte store root key after the image. The
+     * store's keys come from it, so it must survive a passphrase change: open
+     * returns it through the out-param, and resealing with it under another
+     * passphrase returns the same bytes. A version-1 file has none, and its
+     * KEK stands in, which is what carries an existing store across. */
+    { char r1[256], r2[256], r3[256], r4[256], r5[256];
+      path(r1, sizeof(r1), "root1.ek"); path(r2, sizeof(r2), "root2.ek"); path(r3, sizeof(r3), "root3.ek");
+      path(r4, sizeof(r4), "root4.ek"); path(r5, sizeof(r5), "root5.ek");
+      static const char PASS2[] = "a second passphrase, after a change";
+      static const char PASS3[] = "and a third";
+      const size_t tag = crypto_aead_xchacha20poly1305_ietf_ABYTES;
+      const size_t want2 = KEYFILE_HEADER_LEN + ilen + KEYFILE_ROOT_BYTES + tag;
+      uint8_t root[KEYFILE_ROOT_BYTES], got[KEYFILE_ROOT_BYTES], got2[KEYFILE_ROOT_BYTES], v1kek[KEYFILE_ROOT_BYTES];
+      mldsa_keypair_t a;
+      randombytes_buf(root, sizeof(root));
+
+      CHECK(keyfile_seal_root(r1, img, ilen, root, PASS, strlen(PASS), OPS, MEM) == KEYFILE_OK &&
+                fmode(r1) == 0600 && fsize(r1) == (long)want2,
+            "v2: seal_root writes header + image + 32-byte root + tag, mode 0600");
+      uint8_t *b1 = malloc(want2);
+      { FILE *f = fopen(r1, "rb"); size_t rn = f ? fread(b1, 1, want2, f) : 0; if (f) fclose(f);
+        if (rn != want2) { puts("fixture: the version-2 file is missing or short"); return 2; } }
+      { uint8_t v1b[9] = {0}; FILE *f = fopen(ek, "rb"); size_t rn = f ? fread(v1b, 1, 9, f) : 0; if (f) fclose(f);
+        CHECK(b1[8] == 0x02u && rn == 9 && v1b[8] == 0x01u,
+              "v2: seal_root writes version byte 2; keyfile_seal still writes version byte 1"); }
+      { int found = 0;
+        for (size_t i = 0; i + sizeof(root) <= want2; i++) { if (memcmp(b1 + i, root, sizeof(root)) == 0) { found = 1; } }
+        CHECK(!found, "v2: the root key does not appear in the sealed file"); }
+
+      memset(got, 0xAA, sizeof(got));
+      CHECK(keyfile_open(r1, ID_A, IDLEN, PASS, strlen(PASS), &a, got) == KEYFILE_OK && a.secret_key != NULL &&
+                memcmp(got, root, sizeof(root)) == 0,
+            "v2: open recovers the identity and returns the sealed root key");
+      { uint8_t sig[MLDSA_SIGNATURE_MAX_BYTES]; size_t sl = 0; const uint8_t m[3] = {4,5,6};
+        CHECK(mldsa_sign(sig, &sl, m, 3, &a) == 0 && mldsa_verify(m, 3, sig, sl, a.public_key) == 0,
+              "v2: the recovered keypair signs and verifies");
+        mldsa_keypair_free(&a); }
+      memset(got2, 0xAA, sizeof(got2));
+      CHECK(keyfile_open_buf(b1, want2, ID_A, IDLEN, PASS, strlen(PASS), &a, got2) == KEYFILE_OK &&
+                memcmp(got2, root, sizeof(root)) == 0,
+            "v2: open_buf returns the same root key");
+      mldsa_keypair_free(&a);
+
+      /* no root supplied: a fresh random one, stable for the file, its own per file */
+      memset(got, 0xAA, sizeof(got)); memset(got2, 0xAA, sizeof(got2));
+      { uint8_t g3[KEYFILE_ROOT_BYTES]; mldsa_keypair_t b, c;
+        const int ok = keyfile_seal_root(r2, img, ilen, NULL, PASS, strlen(PASS), OPS, MEM) == KEYFILE_OK &&
+                       keyfile_seal_root(r3, img, ilen, NULL, PASS, strlen(PASS), OPS, MEM) == KEYFILE_OK &&
+                       keyfile_open(r2, ID_A, IDLEN, PASS, strlen(PASS), &a, got) == KEYFILE_OK &&
+                       keyfile_open(r2, ID_A, IDLEN, PASS, strlen(PASS), &b, got2) == KEYFILE_OK &&
+                       keyfile_open(r3, ID_A, IDLEN, PASS, strlen(PASS), &c, g3) == KEYFILE_OK;
+        if (!ok) { puts("fixture: sealing or opening a fresh-root file failed"); return 2; }
+        uint8_t aa[KEYFILE_ROOT_BYTES]; memset(aa, 0xAA, sizeof(aa));
+        CHECK(memcmp(got, aa, sizeof(aa)) != 0 && !sodium_is_zero(got, sizeof(got)) &&
+                  memcmp(got, got2, sizeof(got)) == 0,
+              "v2: with no root supplied a random one is sealed, and every open returns it");
+        CHECK(memcmp(got, g3, sizeof(got)) != 0 && memcmp(got, root, sizeof(got)) != 0,
+              "v2: two files sealed without a root hold different roots");
+        mldsa_keypair_free(&a); mldsa_keypair_free(&b); mldsa_keypair_free(&c); }
+
+      /* the passphrase change, as rewrap does it: v1 -> v2 -> v2 */
+      memset(v1kek, 0xAA, sizeof(v1kek)); memset(got, 0xAA, sizeof(got)); memset(got2, 0xAA, sizeof(got2));
+      if (keyfile_open(ek, ID_A, IDLEN, PASS, strlen(PASS), &a, v1kek) != KEYFILE_OK) {
+          puts("fixture: the version-1 file does not open"); return 2; }
+      mldsa_keypair_free(&a);
+      CHECK(memcmp(v1kek, kek, sizeof(kek)) == 0,
+            "v1: open still returns the file's KEK as the store root key");
+      CHECK(keyfile_seal_root(r4, img, ilen, v1kek, PASS2, strlen(PASS2), OPS, MEM) == KEYFILE_OK &&
+                keyfile_open(r4, ID_A, IDLEN, PASS2, strlen(PASS2), &a, got) == KEYFILE_OK &&
+                memcmp(got, v1kek, sizeof(got)) == 0,
+            "rewrap v1 -> v2: the new file, under a new passphrase, returns the old file's KEK as its root");
+      if (a.secret_key) mldsa_keypair_free(&a);
+      CHECK(keyfile_seal_root(r5, img, ilen, got, PASS3, strlen(PASS3), OPS, MEM) == KEYFILE_OK &&
+                keyfile_open(r5, ID_A, IDLEN, PASS3, strlen(PASS3), &a, got2) == KEYFILE_OK &&
+                memcmp(got2, v1kek, sizeof(got2)) == 0,
+            "rewrap v2 -> v2: a second passphrase change still returns the same root");
+      if (a.secret_key) mldsa_keypair_free(&a);
+      memset(got, 0xAA, sizeof(got));
+      CHECK(keyfile_open(r4, ID_A, IDLEN, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_DECRYPT &&
+                a.secret_key == NULL && sodium_is_zero(got, sizeof(got)),
+            "v2: the old passphrase does not open the rewrapped file, and the out-param is zeroed");
+
+      /* the version byte is authenticated, and decides where the image ends */
+      { uint8_t *t = malloc(want2); memcpy(t, b1, want2); t[8] = 0x01u;
+        memset(got, 0xAA, sizeof(got));
+        CHECK(keyfile_open_buf(t, want2, ID_A, IDLEN, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_DECRYPT &&
+                  a.secret_key == NULL && sodium_is_zero(got, sizeof(got)),
+              "v2: relabelled as version 1 -> DECRYPT, no key, no root");
+        free(t);
+        const long l1 = fsize(ek);
+        if (l1 <= 0) { puts("fixture: the version-1 file is missing"); return 2; }
+        uint8_t *u = malloc((size_t)l1);
+        FILE *f = fopen(ek, "rb"); size_t rn = f ? fread(u, 1, (size_t)l1, f) : 0; if (f) fclose(f);
+        u[8] = 0x02u;
+        memset(got, 0xAA, sizeof(got));
+        CHECK(rn == (size_t)l1 &&
+                  keyfile_open_buf(u, rn, ID_A, IDLEN, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_DECRYPT &&
+                  a.secret_key == NULL && sodium_is_zero(got, sizeof(got)),
+              "v1: relabelled as version 2 -> DECRYPT, no key, no root");
+        u[8] = 0x03u;
+        CHECK(keyfile_open_buf(u, rn, ID_A, IDLEN, PASS, strlen(PASS), &a, NULL) == KEYFILE_ERR_FORMAT,
+              "version 3 -> FORMAT");
+        free(u); }
+
+      /* header bounds: a version-2 envelope must have room for the root key
+       * and at least one image byte, and may be 32 bytes longer than version 1 */
+      { keyfile_header_t h;
+        const size_t short_ct = tag + KEYFILE_ROOT_BYTES;            /* a root and nothing else */
+        const size_t max1 = KEYFILE_HEADER_LEN + demo_keys_sk2_image_len(64) + tag;
+        uint8_t *t = calloc(1, max1 + KEYFILE_ROOT_BYTES + 1u);
+        memcpy(t, b1, KEYFILE_HEADER_LEN);
+        t[63] = 0; t[64] = 0; t[65] = 0; t[66] = (uint8_t)short_ct;
+        const keyfile_status_t s0 = keyfile_parse_header(t, KEYFILE_HEADER_LEN + short_ct, &h);
+        t[66] = (uint8_t)(short_ct + 1u);
+        const keyfile_status_t s1 = keyfile_parse_header(t, KEYFILE_HEADER_LEN + short_ct + 1u, &h);
+        CHECK(s0 == KEYFILE_ERR_FORMAT && s1 == KEYFILE_OK && h.img_len == 1u && h.root_len == KEYFILE_ROOT_BYTES &&
+                  h.version == 0x02u,
+              "v2 header: no room for an image beside the root -> FORMAT, and one image byte parses");
+        /* the upper bound, per version */
+        const size_t ct_hi2 = demo_keys_sk2_image_len(64) + KEYFILE_ROOT_BYTES + tag;
+        t[63] = (uint8_t)(ct_hi2 >> 24); t[64] = (uint8_t)(ct_hi2 >> 16); t[65] = (uint8_t)(ct_hi2 >> 8); t[66] = (uint8_t)ct_hi2;
+        const keyfile_status_t hi2 = keyfile_parse_header(t, KEYFILE_HEADER_LEN + ct_hi2, &h);
+        const size_t hi2_img = h.img_len;
+        t[8] = 0x01u;
+        const keyfile_status_t hi1 = keyfile_parse_header(t, KEYFILE_HEADER_LEN + ct_hi2, &h);
+        t[8] = 0x02u;
+        t[63] = (uint8_t)((ct_hi2 + 1u) >> 24); t[64] = (uint8_t)((ct_hi2 + 1u) >> 16);
+        t[65] = (uint8_t)((ct_hi2 + 1u) >> 8); t[66] = (uint8_t)(ct_hi2 + 1u);
+        const keyfile_status_t over2 = keyfile_parse_header(t, KEYFILE_HEADER_LEN + ct_hi2 + 1u, &h);
+        CHECK(hi2 == KEYFILE_OK && hi2_img == demo_keys_sk2_image_len(64) && hi1 == KEYFILE_ERR_FORMAT &&
+                  over2 == KEYFILE_ERR_FORMAT,
+              "header: the largest version-2 envelope parses, the same length as version 1 or one byte more is FORMAT");
+        const long l1 = fsize(ek);
+        if (l1 <= 0) { puts("fixture: the version-1 file is missing"); return 2; }
+        uint8_t *w = malloc((size_t)l1);
+        FILE *f = fopen(ek, "rb"); const size_t rn = f ? fread(w, 1, (size_t)l1, f) : 0; if (f) fclose(f);
+        CHECK(rn == (size_t)l1 && keyfile_parse_header(w, rn, &h) == KEYFILE_OK &&
+                  h.version == 0x01u && h.root_len == 0u && h.img_len == ilen,
+              "v1 header: parses with no root, and the image length is the whole plaintext");
+        free(w); free(t); }
+
+      /* argument and parameter refusals write nothing; never clobbers */
+      { char rx[256]; path(rx, sizeof(rx), "rootx.ek");
+        CHECK(keyfile_seal_root(rx, NULL, ilen, root, PASS, strlen(PASS), OPS, MEM) == KEYFILE_ERR_ARG &&
+                  keyfile_seal_root(rx, img, 0u, root, PASS, strlen(PASS), OPS, MEM) == KEYFILE_ERR_ARG &&
+                  keyfile_seal_root(rx, img, demo_keys_sk2_image_len(64) + 1u, root, PASS, strlen(PASS), OPS, MEM) ==
+                      KEYFILE_ERR_ARG &&
+                  keyfile_seal_root(rx, img, ilen, root, NULL, 0u, OPS, MEM) == KEYFILE_ERR_ARG && fsize(rx) == -1,
+              "v2: seal_root refuses a missing image, an out-of-range length or a missing passphrase (ARG), writes nothing");
+        CHECK(keyfile_seal_root(rx, img, ilen, root, PASS, strlen(PASS), KEYFILE_OPSLIMIT_MAX + 1u, MEM) ==
+                  KEYFILE_ERR_PARAMS && fsize(rx) == -1,
+              "v2: seal_root opslimit over the ceiling -> PARAMS, writes nothing");
+        CHECK(keyfile_seal_root(r1, img, ilen, root, PASS, strlen(PASS), OPS, MEM) == KEYFILE_ERR_EXISTS &&
+                  fsize(r1) == (long)want2,
+              "v2: seal_root over an existing file -> EXISTS, not overwritten"); }
+
+      /* a wrong expected id on a version-2 file: IMAGE, and no root handed out */
+      { const uint8_t bob[] = {'b','o','b'};
+        memset(got, 0xAA, sizeof(got));
+        CHECK(keyfile_open(r1, bob, 3, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_IMAGE && a.secret_key == NULL &&
+                  sodium_is_zero(got, sizeof(got)),
+              "v2: a wrong expected id -> IMAGE, no key, the root out-param zeroed"); }
+      sodium_memzero(root, sizeof(root)); sodium_memzero(got, sizeof(got)); sodium_memzero(got2, sizeof(got2));
+      sodium_memzero(v1kek, sizeof(v1kek));
+      free(b1); }
+
     /* ---- V4-13a: MLDSAPK1 in memory ---------------------------------------- */
     { mldsa_keypair_t pk_kp;
       const uint8_t bob[] = {'b','o','b'};

@@ -181,8 +181,8 @@ int main(int argc, char **argv)
     }
 
     /* The server identity: opened from its MLDSAEK1 envelope with the
-     * passphrase file, returning the KEK so the store can derive its audit
-     * key (spec 9.2.4). The passphrase and the KEK are wiped as soon as they
+     * passphrase file, returning the store root key so the store can derive its
+     * audit key (spec 9.2.4). The passphrase and the root key are wiped as soon as they
      * have done their jobs; the secret key stays in secure memory. */
     static authd_app_t app;
     memset(&app, 0, sizeof app);

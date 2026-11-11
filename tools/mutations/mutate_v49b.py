@@ -68,8 +68,8 @@ M = {
  "C2": (CLI, [("    const authd_config_status_t cs = authd_config_load(path, &cfg, &err_line);",
                "    authd_config_status_t cs = authd_config_load(path, &cfg, &err_line); /* MUTATION C2: second parser (its status replaced; the first form left cfg unset, which Apple clang refuses: F79) */\n    { FILE *pf = fopen(path, \"r\"); if (pf != NULL) { (void)fclose(pf); if (cs != AUTHD_CFG_OK) { cs = AUTHD_CFG_ERR_VALUE; } } }")]),
  # the keygen paths ALSO leave a plaintext MLDSASK2 copy on disk (Req 10)
- "K1": (CLI, [("    const keyfile_status_t ks = keyfile_seal(ek_path, img, img_len, pass, pass_len, ops, mem);",
-               "    const keyfile_status_t ks = keyfile_seal(ek_path, img, img_len, pass, pass_len, ops, mem);\n"
+ "K1": (CLI, [("    const keyfile_status_t ks = keyfile_seal_root(ek_path, img, img_len, NULL, pass, pass_len, ops, mem);",
+               "    const keyfile_status_t ks = keyfile_seal_root(ek_path, img, img_len, NULL, pass, pass_len, ops, mem);\n"
                "    { char bak[PATH_MAX]; /* MUTATION K1: a plaintext copy beside the sealed key */\n"
                "      if (snprintf(bak, sizeof bak, \"%s.sk\", ek_path) > 0) {\n"
                "          FILE *mf = fopen(bak, \"wb\");\n"

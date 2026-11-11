@@ -24,6 +24,13 @@
  *   nonce    24   crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
  *   ct_len    4   plaintext + tag
  *   ciphertext||tag  ct_len
+ *
+ * Version 0x02 (V4-108, spec erratum 79) is the same layout with one
+ * difference: the plaintext is the MLDSASK2 image FOLLOWED BY a 32-byte root
+ * key. The server's key file is written this way, and the store's audit-MAC
+ * and log-pseudonym keys are derived from that root key -- not from the
+ * passphrase's KEK -- so a passphrase change (`rewrap`), which reseals the
+ * same plaintext, keeps both (audit finding F190). Client keys stay version 1.
  */
 
 #include <stddef.h>
@@ -34,6 +41,8 @@
 #define KEYFILE_MAGIC "MLDSAEK1"
 #define KEYFILE_MAGIC_LEN 8u
 #define KEYFILE_VERSION 0x01u
+#define KEYFILE_VERSION_ROOT 0x02u      /* plaintext = image || root key */
+#define KEYFILE_ROOT_BYTES 32u
 #define KEYFILE_KDF_ARGON2ID13 0x01u
 #define KEYFILE_AEAD_XCHACHA20POLY1305 0x01u
 #define KEYFILE_HEADER_LEN 67u          /* magic..ct_len inclusive; the AEAD's AAD */
@@ -65,7 +74,10 @@ typedef struct {
     uint32_t opslimit;
     uint64_t memlimit;
     uint32_t ct_len;   /* ciphertext + tag */
-    uint32_t img_len;  /* plaintext (MLDSASK2 image) length */
+    uint32_t img_len;  /* the MLDSASK2 image's length */
+    uint32_t root_len; /* 0 in a version-1 file, KEYFILE_ROOT_BYTES in a version-2 one;
+                        * plaintext = img_len + root_len */
+    uint8_t  version;  /* KEYFILE_VERSION or KEYFILE_VERSION_ROOT */
 } keyfile_header_t;
 
 /* Validates the header of a `total`-byte candidate: size range, magic,
@@ -81,14 +93,27 @@ keyfile_status_t keyfile_seal(const char *out_path, const uint8_t *sk2_image, si
                               const char *passphrase, size_t pass_len,
                               uint32_t opslimit, uint64_t memlimit);
 
+/* The server's key file (V4-108): a VERSION-2 envelope whose plaintext is the
+ * image followed by a 32-byte root key. `root` NULL draws a fresh random one
+ * (a new server); non-NULL reseals an existing one, which is how `rewrap`
+ * changes the passphrase without changing what the store's keys are derived
+ * from. Publishes exactly as keyfile_seal does; same statuses. */
+keyfile_status_t keyfile_seal_root(const char *out_path, const uint8_t *sk2_image, size_t image_len,
+                                   const uint8_t *root,
+                                   const char *passphrase, size_t pass_len,
+                                   uint32_t opslimit, uint64_t memlimit);
+
 /* Opens an MLDSAEK1 file and returns the validated keypair (secret key in
  * secure memory). Runs the shared MLDSASK2 validator after decryption, so a
  * wrong id is ID_MISMATCH-in-image (KEYFILE_ERR_IMAGE) and so on. */
-/* `kek_out`, when non-NULL, receives the 32-byte envelope KEK (the Argon2id
- * output) on success. The store derives its audit-chain key from it
- * (key_audit = HKDF(ikm=KEK, salt=store_id, info="mldsa-authd/v1/audit-mac"),
- * spec 9.2.4), and store_id only exists after the store is created, so the
- * KEK -- not a pre-derived key -- is what must cross this boundary. It is
+/* `kek_out`, when non-NULL, receives the 32-byte STORE ROOT KEY on success:
+ * the root key sealed in a version-2 file, or -- for a version-1 file, which
+ * has none -- the envelope KEK (the Argon2id output), which is what stores
+ * written before V4-108 are keyed from. The store derives its audit-chain key
+ * from it (key_audit = HKDF(ikm=root, salt=store_id,
+ * info="mldsa-authd/v1/audit-mac"), spec 9.2.4), and store_id only exists
+ * after the store is created, so the root -- not a pre-derived key -- is what
+ * must cross this boundary. (The parameter keeps its V4-10 name.) It is
  * secret: the caller SHOULD pass secure memory and wipe it. On EVERY failure
  * path it is zeroed, never left holding a partial derivation. */
 keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, size_t id_len,

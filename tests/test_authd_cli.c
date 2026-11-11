@@ -38,6 +38,7 @@
 #include "keyfile.h"
 #include "localcli.h"
 #include "net_io.h"
+#include "secure_mem.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -61,21 +62,21 @@ static int run_cli(int (*fn)(int, char **), char **argv)
     return fn(argc, argv);
 }
 
-/* Runs a CLI with stderr captured into `buf`. Used where the MESSAGE is the
- * thing under test, not just the exit code. */
-static int run_admin_capture(char **argv, char *buf, size_t cap)
+/* Runs a CLI with one of its streams captured into `buf`. Used where the
+ * MESSAGE is the thing under test, not just the exit code. */
+static int run_admin_capture_stream(char **argv, char *buf, size_t cap, FILE *stream, int fd)
 {
     char tmp[256];
-    (void)snprintf(tmp, sizeof tmp, "%s/stderr.txt", g_dir);
-    const int saved = dup(2);
-    fflush(stderr);
-    FILE *f = freopen(tmp, "w", stderr);
+    (void)snprintf(tmp, sizeof tmp, "%s/captured.txt", g_dir);
+    (void)fflush(stream);
+    const int saved = dup(fd);
+    FILE *f = freopen(tmp, "w", stream);
     const int rc = (f != NULL) ? run_cli(authd_cli_admin, argv) : -1;
-    fflush(stderr);
+    (void)fflush(stream);
     if (saved >= 0) {
-        (void)dup2(saved, 2);
+        (void)dup2(saved, fd);
         (void)close(saved);
-        clearerr(stderr);
+        clearerr(stream);
     }
     buf[0] = '\0';
     FILE *r = fopen(tmp, "r");
@@ -86,6 +87,16 @@ static int run_admin_capture(char **argv, char *buf, size_t cap)
     }
     (void)unlink(tmp);
     return rc;
+}
+
+static int run_admin_capture(char **argv, char *buf, size_t cap)
+{
+    return run_admin_capture_stream(argv, buf, cap, stderr, 2);
+}
+
+static int run_admin_capture_stdout(char **argv, char *buf, size_t cap)
+{
+    return run_admin_capture_stream(argv, buf, cap, stdout, 1);
 }
 
 static int write_file(const char *path, const char *text, mode_t mode)
@@ -401,15 +412,18 @@ static void test_keys(void)
     CHECK(RUN_ADMIN("rewrap", "--id", "srv", "--in", ek, "--out", ek2,
                     "--old-passphrase-file", pass, "--new-passphrase-file", pass2) == 0,
           "rewrap: writes a new file under the new passphrase");
-    /* V4-104, F190: and it says, where the operator does it, that a store
-     * written under the old passphrase will not verify under the new one. */
-    { char ek3[400], err[4096];
+    /* V4-108, F190: the V4-104 warning is gone with its cause. What rewrap
+     * says now is that the store's keys carry over, and on stderr nothing. */
+    { char ek3[400], err[4096], outb[4096];
       (void)snprintf(ek3, sizeof ek3, "%s.f190", ek2);
       char *wa[] = { "authd_admin", "rewrap", "--id", "srv", "--in", ek, "--out", ek3,
                      "--old-passphrase-file", pass, "--new-passphrase-file", pass2, NULL };
-      CHECK(run_admin_capture(wa, err, sizeof err) == 0 && strstr(err, "will NOT verify") != NULL &&
-            strstr(err, "audit-chain-corrupt") != NULL && strstr(err, "F190") != NULL,
-            "rewrap: warns that the store's audit chain and pseudonyms will not survive the new passphrase (F190)");
+      CHECK(run_admin_capture(wa, err, sizeof err) == 0 && err[0] == '\0',
+            "rewrap: a successful rewrap prints no warning (the F190 warning went with its cause)");
+      (void)unlink(ek3);
+      CHECK(run_admin_capture_stdout(wa, outb, sizeof outb) == 0 && strstr(outb, "version 2") != NULL &&
+            strstr(outb, "carry over") != NULL && strstr(outb, "same store root key") != NULL,
+            "rewrap: says the new file is version 2 and that the store's audit chain and pseudonyms carry over");
       (void)unlink(ek3); }
     {
         mldsa_keypair_t a, b;
@@ -426,6 +440,180 @@ static void test_keys(void)
         mldsa_keypair_free(&a);
         mldsa_keypair_free(&b);
     }
+}
+
+/* ------------------------------------------- rewrap keeps the store (F190) */
+
+static int version_byte(const char *path)
+{
+    uint8_t h[9];
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) { return -1; }
+    const size_t n = fread(h, 1u, sizeof h, f);
+    (void)fclose(f);
+    return (n == sizeof h) ? (int)h[8] : -1;
+}
+
+/* Opens the store at `db` with the root key of `ek`, optionally writes two
+ * audit entries, and returns the pseudonym of "alice". 0 on success. */
+static int store_with_key(const char *db, const char *ek, const char *id, const char *pass, size_t pass_len,
+                          int write_entries, uint8_t root_out[KEYFILE_ROOT_BYTES],
+                          uint8_t ps_out[STORE_PSEUDONYM_BYTES])
+{
+    mldsa_keypair_t kp;
+    memset(&kp, 0, sizeof kp);
+    /* Every failure names its step and status: a bare "!= 0" here once left a
+     * one-off failure with nothing to read (V4-108). */
+    const keyfile_status_t ks = keyfile_open(ek, (const uint8_t *)id, strlen(id), pass, pass_len, &kp, root_out);
+    if (ks != KEYFILE_OK) {
+        printf("store_with_key: keyfile_open(%s) -> %d\n", ek, (int)ks);
+        return -1;
+    }
+    mldsa_keypair_free(&kp);
+    store_t *st = NULL;
+    const store_status_t so = store_open(db, root_out, &st);
+    if (so != STORE_OK) {
+        printf("store_with_key: store_open(%s) -> %d\n", db, (int)so);
+        return -2;
+    }
+    int rc = 0;
+    if (write_entries) {
+        const store_status_t sa = store_add_user(st, (const uint8_t *)"alice", 5u, STORE_ROLE_USER);
+        const store_status_t sd = (sa == STORE_OK)
+            ? store_disable_user(st, (const uint8_t *)"alice", 5u, "test", (const uint8_t *)"f190", 4u) : sa;
+        if (sa != STORE_OK || sd != STORE_OK) {
+            printf("store_with_key: add_user -> %d, disable_user -> %d\n", (int)sa, (int)sd);
+            rc = -3;
+        }
+    }
+    if (rc == 0) {
+        const store_status_t sv = store_audit_verify(st);
+        if (sv != STORE_OK) { printf("store_with_key: audit_verify -> %d\n", (int)sv); rc = -4; }
+    }
+    if (rc == 0) {
+        const store_status_t sp = store_log_pseudonym(st, (const uint8_t *)"alice", 5u, ps_out);
+        if (sp != STORE_OK) { printf("store_with_key: log_pseudonym -> %d\n", (int)sp); rc = -5; }
+    }
+    store_close(st);
+    return rc;
+}
+
+/* V4-108, audit F190, spec erratum 79. Before this step the store's audit-MAC
+ * and pseudonym keys were derived from the envelope KEK, so a passphrase
+ * change left a store that failed audit-verify and whose every idh= had
+ * changed. Now they come from a root key sealed in the key file, and rewrap
+ * carries it over. Both starting points are driven: a version-2 file from
+ * init, and a version-1 file with a store keyed from its KEK -- what every
+ * deployment made before this step has. */
+static void test_rewrap_keeps_store(void)
+{
+    char dir[256], pass[256], p2[256], p3[256], ek[256], db[256], next[300], third[300], other[300], opub[300];
+    (void)snprintf(dir, sizeof dir, "%s/rw1", g_dir);
+    (void)snprintf(pass, sizeof pass, "%s/rw1/pass", g_dir);
+    (void)snprintf(p2, sizeof p2, "%s/rw-p2", g_dir);
+    (void)snprintf(p3, sizeof p3, "%s/rw-p3", g_dir);
+    (void)snprintf(ek, sizeof ek, "%s/rw1/server.ek", g_dir);
+    (void)snprintf(db, sizeof db, "%s/rw1/store.sqlite3", g_dir);
+    (void)snprintf(next, sizeof next, "%s.next", ek);
+    (void)snprintf(third, sizeof third, "%s.third", ek);
+    (void)snprintf(other, sizeof other, "%s/rw-other.ek", g_dir);
+    (void)snprintf(opub, sizeof opub, "%s/rw-other.pub", g_dir);
+    CHECK(write_file(p2, "the second passphrase\n", 0600) == 0 && write_file(p3, "the third passphrase\n", 0600) == 0,
+          "rewrap/store: fixture passphrases");
+
+    CHECK(RUN_ADMIN("init", "--dir", dir, "--server-id", "authd", "--passphrase-file", pass) == 0,
+          "rewrap/store: init");
+    CHECK(version_byte(ek) == 2 && file_size(ek) == 6140 + 5,
+          "init: server.ek is MLDSAEK1 version 2, 6140 + id_len bytes (spec 12)");
+
+    /* The passphrase exactly as authd_admin reads it -- through its own
+     * reader. init writes 32 RANDOM bytes, and the reader strips one trailing
+     * newline and nothing else; a reader of this test's own that stripped
+     * every trailing CR and LF derived a different key whenever the last
+     * byte was 0x0D, about one run in 256 (seen once, in a campaign's clean
+     * suite). */
+    uint8_t *pw = NULL;
+    size_t pwl = 0u;
+    (void)authd_secret_read(pass, &pw, &pwl);
+    uint8_t root0[KEYFILE_ROOT_BYTES], root1[KEYFILE_ROOT_BYTES], root2[KEYFILE_ROOT_BYTES];
+    uint8_t ps0[STORE_PSEUDONYM_BYTES], ps1[STORE_PSEUDONYM_BYTES], ps2[STORE_PSEUDONYM_BYTES];
+    CHECK(pwl > 0u && store_with_key(db, ek, "authd", (const char *)pw, pwl, 1, root0, ps0) == 0,
+          "rewrap/store: two audit entries written under the key init made, and the chain verifies");
+    CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", ek, "--passphrase-file", pass,
+                    "--server-id", "authd") == 0,
+          "rewrap/store: audit-verify passes before the passphrase change");
+
+    CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", ek, "--out", next,
+                    "--old-passphrase-file", pass, "--new-passphrase-file", p2) == 0 &&
+              version_byte(next) == 2 && file_size(next) == 6140 + 5 && mode_of(next) == 0600,
+          "rewrap/store: a version-2 key is rewrapped to a version-2 key, mode 0600");
+    CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", next, "--passphrase-file", p2,
+                    "--server-id", "authd") == 0,
+          "F190: after a passphrase change the store's audit chain still verifies (audit-verify 0)");
+    CHECK(store_with_key(db, next, "authd", "the second passphrase", 21u, 0, root1, ps1) == 0 &&
+              memcmp(root0, root1, sizeof root0) == 0 && memcmp(ps0, ps1, sizeof ps0) == 0,
+          "F190: after a passphrase change the root key and a user's pseudonym are unchanged");
+    CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", next, "--passphrase-file", pass,
+                    "--server-id", "authd") == 1,
+          "rewrap/store: the old passphrase does not open the new file (audit-verify 1)");
+    CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", next, "--out", third,
+                    "--old-passphrase-file", p2, "--new-passphrase-file", p3) == 0 &&
+              RUN_ADMIN("audit-verify", "--store", db, "--key", third, "--passphrase-file", p3,
+                        "--server-id", "authd") == 0,
+          "F190: a second passphrase change, and the chain still verifies");
+
+    /* the control: the chain is keyed, and a different root key fails it. A
+     * check above that passed for an empty or unkeyed chain would pass here too. */
+    CHECK(RUN_ADMIN("keygen-server", "--key", other, "--pub", opub, "--server-id", "authd",
+                    "--passphrase-file", p2) == 0 && version_byte(other) == 2,
+          "keygen-server: writes MLDSAEK1 version 2");
+    CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", other, "--passphrase-file", p2,
+                    "--server-id", "authd") == 1,
+          "control: a key file with a different root key fails audit-verify (1) on the same store");
+
+    /* ---- the legacy path: a version-1 server key, a store keyed from its KEK */
+    char ldir[256], l1[300], l2[300], ldb[300], lp[300];
+    (void)snprintf(ldir, sizeof ldir, "%s/rw-legacy", g_dir);
+    (void)snprintf(l1, sizeof l1, "%s/server.ek", ldir);
+    (void)snprintf(l2, sizeof l2, "%s/server.ek.next", ldir);
+    (void)snprintf(ldb, sizeof ldb, "%s/store.sqlite3", ldir);
+    (void)snprintf(lp, sizeof lp, "%s/pass", ldir);
+    (void)mkdir(ldir, 0700);
+    static const char LPASS[] = "a passphrase from before V4-108";
+    {
+        mldsa_keypair_t kp;
+        memset(&kp, 0, sizeof kp);
+        const size_t il = demo_keys_sk2_image_len(5u);
+        uint8_t *img = secure_mem_alloc(il);
+        const int made = img != NULL && mldsa_keypair_generate(&kp) == 0 &&
+                         demo_keys_build_sk2_image(img, il, (const uint8_t *)"authd", 5u, &kp) == DEMO_KEYS_OK &&
+                         keyfile_seal(l1, img, il, LPASS, strlen(LPASS), 1u, 8u * 1024u * 1024u) == KEYFILE_OK;
+        if (kp.secret_key != NULL) { mldsa_keypair_free(&kp); }
+        if (img != NULL) { secure_mem_free(img, il); }
+        CHECK(made && version_byte(l1) == 1 && file_size(l1) == 6108 + 5 &&
+                  write_file(lp, "a passphrase from before V4-108\n", 0600) == 0,
+              "legacy: a version-1 server key, as every key file before V4-108 is");
+    }
+    CHECK(store_with_key(ldb, l1, "authd", LPASS, strlen(LPASS), 1, root0, ps0) == 0,
+          "legacy: a store keyed from the version-1 file's KEK, with two audit entries");
+    CHECK(RUN_ADMIN("audit-verify", "--store", ldb, "--key", l1, "--passphrase-file", lp,
+                    "--server-id", "authd") == 0,
+          "legacy: an existing store still verifies under its version-1 key (no forced migration)");
+    CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", l1, "--out", l2,
+                    "--old-passphrase-file", lp, "--new-passphrase-file", p2) == 0 &&
+              version_byte(l2) == 2 && file_size(l2) == 6140 + 5,
+          "legacy: rewrap turns the version-1 key into a version-2 key");
+    CHECK(RUN_ADMIN("audit-verify", "--store", ldb, "--key", l2, "--passphrase-file", p2,
+                    "--server-id", "authd") == 0,
+          "F190, legacy: the store verifies under the rewrapped key and its new passphrase");
+    CHECK(store_with_key(ldb, l2, "authd", "the second passphrase", 21u, 0, root2, ps2) == 0 &&
+              memcmp(root0, root2, sizeof root0) == 0 && memcmp(ps0, ps2, sizeof ps0) == 0,
+          "F190, legacy: the old KEK became the root key, and the pseudonym is unchanged");
+    CHECK(RUN_ADMIN("audit-verify", "--store", ldb, "--key", other, "--passphrase-file", p2,
+                    "--server-id", "authd") == 1,
+          "control, legacy: a different key fails audit-verify (1) on the legacy store");
+    authd_secret_free(pw, pwl);
+    sodium_memzero(root0, sizeof root0); sodium_memzero(root1, sizeof root1); sodium_memzero(root2, sizeof root2);
 }
 
 /* -------------------------------------------------------- client keygen */
@@ -527,6 +715,8 @@ static void test_migrate_key(void)
     CHECK(RUN_ADMIN("migrate-key", "--id", "mig", "--in", legacy, "--out", out,
                     "--passphrase-file", pass) == 0,
           "migrate-key: seals the legacy identity into an envelope");
+    CHECK(version_byte(out) == 2 && file_size(out) == 6140 + 3,
+          "migrate-key: writes MLDSAEK1 version 2, 6140 + id_len bytes");
     mldsa_keypair_t old_k, new_k;
     memset(&old_k, 0, sizeof old_k);
     memset(&new_k, 0, sizeof new_k);
@@ -1516,6 +1706,7 @@ int main(void)
 
     test_init();
     test_keys();
+    test_rewrap_keeps_store();
     test_client_keygen();
     test_migrate_key();
     test_check_config();

@@ -53,6 +53,7 @@ check "MLDSASK2 image (+id_len)" "$SK2"
 check "MLDSAEK1 header/AAD"      "$EK_HDR"
 check "MLDSAEK1 file (+id_len)"  "$EK_FILE"
 check "MLDSAEK1 for a handle"    "$((EK_FILE + HANDLE))"
+check "MLDSAEK1 version 2 (+id_len)" "$((EK_FILE + 32))"   # + the store root key (erratum 79)
 
 # --- signature and key sizes quoted in the byte tables -------------------
 check "pk_new field"             "$PK"

@@ -3,6 +3,7 @@
 # live in the AEAD's associated data, which the harness builds, not the input).
 magic="MLDSAEK1"
 version_01="\x01"
+version_02_root="\x02"
 kdf_argon2id13="\x01"
 aead_xchacha20poly1305="\x01"
 opslimit_min="\x00\x00\x00\x01"
@@ -12,3 +13,5 @@ memlimit_min_8mib="\x00\x00\x00\x00\x00\x80\x00\x00"
 memlimit_max_1gib="\x00\x00\x00\x00\x40\x00\x00\x00"
 memlimit_under_min="\x00\x00\x00\x00\x00\x7f\xff\xff"
 ctlen_header_67="\x00\x00\x00\x43"
+ctlen_root_only_48="\x00\x00\x00\x30"
+ctlen_root_plus_1="\x00\x00\x00\x31"

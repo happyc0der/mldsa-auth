@@ -1,0 +1,13 @@
+RK1|^test_authd_cli$|F190: after a passphrase change the store's audit chain still verifies (audit-verify 0)
+RK2|^test_authd_keyfile$|v2: open recovers the identity and returns the sealed root key
+RK3|^test_authd_keyfile$|v2 header: no room for an image beside the root -> FORMAT, and one image byte parses
+RK4|^test_authd_keyfile$|header: the largest version-2 envelope parses, the same length as version 1 or one byte more is FORMAT
+RK5|^test_authd_keyfile$|header: the largest version-2 envelope parses, the same length as version 1 or one byte more is FORMAT
+RK6|^test_authd_cli$|init: server.ek is MLDSAEK1 version 2, 6140 + id_len bytes (spec 12)
+RK7|^test_authd_keyfile$|v2: open recovers the identity and returns the sealed root key
+RK8|^test_authd_keyfile$|v2: open recovers the identity and returns the sealed root key
+RK9|^test_authd_cli$|migrate-key: writes MLDSAEK1 version 2, 6140 + id_len bytes
+RK10|^test_authd_keyfile$|version 3 -> FORMAT
+RK11|^test_authd_cli$|rewrap/store: a version-2 key is rewrapped to a version-2 key, mode 0600
+RK12|^test_envelope_spec$|spec->code v2: what it returns is the sealed root key, not the passphrase-derived key
+RK13|^test_envelope_spec$|code->spec v2: raw libsodium opens it to the exact image followed by the exact root key

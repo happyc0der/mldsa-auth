@@ -124,6 +124,10 @@ PRE = {
     # step 19's claim is that the OLD key stops working: keep a copy of it.
     19: ["cp ~/.mldsa/$HANDLE.ek /tmp/old.ek"],
     1: ["test -d " + SRC],
+    # step 23's claim is that the pseudonym does not change: step 15 left the
+    # device's in /tmp/idh.out, under the old passphrase.
+    23: ["cp /tmp/idh.out /tmp/idh.before",
+         "sudo od -An -tu1 -j8 -N1 /var/lib/mldsa-authd/server.ek | tr -d ' ' | sed 's/^/ek-version-before=/'"],
     11: ["sudo cp /var/lib/mldsa-authd/server.pub ./server.pub",
          "openssl rand -base64 33 | tr -d '\\n' > ~/op.pass; chmod 600 ~/op.pass"],
 }
@@ -139,6 +143,17 @@ POST = {
     20: [LOGIN + " > /tmp/dis.out 2>&1 && echo disabled-user-ACCEPTED || echo disabled-user-refused; tail -n 2 /tmp/dis.out"],
     21: [LOGIN],
     22: [LOGIN],
+    # V4-108 (F190): after the passphrase change the daemon is running on the
+    # swapped key and credential; a device logs in, the runbook's OWN
+    # audit-verify block (which names the standard paths, so it now reads the
+    # new pair) verifies the whole chain, and the runbook's own pseudonym
+    # block prints the pseudonym it printed in step 15.
+    23: [LOGIN,
+         "@runbook:12:audit-verify",
+         "@runbook:15:pseudonym",
+         "echo \"pseudonym-same=$(cmp -s /tmp/idh.before /tmp/idh.out && grep -cE '^idh=[0-9a-f]{16}$' /tmp/idh.out)\"",
+         "sudo od -An -tu1 -j8 -N1 /var/lib/mldsa-authd/server.ek | tr -d ' ' | sed 's/^/ek-version-after=/'",
+         "sudo ls /var/lib/mldsa-authd/ /etc/mldsa-authd/ | grep -cE '\\.(old|new)$' | sed 's/^/leftovers=/'"],
     # Step 18's journal check, made here: with log_identities = hashed and
     # log_client_ip = prefix, no line may carry a plain id= or a full address.
     # A count of zero full addresses means nothing if no line carries an
@@ -237,6 +252,13 @@ EXPECT = {
     21: [r"(?m)^[A-Za-z0-9_-]{43}$"],
     22: [r"OK: every discovered executable carries the full hardening set \[Linux\]",
          r"event=started", r"(?m)^[A-Za-z0-9_-]{43}$"],
+    23: [r"wrote /var/lib/mldsa-authd/server\.ek\.new \(MLDSAEK1 version 2, mode 0600\)",
+         r"(?m)^ek-version-before=2$", r"(?m)^ek-version-after=2$",
+         r"event=started", r"(?m)^[A-Za-z0-9_-]{43}$",
+         # twice: the runbook's own check of the new pair before the swap,
+         # and step 12's block after it
+         r"(?s)the audit chain verifies \(\d+ entries\).*the audit chain verifies \(\d+ entries\)",
+         r"(?m)^pseudonym-same=1$", r"(?m)^leftovers=0$"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
          r"PASS: BROWSER: recovery: a fresh browser recovered with a code, enrolled a new device and logged in",
@@ -256,7 +278,7 @@ FORBID = {
     9: [r"memlock-limit.*level=warn|level=warn.*memlock-limit"],
 }
 # commands whose nonzero exit is the documented result, not a failure
-ALLOW_NONZERO = {16: ["grep"]}
+ALLOW_NONZERO = {16: ["grep"], 23: ["grep"]}
 
 
 def steps(md):

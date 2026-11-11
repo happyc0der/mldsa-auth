@@ -6,7 +6,7 @@
 # No line numbers, so an unrelated edit above a site does not move it; a
 # line that appears twice in one file is listed twice. Each site was read, in
 # V4-24b, to hold a secret: a key (ML-DSA, ML-KEM, X25519, the session keys,
-# the audit and log keys, the store KEK, a key envelope's key), a shared
+# the audit and log keys, the store KEK or root key, a key envelope's key), a shared
 # secret, a passphrase, or a plaintext secret-key image -- or, at keyfile.c's
 # `out` and `fbuf`, a sealed envelope, kept in secure memory with the rest.
 # A site added to the tree must be read the same way before it is listed.
@@ -28,6 +28,8 @@ apps/authd/cli_prompt.c|uint8_t *exact = secure_mem_alloc(len);
 apps/authd/authd_main.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
 apps/authd/client_core.c|uint8_t *img = secure_mem_alloc(img_len);
 apps/authd/keyfile.c|uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+apps/authd/keyfile.c|uint8_t *pt = secure_mem_alloc(pt_len);
+apps/authd/keyfile.c|uint8_t *out = secure_mem_alloc(total);
 apps/authd/keyfile.c|uint8_t *out = secure_mem_alloc(total);
 apps/authd/keyfile.c|uint8_t *key = secure_mem_alloc(crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
 apps/authd/keyfile.c|img = secure_mem_alloc(img_len);
@@ -37,6 +39,7 @@ apps/authd/store/store.c|s->key_log = secure_mem_alloc(STORE_LOG_KEY_BYTES);
 apps/authd/authd_cli.c|uint8_t *img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
 apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
 apps/authd/authd_cli.c|uint8_t *img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
+apps/authd/authd_cli.c|uint8_t *root = secure_mem_alloc(KEYFILE_ROOT_BYTES);
 apps/authd/authd_cli.c|img = (img_len > 0u) ? secure_mem_alloc(img_len) : NULL;
 apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
 apps/authd/authd_cli.c|uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);

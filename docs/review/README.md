@@ -49,7 +49,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 191 findings (F0–F191), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 78 errata, each
+3. The two specifications. The deployment spec's §20 lists 79 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 58 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 391 committed defects in 57 campaigns, each of which must be
+- **Mutations**: 404 committed defects in 58 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -234,7 +234,7 @@ V4-24b took two gates:
   intent. A new CTest, `ubsan_aborts`, needs a planted signed overflow to
   stop the process: what the compiler did, not only what it was told. Four
   hand controls showed both failing.
-- **P2:** every heap secret's allocation site, 36 of them, is pinned to
+- **P2:** every heap secret's allocation site, 39 of them, is pinned to
   libsodium's guarded memory (`secure_mem_sites`). Campaign v69 shows a key
   moved to `malloc` caught by name.
 

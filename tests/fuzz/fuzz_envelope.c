@@ -46,18 +46,27 @@ static uint64_t be64(const uint8_t *p) {
 
 /* The independent model: what keyfile_parse_header MUST return for `total`
  * bytes. Mirrors the spec, not the code. */
-static keyfile_status_t model(const uint8_t *b, size_t total) {
-    const size_t max_ct = demo_keys_sk2_image_len(64) + 16u; /* +ABYTES */
-    if (total <= (size_t)HDR || total > (size_t)HDR + max_ct) { return KEYFILE_ERR_FORMAT; }
+static keyfile_status_t model(const uint8_t *b, size_t total, uint32_t *root_out) {
+    *root_out = 0u;
+    if (total <= (size_t)HDR) { return KEYFILE_ERR_FORMAT; }
     if (memcmp(b + O_MAGIC, "MLDSAEK1", 8) != 0) { return KEYFILE_ERR_FORMAT; }
-    if (b[O_VER] != 0x01u || b[O_KDF] != 0x01u || b[O_AEAD] != 0x01u) { return KEYFILE_ERR_FORMAT; }
+    if ((b[O_VER] != 0x01u && b[O_VER] != 0x02u) || b[O_KDF] != 0x01u || b[O_AEAD] != 0x01u) {
+        return KEYFILE_ERR_FORMAT;
+    }
+    /* V4-108, spec 12 (erratum 79): version 2 seals a 32-byte root key after
+     * the image, so its ciphertext may be 32 bytes longer and must be more
+     * than 32 bytes longer than a bare tag. */
+    const uint32_t root = (b[O_VER] == 0x02u) ? 32u : 0u;
+    const size_t max_ct = demo_keys_sk2_image_len(64) + root + 16u; /* +ABYTES */
+    if (total > (size_t)HDR + max_ct) { return KEYFILE_ERR_FORMAT; }
     const uint32_t ct = be32(b + O_CTLEN);
-    if ((size_t)ct != total - (size_t)HDR || ct <= 16u) { return KEYFILE_ERR_FORMAT; }
+    if ((size_t)ct != total - (size_t)HDR || ct <= 16u + root) { return KEYFILE_ERR_FORMAT; }
     const uint32_t ops = be32(b + O_OPS);
     const uint64_t mem = be64(b + O_MEM);
     if (ops < 1u || ops > 10u || mem < (8u * 1024u * 1024u) || mem > (1024u * 1024u * 1024u)) {
         return KEYFILE_ERR_PARAMS;
     }
+    *root_out = root;
     return KEYFILE_OK;
 }
 
@@ -66,12 +75,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const uint8_t *in = fuzz_ptr(data, size);
     keyfile_header_t hdr;
     const keyfile_status_t got = keyfile_parse_header(in, size, &hdr);
-    const keyfile_status_t want = model(in, size);
+    uint32_t want_root = 0u;
+    const keyfile_status_t want = model(in, size, &want_root);
     FUZZ_ASSERT(got == want, "keyfile_parse_header disagrees with the independent model");
     /* On OK the reported lengths are consistent with the input. */
     if (got == KEYFILE_OK) {
         FUZZ_ASSERT((size_t)hdr.ct_len == size - (size_t)HDR &&
-                        hdr.img_len == hdr.ct_len - 16u,
+                        hdr.root_len == want_root && hdr.version == in[O_VER] &&
+                        hdr.img_len == hdr.ct_len - 16u - want_root,
                     "parsed lengths inconsistent with the input size");
     } else {
         /* V4-13a: the in-memory opener -- which the browser build hands bytes
@@ -118,7 +129,16 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     const uint64_t MEM = 8u * 1024u * 1024u;
     emit(ctx, "empty", fuzz_empty, 0);
     emit_hdr(emit, ctx, "valid",          0x01, 0x01, 0x01, 1u, MEM, ct, total);
-    emit_hdr(emit, ctx, "bad-version",    0x02, 0x01, 0x01, 1u, MEM, ct, total);
+    emit_hdr(emit, ctx, "bad-version",    0x03, 0x01, 0x01, 1u, MEM, ct, total);
+    emit_hdr(emit, ctx, "bad-version-0",  0x00, 0x01, 0x01, 1u, MEM, ct, total);
+    /* V4-108: version 2, the image followed by a 32-byte root key */
+    emit_hdr(emit, ctx, "v2-valid",       0x02, 0x01, 0x01, 1u, MEM, ct + 32u, total + 32u);
+    emit_hdr(emit, ctx, "v2-root-only",   0x02, 0x01, 0x01, 1u, MEM, 48u, HDR + 48u);
+    emit_hdr(emit, ctx, "v2-one-byte",    0x02, 0x01, 0x01, 1u, MEM, 49u, HDR + 49u);
+    emit_hdr(emit, ctx, "v2-max",         0x02, 0x01, 0x01, 1u, MEM, 6089u + 48u, HDR + 6089u + 48u);
+    emit_hdr(emit, ctx, "v2-over",        0x02, 0x01, 0x01, 1u, MEM, 6089u + 49u, HDR + 6089u + 49u);
+    emit_hdr(emit, ctx, "v1-at-v2-max",   0x01, 0x01, 0x01, 1u, MEM, 6089u + 48u, HDR + 6089u + 48u);
+    emit_hdr(emit, ctx, "v1-max",         0x01, 0x01, 0x01, 1u, MEM, 6089u + 16u, HDR + 6089u + 16u);
     emit_hdr(emit, ctx, "bad-kdf",        0x01, 0x02, 0x01, 1u, MEM, ct, total);
     emit_hdr(emit, ctx, "bad-aead",       0x01, 0x01, 0x02, 1u, MEM, ct, total);
     emit_hdr(emit, ctx, "ops-0",          0x01, 0x01, 0x01, 0u, MEM, ct, total);

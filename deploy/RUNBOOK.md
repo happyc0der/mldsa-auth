@@ -612,8 +612,8 @@ a Tailscale name for an address you passed as `--host`, add
 
 # Part III — running it
 
-What an operator does after the first day. Steps 19–22 are rehearsed like
-the rest (V4-104); each says what proves it worked.
+What an operator does after the first day. Steps 19–23 are rehearsed like
+the rest (V4-104, V4-108); each says what proves it worked.
 
 ## 19. Rotate a device key
 
@@ -683,18 +683,89 @@ new daemon is listening (`Type=notify`, V4-104: as `Type=simple` it returned at
 fork, and a login sent straight after found nothing listening). The journal
 should show `event=started` again, and an existing device logs in as before.
 
-## Changing the server passphrase — not yet
+## 23. Change the server passphrase
 
-`authd_admin rewrap` re-seals `server.ek` under a new passphrase, and it
-works. **But the store's audit chain and the journal's pseudonyms are keyed
-from the envelope's KEK**, which is derived from the passphrase (spec §9.2,
-§15): under a new one, `audit-verify` reports the existing chain as
-`audit-chain-corrupt`, and every `idh=` changes (audit finding F190, measured
-in V4-104). `rewrap` says so when it runs. Until the key hierarchy is changed
-so that a new passphrase keeps those keys, do not change the server passphrase
-of a store you want to keep verifying. If you must — the passphrase leaked —
-run `audit-verify` and record its head MAC under the OLD passphrase first:
-that head is then the last thing the old chain can vouch for.
+`authd_admin rewrap` re-seals `server.ek` under a new passphrase. The store's
+audit chain and the journal's pseudonyms are keyed from a **store root key**
+sealed inside `server.ek` (spec §12, version 2 of the format, V4-108), and
+`rewrap` carries that key over: after the change `audit-verify` still verifies
+every entry, and a user's `idh=` is the one it was. Before V4-108 those keys
+came from the passphrase itself, and a change broke both (audit finding F190).
+
+A new passphrase the service user alone can read, and the key re-sealed under
+it — into a **new file**; `server.ek` is not touched:
+
+```bash
+sudo -u mldsa-authd sh -c 'umask 077; openssl rand -base64 33 | tr -d "\n" \
+     > /var/lib/mldsa-authd/pass.new'
+sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+     -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred \
+     sh -c 'exec authd_admin rewrap --id authd \
+     --in /var/lib/mldsa-authd/server.ek \
+     --out /var/lib/mldsa-authd/server.ek.new \
+     --old-passphrase-file "$CREDENTIALS_DIRECTORY/passphrase" \
+     --new-passphrase-file /var/lib/mldsa-authd/pass.new'
+```
+
+It prints that it wrote `server.ek.new` (`MLDSAEK1 version 2, mode 0600`) and
+that the chain and the pseudonyms carry over. **Copy the new passphrase
+offline now**, as in step 6: there is still no escrow.
+
+The new credential, beside the old one, and proof that the new pair opens the
+store **before** anything is swapped:
+
+```bash
+sudo systemd-creds encrypt --name=passphrase \
+     /var/lib/mldsa-authd/pass.new /etc/mldsa-authd/passphrase.cred.new
+sudo chmod 0600 /etc/mldsa-authd/passphrase.cred.new
+sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+     -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred.new \
+     sh -c 'exec authd_admin audit-verify \
+     --store /var/lib/mldsa-authd/store.sqlite3 \
+     --key /var/lib/mldsa-authd/server.ek.new \
+     --passphrase-file "$CREDENTIALS_DIRECTORY/passphrase" \
+     --server-id authd'
+```
+
+It must say `the audit chain verifies`. If it does not, stop: nothing has
+changed yet, and the daemon is still running on the old key and credential.
+
+Swap both, keeping the old pair until the new one has served a login:
+
+```bash
+sudo systemctl stop mldsa-authd
+sudo mv /var/lib/mldsa-authd/server.ek /var/lib/mldsa-authd/server.ek.old
+sudo mv /var/lib/mldsa-authd/server.ek.new /var/lib/mldsa-authd/server.ek
+sudo mv /etc/mldsa-authd/passphrase.cred /etc/mldsa-authd/passphrase.cred.old
+sudo mv /etc/mldsa-authd/passphrase.cred.new /etc/mldsa-authd/passphrase.cred
+sudo systemctl start mldsa-authd
+journalctl -u mldsa-authd -n 5 --no-pager
+```
+
+The journal shows `event=started`. Log in as in step 11, and run step 12's
+`audit-verify` once more: it reads the swapped files now. To go back instead,
+stop the daemon and move the two `.old` files back. Once a login has worked:
+
+```bash
+sudo shred -u /var/lib/mldsa-authd/pass.new /var/lib/mldsa-authd/server.ek.old \
+     /etc/mldsa-authd/passphrase.cred.old
+```
+
+Three things this does not do:
+
+- **It does not revoke a copy.** A copy of the old `server.ek` — in a backup,
+  on a stolen disk — still opens under the old passphrase, and it holds the
+  same server key. Changing the passphrase protects a key file nobody has
+  copied; if the file and its passphrase both leaked, the server's identity
+  has, and that needs a new server key, which this runbook does not cover.
+  Replace your own backups of `server.ek` with the new file.
+- **It does not change `server.pub`.** Clients pin the same key as before.
+- **It is one-way for the binary.** The file `rewrap` writes is version 2, and
+  a daemon older than V4-108 refuses it (`bad-format`). Keep `server.ek.old`
+  and its credential until you are sure you will not go back to an older
+  build. A key file made before V4-108 (version 1) needs nothing done to it:
+  the daemon reads both, and its store keeps verifying; the first `rewrap`
+  makes it version 2 with the same keys.
 
 ---
 

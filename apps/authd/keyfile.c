@@ -25,6 +25,7 @@ _Static_assert(OFF_CTLEN + 4u == KEYFILE_HEADER_LEN, "header layout");
 _Static_assert(crypto_pwhash_SALTBYTES == 16u, "salt width");
 _Static_assert(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES == 24u, "nonce width");
 _Static_assert(crypto_aead_xchacha20poly1305_ietf_ABYTES == 16u, "tag width");
+_Static_assert(crypto_aead_xchacha20poly1305_ietf_KEYBYTES == KEYFILE_ROOT_BYTES, "a v1 KEK stands in for the root key");
 
 const char *keyfile_status_name(keyfile_status_t st) {
     switch (st) {
@@ -115,17 +116,26 @@ keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_
     if (buf == NULL || out == NULL) {
         return KEYFILE_ERR_ARG;
     }
-    const size_t max_ct = demo_keys_sk2_image_len(64) + crypto_aead_xchacha20poly1305_ietf_ABYTES;
-    if (total <= KEYFILE_HEADER_LEN || total > KEYFILE_HEADER_LEN + max_ct) {
+    if (total <= KEYFILE_HEADER_LEN) {
         return KEYFILE_ERR_FORMAT;
     }
     if (memcmp(buf + OFF_MAGIC, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN) != 0 ||
-        buf[OFF_VERSION] != KEYFILE_VERSION || buf[OFF_KDFALG] != KEYFILE_KDF_ARGON2ID13 ||
+        (buf[OFF_VERSION] != KEYFILE_VERSION && buf[OFF_VERSION] != KEYFILE_VERSION_ROOT) ||
+        buf[OFF_KDFALG] != KEYFILE_KDF_ARGON2ID13 ||
         buf[OFF_AEADALG] != KEYFILE_AEAD_XCHACHA20POLY1305) {
         return KEYFILE_ERR_FORMAT;
     }
+    /* V4-108: a version-2 plaintext is the image followed by the 32-byte root
+     * key, so every length bound moves by exactly that much -- and a version-2
+     * file too short to hold a root key is refused here, before the KDF. */
+    const uint32_t root_len = (buf[OFF_VERSION] == KEYFILE_VERSION_ROOT) ? KEYFILE_ROOT_BYTES : 0u;
+    const size_t max_ct = demo_keys_sk2_image_len(64) + root_len + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    if (total > KEYFILE_HEADER_LEN + max_ct) {
+        return KEYFILE_ERR_FORMAT;
+    }
     const uint32_t ct_len = get_be32(buf + OFF_CTLEN);
-    if ((size_t)ct_len != total - KEYFILE_HEADER_LEN || ct_len <= crypto_aead_xchacha20poly1305_ietf_ABYTES) {
+    if ((size_t)ct_len != total - KEYFILE_HEADER_LEN ||
+        ct_len <= crypto_aead_xchacha20poly1305_ietf_ABYTES + root_len) {
         return KEYFILE_ERR_FORMAT;
     }
     const uint32_t ops = get_be32(buf + OFF_OPSLIMIT);
@@ -136,7 +146,9 @@ keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_
     out->opslimit = ops;
     out->memlimit = mem;
     out->ct_len = ct_len;
-    out->img_len = ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    out->img_len = ct_len - crypto_aead_xchacha20poly1305_ietf_ABYTES - root_len;
+    out->root_len = root_len;
+    out->version = buf[OFF_VERSION];
     return KEYFILE_OK;
 }
 
@@ -147,13 +159,13 @@ size_t keyfile_sealed_len(size_t image_len) {
     return KEYFILE_HEADER_LEN + image_len + crypto_aead_xchacha20poly1305_ietf_ABYTES;
 }
 
-keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *sk2_image, size_t image_len,
+/* The one sealer. `sk2_image`/`image_len` are the PLAINTEXT: the image for a
+ * version-1 envelope, the image followed by the root key for a version-2 one
+ * (keyfile_seal_root builds that). The callers have checked the arguments and
+ * that `out` holds KEYFILE_HEADER_LEN + image_len + the tag. */
+static keyfile_status_t seal_core(uint8_t version, uint8_t *out, const uint8_t *sk2_image, size_t image_len,
                                   const char *passphrase, size_t pass_len,
                                   uint32_t opslimit, uint64_t memlimit) {
-    if (out == NULL || sk2_image == NULL || passphrase == NULL || image_len == 0u ||
-        image_len > demo_keys_sk2_image_len(64) || out_cap < keyfile_sealed_len(image_len)) {
-        return KEYFILE_ERR_ARG;
-    }
     if (!params_ok(opslimit, memlimit)) {
         return KEYFILE_ERR_PARAMS;
     }
@@ -163,7 +175,7 @@ keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *s
         return KEYFILE_ERR_CRYPTO;
     }
     memcpy(out + OFF_MAGIC, KEYFILE_MAGIC, KEYFILE_MAGIC_LEN);
-    out[OFF_VERSION] = KEYFILE_VERSION;
+    out[OFF_VERSION] = version;
     out[OFF_KDFALG] = KEYFILE_KDF_ARGON2ID13;
     put_be32(out + OFF_OPSLIMIT, opslimit);
     put_be64(out + OFF_MEMLIMIT, memlimit);
@@ -187,6 +199,46 @@ keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *s
         /* never hand back a half-built envelope: no header without its ciphertext */
         sodium_memzero(out, KEYFILE_HEADER_LEN + ct_len);
     }
+    return r;
+}
+
+keyfile_status_t keyfile_seal_buf(uint8_t *out, size_t out_cap, const uint8_t *sk2_image, size_t image_len,
+                                  const char *passphrase, size_t pass_len,
+                                  uint32_t opslimit, uint64_t memlimit) {
+    if (out == NULL || sk2_image == NULL || passphrase == NULL || image_len == 0u ||
+        image_len > demo_keys_sk2_image_len(64) || out_cap < keyfile_sealed_len(image_len)) {
+        return KEYFILE_ERR_ARG;
+    }
+    return seal_core(KEYFILE_VERSION, out, sk2_image, image_len, passphrase, pass_len, opslimit, memlimit);
+}
+
+keyfile_status_t keyfile_seal_root(const char *out_path, const uint8_t *sk2_image, size_t image_len,
+                                   const uint8_t *root,
+                                   const char *passphrase, size_t pass_len,
+                                   uint32_t opslimit, uint64_t memlimit) {
+    if (out_path == NULL || sk2_image == NULL || passphrase == NULL || image_len == 0u ||
+        image_len > demo_keys_sk2_image_len(64)) {
+        return KEYFILE_ERR_ARG;
+    }
+    const size_t pt_len = image_len + KEYFILE_ROOT_BYTES;
+    const size_t total = KEYFILE_HEADER_LEN + pt_len + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    uint8_t *pt = secure_mem_alloc(pt_len);
+    uint8_t *out = secure_mem_alloc(total);
+    keyfile_status_t r = KEYFILE_ERR_CRYPTO;
+    if (pt != NULL && out != NULL) {
+        memcpy(pt, sk2_image, image_len);
+        if (root != NULL) {
+            memcpy(pt + image_len, root, KEYFILE_ROOT_BYTES);
+        } else {
+            randombytes_buf(pt + image_len, KEYFILE_ROOT_BYTES);
+        }
+        r = seal_core(KEYFILE_VERSION_ROOT, out, pt, pt_len, passphrase, pass_len, opslimit, memlimit);
+        if (r == KEYFILE_OK) {
+            r = publish(out_path, out, total);
+        }
+    }
+    if (pt != NULL) { secure_mem_free(pt, pt_len); }
+    if (out != NULL) { secure_mem_free(out, total); }
     return r;
 }
 
@@ -254,7 +306,7 @@ keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_
     r = derive_key(key, passphrase, pass_len, buf + OFF_SALT, hdr.opslimit, hdr.memlimit);
     if (r != KEYFILE_OK) { goto freebufs; }
 
-    const size_t img_len = hdr.img_len;
+    const size_t img_len = hdr.img_len + hdr.root_len;   /* the whole plaintext */
     img = secure_mem_alloc(img_len);
     if (img == NULL) { r = KEYFILE_ERR_CRYPTO; goto freebufs; }
     {
@@ -263,12 +315,19 @@ keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_
                                                        buf, KEYFILE_HEADER_LEN, buf + OFF_NONCE, key) != 0) {
             r = KEYFILE_ERR_DECRYPT; goto freebufs;
         }
+        if (hdr.root_len != 0u) {
+            mlen -= hdr.root_len;   /* version 2: the image is what precedes the root key */
+        }
         /* The image validator runs the same digest/id/self-test as the file
          * loader; map any image failure to a single coarse status. */
         r = (demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp) == DEMO_KEYS_OK)
                 ? KEYFILE_OK : KEYFILE_ERR_IMAGE;
         if (r == KEYFILE_OK && kek_out != NULL) {
-            memcpy(kek_out, key, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+            /* V4-108, F190: a version-2 file carries its store root key, and
+             * a passphrase change reseals the same one. A version-1 file has
+             * none, and its KEK stands in -- what every store written before
+             * V4-108 is keyed from, so those keep verifying. */
+            memcpy(kek_out, (hdr.root_len != 0u) ? img + mlen : key, KEYFILE_ROOT_BYTES);
         }
     }
 freebufs:
@@ -298,7 +357,8 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
         return KEYFILE_ERR_IO;
     }
     keyfile_status_t r = KEYFILE_ERR_FORMAT;
-    const size_t max_ct = demo_keys_sk2_image_len(64) + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    const size_t max_ct = demo_keys_sk2_image_len(64) + KEYFILE_ROOT_BYTES +
+                          crypto_aead_xchacha20poly1305_ietf_ABYTES;   /* the larger, version-2, bound */
     const size_t max_total = KEYFILE_HEADER_LEN + max_ct;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         r = KEYFILE_ERR_IO; goto done;

@@ -74,7 +74,9 @@ static int seal_new_identity(const char *prog, const char *sub, const char *ek_p
         (void)failed(prog, sub, ek_path, demo_keys_status_name(bs));
         goto out;
     }
-    const keyfile_status_t ks = keyfile_seal(ek_path, img, img_len, pass, pass_len, ops, mem);
+    /* V4-108: this seals SERVER keys only (init, keygen-server), and a server
+     * key file is version 2: it carries a fresh random root key for the store. */
+    const keyfile_status_t ks = keyfile_seal_root(ek_path, img, img_len, NULL, pass, pass_len, ops, mem);
     if (ks != KEYFILE_OK) {
         (void)failed(prog, sub, ek_path, keyfile_status_name(ks));
         goto out;
@@ -153,8 +155,8 @@ static int cmd_init(int argc, char **argv, const char *prog)
     /* Refuse if ANY of the three already exists, and name which one.
      *
      * This is not tidiness. store_open() succeeds on an existing store and
-     * derives key_audit = HKDF(KEK, store_id, ...); re-running init with a
-     * different passphrase would derive it from a DIFFERENT KEK, every
+     * derives key_audit = HKDF(root key, store_id, ...); re-running init would
+     * seal a NEW random root key and derive it from that, every
      * subsequent audit row would chain under the wrong key, and
      * store_audit_verify() would fail forever -- with nothing reported at the
      * moment of damage. Refusing up front is the only cheap defence. */
@@ -205,7 +207,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
     }
 
     /* Reopen: proves the sealed file opens with the passphrase AS WRITTEN, and
-     * yields the KEK the store's audit chain is keyed from (spec 9.2.4). */
+     * yields the root key the store's audit chain is keyed from (spec 9.2.4). */
     mldsa_keypair_t kp;
     memset(&kp, 0, sizeof kp);
     uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
@@ -219,7 +221,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
         secure_mem_free(kek, STORE_KEK_BYTES);
         return failed(prog, "init", ek, keyfile_status_name(ks));
     }
-    mldsa_keypair_free(&kp);   /* init needs the KEK, not the key */
+    mldsa_keypair_free(&kp);   /* init needs the root key, not the identity key */
 
     store_t *store = NULL;
     const store_status_t ss = store_open(db, kek, &store);
@@ -328,8 +330,8 @@ static int cmd_migrate_key(int argc, char **argv, const char *prog)
         goto done;
     }
     {
-        const keyfile_status_t ks = keyfile_seal(out, img, img_len, (const char *)pass, pass_len,
-                                                 KDF_OPS_SERVER, KDF_MEM_256MIB);
+        const keyfile_status_t ks = keyfile_seal_root(out, img, img_len, NULL, (const char *)pass, pass_len,
+                                                      KDF_OPS_SERVER, KDF_MEM_256MIB);
         if (ks != KEYFILE_OK) {
             (void)failed(prog, "migrate-key", out, keyfile_status_name(ks));
             goto done;
@@ -386,7 +388,19 @@ static int cmd_rewrap(int argc, char **argv, const char *prog)
     memset(&kp, 0, sizeof kp);
     uint8_t *img = NULL;
     size_t img_len = 0;
-    const keyfile_status_t ko = keyfile_open(in, id, id_len, (const char *)pa, la, &kp, NULL);
+    /* V4-108, F190: the store's audit-MAC and log-pseudonym keys are derived
+     * from the key file's root key, and a rewrap carries it over -- so the
+     * chain a store already holds verifies under the new passphrase and every
+     * idh= stays what it was. A version-1 file (written before V4-108) has no
+     * root key: its KEK is what its store is keyed from, keyfile_open returns
+     * exactly that, and it becomes the new file's root key. Either way the
+     * output is version 2, and no later rewrap changes the store's keys. */
+    uint8_t *root = secure_mem_alloc(KEYFILE_ROOT_BYTES);
+    if (root == NULL) {
+        rc = failed(prog, "rewrap", in, "allocation-failed");
+        goto done;
+    }
+    const keyfile_status_t ko = keyfile_open(in, id, id_len, (const char *)pa, la, &kp, root);
     if (ko != KEYFILE_OK) {
         rc = failed(prog, "rewrap", in, keyfile_status_name(ko));
         goto done;
@@ -401,27 +415,21 @@ static int cmd_rewrap(int argc, char **argv, const char *prog)
         /* keyfile_seal publishes with O_EXCL + link(), so --out equal to --in
          * is EXISTS rather than a half-written key. Never in place: an
          * interrupted rewrap must leave the OLD file openable. */
-        const keyfile_status_t ks = keyfile_seal(out, img, img_len, (const char *)pb, lb,
-                                                 KDF_OPS_SERVER, KDF_MEM_256MIB);
+        const keyfile_status_t ks = keyfile_seal_root(out, img, img_len, root, (const char *)pb, lb,
+                                                      KDF_OPS_SERVER, KDF_MEM_256MIB);
         if (ks != KEYFILE_OK) {
             rc = failed(prog, "rewrap", out, keyfile_status_name(ks));
             goto done;
         }
     }
     rc = EX_OK;
-    printf("%s rewrap: wrote %s (MLDSAEK1, mode 0600); %s was not modified\n", prog, out, in);
-    /* V4-104, F190: the store's audit MAC key and the journal's pseudonym
-     * key are derived from the envelope's KEK (spec 9.2, 15), and a new
-     * passphrase is a new KEK. Measured: a store's untouched chain then fails
-     * audit-verify as audit-chain-corrupt, and every idh= changes. Said here,
-     * where the operator does it, until the key hierarchy is changed. */
-    fprintf(stderr,
-            "%s rewrap: WARNING: a store written under the old passphrase will NOT verify under the\n"
-            "  new one -- the audit chain and the journal's pseudonyms are keyed from this\n"
-            "  envelope's KEK, so audit-verify will report audit-chain-corrupt for its existing\n"
-            "  entries and every idh= changes (audit finding F190). Record the head MAC under the\n"
-            "  old passphrase first, and treat the rewrapped key as starting a new chain.\n", prog);
+    printf("%s rewrap: wrote %s (MLDSAEK1 version 2, mode 0600); %s was not modified\n", prog, out, in);
+    printf("%s rewrap: the store's audit chain and the journal's pseudonyms carry over: %s holds\n"
+           "  the same store root key as %s\n", prog, out, in);
 done:
+    if (root != NULL) {
+        secure_mem_free(root, KEYFILE_ROOT_BYTES);
+    }
     if (img != NULL) {
         secure_mem_free(img, img_len);
     }
@@ -652,9 +660,10 @@ static int cmd_backup(int argc, char **argv, const char *prog)
  * against a BACKUP, which is where a tampered chain is most likely to be
  * noticed and least likely to be repairable.
  *
- * It needs the passphrase because the chain is keyed from the envelope KEK
- * (key_audit = HKDF(KEK, store_id, "mldsa-authd/v1/audit-mac")): verifying it
- * without the key would verify nothing. The KEK is wiped as soon as the store
+ * It needs the passphrase because the chain is keyed from the root key
+ * sealed in the server key file (key_audit = HKDF(root key, store_id,
+ * "mldsa-authd/v1/audit-mac")): verifying it without the key would verify
+ * nothing. The root key is wiped as soon as the store
  * holds its derived key, exactly as the daemon and `init` do. */
 /* The chain's length, which store_audit_verify has just proven is also the
  * highest seq: it walks every row and fails on a gap or a reorder, so after it
@@ -711,7 +720,7 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
         secure_mem_free(kek, STORE_KEK_BYTES);
         return failed(prog, "audit-verify", ek, keyfile_status_name(ks));
     }
-    mldsa_keypair_free(&kp);          /* the KEK is all this needs */
+    mldsa_keypair_free(&kp);          /* the root key is all this needs */
 
     store_t *store = NULL;
     const store_status_t so = store_open(db, kek, &store);
@@ -761,7 +770,7 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
  * pseudonym ...)"` -- without the journal holding the identifier itself.
  *
  * Offline, like audit-verify, and for the same reason: the pseudonym key is
- * derived from the envelope KEK (key_log = HKDF(KEK, store_id,
+ * derived from the key file's root key (key_log = HKDF(root key, store_id,
  * "mldsa-authd/v1/log-pseudonym")), so computing one takes the passphrase,
  * which is exactly who should be able to reverse a pseudonymous journal by
  * guessing. The key stays inside the store; this prints only the result. */
@@ -805,7 +814,7 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
         secure_mem_free(kek, STORE_KEK_BYTES);
         return failed(prog, "pseudonym", ek, keyfile_status_name(ks));
     }
-    mldsa_keypair_free(&kp);          /* the KEK is all this needs */
+    mldsa_keypair_free(&kp);          /* the root key is all this needs */
 
     store_t *store = NULL;
     const store_status_t so = store_open(db, kek, &store);

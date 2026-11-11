@@ -17,10 +17,14 @@
  *
  * The offsets are restated below from §12 on purpose, not taken from
  * keyfile.h: an independent reader must not share the reader under test.
+ *
+ * Version 0x02, the server's key file (V4-108, erratum 79), is read the same
+ * two ways: its plaintext is the image followed by a 32-byte store root key.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <sodium.h>
 #include "keyfile.h"
@@ -43,6 +47,7 @@ static int g_fail = 0;
 #define SPEC_HEADER       67u   /* bytes [0, 67) are the AEAD's associated data */
 #define SPEC_TAG          16u
 #define SPEC_KEY          32u
+#define SPEC_ROOT         32u   /* version 0x02 only: the store root key after the image */
 #define SPEC_OPS           1u                 /* §12's floor, so the test is quick */
 #define SPEC_MEM          (8u * 1024u * 1024u)
 
@@ -162,6 +167,83 @@ int main(void)
                 memcmp(got.public_key, kp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
             "spec->code: keyfile_open_buf opens the hand-built envelope, to the same identity");
       mldsa_keypair_free(&got); }
+
+    /* ---- version 0x02: the server's key file (V4-108, erratum 79) ----
+     * Same header, same associated data; the plaintext is the MLDSASK2 image
+     * followed by a 32-byte store root key, so ct_len is 32 more. */
+    { const size_t total_v2 = SPEC_HEADER + img_len + SPEC_ROOT + SPEC_TAG;
+      uint8_t *env3 = (uint8_t *)malloc(total_v2);
+      uint8_t *file = (uint8_t *)malloc(total_v2 + 1u);
+      uint8_t *pt2 = (uint8_t *)sodium_malloc(img_len + SPEC_ROOT);
+      uint8_t root[SPEC_ROOT], key3[SPEC_KEY];
+      if (env3 == NULL || file == NULL || pt2 == NULL) { printf("FAIL: allocation (v2)\n"); return 1; }
+      randombytes_buf(root, sizeof root);
+
+      /* spec -> code */
+      memcpy(pt2, img, img_len);
+      memcpy(pt2 + img_len, root, SPEC_ROOT);
+      memcpy(env3, "MLDSAEK1", 8);
+      env3[SPEC_OFF_VERSION] = 0x02;
+      env3[SPEC_OFF_KDF] = 0x01;
+      put_be32(env3 + SPEC_OFF_OPS, SPEC_OPS);
+      put_be64(env3 + SPEC_OFF_MEM, SPEC_MEM);
+      randombytes_buf(env3 + SPEC_OFF_SALT, 16);
+      env3[SPEC_OFF_AEAD] = 0x01;
+      randombytes_buf(env3 + SPEC_OFF_NONCE, 24);
+      put_be32(env3 + SPEC_OFF_CTLEN, (uint32_t)(img_len + SPEC_ROOT + SPEC_TAG));
+      clen = 0;
+      CHECK(crypto_pwhash(key3, sizeof key3, PASS, strlen(PASS), env3 + SPEC_OFF_SALT, SPEC_OPS, SPEC_MEM,
+                          crypto_pwhash_ALG_ARGON2ID13) == 0 &&
+                crypto_aead_xchacha20poly1305_ietf_encrypt(env3 + SPEC_HEADER, &clen, pt2, img_len + SPEC_ROOT,
+                                                           env3, SPEC_HEADER, NULL, env3 + SPEC_OFF_NONCE,
+                                                           key3) == 0 &&
+                clen == img_len + SPEC_ROOT + SPEC_TAG,
+            "spec->code v2: a version-2 envelope is built from §12 with raw libsodium");
+      { mldsa_keypair_t got;
+        uint8_t out[SPEC_KEY];
+        memset(out, 0, sizeof out);
+        CHECK(keyfile_open_buf(env3, total_v2, ID, sizeof ID, PASS, strlen(PASS), &got, out) == KEYFILE_OK &&
+                  memcmp(got.public_key, kp.public_key, MLDSA_PUBLIC_KEY_BYTES) == 0,
+              "spec->code v2: keyfile_open_buf opens the hand-built version-2 envelope, to the same identity");
+        CHECK(sodium_memcmp(out, root, SPEC_ROOT) == 0 && sodium_memcmp(out, key3, SPEC_KEY) != 0,
+              "spec->code v2: what it returns is the sealed root key, not the passphrase-derived key");
+        mldsa_keypair_free(&got);
+        sodium_memzero(out, sizeof out); }
+
+      /* code -> spec: keyfile_seal_root writes a file, raw libsodium reads it */
+      { char dir[64], ek[96];
+        size_t got_len = 0;
+        snprintf(dir, sizeof dir, "/tmp/authd_es_XXXXXX");
+        if (mkdtemp(dir) == NULL) { perror("mkdtemp"); return 1; }
+        snprintf(ek, sizeof ek, "%s/srv.ek", dir);
+        CHECK(keyfile_seal_root(ek, img, img_len, root, PASS, strlen(PASS), SPEC_OPS, SPEC_MEM) == KEYFILE_OK,
+              "code->spec v2: keyfile_seal_root seals the image with a given root key");
+        { FILE *f = fopen(ek, "rb");
+          if (f != NULL) { got_len = fread(file, 1, total_v2 + 1u, f); (void)fclose(f); } }
+        CHECK(got_len == total_v2 && memcmp(file, "MLDSAEK1", 8) == 0 && file[SPEC_OFF_VERSION] == 0x02 &&
+                  file[SPEC_OFF_KDF] == 0x01 && file[SPEC_OFF_AEAD] == 0x01 &&
+                  be32(file + SPEC_OFF_CTLEN) == img_len + SPEC_ROOT + SPEC_TAG,
+              "code->spec v2: the file is 67 + image + 32 + 16 bytes, version 0x02, ct_len 32 more than version 1");
+        mlen = 0;
+        memset(pt2, 0, img_len + SPEC_ROOT);
+        CHECK(got_len == total_v2 &&
+                  crypto_pwhash(key3, sizeof key3, PASS, strlen(PASS), file + SPEC_OFF_SALT,
+                                (unsigned long long)be32(file + SPEC_OFF_OPS), (size_t)be64(file + SPEC_OFF_MEM),
+                                crypto_pwhash_ALG_ARGON2ID13) == 0 &&
+                  crypto_aead_xchacha20poly1305_ietf_decrypt(pt2, &mlen, NULL, file + SPEC_HEADER,
+                                                             be32(file + SPEC_OFF_CTLEN), file, SPEC_HEADER,
+                                                             file + SPEC_OFF_NONCE, key3) == 0 &&
+                  mlen == img_len + SPEC_ROOT && memcmp(pt2, img, img_len) == 0 &&
+                  sodium_memcmp(pt2 + img_len, root, SPEC_ROOT) == 0,
+              "code->spec v2: raw libsodium opens it to the exact image followed by the exact root key");
+        (void)unlink(ek);
+        (void)rmdir(dir); }
+
+      sodium_memzero(root, sizeof root);
+      sodium_memzero(key3, sizeof key3);
+      sodium_free(pt2);
+      free(env3);
+      free(file); }
 
     sodium_memzero(key, sizeof key);
     sodium_memzero(key2, sizeof key2);

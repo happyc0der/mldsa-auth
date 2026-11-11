@@ -13637,3 +13637,80 @@ names the rehearsal (two Ubuntus, a browser through the deployment, the
 restore drill) and says ~6 min; `tools/README.md` lists `rehearse_runbook.py`
 and `rehearsal_browser.mjs` with what each found; README's `test_authd_cli` row
 names the checks V4-99–V4-104 added to it.
+
+## V4-108 — the store's keys survive a passphrase change (F190 fixed)
+
+The owner chose option B from V4-104: a random root key sealed inside the
+server key file. Spec §12 gains MLDSAEK1 **version 0x02** (erratum 79): the
+same 67-byte header and associated data, and a plaintext of the MLDSASK2
+image followed by a 32-byte store root key, so the file is 6140 + id_len
+bytes where version 1 is 6108 + id_len. `keyfile_open` hands back that root
+key where it used to hand back the passphrase-derived key, and the store
+derives `key_audit` and `key_log` from it exactly as before (§9.2.4, §15
+unchanged but for the name of the input). `rewrap` reseals the identity AND
+the root under the new passphrase, so the audit chain a store already holds
+verifies afterwards and every `idh=` stays what it was.
+
+Why B and not "derive from the identity's secret key": a root key that is
+independent of the signing key keeps the two lifetimes apart. A future server
+key rotation can carry the root over the same way a rewrap does; deriving
+from the secret key would have broken every store at rotation instead of at
+rewrap.
+
+**Version 1 files keep working.** A key file written before this step has no
+root key. Its store is keyed from the envelope KEK, `keyfile_open` returns
+exactly that for a version-1 file, and nothing needs migrating: the daemon
+and every `authd_admin` command open it as before. The first `rewrap` of such
+a file seals that old KEK in as the root key of a version-2 file, so the
+store verifies across that change too and across every later one. `init`,
+`keygen-server` and `migrate-key` write version 2 with a fresh random root.
+Client, operator and browser keys stay version 1: they key no store, and the
+browser module still seals version 1 (it grew 87 bytes: the shared parser
+now knows the second version).
+
+**One-way for older binaries.** A daemon built before V4-108 refuses a
+version-2 file as `bad-format`. That is the cost of a format change and the
+runbook's step says so; a version-1 file needs nothing done to it, so an
+upgrade never forces the change.
+
+**The runbook has the procedure now.** V4-104 left a section telling the
+operator not to change the passphrase. It is step 23: rewrap to a new file
+under a new passphrase read from the encrypted credential, encrypt the new
+credential, verify the audit chain with the NEW pair before anything is
+swapped, swap both with the daemon stopped, start, then shred the old pair.
+The rehearsal checks it from outside the step: the key file is version 2
+before and after, the daemon starts, the same device logs in, the audit
+chain verifies under the new passphrase, the pseudonym of a known identifier
+is the one recorded before the change, and no `.old`/`.new` file is left.
+What the step does not do is said beside it: a passphrase change does not
+revoke a copy of the OLD file with the OLD passphrase. If both leaked, the
+server needs a new key, and server key rotation is still unspecified.
+
+**Proven able to fail.** Campaign v88, 13 mutations, each killed by the check
+that names it: rewrap dropping the root (the F190 check itself: `audit-verify`
+after a passphrase change), `keyfile_open` returning the KEK for a version-2
+file, both header bounds forgetting or over-applying the root, `init` and
+`migrate-key` and `rewrap` writing version 1, any version ≥ 1 accepted, the
+plaintext length not reduced by the root, and `keyfile_seal_root` ignoring or
+truncating the root it is given. `test_envelope_spec`, the reader that uses
+only §12 and raw libsodium, covers version 2 in both directions, and two of
+the thirteen name its checks. `fuzz_envelope`'s independent model knows version 2 (600 s, no
+disagreement). Three new wipe sites for the root key (39 in
+`secure_mem_sites.txt`).
+
+**Not changed.** The store schema, the wire protocol, the derivation labels,
+the client's key file, and what a passphrase protects. The identifiers
+`kek`/`STORE_KEK_BYTES` in the store's interface keep their names — renaming
+them would move campaign anchors for no change in behaviour — and the
+comments beside them now say what the bytes are.
+
+**A flake in the new test, found by the campaign's own clean suite.** After
+one mutation was restored, the clean suite failed `test_authd_cli` at the
+first F190 fixture check (1 clean run in about 40). The test read `init`'s
+passphrase file with a reader of its own that stripped every trailing CR and
+LF. `init` writes 32 random bytes and the daemon's reader strips exactly one
+trailing newline, so a passphrase ending in 0x0D opened under the CLI and
+not under the test: about one run in 256. The test now reads it with
+`authd_secret_read`, and the helper prints which step failed and its status
+instead of a bare non-zero. Not reproduced on demand (24 further runs
+passed); the mechanism is exact, and a recurrence would now name its step.

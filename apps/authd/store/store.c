@@ -548,7 +548,9 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         goto fail_tx;
     }
 
-    /* key_audit = HKDF-SHA256(ikm=KEK, salt=store_id, info=label) (§9.2.4).
+    /* key_audit = HKDF-SHA256(ikm=root key, salt=store_id, info=label) (§9.2.4).
+     * `kek` is whatever keyfile_open returned: the root key of a version-2
+     * key file, the envelope KEK of a version-1 one.
      * Held in secure memory; never leaves this module. */
     s->key_audit = secure_mem_alloc(STORE_AUDIT_MAC_BYTES);
     if (s->key_audit == NULL) {
@@ -562,7 +564,7 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
         r = STORE_ERR_CRYPTO;
         goto fail;
     }
-    /* key_log = HKDF-SHA256(ikm=KEK, salt=store_id, info=LOG_LABEL) (§15,
+    /* key_log = HKDF-SHA256(ikm=root key, salt=store_id, info=LOG_LABEL) (§15,
      * log_identities = hashed). The same derivation as key_audit under its own
      * label, so the pseudonyms are stable across restarts and computable
      * offline by an operator who holds the passphrase -- and by nobody else.

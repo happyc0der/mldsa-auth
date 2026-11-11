@@ -61,7 +61,8 @@ const char *store_status_name(store_status_t st);
 /* Opens (creating if absent) the store at `path`, sets the spec pragmas (WAL,
  * synchronous=FULL, foreign_keys=ON), creates the schema, and on first use
  * generates store_id(16) and decoy_pk(1952) into meta. `kek` is the 32-byte
- * envelope KEK (from keyfile_open): key_audit = HKDF-SHA256(ikm=kek,
+ * store root key keyfile_open returns (the key sealed in a version-2 server
+ * key file; for a version-1 file, the envelope KEK): key_audit = HKDF-SHA256(ikm=kek,
  * salt=store_id, info="mldsa-authd/v1/audit-mac") is derived and held in
  * secure memory for the store's lifetime. On any failure *out is NULL. */
 store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
@@ -74,7 +75,7 @@ store_status_t store_get_store_id(const store_t *s, uint8_t out[STORE_STORE_ID_B
 
 /* The log pseudonym of an identifier (spec §15, log_identities = hashed):
  * the first STORE_PSEUDONYM_BYTES of keyed BLAKE2b(id) under
- * key_log = HKDF-SHA256(ikm=KEK, salt=store_id, info="mldsa-authd/v1/log-pseudonym"),
+ * key_log = HKDF-SHA256(ikm=root key, salt=store_id, info="mldsa-authd/v1/log-pseudonym"),
  * which is derived in store_open and never leaves the store. Stable for the
  * life of the store and the server key; `authd_admin pseudonym` computes the
  * same value offline. On failure `out` is zeroed. */

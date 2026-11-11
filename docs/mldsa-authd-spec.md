@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.36, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104 errata)
+# mldsa-authd — deployment specification (v1.37, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -605,8 +605,10 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    `active` and the user is `active` — one query, three joins.
 4. The audit log is append-only and chained:
    `mac_i = crypto_auth(key_audit, prev_mac || seq || at || event || 0x00 || fields)`
-   with `key_audit = HKDF-SHA256(ikm = the envelope KEK, salt = store_id,
-   info = "mldsa-authd/v1/audit-mac")`, MAC width 32 bytes. The head MAC is
+   with `key_audit = HKDF-SHA256(ikm = the store root key, salt = store_id,
+   info = "mldsa-authd/v1/audit-mac")`, MAC width 32 bytes. The store root
+   key is the 32 bytes sealed in a version-2 server key file, or the envelope
+   KEK of a version-1 one (§12). The head MAC is
    printed by `authd_admin audit-verify` (§13), which re-computes the whole
    chain offline and is the operator's means of detecting truncation or
    tampering. **Periodic publication of the head MAC to the system journal —
@@ -807,13 +809,15 @@ is available only on the local socket.
 
 ## 12. `MLDSAEK1` — identity keys at rest
 
-One envelope format for server, operator and browser keys. All constants below
+One envelope format for server, operator and browser keys, in two versions:
+version 1 seals an identity key, and version 2 — the server's key file since
+V4-108 — seals an identity key and a store root key. All constants below
 are libsodium's own, read from the pinned build.
 
 | off | field | bytes | value |
 |---|---|---|---|
 | 0 | magic | 8 | `"MLDSAEK1"` |
-| 8 | `version` | 1 | `0x01` |
+| 8 | `version` | 1 | `0x01`, or `0x02` for a file that also seals a store root key |
 | 9 | `kdf_alg` | 1 | `0x01` = Argon2id13 (`crypto_pwhash_ALG_ARGON2ID13` = 2) |
 | 10 | `opslimit` | 4 | big-endian; accepted 1..10 |
 | 14 | `memlimit` | 8 | big-endian bytes; accepted 8 MiB..1 GiB |
@@ -833,6 +837,36 @@ The plaintext is the **exact `MLDSASK2` image** (`6025 + id_len` bytes,
 including its own integrity digest), so the existing loader validates it
 unchanged after decryption. Total file size = `6108 + id_len`; for a 34-byte
 handle, **6142 bytes**.
+
+**Version 2: the store root key** (erratum 79). A version-2 plaintext is that
+same image followed by a 32-byte **store root key**, so `ct_len` is 32 larger
+and the file is `6140 + id_len` bytes; a version-2 file whose `ct_len` leaves
+no room for an image beside the root key is refused as malformed, before the
+KDF. Nothing else differs: the header layout, the associated data, the KDF and
+the AEAD are version 1's, and `version` is authenticated with the rest of the
+header, so a file cannot be relabelled from one version to the other.
+
+The root key is what the store's two keys are derived from — `key_audit`
+(§9.2) and `key_log` (§15) — and it exists so that they do **not** depend on
+the passphrase. It is 32 random bytes drawn when the key file is first written
+(`init`, `keygen-server`, `migrate-key`), and `rewrap` reseals the same bytes
+under the new passphrase: a passphrase change leaves the audit chain
+verifiable and every pseudonym as it was. The root key is never written
+anywhere but inside the envelope, and is held in `secure_mem` while in use.
+
+A version-1 **server** key file — every one written before V4-108 — has no
+root key, and its store is keyed from the file's KEK (the Argon2id output).
+That is still what the daemon and the offline commands do with a version-1
+file, so an existing deployment keeps working and verifying unchanged.
+`rewrap` of a version-1 file writes a version-2 file whose root key **is the
+old KEK**: the store's keys carry over, and from then on they no longer follow
+the passphrase. `rewrap` always writes version 2. A daemon older than V4-108
+refuses a version-2 file as malformed, so a deployment that may need to roll
+the binary back keeps its version-1 file until it no longer does.
+
+Operator and browser keys stay version 1 as written by `authd_client` and the
+browser client: no store is keyed from them. Every reader accepts both
+versions.
 
 **Parameters by role:** server `ops=4, mem=256 MiB`; operator `ops=3,
 mem=256 MiB`; browser `ops=3, mem=64 MiB` (measured at 111.5 ms in wasm,
@@ -887,7 +921,7 @@ should be destroyed once the new file is verified.
 `--check-config`. `pseudonym` is offline like `audit-verify` and prints the
 `idh=` a daemon with `log_identities = hashed` writes for one identifier (§15).
 
-`audit-verify` is **offline**: it opens the key envelope for the KEK, opens the
+`audit-verify` is **offline**: it opens the key envelope for the store root key (§12), opens the
 store, re-computes the whole MAC chain and prints the head MAC and a verdict.
 It needs no running daemon and no §8 command, which is what makes it usable on
 a backup as well as on the live store. Exit 0 means the chain verified.
@@ -1135,15 +1169,16 @@ and is right for a handful of operators on a host they own.
 | Key | Value | Written |
 |---|---|---|
 | `log_identities` | `full` | `id=` the escaped identifier |
-| | `hashed` | `idh=` the first 8 bytes, in hex, of keyed BLAKE2b-128 of the **whole** identifier, under `key_log = HKDF-SHA256(ikm = KEK, salt = store_id, info = "mldsa-authd/v1/log-pseudonym")` — `key_audit`'s derivation (§9.2.4) under its own label. A pseudonym that cannot be computed is `idh=unavailable`, never the identifier |
+| | `hashed` | `idh=` the first 8 bytes, in hex, of keyed BLAKE2b-128 of the **whole** identifier, under `key_log = HKDF-SHA256(ikm = the store root key, salt = store_id, info = "mldsa-authd/v1/log-pseudonym")` — `key_audit`'s derivation (§9.2.4) under its own label. A pseudonym that cannot be computed is `idh=unavailable`, never the identifier |
 | | `off` | no identifier field |
 | `log_client_ip` | `full` | `src=` the address |
 | | `prefix` | `src=` the address with the host part zeroed and its width stated: `/24` for IPv4, `/48` for IPv6 |
 | | `off` | no `src` field |
 
-`key_log` never leaves the store. Because it is derived from the KEK, a
-pseudonym is stable across restarts and can be computed only by someone who
-holds the server passphrase: `authd_admin pseudonym --id X` prints the `idh=`
+`key_log` never leaves the store. Because it is derived from the store root
+key (§12), a pseudonym is stable across restarts and across a passphrase
+change (`rewrap`), and can be computed only by someone who holds the server
+key file and its passphrase: `authd_admin pseudonym --id X` prints the `idh=`
 for one identifier, so an operator can find a user's lines and a reader of the
 journal cannot test guesses against it. The switches change **only the
 journal**: the store's audit table (§9.2) records the real identifiers under
@@ -1252,10 +1287,10 @@ different numbers sets them. The rest are normative.
 ## 18. Known limitations (document, do not silently fix)
 
 - Server identity-key rotation is not specified; it means redistributing pins.
-- **Changing the server passphrase breaks the audit chain and the journal's
-  pseudonyms** (F190, erratum 77): `key_audit` and `key_log` are derived from
-  the envelope KEK, and `rewrap` makes a new one. `rewrap` warns; the key
-  hierarchy that would let a passphrase change keep both keys is not decided.
+- A daemon older than V4-108 cannot open a version-2 server key file (§12,
+  erratum 79), and `init` and `rewrap` now write version 2. Rolling the binary
+  back past V4-108 therefore needs the version-1 key file that the rewrap left
+  in place, and its passphrase.
 - No HSM or TPM key custody; root on the host has the key.
 - A copied browser key blob is an undetectable clone.
 - Traffic analysis is only partially mitigated (inherited from spec-v2 §9).
@@ -1637,3 +1672,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 77 | 18 | A known limitation: a server-passphrase change (`rewrap`) breaks the audit chain's verification and changes every pseudonym | both keys are HKDF of the envelope KEK (§9.2, §15) and a new passphrase is a new KEK; measured, an untouched store then fails `audit-verify` as `audit-chain-corrupt` (F190) |
 | 78 | 16 | The unit is `Type=notify`; the daemon sends `READY=1` after its listeners are bound | as `Type=simple`, `systemctl restart` returned at fork, before the 256 MiB Argon2id unseal and the binds, and the rehearsal's login straight after a restart found nothing listening (F191) |
+
+### Revision v1.37 (V4-108)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 79 | 9.2, 12, 13, 15, 18 | `MLDSAEK1` version 2: the server key file seals a 32-byte store root key after the image, and `key_audit` and `key_log` are derived from it rather than from the envelope KEK. `init`, `keygen-server`, `migrate-key` and `rewrap` write version 2; a version-1 file's KEK stands in as its root key and `rewrap` carries it into the version-2 file. The limitation erratum 77 recorded is removed; an older daemon not reading version 2 is recorded in its place | F190: a passphrase change made a new KEK, so an untouched store failed `audit-verify` and every `idh=` changed. The owner chose a sealed root key over deriving both keys from the secret key (2026-11-10); the version-1 rule is what lets an existing store cross over without re-keying |
