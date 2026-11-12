@@ -484,6 +484,43 @@ if (ulimit -S -n 64) 2>/dev/null; then
 else
     echo "SKIP: E2E: this platform will not lower RLIMIT_NOFILE; the fd-limit lines are not staged"
 fi
+# F206 (V4-121): SIGHUP. Its default action kills the process with no drain,
+# and systemd counts death by SIGHUP as a clean exit, so Restart=on-failure
+# leaves the service down. The daemon has no reload; it must say so and stay.
+"$DAEMON" --config "$TMP/su.conf" > "$TMP/su-hup.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/su-hup.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] && fail "the daemon for the SIGHUP leg never logged event=started: $(cat "$TMP/su-hup.log")"
+    sleep 0.05
+done
+kill -HUP "$SUPID"
+i=0
+while kill -0 "$SUPID" 2>/dev/null && ! grep -q 'event=sighup-ignored' "$TMP/su-hup.log"; do
+    i=$((i + 1))
+    [ "$i" -gt 100 ] && break
+    sleep 0.05
+done
+kill -0 "$SUPID" 2>/dev/null || fail "a daemon sent SIGHUP died (F206): $(cat "$TMP/su-hup.log")"
+grep -q '^warn event=sighup-ignored$' "$TMP/su-hup.log" \
+    || fail "a daemon sent SIGHUP did not log 'warn event=sighup-ignored' (F206): $(cat "$TMP/su-hup.log")"
+# The loop turns at least once a second; a flag that is never cleared would
+# log on every turn.
+sleep 1.3
+[ "$(grep -c '^warn event=sighup-ignored$' "$TMP/su-hup.log")" -eq 1 ] \
+    || fail "one SIGHUP was logged more than once (F206): $(cat "$TMP/su-hup.log")"
+kill -HUP "$SUPID"
+i=0
+while [ "$(grep -c '^warn event=sighup-ignored$' "$TMP/su-hup.log")" -lt 2 ]; do
+    i=$((i + 1))
+    [ "$i" -gt 100 ] && fail "a second SIGHUP was not logged like the first (F206): $(cat "$TMP/su-hup.log")"
+    sleep 0.05
+done
+kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+grep -q '^info event=stopped accepted=' "$TMP/su-hup.log" \
+    || fail "after a SIGHUP, SIGTERM no longer drains and stops the daemon -- the canary (F206): $(cat "$TMP/su-hup.log")"
+echo "PASS: E2E: SIGHUP does not stop the daemon; each one is logged as 'warn event=sighup-ignored', and SIGTERM still drains and stops it (F206)"
 echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 

@@ -14245,3 +14245,76 @@ and prints nothing about it; under a hard limit of 64 it logs the line at
 all of its connections under the soft limit, and under the hard limit
 accepts 54 and logs both lines. Campaign v96, fifteen mutations (FD1–FD8,
 AF1–AF7).
+
+## V4-121 — F206: a SIGHUP is logged and ignored
+
+**What was wrong.** `authd_main.c` installed handlers for `SIGTERM` and
+`SIGINT`. `SIGHUP` kept its default action, which is to terminate the
+process. There was no drain, no `draining` or `stopped` line, and the
+socket files stayed on disk.
+
+**Reproduced before the fix**, twice.
+
+- With the built daemon: started, `kill -HUP`, gone. Its log ends at
+  `listening-unix`. This is the end-to-end leg, which failed with "a daemon
+  sent SIGHUP died (F206)".
+- On the deployed service, in CI's deployment rehearsal on real systemd (run
+  43154418299 on `23b87d8`, a throwaway branch carrying main plus the new
+  measuring step): after `systemctl kill -s HUP mldsa-authd` the unit was
+  `ActiveState=inactive`, `SubState=dead`, `Result=success`, `NRestarts=0`, on Ubuntu 24.04 and 26.04 alike. systemd counts death by `SIGHUP` among the clean exits, so
+  `Restart=on-failure` does not apply. The step failed with "a SIGHUP
+  stopped the service, and systemd did not restart it (F206)".
+
+**Who is affected.** Nobody remote: sending the signal takes root or the
+service's uid. The person who does it is an operator who has just edited
+`authd.conf` and reaches for the usual way to make a daemon re-read it, or
+a log-rotation snippet copied from another service. The cost is every login
+until somebody notices that the service is `inactive`, with nothing in the
+daemon's log to say why. Low.
+
+**Decisions.**
+
+- **Ignored, and logged at WARN each time.** Three alternatives were
+  weighed. Draining on `SIGHUP` leaves the same outage, more politely.
+  `Restart=always` in the unit would bring the service back, but as a new
+  process with every session gone, and it does nothing for a daemon run
+  outside systemd. Re-reading the
+  configuration is a feature: most keys size tables that are allocated and
+  locked once, and a partial reload that applies some keys and not others is
+  worse to operate than none. So the signal does nothing, and the log says
+  that it did nothing, at WARN because whoever sent it expected something.
+- **`SIG_IGN` was not used.** An ignored signal leaves no trace, and the
+  person who sent it would conclude the configuration had been re-read.
+- **A hand-started daemon now outlives its terminal.** Closing the terminal
+  sends `SIGHUP`, which used to kill it. That was never a documented way to
+  stop it; `SIGTERM` and `SIGINT` are, and the end-to-end leg holds
+  `SIGTERM` as its canary: after two `SIGHUP`s it still drains and logs
+  `stopped`.
+- **The flag is cleared before the line is written.** A second signal that
+  arrives during the write is then logged on the next turn of the loop and
+  not lost. Two that arrive within one turn are one line; the line reports
+  that the signal came, not how many times.
+- **The line appears within one poll timeout, not at once.** `poll` returns
+  `EINTR` when the handler runs, so in practice it is immediate. The test
+  waits for the line and does not time it.
+- **`SIGUSR1` and `SIGUSR2` are left at their defaults.** They also
+  terminate. systemd.service(5) lists only `SIGHUP`, `SIGINT`, `SIGTERM`
+  and `SIGPIPE` as clean, so by the manual the unit restarts the service
+  after them (not measured here); and nobody sends them to a daemon by
+  habit.
+- **No `ExecReload=` in the unit.** `systemctl reload` is then refused by
+  systemd with a message that says the unit has none, which is the truth.
+  The rehearsal checks that it is refused and that the service is still
+  active afterwards.
+
+**Spec.** v1.45, erratum 87: `sighup-ignored` in §15's lifecycle events; a
+"Signals" paragraph in §16 stating what each of `SIGTERM`, `SIGINT` and
+`SIGHUP` does.
+
+**Tests.** `authd_e2e.sh`: the built daemon is sent `SIGHUP`; it must still
+be running, must have logged `warn event=sighup-ignored` exactly once after
+a wait longer than a loop turn, must log a second line for a second signal,
+and (canary) must drain and log `stopped` on `SIGTERM`. CI's `rehearse` job
+sends the signal through systemd and requires the unit `active`, the same
+main PID, the log line, and a refused `systemctl reload`. Campaign v97,
+five mutations (SH1–SH5).

@@ -43,11 +43,18 @@
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
  * happens in the handler -- no logging, no allocation, no close(). */
 static volatile sig_atomic_t g_stop = 0;
+/* F206: a SIGHUP arrived. The daemon has no reload, and SIGHUP's default
+ * action would kill it with no drain -- a death systemd counts as a clean
+ * exit, so Restart=on-failure would leave the service down. */
+static volatile sig_atomic_t g_hup = 0;
 
 static void on_signal(int sig)
 {
-    (void)sig;
-    g_stop = 1;
+    if (sig == SIGHUP) {
+        g_hup = 1;
+    } else {
+        g_stop = 1;
+    }
 }
 
 static uint64_t now_ms(void)
@@ -418,6 +425,7 @@ int main(int argc, char **argv)
     sa.sa_handler = on_signal;
     (void)sigaction(SIGTERM, &sa, NULL);
     (void)sigaction(SIGINT, &sa, NULL);
+    (void)sigaction(SIGHUP, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */
 
     /* How much of this daemon's memory can actually be locked (spec 16,
@@ -483,6 +491,12 @@ int main(int argc, char **argv)
 
     int draining = 0;
     for (;;) {
+        if (g_hup) {
+            /* Cleared before it is logged: one that lands in between is
+             * logged on the next turn, never lost. */
+            g_hup = 0;
+            authd_log_event(AUTHD_LOG_WARN, "sighup-ignored");
+        }
         if (g_stop && !draining) {
             authd_log_event(AUTHD_LOG_INFO, "draining");
             evloop_stop(&ev);

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.44, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120 errata)
+# mldsa-authd — deployment specification (v1.45, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1146,6 +1146,7 @@ Transport and lifecycle:
 
 ```
 started draining stopped loop-failed memlock-limit fd-limit store-created
+sighup-ignored
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
 accept-refused-no-slot local-accept-refused-no-slot accept-failed
@@ -1261,6 +1262,16 @@ keeps `/etc` read-only to the service, so it cannot change its own
 configuration. It is validated by `--check-config` as the unit's
 `ExecStartPre=`, because the passphrase credential and `/run/mldsa-authd/` that
 it checks exist only while systemd starts the service (erratum 75).
+
+**Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
+**`SIGHUP` is logged (`sighup-ignored`, at WARN) and otherwise ignored.** The
+daemon reads its configuration once, at start, and has no reload; the unit
+defines no `ExecReload=`. Left at its default action a `SIGHUP` kills the
+process with no drain, and systemd counts death by `SIGHUP` as a clean exit,
+so `Restart=on-failure` does not start it again: one `kill -HUP`, sent by
+someone expecting a reload, was the service down until a person noticed.
+A daemon started by hand therefore outlives the terminal it was started in;
+stop it with `SIGTERM`.
 
 The systemd unit is `Type=notify` — the daemon sends `READY=1` to
 `$NOTIFY_SOCKET` once its key is unsealed and every listener is bound, so
@@ -1793,3 +1804,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 86 | 15, 16 | The events `fd-limit` and `accept-failed`. The daemon needs `max_slots` + `max_local_slots` + 32 open files, raises its own soft `RLIMIT_NOFILE` to that at startup, and warns when the hard limit is short; an `accept()` that fails is logged once per run of failures and the listener is left alone for 100 ms | nothing compared the slot count to the descriptor limit, and a failed `accept()` returned without a word. Under a limit below the slot count the daemon stopped accepting on every socket, the admin socket included, and logged nothing (F205) |
+
+### Revision v1.45 (V4-121)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 87 | 15, 16 | The event `sighup-ignored`: a `SIGHUP` is logged at WARN and ignored | the daemon installed no handler for it, so it died with no drain; systemd treats that death as a clean exit and `Restart=on-failure` left the service stopped (F206) |

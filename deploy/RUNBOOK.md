@@ -187,6 +187,12 @@ The same line ends with `log_identities=` and `log_client_ip=`. The example sets
 may prefer `full` for both, and nothing else changes (step 15 says what each
 setting writes).
 
+**The daemon reads this file once, at start.** There is no reload:
+`systemctl reload mldsa-authd` is refused by systemd (the unit defines none),
+and a `SIGHUP` sent by hand is logged as `warn event=sighup-ignored` and
+changes nothing. `sudo systemctl restart mldsa-authd` applies a change
+(step 22 does one).
+
 ## 8. Install the unit
 
 ```bash

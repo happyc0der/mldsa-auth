@@ -1,0 +1,5 @@
+SH1|^authd_e2e$|a daemon sent SIGHUP died (F206)
+SH2|^authd_e2e$|a daemon sent SIGHUP died (F206)
+SH3|^authd_e2e$|a daemon sent SIGHUP did not log 'warn event=sighup-ignored' (F206)
+SH4|^authd_e2e$|a daemon sent SIGHUP did not log 'warn event=sighup-ignored' (F206)
+SH5|^authd_e2e$|one SIGHUP was logged more than once (F206)

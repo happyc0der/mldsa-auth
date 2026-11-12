@@ -36,6 +36,10 @@ Group=mldsa-authd
 # journal; a configuration it refuses stops the start there, with the reason.
 ExecStartPre=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf --check-config
 ExecStart=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf
+# No ExecReload=: the daemon reads its configuration once, at start. A SIGHUP
+# is logged (`sighup-ignored`) and ignored; before V4-121 it killed the
+# daemon, and Restart=on-failure does not restart after SIGHUP, which systemd
+# counts as a clean exit. Use `systemctl restart` to apply a change.
 Restart=on-failure
 RestartSec=2s
 

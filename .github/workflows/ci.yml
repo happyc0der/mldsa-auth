@@ -540,6 +540,34 @@ jobs:
           REHEARSAL_HOST_IS_DISPOSABLE: "1"
         run: python3 tools/rehearse_runbook.py deploy/RUNBOOK.md --keep-going
 
+      # V4-121 (F206): what a SIGHUP does to the deployed service, measured
+      # rather than assumed. Before the fix the daemon died of it, and systemd
+      # counts death by SIGHUP as a clean exit: Restart=on-failure left the
+      # service down. The same process must still be there, and must have
+      # said what it did with the signal.
+      - name: SIGHUP does not stop the service
+        run: |
+          systemctl is-active mldsa-authd
+          before=$(systemctl show -p MainPID --value mldsa-authd)
+          [ "$before" != 0 ] || { echo "FAIL: the service has no main process to signal"; exit 1; }
+          sudo systemctl kill -s HUP mldsa-authd
+          sleep 5
+          systemctl show -p MainPID -p ActiveState -p SubState -p Result -p NRestarts mldsa-authd
+          [ "$(systemctl is-active mldsa-authd)" = active ] \
+            || { echo "FAIL: a SIGHUP stopped the service, and systemd did not restart it (F206)"; exit 1; }
+          [ "$(systemctl show -p MainPID --value mldsa-authd)" = "$before" ] \
+            || { echo "FAIL: after a SIGHUP the service is a different process (F206)"; exit 1; }
+          sudo journalctl -u mldsa-authd --no-pager -n 20 | grep -q 'warn event=sighup-ignored' \
+            || { echo "FAIL: the daemon did not log 'warn event=sighup-ignored' (F206)"; exit 1; }
+          echo "PASS: after SIGHUP the service is active, the same process, and logged sighup-ignored"
+          # The runbook says systemd refuses a reload of this unit.
+          if sudo systemctl reload mldsa-authd; then
+            echo "FAIL: systemctl reload was accepted; deploy/RUNBOOK.md step 7 says it is refused"; exit 1
+          fi
+          [ "$(systemctl is-active mldsa-authd)" = active ] \
+            || { echo "FAIL: the refused reload stopped the service"; exit 1; }
+          echo "PASS: systemctl reload is refused and the service stays active"
+
       # What systemd actually delivers as a credential to a service with
       # User= -- owner, mode, ACL, filesystem -- measured in a throwaway unit
       # with the same two directives, rather than assumed (V4-99, R5).
