@@ -80,6 +80,12 @@ export class Authd {
     this.#sock?.end();
   }
 
+  // For a daemon that has stopped answering (V4-127, F210): end() waits for
+  // the peer, and a peer that is hung never lets the descriptor go.
+  destroy() {
+    this.#sock?.destroy();
+  }
+
   #onData(chunk) {
     this.#buf += chunk;
     for (;;) {

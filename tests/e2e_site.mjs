@@ -10,6 +10,7 @@
  *   node e2e_site.mjs <site.sock> <code-base64url>
  *   node e2e_site.mjs <site.sock> --revoke <handle>
  *   node e2e_site.mjs <site.sock> --recover-all <user> <recovery-code>
+ *   node e2e_site.mjs <site.sock> --hold <code-base64url> <dir>
  *
  * The second form is the site's REVOKE-DEVICE (spec §8, Req 9): the device
  * and its key are revoked and its live sessions closed. authd_admin has no
@@ -21,16 +22,27 @@
  * user has is revoked in the same transaction that spends the code (V4-22a).
  * The ticket it returns is a secret and is not printed.
  *
+ * The fourth holds a token across a daemon restart (V4-127, F210): it
+ * exchanges the code, verifies the token, closes its connection and creates
+ * <dir>/hold.ready; when <dir>/hold.down appears it tries the (stopped)
+ * daemon, records how that failed and creates <dir>/hold.down.seen; when
+ * <dir>/hold.up appears it verifies the SAME token again and logs it out.
+ * The token is not printed.
+ *
  * Prints one JSON line on stdout and exits 0, or a reason on stderr and exits 1.
  */
-import { Authd, exchange, verify, logout, recoveryUse } from '../examples/site-node/authd.mjs';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { Authd, AuthdError, exchange, verify, logout, recoveryUse } from '../examples/site-node/authd.mjs';
 
 const [sock, code, revokeHandle, recoveryCode] = process.argv.slice(2);
 if (!sock || !code || (code === '--revoke' && !revokeHandle) ||
-    (code === '--recover-all' && (!revokeHandle || !recoveryCode))) {
+    (code === '--recover-all' && (!revokeHandle || !recoveryCode)) ||
+    (code === '--hold' && (!revokeHandle || !recoveryCode))) {
   console.error('usage: e2e_site.mjs <site.sock> <code-base64url>\n' +
                 '       e2e_site.mjs <site.sock> --revoke <handle>\n' +
-                '       e2e_site.mjs <site.sock> --recover-all <user> <recovery-code>');
+                '       e2e_site.mjs <site.sock> --recover-all <user> <recovery-code>\n' +
+                '       e2e_site.mjs <site.sock> --hold <code-base64url> <dir>');
   process.exit(2);
 }
 
@@ -54,6 +66,34 @@ try {
       throw new Error('RECOVERY-USE revoke=all returned no ticket');
     }
     console.log(JSON.stringify({ recovered_all: revokeHandle }));
+    process.exit(0);
+  }
+
+  if (code === '--hold') {
+    const dir = recoveryCode;
+    const appears = async (name) => {
+      for (let i = 0; i < 1200; i++) {
+        if (existsSync(join(dir, name))) { return; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error(`${name} never appeared`);
+    };
+    const session = await exchange(authd, revokeHandle, '');
+    await verify(authd, session.token);
+    authd.close();                // an open site connection would hold the daemon's drain
+    authd = undefined;
+    writeFileSync(join(dir, 'hold.ready'), '');
+    await appears('hold.down');
+    let whileDown = 'answered';
+    try { (await new Authd(sock).connect()).close(); }
+    catch (e) { whileDown = e instanceof AuthdError ? `authd-${e.code}` : String(e.code); }
+    writeFileSync(join(dir, 'hold.down.seen'), '');
+    await appears('hold.up');
+    authd = await new Authd(sock).connect();
+    const again = await verify(authd, session.token);
+    if (again.handle !== session.handle) { throw new Error('VERIFY after the restart named another device'); }
+    await logout(authd, session.token);
+    console.log(JSON.stringify({ held: again.user, handle: again.handle, while_down: whileDown }));
     process.exit(0);
   }
 

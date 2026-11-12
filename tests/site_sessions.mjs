@@ -10,7 +10,8 @@
 // F132: the session table had no bound. The checks below require a cap on
 // sessions nobody has logged into, idle expiry, and removal at logout.
 import { spawn } from 'node:child_process';
-import { createConnection } from 'node:net';
+import { createConnection, createServer } from 'node:net';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [fixturePath, modulePath, repo] = process.argv.slice(2);
@@ -273,6 +274,124 @@ try {
     check(lo.status === 200 && /(?:^|,\s*)sid=;\s*Max-Age=0/.test(lo.headers.get('set-cookie') || ''),
           'logout: the response tells the browser to forget the cookie');
     check(!sessions.has(fresh) && (await get('/api/me', fresh)).status === 401, 'logout: the session is gone from the table');
+  }
+
+  // V4-127, F210: the daemon being away is not the daemon refusing a token.
+  // The site reaches the daemon through a relay here, which can be taken
+  // down (no socket), made to hang (accepts, never answers) or made to drop
+  // every connection -- what a daemon restart looks like from the site.
+  {
+    const relayPath = join(dirname(info.site), 'relay.sock');
+    let mode = 'up';
+    const held = new Set();
+    const relay = createServer((c) => {
+      held.add(c);
+      c.on('close', () => held.delete(c));
+      c.on('error', () => {});
+      if (mode === 'drop') { c.destroy(); return; }
+      if (mode === 'hang') { return; }
+      const u = createConnection(info.site);
+      u.on('error', () => c.destroy());
+      c.on('close', () => u.destroy());
+      c.pipe(u); u.pipe(c);
+    });
+    const up = () => new Promise((r) => relay.listen(relayPath, r));
+    const down = () => new Promise((r) => { relay.close(r); for (const c of held) { c.destroy(); } });
+    await up();
+    try {
+      const o = await start({ authdSite: relayPath, authdTimeoutMs: 400 });
+      const ob = `http://127.0.0.1:${o.port}`;
+      const oget = (path, sid) => fetch(`${ob}${path}`, { headers: sid ? { Cookie: `sid=${sid}` } : {} });
+      const opost = (path, obj, sid) => fetch(`${ob}${path}`, {
+        method: 'POST', body: JSON.stringify(obj),
+        headers: { ...(sid ? { Cookie: `sid=${sid}` } : {}), Origin: ob, 'Content-Type': 'application/json' } });
+      const ocode = async (sid) => {
+        const st = await (await oget('/api/session', sid)).json();
+        const s = await client.login({ url: `ws://127.0.0.1:${o.port}/authd/v1?state=${st.state}`, serverId: info.server_id,
+                                       serverPub, handle: vid.handle, passphrase: PASS, envelope: vid.envelope });
+        const code = Buffer.from(s.code).toString('base64url');
+        await s.close();
+        return code;
+      };
+      const s0 = idOf(await oget('/api/session'));
+      const li = await opost('/api/login', { code: await ocode(s0) }, s0);
+      const sid = idOf(li);
+      check(li.status === 200 && sid !== undefined && (await oget('/api/me', sid)).status === 200,
+            'outage: a visitor logs in through the relay and /api/me answers 200 (the canary)');
+      // What every outage must look like: 503 `unavailable`, nothing else in
+      // the body, the cookie untouched and the session still in the table.
+      const away = async (what) => {
+        const t0 = Date.now();
+        let r;
+        try { r = await fetch(`${ob}/api/me`, { headers: { Cookie: `sid=${sid}` }, signal: AbortSignal.timeout(10000) }); }
+        catch (e) { check(false, `outage: ${what}: /api/me gave no answer in 10 s (${e.name}) (F210)`); return Date.now() - t0; }
+        const b = await r.json();
+        check(r.status === 503 && b.error === 'unavailable' && Object.keys(b).length === 1,
+              `outage: ${what}: /api/me answers 503 unavailable and nothing more (${r.status} ${JSON.stringify(b)}) (F210)`);
+        check(r.headers.get('set-cookie') === null && typeof o.sessions.get(sid)?.token === 'string',
+              `outage: ${what}: the session and its cookie are kept (F210)`);
+        return Date.now() - t0;
+      };
+      await down();
+      await away('the daemon\'s socket is gone');
+      // The other routes say `unavailable` too, not a refusal and not Node's
+      // error name.
+      {
+        const su = await opost('/api/signup', { user: 'during-outage', invite: 'the-invite' });
+        const id2 = client.newIdentity('a passphrase for the outage leg');
+        const en = await opost('/api/enroll', { handle: id2.handle, pub: hex(id2.publicImage) }, idOf(su));
+        const eb = await en.json();
+        check(en.status === 503 && eb.error === 'unavailable',
+              `outage: an enrollment while the daemon is away is 503 unavailable (${en.status} ${JSON.stringify(eb)}) (F210)`);
+        const rv = await opost('/api/recover', { user, code: '0000000000000000' });
+        const rb = await rv.json();
+        check(rv.status === 503 && rb.error === 'unavailable',
+              `outage: a recovery while the daemon is away is 503 unavailable (${rv.status} ${JSON.stringify(rb)}) (F210)`);
+      }
+      await up();
+      {
+        // A login whose code the site could not exchange: 503, and the code
+        // was never shown to the daemon.
+        const s1 = idOf(await oget('/api/session'));
+        const code = await ocode(s1);
+        await down();
+        const lr2 = await opost('/api/login', { code }, s1);
+        const lb = await lr2.json();
+        check(lr2.status === 503 && lb.error === 'unavailable',
+              `outage: a login while the daemon is away is 503 unavailable (${lr2.status} ${JSON.stringify(lb)}) (F210)`);
+        await up();
+      }
+      mode = 'drop';
+      await away('the daemon closes the connection (a restart mid-request)');
+      mode = 'hang';
+      const took = await away('the daemon accepts and never answers');
+      check(took >= 300 && took < 5000, `outage: a daemon that never answers is given up on (${took} ms against a 400 ms limit) (F210)`);
+      for (const c of held) { c.destroy(); }
+      mode = 'up';
+      const back = await oget('/api/me', sid);
+      check(back.status === 200 && back.headers.get('set-cookie') === null,
+            `outage: the daemon back, the same cookie is logged in again (${back.status}) (F210)`);
+      {
+        // Minting recovery codes: the fresh login's code cannot be exchanged.
+        const code = await ocode(sid);
+        await down();
+        const mr = await opost('/api/recovery-codes', { code }, sid);
+        const mb = await mr.json();
+        check(mr.status === 503 && mb.error === 'unavailable' && o.sessions.has(sid),
+              `outage: minting recovery codes while the daemon is away is 503 unavailable (${mr.status} ${JSON.stringify(mb)}) (F210)`);
+        await up();
+      }
+      // The canary for all of the above: when the DAEMON says the token is
+      // dead, the session does end.
+      const lo = await siteLine(`LOGOUT token=${o.sessions.get(sid)?.token}`);
+      const dead = await oget('/api/me', sid);
+      const db = await dead.json();
+      check(lo.startsWith('OK') && dead.status === 401 && db.error === 'unknown' && !o.sessions.has(sid) &&
+            /(?:^|,\s*)sid=;\s*Max-Age=0/.test(dead.headers.get('set-cookie') || ''),
+            `outage: a token the daemon refuses still ends the session and the cookie (${dead.status} ${JSON.stringify(db)}) (the canary)`);
+    } finally {
+      await down().catch(() => {});
+    }
   }
 
   // --- the cookie ------------------------------------------------------------

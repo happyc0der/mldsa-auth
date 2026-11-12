@@ -35,10 +35,20 @@ fi
 
 DPID=""
 UPID=""
+SUPID=""
+RESTPID=""
 RU=""
 cleanup() {
     if [ -n "$DPID" ]; then kill "$DPID" 2>/dev/null || true; fi
     if [ -n "$UPID" ]; then kill "$UPID" 2>/dev/null || true; fi
+    # A check that fails while one of these is up used to leave it running
+    # (three such daemons were found hours after a campaign, V4-127). Their
+    # variables are not cleared when a leg ends, so only a process that is
+    # still this shell's child is signalled.
+    for p in "$SUPID" "$RESTPID"; do
+        [ -n "$p" ] || continue
+        [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "$$" ] && kill "$p" 2>/dev/null
+    done
     rm -rf "$TMP"
     if [ -n "$RU" ]; then rm -rf "$RU"; fi
 }
@@ -1123,6 +1133,27 @@ fi
 
 # ------------------------------------------------------------- shutdown
 
+# V4-127 (F210): a site holds a token across the restart below. It exchanges a
+# login code now, closes its connection, and asks again once the daemon is
+# back. The reference site ended a session whenever the daemon could not be
+# asked; what makes that wrong is that the token is still good afterwards,
+# and this is where that is measured.
+RESTPID=""
+if [ -n "$NODE" ] && [ -n "$SITE" ] && [ -x "$NODE" ]; then
+    CODEH=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+            --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+            --unix "$TMP/p.sock" --proxy-v2 2>> "$TMP/login.err") || fail "the login before the restart exited nonzero"
+    "$NODE" "$SITE" "$TMP/s.sock" --hold "$CODEH" "$TMP" > "$TMP/hold.txt" 2> "$TMP/hold.err" &
+    RESTPID=$!
+    i=0
+    while [ ! -e "$TMP/hold.ready" ]; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] || kill -0 "$RESTPID" 2>/dev/null || { cat "$TMP/hold.err"; fail "the site holding a token exited before the restart"; }
+        [ "$i" -gt 400 ] && fail "the site never exchanged the code it was to hold across the restart"
+        sleep 0.05
+    done
+fi
+
 # Close nothing and the drain loop would wait forever: evloop_stop marks local
 # slots draining rather than closing them, so a still-open client socket wedges
 # shutdown. Every client above is one-shot and already gone.
@@ -1140,6 +1171,47 @@ if wait "$DPID"; then DPID=""; else DPID=""; fi
 echo "PASS: E2E: the daemon drained and exited on SIGTERM"
 [ -e "$TMP/a.sock" ] && fail "the admin socket was left behind after shutdown"
 echo "PASS: E2E: every socket file was removed on shutdown"
+
+if [ -n "$RESTPID" ]; then
+    # The daemon is down: the site's request fails with no answer from it.
+    : > "$TMP/hold.down"
+    i=0
+    while [ ! -e "$TMP/hold.down.seen" ]; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && { cat "$TMP/hold.err"; fail "the site holding a token never tried the stopped daemon"; }
+        sleep 0.05
+    done
+    "$DAEMON" --config "$TMP/authd.conf" > "$TMP/authd2.log" 2>&1 &
+    DPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/authd2.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] || kill -0 "$DPID" 2>/dev/null || { cat "$TMP/authd2.log"; fail "the daemon exited when started again on its own store"; }
+        [ "$i" -gt 400 ] && fail "the restarted daemon never logged event=started"
+        sleep 0.05
+    done
+    : > "$TMP/hold.up"
+    rc=0; wait "$RESTPID" || rc=$?
+    RESTPID=""
+    [ "$rc" -eq 0 ] || { cat "$TMP/hold.err"; fail "a token issued before the daemon restarted was refused after it: every restart would log every user out (F210)"; }
+    grep -q '"held":"alice"' "$TMP/hold.txt" || fail "the token verified after the restart is not alice's: $(cat "$TMP/hold.txt")"
+    grep -q '"while_down":"E[A-Z]*"' "$TMP/hold.txt" \
+        || fail "with the daemon stopped the site's request did not fail as a socket error: $(cat "$TMP/hold.txt")"
+    echo "PASS: E2E: a token issued before a daemon restart verifies after it; while the daemon was down the site got $(sed -n 's/.*"while_down":"\([A-Z]*\)".*/\1/p' "$TMP/hold.txt"), not a refusal (F210)"
+    kill -TERM "$DPID"
+    i=0
+    while kill -0 "$DPID" 2>/dev/null; do
+        i=$((i + 1))
+        if [ "$i" -gt 200 ]; then
+            kill -9 "$DPID" 2>/dev/null || true
+            fail "the restarted daemon did not exit within 10s of SIGTERM"
+        fi
+        sleep 0.05
+    done
+    if wait "$DPID"; then DPID=""; else DPID=""; fi
+else
+    echo "SKIP: E2E: node not found, so the token-across-a-restart leg did not run"
+fi
 
 # ------------------------------------------------- the audit chain, offline
 #

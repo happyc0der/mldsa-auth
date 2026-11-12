@@ -43,6 +43,11 @@
  *   * The /authd/v1 WebSocket is proxied to the daemon here, the job Caddy does
  *     in production (deploy/Caddyfile.example), so the page is same-origin with
  *     its WebSocket in tests exactly as it is when deployed.
+ *   * THE DAEMON BEING AWAY IS NOT THE DAEMON REFUSING (V4-127, audit F210). A
+ *     session ends when the daemon says its token is dead, and not when the
+ *     daemon cannot be asked: it restarts on an upgrade, a configuration
+ *     change or a watchdog kill, and the tokens it issued are still good when
+ *     it is back. Until then the answer is 503 `unavailable`.
  *   * Enrollment is gated by the site's own account check -- here an invite
  *     secret, in a real site whatever it already uses -- because the site, not
  *     the daemon, decides who may have an account (spec 10.1).
@@ -54,7 +59,7 @@ import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Authd, exchange, enroll, verify, logout, recoveryIssue, recoveryUse } from './authd.mjs';
+import { Authd, AuthdError, exchange, enroll, verify, logout, recoveryIssue, recoveryUse } from './authd.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '..', '..');
@@ -172,11 +177,32 @@ export async function startSite(opt) {
     return true;
   };
 
+  // One request to the daemon, given up on after AUTHD_TIMEOUT_MS (V4-127,
+  // F210): a daemon that accepts and never answers held the browser's request
+  // open for as long as it stayed that way.
+  const AUTHD_TIMEOUT_MS = opt.authdTimeoutMs ?? 10 * 1000;
   const withAuthd = async (fn) => {
     const a = new Authd(opt.authdSite);
-    await a.connect();
-    try { return await fn(a); } finally { a.close(); }
+    let timer, late = false;
+    const limit = new Promise((_, reject) => {
+      timer = setTimeout(() => { late = true; reject(new Error('authd: no answer')); }, AUTHD_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([a.connect(), limit]);
+      return await Promise.race([fn(a), limit]);
+    } finally {
+      clearTimeout(timer);
+      if (late) { a.destroy(); } else { a.close(); }
+    }
   };
+  // What a failed request to the daemon was (F210). The daemon REFUSED when
+  // it answered with one of its own codes; every other failure -- no socket,
+  // a connection closed under the request, no answer in time, `internal`,
+  // `busy`, an answer that is not one -- is the daemon being AWAY, which says
+  // nothing about the token, the code or the account that was asked about.
+  const AWAY = new Set(['connection-closed', 'malformed-response', 'internal', 'busy']);
+  const away = (e) => !(e instanceof AuthdError) || AWAY.has(e.code);
+  const unavailable = (res) => send(res, 503, { error: 'unavailable' });
 
   // The session table (V4-58, audit F131 and F132). What a site's sessions need,
   // which this one lacked:
@@ -317,7 +343,8 @@ export async function startSite(opt) {
         const r = await withAuthd((a) => exchange(a, code, state));
         authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
-      } catch {
+      } catch (e) {
+        if (away(e)) { return unavailable(res); }          // F210: not a refusal
         // ONE refusal for every reason (V4-96, F166): the daemon's code (a
         // used, expired or revoked code, a disabled user) is not the
         // browser's business, and naming it told a code's holder about the
@@ -328,7 +355,15 @@ export async function startSite(opt) {
     'GET /api/me': async (req, res, s) => {
       if (!s.token) { return send(res, 401, { error: 'not logged in' }); }
       try { const r = await withAuthd((a) => verify(a, s.token)); send(res, 200, { user: r.user, handle: r.handle }); }
-      catch (e) { end(res, s); send(res, 401, { error: e.code || 'verify-failed' }); }
+      catch (e) {
+        // F210: only the daemon's own refusal ends the session. This used to
+        // end it on ANY failure, so a daemon restart logged out every visitor
+        // whose page asked in that moment, and answered with Node's error
+        // name (`ENOENT`) as the reason.
+        if (away(e)) { return unavailable(res); }
+        end(res, s);
+        send(res, 401, { error: e.code });
+      }
     },
     'POST /api/logout': async (req, res, s) => {
       if (s.token) { try { await withAuthd((a) => logout(a, s.token)); } catch { /* already gone */ } }
@@ -359,7 +394,7 @@ export async function startSite(opt) {
                                            signup: !s.ticket }));   // F145: a signup is a NEW account
         s.signupUser = null; s.ticket = null;
         send(res, 200, { user, handle });
-      } catch (e) { send(res, 403, { error: e.code || 'enroll-failed' }); }
+      } catch (e) { if (away(e)) { return unavailable(res); } send(res, 403, { error: e.code }); }
     },
     // Minting recovery codes needs a LOGIN, not only a session (V4-62, the
     // owner's decision). The page logs in again -- the device key and the
@@ -374,12 +409,12 @@ export async function startSite(opt) {
       s.state = null;               // one state, one login
       let again;
       try { again = await withAuthd((a) => exchange(a, code, state)); }
-      catch { return send(res, 403, { error: 'login-failed' }); }   // F166, as /api/login
+      catch (e) { return away(e) ? unavailable(res) : send(res, 403, { error: 'login-failed' }); }   // F166, F210, as /api/login
       // The session keeps the token it had; this login's token is not kept.
       try { await withAuthd((a) => logout(a, again.token)); } catch { /* already gone */ }
       if (again.user !== s.user) { return send(res, 403, { error: 'login is another user' }); }
       try { send(res, 200, { codes: await withAuthd((a) => recoveryIssue(a, s.user, 5)) }); }
-      catch (e) { send(res, 403, { error: e.code || 'issue-failed' }); }
+      catch (e) { if (away(e)) { return unavailable(res); } send(res, 403, { error: e.code }); }
     },
     'POST /api/recover': async (req, res, s) => {
       const { user, code } = await body(req);
@@ -392,6 +427,7 @@ export async function startSite(opt) {
         rotate(res, s).ticket = { user, ticket: t.ticket };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
       } catch (e) {
+        if (away(e)) { return unavailable(res); }          // F210: says nothing about the user or the code
         // ONE reply for every refusal (V4-76, F143). The daemon's codes --
         // invalid, locked, user-disabled, not-permitted -- told anyone which
         // usernames exist and which are operators; the daemon logs which it was.

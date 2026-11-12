@@ -432,6 +432,7 @@ if(MLDSA_NODE)
 endif()
 set(MLDSA_WASM_DIR "" CACHE PATH "An Emscripten build tree (web/mldsa_client.mjs) for the wasm interop test")
 if(MLDSA_WASM_DIR)
+  get_property(MLDSA_TESTS_BEFORE_WASM DIRECTORY PROPERTY TESTS)
   if(NOT MLDSA_NODE)
     message(FATAL_ERROR "MLDSA_WASM_DIR is set but node was not found: the wasm interop test needs it")
   endif()
@@ -489,6 +490,12 @@ if(MLDSA_WASM_DIR)
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     set_tests_properties(phone_timing_tool PROPERTIES TIMEOUT 300)
   endif()
+  # Every test this block registered carries the label `needs-wasm`, and CI
+  # runs the label rather than a list of names (V4-127, F210): site_sessions
+  # was added here in V4-58 and to no list, so CI never ran it.
+  get_property(MLDSA_TESTS_AFTER_WASM DIRECTORY PROPERTY TESTS)
+  list(REMOVE_ITEM MLDSA_TESTS_AFTER_WASM ${MLDSA_TESTS_BEFORE_WASM})
+  set_tests_properties(${MLDSA_TESTS_AFTER_WASM} PROPERTIES LABELS needs-wasm)
 endif()
 
 # Milestone A, automated: the shipped daemon and both CLIs as real processes.

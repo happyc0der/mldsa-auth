@@ -14517,3 +14517,88 @@ one, is the whole service until a person looks.
   ask. A health probe that logs in is the operator's monitoring.
 
 **Spec.** v1.48, erratum 90, in §16 after the exit status paragraph.
+
+## V4-127 — F210, F211: a daemon restart no longer logs users out; CI runs `site_sessions`
+
+**Where it came from.** V4-126 made systemd kill a hung daemon on purpose.
+The next question was what a user sees during that restart. The reference
+site's `/api/me` answered it: logged out.
+
+**F210, measured before the fix.** A relay socket stands between the site
+and the real daemon in `site_sessions`, with four modes: pass, socket
+removed, accept-and-close, accept-and-hold. On the unfixed site:
+
+- socket removed: `/api/me` answered `401 {"error":"ENOENT"}`, deleted the
+  session and cleared the cookie;
+- enroll answered `403 {"error":"ENOENT"}`; recovery answered
+  `recover-failed` and login `login-failed`, though nothing had been asked;
+- accept-and-hold: the request did not return (the check has its own 10 s
+  limit and failed by name).
+
+**The premise, measured.** "The token is still good" needed evidence: no
+test stopped a daemon and asked again. `authd_e2e` now does. A site process
+(`e2e_site.mjs --hold`) exchanges a login code, verifies, closes its
+connection; the script stops the daemon with the existing `SIGTERM` leg,
+the site tries the stopped daemon (`ENOENT`), the script starts a second
+daemon on the same store, and the site verifies the same token and logs it
+out. Control: with `DELETE FROM tokens` run between stop and start, the leg
+fails by name ("a token issued before the daemon restarted was refused
+after it").
+
+**The fix.**
+
+- `away(e)`: an error that is not an `AuthdError`, or whose code is
+  `connection-closed`, `malformed-response`, `internal` or `busy`, is the
+  daemon not answering. Every route answers `503 {"error":"unavailable"}`
+  for it and changes nothing. `/api/me` ends the session only otherwise.
+- `withAuthd` has a time limit (10 s; `authdTimeoutMs` for the test). On
+  expiry the socket is destroyed, not closed gracefully.
+- `account.mjs` shows "The login service is not answering; reload in a
+  moment" on a 503 instead of "Not logged in".
+- `busy` from `RECOVERY-USE` is now 503, not `recover-failed`. The daemon
+  answers it before any lookup, the same whoever is named (erratum 59), so
+  it says nothing about a username.
+
+**Proven able to fail.** 14 named `outage:` checks. Ten hand mutations of
+`server.mjs` (JS is outside the campaign runner), each restored
+byte-exact: 10 killed by name, from 1 to 13 checks each. The last check is
+the canary the other way: a token the daemon refuses (`unknown`, after a
+`LOGOUT` behind the site's back) still ends the session, and the mutation
+that keeps such a session is killed by it alone.
+
+**Not covered by a check, said plainly.**
+
+- `Authd.destroy()` on the timeout path: the hang leg proves the request is
+  given up on at the limit, not that the socket is torn down.
+- The `account.mjs` message: no browser test stages an outage.
+- The 10 s default itself; the test uses 400 ms.
+
+**F211.** Adding those checks showed `site_sessions` had never run in CI.
+The wasm job named its tests in a `-R` list, and the list never had it
+(run 43203038019's log: 7 tests in that step). Eight commits changed the
+test since V4-58. A second name in the list would repeat the mistake, so
+the list is gone: CMake labels every test registered inside the
+`MLDSA_WASM_DIR` block `needs-wasm` (the difference of the directory's
+`TESTS` property before and after), and the job runs the label. Locally
+that is 5 tests: `wasm_interop`, `web_flows`, `site_sessions`,
+`browser_e2e`, `phone_timing_tool`. The job still fails if one of three
+named tests is not registered, so an empty label cannot pass.
+
+**Also in this step: `authd_e2e` left daemons behind.** Three
+`mldsa-authd --config …/su.conf` processes were found running seven hours
+after V4-126's campaign. The script's cleanup killed `$DPID` and `$UPID`
+but not `$SUPID`, so a check that failed while a start-up-leg daemon was up
+left it. Cleanup now signals `$SUPID` and the restart leg's site process,
+and only if the process is still this shell's child, since those variables
+are not cleared when a leg ends. Control: a `fail` planted while the
+daemon is up leaves no process. Test hygiene, no finding number.
+
+**Not done.**
+
+- The site does not retry. A 503 is the answer; the page says reload.
+- No health endpoint on the site. `/api/me` with a session is one.
+- `authd_admin` still has no `ping`; next candidate.
+
+**Spec.** v1.49, erratum 91, in §14 before the reference-site sentence.
+No C file changed, so no campaign: 483 mutations, 70 campaigns, 523
+anchors stand.

@@ -351,19 +351,24 @@ jobs:
       # environment (its CC, its node) in the way. browser_e2e and
       # phone_timing_tool exist only when a browser is named, so their presence
       # is asserted: a gate that can pass by not having the test is not a gate.
+      # Every test that needs the wasm tree is run by its CMake label, not by a
+      # list of names here (V4-127, F210): site_sessions was written in V4-58,
+      # extended in seven steps since, and CI never ran it, because nobody
+      # added its name to this step.
       - name: The native daemon fixture, the wasm client logging in to it, and the browser
         run: |
           cmake -S . -B build-native -DMLDSA_WASM_DIR="$PWD/build-wasm" \
             -DMLDSA_NODE="$RUNNER_TEMP/node/bin/node" \
             -DMLDSA_BROWSER="$RUNNER_TEMP/chrome-linux64/chrome"
           cmake --build build-native -j4
-          for t in browser_e2e phone_timing_tool; do
-            ctest --test-dir build-native -N -R "^$t\$" | grep -q 'Total Tests: 1' || \
+          for t in browser_e2e phone_timing_tool site_sessions; do
+            ctest --test-dir build-native -N -L needs-wasm -R "^$t\$" | grep -q 'Total Tests: 1' || \
               { echo "::error::$t is not registered"; exit 1; }
           done
           tools/check_build_current.sh build-native && \
+            ctest --test-dir build-native --output-on-failure -L needs-wasm && \
             ctest --test-dir build-native --output-on-failure \
-              -R '^(wasm_interop|web_no_crypto|test_client_wasm|test_passphrase|web_flows|browser_e2e|phone_timing_tool)$'
+              -R '^(web_no_crypto|test_client_wasm|test_passphrase)$'
 
   deploy:
     name: unit + offline build (Linux)

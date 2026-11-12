@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.48, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126 errata)
+# mldsa-authd — deployment specification (v1.49, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1069,7 +1069,13 @@ never in a URL — so never in a proxy log, a `Referer` or history — and the
 token never reaches page script. Pages are served under a CSP of
 `script-src 'self' 'wasm-unsafe-eval'` and `connect-src 'self'` with no inline
 script; `'wasm-unsafe-eval'` is required to compile the module and permits
-nothing else. `examples/site-node/server.mjs` is the reference.
+nothing else. **A site ends a session only when the daemon refuses its
+token** — `VERIFY` answering `unknown`, `expired`, `idle-expired`,
+`device-revoked` or `user-disabled`. A daemon that cannot be reached, closes
+the connection, does not answer in time (the reference site waits 10 s) or
+answers `internal` or `busy` has refused nothing: the site answers 503 and
+keeps the session, because a token issued before a daemon restart is valid
+after it (erratum 91). `examples/site-node/server.mjs` is the reference.
 
 **The passphrase policy** (erratum 35), enforced inside the module so a page
 cannot seal around it: at least 12 characters (code points, not bytes); not a
@@ -1858,3 +1864,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 90 | 16 | The unit sets `WatchdogSec=30s` and `WatchdogSignal=SIGKILL`; the daemon sends `WATCHDOG=1` from its event loop at a quarter of `$WATCHDOG_USEC`, at most 1 s apart | a daemon that hung stayed `active (running)` for as long as it hung: its process was alive, so `Restart=on-failure` had nothing to act on and no login was answered until a person noticed (F209) |
+
+### Revision v1.49 (V4-127)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 91 | 14 | A site ends a session only on the daemon's refusal of its token; with the daemon unreachable, silent for 10 s, or answering `internal` or `busy`, it answers 503 and keeps the session | the reference site read every failure of `VERIFY` as a refusal, so a daemon restart logged out every user who loaded a page during it, though their tokens were valid again a moment later; it also sent Node's socket error name to the browser and waited without limit on a daemon that did not answer (F210) |

@@ -2,8 +2,12 @@ import { boot, session, loginParams, post, report, val, b64url, secret } from '.
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
-const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null));
-document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me.handle})` : 'Not logged in';
+const meRes = await fetch('/api/me');
+const me = meRes.ok ? await meRes.json() : null;
+// 503: the site could not ask the daemon (V4-127, F210). The session is kept,
+// so this is not "Not logged in" and logging in again is not the remedy.
+document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me.handle})`
+  : meRes.status === 503 ? 'The login service is not answering; reload in a moment' : 'Not logged in';
 document.body.dataset.ready = '1';
 
 document.getElementById('rotate').addEventListener('click', async () => {
