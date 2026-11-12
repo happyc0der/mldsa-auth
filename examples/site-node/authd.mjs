@@ -37,7 +37,10 @@ const hex = (b) => Buffer.from(b).toString('hex');
 export function codeToHex(codeBase64url) {
   const b = Buffer.from(codeBase64url, 'base64url');
   if (b.length !== 32) {
-    throw new Error(`login code must be 32 bytes, got ${b.length}`);
+    // The caller's input is at fault, not the daemon: an AuthdError, as for
+    // every other value this module refuses to send (V4-130, F214). A plain
+    // Error here was read by the site as the daemon being away.
+    throw new AuthdError('bad-request-field');
   }
   return b.toString('hex');
 }

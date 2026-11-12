@@ -202,6 +202,36 @@ try {
           `ws: a rebound Host is refused, localhost is upgraded (${rebound}, ${local}) (F177)`);
   }
 
+  // V4-130, F214: a login code that is not 32 bytes is a refused login. The
+  // site answered it 503 `unavailable` -- the daemon being away -- because the
+  // conversion threw an error that was not one of the daemon's refusals.
+  {
+    const offer = async (code) => {
+      const sid = idOf(await get('/api/session'));
+      const r = await post('/api/login', { code }, sid);
+      return `${r.status} ${await r.text()}`;
+    };
+    const refused = '403 {"error":"login-failed"}';
+    const unknown = await offer(Buffer.alloc(32, 7).toString('base64url'));
+    check(unknown === refused, `code: a well-formed code the daemon never issued is ${refused} (the canary) (${unknown})`);
+    for (const [what, code] of [['one character', 'x'], ['the empty string', ''],
+                                ['31 bytes', Buffer.alloc(31, 7).toString('base64url')],
+                                ['33 bytes', Buffer.alloc(33, 7).toString('base64url')],
+                                ['64 hex digits', '07'.repeat(32)]]) {
+      const got = await offer(code);
+      check(got === refused, `code: a login code of ${what} is ${refused}, not the daemon being away (${got}) (F214)`);
+    }
+    // The same conversion serves the second login that mints recovery codes.
+    const lr2 = await login(idOf(await get('/api/session')), vid, PASS);
+    const sid2 = idOf(lr2);
+    await get('/api/session', sid2);
+    const rc = await post('/api/recovery-codes', { code: 'x' }, sid2);
+    const rcGot = `${rc.status} ${await rc.text()}`;
+    check(lr2.status === 200 && rcGot === refused,
+          `code: a malformed code offered for recovery codes is ${refused} (${rcGot}) (F214)`);
+    check((await get('/api/me', sid2)).status === 200, 'code: and the session that offered it is kept (F214)');
+  }
+
   // V4-88, F177: the HTTP routes refuse a Host that is neither an IP literal,
   // localhost, nor the site's own name; Origin agreeing with it does not help.
   {
@@ -543,6 +573,50 @@ try {
         await rawUpgrade(target);
         await sleep(100);
         check(alive(), `malformed: an upgrade to ${JSON.stringify(target)}, which the URL parser refuses, is closed and the site lives`);
+      }
+      // V4-130, F213: a refused upgrade is answered 403 on a socket that had no
+      // 'error' listener, so a client that reset the connection after reading
+      // the refusal ended the site's process (ECONNRESET, uncaught). And the
+      // site only half-closed that socket: a client that never closed its own
+      // half held it open for as long as it liked.
+      const refusedUpgrade = (headers, then) => new Promise((resolve) => {
+        const u = createConnection({ port: cp, host: '127.0.0.1', allowHalfOpen: true });
+        let buf = '';
+        let done = false;
+        let seen = false;
+        const finish = (v) => { if (!done) { done = true; u.destroy(); resolve(v); } };
+        u.on('error', (e) => finish(`error ${e.code}`));
+        u.on('close', () => finish('closed'));
+        u.on('data', (d) => {
+          buf += d;
+          if (buf.includes('\r\n\r\n') && !seen) { seen = true; then(u, Number(buf.split(' ')[1]), finish); }
+        });
+        u.on('connect', () => u.write(`GET /authd/v1?state=00 HTTP/1.1\r\n${headers}` +
+                                      'Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n'));
+        setTimeout(() => finish('no answer in 5 s'), 5000);
+      });
+      for (const [what, headers] of [
+        ['a foreign Origin', `Host: 127.0.0.1:${cp}\r\nOrigin: http://attacker.example\r\n`],
+        ['a rebound Host', `Host: rebind.example:${cp}\r\n`],
+      ]) {
+        const st = await refusedUpgrade(headers, (u, status, finish) => { u.resetAndDestroy(); finish(status); });
+        await sleep(300);
+        check(st === 403 && alive(),
+              `malformed: an upgrade refused for ${what}, then reset by the client, leaves the site alive (${st}${alive() ? '' : '; the site EXITED'}) (F213)`);
+      }
+      if (alive()) {
+        // The client keeps its half open and writes 1.5 s after the refusal: a
+        // site that has closed the socket answers that write with a reset.
+        const t0 = Date.now();
+        const held = await refusedUpgrade(`Host: 127.0.0.1:${cp}\r\nOrigin: http://attacker.example\r\n`, (u, status, finish) => {
+          const poke = () => { if (!u.destroyed) { u.write('x'); setTimeout(poke, 250); } };
+          setTimeout(poke, 1500);
+          setTimeout(() => finish(`still open ${Date.now() - t0} ms after the ${status}`), 4000);
+        });
+        check(/^(error (ECONNRESET|EPIPE)|closed)$/.test(held) && alive(),
+              `malformed: a refused upgrade's socket is closed by the site, whatever the client does (${held}) (F213)`);
+      } else {
+        check(false, 'malformed: a refused upgrade\'s socket is closed by the site (not run: the site had exited) (F213)');
       }
       check(alive() && (await fetch(`${cb}/api/session`)).status === 200, 'malformed: the site still serves after all of them');
     } finally {

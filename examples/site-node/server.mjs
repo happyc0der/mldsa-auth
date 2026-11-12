@@ -486,10 +486,15 @@ export async function startSite(opt) {
 
   // The WebSocket to the daemon, proxied byte for byte after the upgrade
   // request -- Caddy's job in production.
+  const REFUSED_UPGRADE_LINGER_MS = 1000;
   server.on('upgrade', (req, sock, head) => {
     // A target the URL parser refuses throws here, outside any request's
     // catch, and that ended the process too (F136); so does an upgrade when
     // neither daemon address was given.
+    // From here on the socket is this handler's, and an 'error' nobody
+    // listens for ends the process: a client that reset the connection after
+    // reading a refusal did exactly that (V4-130, F213).
+    sock.on('error', () => {});
     let path;
     try { path = new URL(req.url, 'http://x').pathname; } catch { sock.destroy(); return; }
     if (!path.startsWith('/authd/v1') || (!opt.authdWsUnix && !opt.authdWs)) { sock.destroy(); return; }
@@ -500,7 +505,11 @@ export async function startSite(opt) {
     const origin = req.headers.origin;
     if (!hostAllowed(req.headers.host, opt) ||
         (origin !== undefined && origin !== `${opt.secure ? 'https' : 'http'}://${req.headers.host}`)) {
+      // end() closes only this side. A client that kept its own side open
+      // held the socket for as long as it liked, so it is destroyed a second
+      // later, long after the refusal has left (F213).
       sock.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      setTimeout(() => sock.destroy(), REFUSED_UPGRADE_LINGER_MS).unref();
       return;
     }
     const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix)

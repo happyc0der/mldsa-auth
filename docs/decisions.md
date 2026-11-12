@@ -14659,3 +14659,55 @@ Six hand mutations, six killed by name, file restored byte-exact.
 not need one; a site that replaces the invite with its own account check
 brings its own. No spec change: the invite is the reference's stand-in
 (§14), not protocol.
+
+## V4-130 — F213, F214: a refused upgrade could end the site; a malformed code read as an outage
+
+**Where they came from.** An independent read of the reference site's
+JavaScript, asked for after quick scouting of the daemon found nothing. It
+reported five candidates. Each was reproduced before being believed; these
+two are fixed here and the other three are listed at the end.
+
+**F213, the refused upgrade.** After the `upgrade` event Node hands the
+socket over with no listeners. The proxied branch attached an `'error'`
+listener; the 403 branch did not. Measured against the site in a child
+process: read the 403, reset the connection, and the site exits. The
+listener is now attached first, before any branch.
+
+The same branch called `end()`, which closes one direction. The reviewer
+could not settle whether the socket lingered; a client opened with
+`allowHalfOpen` settled it: still open 4 s later, with nothing to end it.
+The socket is now destroyed one second after the refusal. One second
+because the refusal is 60 bytes and has left long before; destroying at
+once can reset the connection before the client has read the status, which
+the F160 and F177 checks read.
+
+**Severity, Medium.** Unauthenticated and remote, but only for a site
+reached directly. In the deployment the runbook describes, Caddy sends
+`/authd/v1` to the daemon and the handler destroys every other upgrade.
+
+**F214, the malformed code.** A regression from V4-127: F210's rule is
+"anything that is not the daemon's refusal is the daemon being away", and
+`codeToHex` threw a plain `Error`. It now throws
+`AuthdError('bad-request-field')`, as `Authd.request` does for a value it
+will not send. The route was not given its own format check: one decoder,
+in one place.
+
+**Checks, 11.** Three for F213, eight for F214, all in `site_sessions`.
+Red before the fix: nine of them, plus two existing checks that failed
+only because the site had exited. The half-open check was shown red on its
+own, with the listener in and the destroy out.
+
+**Mutations, five by hand.** Four killed by name. One survived and is
+equivalent: weakening `b.length !== 32` sends a 31-byte code to the
+daemon, which refuses it, and the site answers the same `403`.
+
+**Reported and not fixed here.**
+
+- A flood of cookieless requests evicts an anonymous session that holds a
+  recovery ticket, spending the visitor's single-use code (reproduced by
+  the reviewer: 10,000 requests, 540 ms). Next bug-finding step.
+- A cross-site top-level navigation to an API route arrives without the
+  Strict cookie and is answered with a new one, which logs the visitor
+  out. The server half is reproduced; the browser half is not yet.
+- Rotating a key in two tabs at once can promote an envelope the daemon
+  never saw. Reasoned from the code only, not reproduced.

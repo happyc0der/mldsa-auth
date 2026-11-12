@@ -176,7 +176,10 @@ if (!FIXTURE || !existsSync(FIXTURE)) {
 
   test('a malformed login code is rejected client-side, before any socket write', async () => {
     await withDaemon(async (authd) => {
-      await assert.rejects(() => exchange(authd, 'AAAA', ''), /32 bytes/);
+      // As an AuthdError (V4-130, F214): a plain Error is what the site reads as
+      // the daemon being away.
+      await assert.rejects(() => exchange(authd, 'AAAA', ''),
+                           (e) => e instanceof AuthdError && e.code === 'bad-request-field');
     });
   });
 }
