@@ -26,6 +26,7 @@
 //                canary written into IndexedDB proves the scan sees it
 // and it measures Argon2id and a login IN the browser, next to V4-2 S6.
 import { spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -156,6 +157,34 @@ try {
   check(await b.eval('document.cookie') === '', 'hand-off: the session cookie is HttpOnly -- invisible to page script');
   const me = await b.eval("fetch('/api/me').then((r) => r.text())");
   check(!/token/i.test(me) && /alice/.test(me), 'hand-off: the site answers who is logged in, and never with the token');
+
+  // V4-133, F216: a link on another site to one of the site's API routes
+  // logged the visitor out. Chromium withholds the SameSite=Strict cookie
+  // from that navigation; the site minted a new session for it, and the
+  // browser stored the new cookie over the logged-in one. `localhost` is
+  // another site than 127.0.0.1.
+  {
+    const evil = http.createServer((q, s) => {
+      s.writeHead(200, { 'Content-Type': 'text/html' });
+      s.end(`<a id="a" href="${origin}${new URL(q.url, 'http://x').searchParams.get('to')}">a link</a>`);
+    });
+    await new Promise((r) => evil.listen(0, '127.0.0.1', r));
+    const sidOf = async () => (await b.send('Network.getCookies', { urls: [origin] })).cookies.find((c) => c.name === 'sid')?.value;
+    for (const to of ['/api/me', '/api/session']) {
+      const before = await sidOf();
+      await b.navigate(`http://localhost:${evil.address().port}/?to=${to}`);
+      await b.eval("document.getElementById('a').click()");
+      await b.waitFor(`location.origin === ${JSON.stringify(origin)} && location.pathname === ${JSON.stringify(to)}`, `the link to ${to}`);
+      const shown = await b.eval('document.body.innerText');
+      const after = await sidOf();
+      await b.navigate(`${origin}/login.html`);
+      const still = await b.eval("fetch('/api/me').then((r) => String(r.status))");
+      check(!!before && after === before && still === '200' && /cross-site request refused/.test(shown),
+            `cross-site: a link on another site to ${to} leaves the visitor logged in ` +
+            `(cookie ${after === before ? 'kept' : 'REPLACED'}, /api/me then ${still}, the link showed ${JSON.stringify(shown.slice(0, 60))}) (F216)`);
+    }
+    evil.close();
+  }
 
   // ---- CSP ----
   const hdr = (await fetch(`${origin}/login.html`)).headers.get('content-security-policy');

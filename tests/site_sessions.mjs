@@ -232,6 +232,48 @@ try {
     check((await get('/api/me', sid2)).status === 200, 'code: and the session that offered it is kept (F214)');
   }
 
+  // V4-133, F216: a link on another site to an API route logged the visitor
+  // out. The browser withholds a SameSite=Strict cookie from such a
+  // navigation, the site took the request for a new visitor's and answered
+  // with a new cookie, and the browser stored it over the logged-in one
+  // (tests/browser_e2e.mjs shows that half in a browser). The browser says
+  // where a request came from in Sec-Fetch-Site; an API request from anywhere
+  // but the site's own pages, or the address bar, is refused before it can
+  // touch a session.
+  {
+    const from = (path, site, sid) => fetch(`${base}${path}`, {
+      headers: { ...(sid ? { Cookie: `sid=${sid}` } : {}), ...(site === null ? {} : { 'Sec-Fetch-Site': site, 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' }) } });
+    const plain = await from('/api/me', null);
+    check(plain.status === 401 && idOf(plain) !== undefined,
+          'nav: a cookieless request that says nothing of where it came from is a new visitor (the canary)');
+    for (const site of ['cross-site', 'same-site', 'elsewhere']) {
+      for (const path of ['/api/me', '/api/session']) {
+        const n0 = sessions.size;
+        const r = await from(path, site);
+        const text = await r.text();
+        check(r.status === 403 && text === '{"error":"cross-site request refused"}' && r.headers.get('set-cookie') === null &&
+              sessions.size === n0,
+              `nav: GET ${path} with Sec-Fetch-Site: ${site} is refused, sets no cookie and makes no session ` +
+              `(${r.status}, set-cookie ${r.headers.get('set-cookie') === null ? 'absent' : 'PRESENT'}, sessions ${n0} -> ${sessions.size}) (F216)`);
+      }
+    }
+    for (const site of ['same-origin', 'none']) {
+      const r = await from('/api/session', site);
+      check(r.status === 200 && idOf(r) !== undefined, `nav: GET /api/session with Sec-Fetch-Site: ${site} is served as before (${r.status})`);
+    }
+    // No browser sends a Strict cookie cross-site, but a request that did
+    // would be refused all the same, and the session it named is untouched.
+    const lr3 = await login(idOf(await get('/api/session')), vid, PASS);
+    const sid3 = idOf(lr3);
+    const xs = await from('/api/me', 'cross-site', sid3);
+    check(lr3.status === 200 && xs.status === 403 && xs.headers.get('set-cookie') === null &&
+          (await get('/api/me', sid3)).status === 200,
+          `nav: a cross-site request carrying a logged-in cookie is refused, and the session is kept (${xs.status}) (F216)`);
+    const page = await from('/login.html', 'cross-site');
+    check(page.status === 200 && page.headers.get('set-cookie') === null,
+          `nav: a link from another site to a page of the site still opens it (${page.status})`);
+  }
+
   // V4-88, F177: the HTTP routes refuse a Host that is neither an IP literal,
   // localhost, nor the site's own name; Origin agreeing with it does not help.
   {

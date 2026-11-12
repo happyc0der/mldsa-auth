@@ -426,7 +426,7 @@ code). The result is `build-wasm/web/mldsa_client.{mjs,wasm}`, about 300 KB toge
 The page runs the client; **your site** decides who may have an account and
 turns a login code into a session. `examples/site-node/server.mjs` is a
 complete reference — `node:http`, no dependencies — and it is what the tests
-drive in a real browser. Use it, or hold your own site to the same seven rules:
+drive in a real browser. Use it, or hold your own site to the same eight rules:
 
 1. **A fresh `state` per login**, kept in the visitor's server-side session and
    put in the WebSocket URL; `EXCHANGE` must present it (spec §7.1, Req 5), so a
@@ -448,6 +448,12 @@ drive in a real browser. Use it, or hold your own site to the same seven rules:
 7. **New recovery codes need a login, not only a session.** Have the page log
    in again (device key and passphrase) and send that login's code; mint the
    codes only if `EXCHANGE` says it is the session's own user (V4-62).
+8. **Refuse an API request that another site started.** A browser leaves a
+   `SameSite=Strict` cookie out of a navigation begun elsewhere; answer one
+   with a new session cookie and any link on the web logs your visitor out.
+   Refuse API requests whose `Sec-Fetch-Site` is present and is neither
+   `same-origin` nor `none`, before making a session, and have your proxy
+   pass the header through (audit F216).
 
 The reference site, installed and started as the site's user:
 

@@ -34,6 +34,9 @@
  *     somebody else's session (login-CSRF).
  *   * EVERY POST MUST COME FROM THIS ORIGIN (the Origin header), on top of a
  *     SameSite=Strict, HttpOnly session cookie -- `__Host-sid` behind TLS.
+ *   * NO API REQUEST THAT ANOTHER SITE STARTED (Sec-Fetch-Site): a link there
+ *     arrives without the Strict cookie, and answering it with a new one
+ *     logged the visitor out (V4-133, audit F216).
  *   * A NEW SESSION ID AT EVERY CHANGE OF PRIVILEGE (a login, a signup, a
  *     recovery), and a BOUNDED session table (V4-58, audit F131 and F132; see
  *     the table's own comment below).
@@ -470,6 +473,19 @@ export async function startSite(opt) {
         if (origin !== self) { return send(res, 403, { error: 'cross-origin POST refused' }); }
       }
       const route = api[`${req.method} ${url.pathname}`];
+      // V4-133, F216: the API is for the site's own pages. A browser leaves
+      // the SameSite=Strict cookie out of a navigation that another site
+      // started, so a link there to an API route arrived looking like a new
+      // visitor, was answered with a new cookie, and the browser stored it
+      // over the logged-in one: any page on the web could log a visitor out
+      // with a link. Sec-Fetch-Site is the browser's own word for where a
+      // request came from, and page script cannot set it; `none` is the
+      // address bar or a bookmark. A client that sends no such header is not
+      // a browser on a secure origin, and has no cookie to lose this way.
+      const from = req.headers['sec-fetch-site'];
+      if (route && from !== undefined && from !== 'same-origin' && from !== 'none') {
+        return send(res, 403, { error: 'cross-site request refused' });
+      }
       // `await`, so a route's rejection lands in the catch below. Without it
       // (F136) the rejection escaped this handler, and Node ended the process
       // on it: one POST of a malformed body stopped the site.

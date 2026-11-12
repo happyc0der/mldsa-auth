@@ -14763,3 +14763,59 @@ last one fills the table with tickets by writing to the session map that
 `startSite` returns, since fifty recovery codes are not to hand.
 
 **Mutations, six by hand, six killed by name.**
+
+## V4-133 — F216: a link on another site no longer logs the visitor out
+
+**Where it came from.** The third of the independent reviewer's candidates
+(V4-130 lists them). The reviewer had shown the server half: a request
+with no cookie is answered with a new one. Whether a browser then stores
+it over a `SameSite=Strict` cookie it had just withheld was unproven.
+
+**The browser half, measured first.** Headless Chromium, a visitor with a
+session, and a page on `localhost` (another site than `127.0.0.1`):
+
+- an `<img>` pointing at `/api/me`: cookie kept. The browser discards a
+  Strict cookie set by a cross-site subresource;
+- a navigation to `/api/me`: cookie replaced;
+- a navigation to `/api/session`: cookie replaced.
+
+The navigations arrived with `Sec-Fetch-Site: cross-site` and no cookie.
+
+**Choices considered.**
+
+- *Make no session on a GET without a cookie.* `/api/session` is where a
+  page gets its first cookie, so it must make one; fixing `/api/me` alone
+  leaves the other route.
+- *Never replace a cookie the request did not carry.* The server cannot
+  tell a withheld cookie from an absent one.
+- *Refuse by `Sec-Fetch-Site`.* Chosen. The browser sets it and page
+  script cannot. An API request is refused when the header is present and
+  is neither `same-origin` nor `none` (the address bar or a bookmark,
+  which do carry the Strict cookie). The refusal comes before any session
+  is looked up or made. `same-site` is refused too: the API is for the
+  site's own pages, and POSTs from a sibling host were already refused by
+  `Origin`.
+
+Pages and static files are not gated, so a link to the site from mail or
+another site opens it as before, and that page's own requests are
+same-origin.
+
+**What is not claimed.** A browser sends `Sec-Fetch-Site` only to an
+https or loopback origin, and a client that sends none is served as
+before. A site served over plain http to another machine is therefore
+not protected; that is not a supported deployment (the cookie is
+`__Host-` and `Secure` behind TLS). Only Chromium was measured. A proxy
+in front must pass the header through; Caddy does by default.
+
+**Checks.** 11 `nav:` checks in `site_sessions`, 7 red before the fix,
+and 2 `cross-site:` checks in `browser_e2e`, both red before: a real
+link on another site, clicked, with the visitor logged in.
+
+**Mutations, seven by hand, seven killed by name:** the gate off; the
+gate on pages too; `none` refused; `same-origin` refused; only
+`cross-site` refused; a session made before the refusal; a request with
+a cookie let through.
+
+**Still open from the reviewer's list:** rotating a key in two tabs can
+promote the wrong pending envelope (`web/client/flows.mjs`), reasoned
+only.
