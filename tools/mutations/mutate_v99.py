@@ -7,11 +7,13 @@ Usage: mutate_v99.py <repo> <ID>
 Two-letter IDs: LF = Loop Failed. Every spec line names the check that must
 catch it (F90).
 
-Both are killed by authd_e2e on Linux only. Nothing portable makes poll()
+LF1 is killed by authd_e2e on Linux only. Nothing portable makes poll()
 fail in a running daemon; Linux's prlimit does, by lowering the daemon's
-RLIMIT_NOFILE below its listeners. On macOS that leg is skipped and both
-survive -- as v75's KC5 and v58's GA13 and GA14 do. The nightly runs them
-on Linux.
+RLIMIT_NOFILE below its listeners. On macOS that leg is skipped and LF1
+survives -- as v75's KC5 and v58's GA13 and GA14 do. The nightly runs it
+on Linux. LF2 was Linux-only too until V4-137: the F219 check (a daemon
+stopped while answering the site exits 0) runs everywhere and comes before
+the F208 canary, so it is the check LF2's spec line names.
 
     LF1   a failed loop is not remembered: the daemon exits 0 after
           loop-failed (what F208 reported).

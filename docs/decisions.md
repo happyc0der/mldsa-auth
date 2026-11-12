@@ -15026,3 +15026,19 @@ not move: 488 mutations, 71 campaigns, 528 anchors.
 
 **Severity.** Low. Nothing is lost and nobody gets in; a user picks
 between two handles and a wrong pick looks like a wrong passphrase.
+
+## V4-139: cleanup after V4-137 and V4-138
+
+- `docs/review/REPRODUCE.md` cites CI 43317693298 (16/16) and nightly
+  43317699329 (86/86, all 71 campaigns) on `4b6eda5`.
+- `tests/web_flows.mjs`: the header's scenario list names the V4-138
+  scenarios.
+- `tools/mutations/mutate_v99.py`: the header said both mutations are
+  killed on Linux only. Since V4-137 that is true of LF1 alone.
+
+For the record: V4-137 as first pushed (`5293498`) had CI 43302354375
+16/16 and nightly 43302358229 85/86, v99's LF2 surviving; recommitted as
+`b9ad255` with LF2's spec line corrected, CI 43317683443 16/16 and
+nightly 43317688576 86/86. V4-138 as first pushed (`d95d9d1`) had CI
+43305456959 16/16 and its nightly failed the same way; rebased as
+`4b6eda5`. No code, test logic or count changed in this step.

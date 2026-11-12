@@ -14,7 +14,10 @@
 // and, since V4-68 (F137), that the server key used is the one pinned at
 // enrollment, whatever the page offers; and, since V4-136 (F218), that two
 // rotations of one identity run one after the other, a login waits for a
-// rotation in progress, and the store promotes only the key its caller staged.
+// rotation in progress, and the store promotes only the key its caller staged; and, since V4-138
+// (F220), that a new key follows the site's answer to its enrollment:
+// removed when refused, confirmed when enrolled, kept and marked when the
+// site did not answer, and confirmed by the first login that succeeds.
 // The IndexedDB store itself (its transactions) is tested in a real browser.
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
