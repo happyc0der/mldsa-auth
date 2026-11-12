@@ -1110,6 +1110,33 @@ static void test_listener_paths(void)
             "paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched"); }
     (void)unlink(lnk);
 
+    /* F204: a socket something is LISTENING on is another daemon's, not a
+     * leftover. It is refused, and it stays that listener's: the same file,
+     * and a connection made to the path afterwards arrives at lfd. */
+    { struct stat before, after;
+      const int had = stat(live, &before);
+      fd = -1;
+      const listener_status_t r = listener_open_unix(live, 4, LISTENER_MODE_PRIVATE, &fd);
+      CHECK(r == LISTENER_ERR_IN_USE && fd == -1 && strcmp(listener_status_name(r), "in-use") == 0,
+            "paths: a socket that is being listened on is refused as in-use (F204)");
+      if (fd >= 0) { (void)close(fd); fd = -1; }  /* the old code's new listener: do not let it answer below */
+      int reached = 0;
+      { int drained = -1;                          /* whatever the refusal's own look left queued */
+        while (listener_accept_ex(lfd, NULL, 0u, &drained, NULL) == LISTENER_OK) { (void)close(drained); drained = -1; }
+        struct sockaddr_un a;
+        memset(&a, 0, sizeof a);
+        a.sun_family = AF_UNIX;
+        memcpy(a.sun_path, live, strlen(live));
+        const int c = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (c >= 0 && connect(c, (const struct sockaddr *)&a, sizeof a) == 0) {
+            int got = -1;
+            reached = listener_accept_ex(lfd, NULL, 0u, &got, NULL) == LISTENER_OK;
+            if (got >= 0) { (void)close(got); }
+        }
+        if (c >= 0) { (void)close(c); } }
+      CHECK(had == 0 && stat(live, &after) == 0 && before.st_ino == after.st_ino && reached,
+            "paths: and it is left in place, still reaching the listener that holds it (F204)"); }
+
     /* a stale socket (its listener gone) is replaced -- the canary */
     listener_close(&lfd, NULL);                    /* the fd only: the socket file stays */
     fd = -1;

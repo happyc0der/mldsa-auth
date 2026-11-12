@@ -14085,3 +14085,60 @@ number: the daemon was never wrong.
 **Still timed.** The 60 ms holder is unchanged: if the test stalls there the
 lock is gone and the check passes without having waited, which weakens one
 run and fails none.
+
+## V4-118 — F204: a socket that answers is not a leftover
+
+**What was wrong.** `listener_open_unix` treated any socket at its path as
+the remains of a crash: unlink, bind. F130 (V4-57) made a daemon that fails
+to start leave alone the paths it never bound, and its end-to-end leg starts
+a second daemon on the first one's configuration and checks the first
+survives. That leg passes because the second daemon fails at the TCP bind,
+which comes first. `listen_port = 0` is a documented configuration
+(`deploy/authd.conf.example`), and with it there is no TCP bind to fail.
+
+Reproduced with the `build-p` binaries before any change: a second daemon on
+a Unix-only configuration logged `started`; the admin socket's inode changed;
+the first daemon kept running with three listening sockets no path led to.
+Stopping the second daemon unlinked the paths, and `authd_admin list-users`
+answered `cannot-connect` with the first daemon alive. Nothing in the first
+daemon's log says anything happened.
+
+Medium, as F130 was: it takes someone who can already start the daemon with
+its configuration, and what it costs is the service, silently, not a secret.
+
+**The change.** Before unlinking, connect to the socket. A refused connection
+(`ECONNREFUSED`) or a path gone in between (`ENOENT`) means nothing is
+listening and the file is a leftover; it is replaced as before. Anything
+else, a connection that succeeds, a full backlog, a permission error, a
+failure to make the probe socket, is `LISTENER_ERR_IN_USE` (`in-use`), and
+the path is not touched. Unknown is treated as in use: refusing to start is
+loud and recoverable, taking a live socket is neither. Spec §16, erratum 85.
+
+**Why not a lock file.** A lock (`flock` on a file beside the socket) would
+close the race below, but it adds a file the daemon must create in a
+directory the unit may not let it write elsewhere, a new failure mode to
+document, and state that outlives a crash on some filesystems. The probe adds
+nothing on disk. If the race ever matters, the lock is the next step.
+
+**What it does not do.**
+- It is a look, not a lock. Two daemons started at the same instant over a
+  leftover socket can both find it dead; the later bind then wins as before.
+  Two starts over a LIVE socket, the case found, are both refused.
+- The running daemon sees the probe: one connection opened and closed with
+  no bytes, per socket, which it handles as it does any client that hangs up.
+- A daemon stopped with SIGSTOP still has a listening socket, so the probe
+  connects and the start is refused. That is the right answer for a process
+  that still holds the socket.
+- Measured on macOS only before the push; Linux's errno for each case is
+  what CI and the nightly are for.
+
+**Evidence.** Two unit checks in `test_authd_ws` (163), written first and
+shown failing: a listened-on path is refused as `in-use`, and afterwards it
+still reaches the listener that holds it. An end-to-end leg in
+`authd_e2e.sh` on a Unix-only configuration: the second daemon exits
+non-zero saying `in-use`, the three sockets and the admin socket's inode are
+unchanged, the first daemon still answers; then the first is killed with
+SIGKILL and a new daemon starts over its sockets, the canary that the probe
+did not turn every leftover into a refusal. Campaign v95, five mutations
+(LU1–LU5): the probe disabled, only-`ENOENT`-is-dead, the wrong status, the
+probe's sense inverted for a live socket, and the status name.

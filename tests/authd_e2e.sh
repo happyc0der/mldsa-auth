@@ -34,9 +34,11 @@ if [ "${#TMP}" -gt 80 ]; then
 fi
 
 DPID=""
+UPID=""
 RU=""
 cleanup() {
     if [ -n "$DPID" ]; then kill "$DPID" 2>/dev/null || true; fi
+    if [ -n "$UPID" ]; then kill "$UPID" 2>/dev/null || true; fi
     rm -rf "$TMP"
     if [ -n "$RU" ]; then rm -rf "$RU"; fi
 }
@@ -225,6 +227,73 @@ done
 "$ADMIN" list-users --socket "$TMP/a.sock" > /dev/null \
     || fail "the running daemon is unreachable after a second daemon failed to start (F130)"
 echo "PASS: E2E: a second daemon on the same configuration fails and leaves the running one reachable"
+
+# F204: the leg above is saved by the TCP port -- the second daemon fails at
+# that bind before it reaches a Unix socket. With listen_port left at 0, which
+# deploy/authd.conf.example offers, nothing failed: the second daemon unlinked
+# the first one's three sockets, bound its own and started. The first stayed
+# up and unreachable, and stopping the second removed the paths altogether.
+cat > "$TMP/u.conf" <<EOF
+store_path = $TMP/d/store.sqlite3
+key_path = $TMP/d/server.ek
+key_passphrase_file = $TMP/d/pass
+server_id = authd
+listen_unix = $TMP/up.sock
+site_socket = $TMP/us.sock
+admin_socket = $TMP/ua.sock
+site_uids = $(id -u)
+admin_uids = $(id -u)
+EOF
+wait_started() {    # <pid> <log>: 0 once the log has event=started, 1 if the process ended first
+    i=0
+    while ! grep -q 'event=started' "$2" 2>/dev/null; do
+        i=$((i + 1))
+        kill -0 "$1" 2>/dev/null || return 1
+        [ "$i" -gt 400 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
+"$DAEMON" --config "$TMP/u.conf" > "$TMP/u1.log" 2>&1 &
+UPID=$!
+wait_started "$UPID" "$TMP/u1.log" || fail "a daemon with no TCP listener did not start"
+"$ADMIN" list-users --socket "$TMP/ua.sock" > /dev/null || fail "the Unix-only daemon's admin socket does not answer"
+ino_before=$(ls -i "$TMP/ua.sock" | awk '{print $1}')
+"$DAEMON" --config "$TMP/u.conf" > "$TMP/u2.log" 2>&1 &
+U2=$!
+if wait_started "$U2" "$TMP/u2.log"; then
+    kill "$U2" 2>/dev/null || true
+    wait "$U2" 2>/dev/null || true
+    fail "a second daemon started on a Unix-only configuration already in use (F204)"
+fi
+rc=0
+wait "$U2" || rc=$?
+[ "$rc" -ne 0 ] || fail "a second daemon on a Unix-only configuration exited zero (F204)"
+grep -q 'in-use' "$TMP/u2.log" || fail "the second daemon did not say the socket is in use (F204)"
+for sk in up.sock us.sock ua.sock; do
+    [ -S "$TMP/$sk" ] || fail "a second daemon removed the running daemon's $sk (F204)"
+done
+[ "$(ls -i "$TMP/ua.sock" | awk '{print $1}')" = "$ino_before" ] \
+    || fail "the running daemon's admin socket was replaced by a second daemon (F204)"
+"$ADMIN" list-users --socket "$TMP/ua.sock" > /dev/null \
+    || fail "the running daemon is unreachable after a second daemon tried its sockets (F204)"
+kill -0 "$UPID" 2>/dev/null || fail "the running daemon died when a second one tried its sockets (F204)"
+echo "PASS: E2E: a second daemon on a Unix-only configuration is refused, and the running one still answers (F204)"
+
+# The canary for that refusal: a daemon that was KILLED leaves its sockets
+# behind with nothing listening, and those must still be replaced.
+kill -9 "$UPID" 2>/dev/null || true
+wait "$UPID" 2>/dev/null || true
+[ -S "$TMP/ua.sock" ] || fail "a killed daemon left no socket behind: the canary has nothing to replace"
+"$DAEMON" --config "$TMP/u.conf" > "$TMP/u3.log" 2>&1 &
+UPID=$!
+wait_started "$UPID" "$TMP/u3.log" || fail "a daemon did not start over the sockets a killed one left behind"
+"$ADMIN" list-users --socket "$TMP/ua.sock" > /dev/null \
+    || fail "the daemon that replaced a killed one's sockets does not answer"
+kill "$UPID" 2>/dev/null || true
+wait "$UPID" 2>/dev/null || true
+UPID=""
+echo "PASS: E2E: sockets left by a killed daemon are replaced -- the canary"
 
 # A listener failure must run the cleanup epilogue, not return early. The real
 # damage when it does not is the DECRYPTED server key left unwiped in secure

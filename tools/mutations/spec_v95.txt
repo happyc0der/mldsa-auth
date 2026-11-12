@@ -1,0 +1,5 @@
+LU1|^authd_e2e$|a second daemon started on a Unix-only configuration already in use (F204)
+LU2|^test_authd_ws$|paths: a stale socket left by a crash is replaced, so it cannot wedge the service -- the canary
+LU3|^test_authd_ws$|paths: a socket that is being listened on is refused as in-use (F204)
+LU4|^test_authd_ws$|paths: and it is left in place, still reaching the listener that holds it (F204)
+LU5|^authd_e2e$|the second daemon did not say the socket is in use (F204)

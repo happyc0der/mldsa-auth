@@ -29,7 +29,8 @@ typedef enum {
     LISTENER_ERR_LISTEN,
     LISTENER_ERR_PATH,       /* unix path too long, or refused */
     LISTENER_AGAIN,          /* accept: nothing pending right now */
-    LISTENER_ERR_PEER        /* accept: peer credential check failed */
+    LISTENER_ERR_PEER,       /* accept: peer credential check failed */
+    LISTENER_ERR_IN_USE      /* unix path: a socket something is listening on (F204) */
 } listener_status_t;
 
 const char *listener_status_name(listener_status_t st);
@@ -38,8 +39,10 @@ const char *listener_status_name(listener_status_t st);
 listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, uint16_t *bound_port);
 
 /* Binds a Unix stream socket at `path` with `mode`. An existing socket file at
- * that path is removed first (a stale socket after a crash must not wedge the
- * service); anything else at that path is refused rather than unlinked.
+ * that path is removed first when nothing is listening on it (a stale socket
+ * after a crash must not wedge the service). A socket that answers is another
+ * daemon's and is refused, LISTENER_ERR_IN_USE (audit F204); anything else at
+ * that path is refused rather than unlinked, LISTENER_ERR_PATH.
  *
  * The mode is a PARAMETER because spec 8 gives the two local sockets different
  * ones: site.sock is 0660 (owner plus the site's group) while admin.sock is

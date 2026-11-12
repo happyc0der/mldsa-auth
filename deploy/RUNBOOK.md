@@ -806,6 +806,11 @@ Common ones, and what they actually are:
 - **`unix listener …: path`** — a socket path longer than `sun_path` (104–108
   bytes). The unit's `ExecStartPre=` check catches this before the daemon
   tries to bind it.
+- **`unix listener …: in-use`** (also `site socket` and `admin socket`) —
+  something is listening on that socket: the service is already running, or a
+  second unit or a hand-started daemon uses the same configuration. The
+  running daemon is not disturbed. A socket left behind by a killed daemon
+  does not cause this; it is replaced.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
 - **`authd.conf: io (Permission denied)`** — the daemon cannot read its

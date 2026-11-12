@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.42, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115 errata)
+# mldsa-authd — deployment specification (v1.43, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1246,6 +1246,14 @@ is shorter than the 255 bytes the configuration parser otherwise allows. A path
 that passes every byte-level check and no kernel can bind is refused by
 `--check-config` rather than at start-up.
 
+**A socket path that something is listening on is refused at start-up**, with
+status `in-use`, and left as it is: it belongs to a running daemon. A socket
+file that nothing is listening on, which is what a killed daemon leaves, is
+replaced. The daemon tells the two apart by connecting to the path, so the
+running daemon sees one connection opened and closed. This is a look, not a
+lock: two daemons started at the same instant over a leftover socket can both
+find it dead.
+
 Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`,
 mode 0600 **owned by the service user**, which reads it; `/etc/mldsa-authd/`
 is root-owned, mode 0750, group `mldsa-authd`; the unit's `ProtectSystem=strict`
@@ -1748,3 +1756,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 84 | 13 | `--passphrase-prompt` survives a stop: the terminal is restored before the process stops; on the continue echo is turned off again, what was typed before the stop is discarded and the prompt is shown again | the stop signals were not caught, so after Ctrl-Z and `fg` the prompt went on reading from a terminal the shell had left echoing, and the rest of the passphrase was shown. Finding **F203** |
+
+### Revision v1.43 (V4-118)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 85 | 16 | A Unix socket path that something is listening on is refused at start-up (`in-use`) and left alone; only a socket nothing listens on is replaced | every existing socket at the path was unlinked and bound over. With a TCP listener configured a second daemon failed at that bind first; with `listen_port = 0` it started, and the running daemon stayed up with no socket anyone could reach (F204) |

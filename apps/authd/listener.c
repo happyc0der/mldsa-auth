@@ -35,6 +35,7 @@ const char *listener_status_name(listener_status_t st)
     case LISTENER_ERR_PATH:    return "path";
     case LISTENER_AGAIN:       return "again";
     case LISTENER_ERR_PEER:    return "peer-credential";
+    case LISTENER_ERR_IN_USE:  return "in-use";
     default:                   return "unknown";
     }
 }
@@ -95,6 +96,35 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
     return LISTENER_OK;
 }
 
+/* Is anything listening on the socket at `a`? 1 yes or cannot tell, 0 no.
+ *
+ * A socket file whose listener is gone refuses a connection (ECONNREFUSED);
+ * that, and the file having vanished meanwhile, are the only answers that
+ * make it a leftover. Everything else -- connected, a full backlog (EAGAIN
+ * on a non-blocking connect), no permission -- leaves it somebody's: a path
+ * this cannot prove dead is not this process's to unlink (F204). The look is
+ * one connection the listener sees opened and closed, with nothing sent. */
+static int unix_socket_in_use(const struct sockaddr_un *a)
+{
+    const int c = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (c < 0) {
+        return 1;
+    }
+    int rc = -1;
+    int err = 0;
+    if (set_nonblock_cloexec(c) == 0) {
+        do {
+            rc = connect(c, (const struct sockaddr *)a, sizeof *a);
+        } while (rc != 0 && errno == EINTR);
+        err = (rc != 0) ? errno : 0;
+    }
+    (void)close(c);
+    if (rc != 0 && (err == ECONNREFUSED || err == ENOENT)) {
+        return 0;
+    }
+    return 1;
+}
+
 listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode, int *fd)
 {
     if (path == NULL || fd == NULL || backlog <= 0) {
@@ -117,11 +147,22 @@ listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode,
 
     /* A stale socket from a crash must not wedge the service, but anything
      * that is NOT a socket at that path is refused rather than removed -- the
-     * daemon does not delete an operator's file because it wanted the name. */
+     * daemon does not delete an operator's file because it wanted the name.
+     *
+     * Nor a socket that is being listened on (F204): that is a running
+     * daemon's, and unlinking it left that daemon up and unreachable while
+     * this one served in its place. With a TCP listener configured the
+     * second daemon failed at its bind before it got here; with
+     * listen_port = 0, which the example configuration offers, nothing
+     * stopped it. Two daemons started at the same instant over a leftover
+     * can still both find it dead; this is not a lock. */
     struct stat st;
     if (lstat(path, &st) == 0) {
         if (!S_ISSOCK(st.st_mode)) {
             return LISTENER_ERR_PATH;
+        }
+        if (unix_socket_in_use(&a)) {
+            return LISTENER_ERR_IN_USE;
         }
         if (unlink(path) != 0) {
             return LISTENER_ERR_PATH;
