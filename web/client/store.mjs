@@ -1,7 +1,7 @@
 // Where a browser keeps its identity (V4-13c): IndexedDB.
 //
 // One record per handle:
-//   { handle, serverId, serverPub, envelope, pending, createdAt, rotatedAt }
+//   { handle, serverId, serverPub, envelope, pending, unconfirmed, createdAt, rotatedAt }
 // `envelope` is the MLDSAEK1 blob of the key the daemon currently accepts, and
 // `pending` -- null except during a rotation -- is the NEW key's envelope.
 // Nothing here is a secret in the clear: both envelopes are sealed under the
@@ -38,6 +38,14 @@
 //   promote        takes the envelope the caller staged and promotes nothing
 //                  else: a pending key somebody else put there is not this
 //                  rotation's to promote.
+//
+// A KEY THE SITE HAS NOT CONFIRMED (V4-138, F220). The record is written
+// BEFORE the site is asked to enroll the key -- the other order can leave an
+// account whose only key was never stored -- so for a moment it holds a key
+// the daemon has not seen. `unconfirmed` says so:
+//   create         takes `unconfirmed: true` from an enrollment (flows.mjs);
+//   confirm        clears it: the site said yes, or the key logged in.
+// A record without the field (written before V4-138) is a confirmed one.
 //
 // MemoryStore has the same methods and no durability, for tests that run
 // where IndexedDB does not (Node).
@@ -107,11 +115,16 @@ export class IdentityStore {
 
   // A newly enrolled identity. Refuses to overwrite one: an existing record
   // may hold the only copy of a key the daemon accepts.
-  async create({ handle, serverId, serverPub, envelope }) {
+  async create({ handle, serverId, serverPub, envelope, unconfirmed = false }) {
     const tx = this.db.transaction(STORE, 'readwrite');
     const os = tx.objectStore(STORE);
-    os.add({ handle, serverId, serverPub, envelope, pending: null, createdAt: Date.now(), rotatedAt: null });
+    os.add({ handle, serverId, serverPub, envelope, pending: null, unconfirmed: unconfirmed === true,
+             createdAt: Date.now(), rotatedAt: null });
     await committed(tx);
+  }
+
+  async confirm(handle) {
+    await this.#update(handle, (r) => { r.unconfirmed = false; });
   }
 
   async stagePending(handle, envelope) {
@@ -161,7 +174,12 @@ export class MemoryStore {
   async list() { return [...this.m.values()].map((r) => ({ ...r })); }
   async create(r) {
     if (this.m.has(r.handle)) { throw new Error('exists'); }
-    this.m.set(r.handle, { ...r, pending: null, createdAt: Date.now(), rotatedAt: null });
+    this.m.set(r.handle, { ...r, pending: null, unconfirmed: r.unconfirmed === true, createdAt: Date.now(), rotatedAt: null });
+  }
+  async confirm(handle) {
+    const r = this.m.get(handle);
+    if (!r) { throw new Error(`no identity for ${handle}`); }
+    r.unconfirmed = false;
   }
   async stagePending(handle, envelope) {
     const r = this.m.get(handle);

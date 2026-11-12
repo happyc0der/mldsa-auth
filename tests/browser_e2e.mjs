@@ -98,10 +98,11 @@ const watch = (b) => b.on((method, p) => {
 });
 
 // Fills the page's fields and clicks, then waits for data-result.
-async function act(b, page, fields, button = 'go') {
+// `first` (optional) is script run in the page before the click.
+async function act(b, page, fields, button = 'go', first = '') {
   await b.navigate(`${origin}/${page}`);
   await b.waitFor("document.body.dataset.ready === '1'", `${page} ready`);
-  await b.eval(`(() => { delete document.body.dataset.result; ${Object.entries(fields).map(([k, v]) =>
+  await b.eval(`(() => { delete document.body.dataset.result; ${first} ${Object.entries(fields).map(([k, v]) =>
     `document.getElementById(${JSON.stringify(k)}).value = ${JSON.stringify(v)};`).join(' ')}
     document.getElementById(${JSON.stringify(button)}).click(); })()`);
   await b.waitFor('!!document.body.dataset.result', `${page} result`, 60000);
@@ -136,6 +137,32 @@ try {
   r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: PASS });
   check(r.result === 'ok' && /Enrolled alice/.test(r.status), `enroll: a key made in the browser is enrolled (${r.status})`);
   const handle = await inPage(b, 'return (await store.list())[0].handle;');
+  // F220 (V4-138): the page stores the key before the site is asked, and a
+  // key the site then refused stayed in IndexedDB: the login page offered it
+  // beside the real one, and the daemon had never seen it. The name is taken,
+  // so the site answers 403.
+  r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: PASS });
+  const kept = await inPage(b, 'return (await store.list()).map((x) => [x.handle, x.unconfirmed]);');
+  check(r.result.startsWith('error') && /user-exists/.test(r.status), `enroll: a taken name is refused (the canary) (${r.status})`);
+  check(kept.length === 1 && kept[0][0] === handle && kept[0][1] === false,
+        `enroll: a key the site refused is not left in the browser, and the enrolled one is confirmed (${JSON.stringify(kept.map((k) => k[1]))}) (F220)`);
+  // No answer is not a refusal: the daemon may have enrolled the key and the
+  // answer been lost, so the key stays, marked, and the login page says which
+  // one it is. The 503 is the site's own answer for a daemon it cannot reach,
+  // given here by the page's fetch so the daemon is not disturbed.
+  r = await act(b, 'enroll.html', { user: 'bob', invite: INVITE, passphrase: PASS }, 'go',
+    `const f = window.fetch; window.fetch = (u, o) => (String(u).endsWith('/api/enroll')
+       ? Promise.resolve(new Response('{"error":"unavailable"}', { status: 503 })) : f(u, o));`);
+  const unsure = await inPage(b, 'return (await store.list()).filter((x) => x.unconfirmed === true).map((x) => x.handle);');
+  check(r.result.startsWith('error') && /did not confirm/.test(r.status) && unsure.length === 1 && r.status.includes(unsure[0]),
+        `enroll: a key the site did not answer for is kept, marked, and the page names it (${unsure.length} kept; ${r.status}) (F220)`);
+  await b.navigate(`${origin}/login.html`);
+  await b.waitFor("document.body.dataset.ready === '1'", 'login.html ready');
+  const offered = await b.eval("Array.from(document.getElementById('identity').options, (o) => [o.value, o.text])");
+  check(offered.length === 2 && offered[0][0] === handle && offered[0][1] === handle &&
+        offered[1][0] === unsure[0] && /not confirmed/.test(offered[1][1]),
+        `login: the confirmed key is offered first, and the other says it was never confirmed (${JSON.stringify(offered.map((o) => o[1].replace(/^\S+ ?/, '')))}) (F220)`);
+  await inPage(b, `await store.remove(${JSON.stringify(unsure[0] ?? '')});`);
   // Every key this profile's store holds, as the test sees each one appear.
   const envOf = async (br, h) => toHex(await inPage(br, `return Array.from((await store.get(${JSON.stringify(h)})).envelope);`));
   const held = [['the enrolled key', await envOf(b, handle)]];

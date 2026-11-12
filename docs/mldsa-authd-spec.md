@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.51, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137 errata)
+# mldsa-authd — deployment specification (v1.52, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1016,6 +1016,18 @@ protocol's. That means a mis-issued certificate, a compromised proxy, or one
 day a quantum computer forging TLS's certificate signatures. The CLI's code
 and pin are local, and it does not depend on TLS.
 
+**A key the site has not confirmed** (erratum 94). A page stores a new key
+before it asks the site to enroll it: the other order can enroll a key that is
+then not stored, and an account whose only key is lost has no way back in. So
+for a moment the store holds a key the daemon has not seen, and the record
+says so until the site answers. If the site answers that it enrolled the key,
+the mark is cleared. If the site refuses, the record is removed: the daemon
+never took that key. If there is no answer to read — no connection, or the
+site's 5xx — the record is kept, still marked, because the daemon may have
+enrolled the key and the answer been lost; the page says which key that is,
+the login page lists it after the confirmed ones and says it was never
+confirmed, and a login the daemon accepts with it clears the mark.
+
 **The module's contract** (V4-13b, addition 32). It is built with **Emscripten
 6.0.9** exactly, and its known-answer test must reproduce the native golden
 (`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
@@ -1902,3 +1914,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 93 | 16 | "Drain" is defined: no further connection is accepted, a connection with no reply queued is closed at once, and every queued reply — on a local connection as on a protocol one — is written before its connection is closed | the daemon ended its loop once no protocol connection was left. A reply is queued by its handler and written on the loop's next turn, so a `SIGTERM` that arrived while a site or admin request was being served — most of that time is one Argon2id computation — dropped the reply: a recovery code was spent and its ticket never delivered, new recovery codes replaced the old and were never shown, an enrolment was committed and the site was told nothing (F219) |
+
+### Revision v1.52 (V4-138)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 94 | 14 | A browser marks a newly stored key unconfirmed until the site answers its enrollment: confirmed on a yes, removed on a refusal, kept and still marked when there is no answer; the login page says which keys were never confirmed, and a login the daemon accepts confirms one | the enrollment page stored the key and then asked the site, and did nothing about the answer. A key the site refused stayed in IndexedDB, and so did one from an attempt the site never answered; the login page offered each beside the real one, by a random handle, with nothing to tell them apart, and the daemon had never seen them (F220) |

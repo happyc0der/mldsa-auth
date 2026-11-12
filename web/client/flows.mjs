@@ -32,6 +32,25 @@ export class PinMismatch extends Error {
   }
 }
 
+// The site REFUSED to enroll a key: it answered, and the answer was no. Thrown
+// by the `submit` a page hands to enroll(), and by nothing else.
+export class EnrollRefused extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = 'EnrollRefused';
+  }
+}
+
+// The site did not say whether it enrolled a key. The key is kept (`handle`).
+export class EnrollUnconfirmed extends Error {
+  constructor(handle, cause) {
+    super(`the site did not confirm the enrollment (${cause && cause.message ? cause.message : cause}); ` +
+          `${handle} is kept on this device: try to log in with it before enrolling again`);
+    this.name = 'EnrollUnconfirmed';
+    this.handle = handle;
+  }
+}
+
 const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 // The server identity a login or a rotation trusts is the one pinned when the
@@ -108,7 +127,40 @@ async function resolveHeld(client, store, handle, params, events) {
 export async function login(client, store, params, events) {
   const p = await pinned(store, params);
   const envelope = await resolveKey(client, store, p.handle, p, events);
-  return client.login({ ...p, envelope });
+  const s = await client.login({ ...p, envelope });
+  // The daemon accepted the key, so it was enrolled after all (F220). The
+  // login has succeeded either way: a store that cannot record that says so
+  // the next time.
+  try { if ((await store.get(p.handle))?.unconfirmed) { await store.confirm(p.handle); } } catch { /* still unconfirmed */ }
+  return s;
+}
+
+// Makes a key and has the site enroll it (V4-138, F220).
+// `submit({ handle, publicImage })` asks the site; it resolves when the site
+// enrolled the key, throws EnrollRefused when the site answered no, and throws
+// anything else when there was no answer to read (no connection, a 5xx).
+//
+// The key is stored BEFORE the site is asked: the other order can enroll a key
+// that is then not stored, and an account whose only key is lost has no way
+// back in. So what is stored is marked unconfirmed until the site answers:
+//   yes        confirmed;
+//   no         removed -- the daemon never took this key, and left in the
+//              store it was offered at every login beside the real one;
+//   no answer  KEPT, still unconfirmed. The daemon may have enrolled it and
+//              the answer been lost, and then this is the account's only key.
+//              A login with it settles the question (login() confirms it).
+export async function enroll(client, store, { serverId, serverPub, passphrase }, submit) {
+  const id = client.newIdentity(passphrase);            // refused inside wasm if the policy says no
+  await store.create({ handle: id.handle, serverId, serverPub, envelope: id.envelope, unconfirmed: true });
+  let answer;
+  try {
+    answer = await submit({ handle: id.handle, publicImage: id.publicImage });
+  } catch (e) {
+    if (e instanceof EnrollRefused) { await store.remove(id.handle); throw e; }
+    throw new EnrollUnconfirmed(id.handle, e);
+  }
+  await store.confirm(id.handle);
+  return { handle: id.handle, answer };
 }
 
 // Rotates to a fresh key under the same passphrase (spec 10.2).

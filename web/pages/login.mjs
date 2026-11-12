@@ -3,7 +3,11 @@ import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
 const list = document.getElementById('identity');
-for (const r of await store.list()) { list.add(new Option(r.handle, r.handle)); }
+// Keys the site confirmed first; one it never confirmed says so (F220): the
+// daemon may not know it, and a login with it is how to find out.
+for (const r of (await store.list()).sort((x, y) => Number(x.unconfirmed === true) - Number(y.unconfirmed === true))) {
+  list.add(new Option(r.unconfirmed === true ? `${r.handle} (enrollment not confirmed)` : r.handle, r.handle));
+}
 document.body.dataset.ready = '1';
 
 document.getElementById('go').addEventListener('click', async () => {

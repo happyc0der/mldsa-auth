@@ -1,5 +1,6 @@
 import { boot, session, post, report, val, bytesToHex, hexToBytes, secret } from './common.mjs';
 import { IdentityStore } from '/client/store.mjs';
+import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
 const meter = document.getElementById('meter');
@@ -18,12 +19,17 @@ document.getElementById('go').addEventListener('click', async () => {
   try {
     const sess = await session();
     if (!sess.recovering) { await post('/api/signup', { user: val('user'), invite: val('invite') }); }
-    const id = client.newIdentity(secret('passphrase'));          // refused inside wasm if the policy says no
-    await store.create({ handle: id.handle, serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub),
-                         envelope: id.envelope });
-    const r = await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) });
+    // A 4xx is the site's refusal: the key was not enrolled, and flows.enroll
+    // removes it. Anything else -- no answer, a 5xx -- says nothing about
+    // whether it was, and the key is kept, marked unconfirmed (F220).
+    const { handle, answer: r } = await flows.enroll(client, store,
+      { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase: secret('passphrase') },
+      async (id) => {
+        try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
+        catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }
+      });
     const persisted = await IdentityStore.persist();
-    report(true, `Enrolled ${r.user} on this device as ${id.handle}` +
+    report(true, `Enrolled ${r.user} on this device as ${handle}` +
                  (persisted ? '' : ' (the browser did not promise to keep this storage)'));
   } catch (e) {
     report(false, e.statusName === 'passphrase-policy' ? 'that passphrase is refused by the policy' : e.message);

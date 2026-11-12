@@ -222,6 +222,78 @@ try {
     catch (e) { rname = e.name; }
     check(rname === 'PinMismatch' && isDeepStrictEqual(await store.get(params.handle), before),
           'pin: a rotation offered a different server identity is refused too, and stages nothing'); }
+
+  // F220 (V4-138): the key is stored before the site is asked to enroll it,
+  // so what the site then answers decides what becomes of it. Each answer is
+  // set up as the page's submit function sees it.
+  { const want = { serverId: info.server_id, serverPub, passphrase: PASS };
+    const paramsOf = (handle) => ({ url, serverId: info.server_id, serverPub, handle, passphrase: PASS, probeTimeoutMs: 3000 });
+    const logsIn = async (store, handle) => {
+      try { const s = await flows.login(client, store, paramsOf(handle)); const ok = s.code.length === 32; await s.close(); return ok; }
+      catch { return false; }
+    };
+
+    // The site answers no: nothing is left behind.
+    { const store = new MemoryStore();
+      let name = null, seen = null;
+      try { await flows.enroll(client, store, want, async (id) => { seen = id; throw new flows.EnrollRefused('user-exists'); }); }
+      catch (e) { name = e.name; }
+      check(seen !== null && typeof seen.handle === 'string' && seen.publicImage instanceof Uint8Array,
+            'enroll: the site is offered the handle and the public key (the canary)');
+      const left = await store.list();
+      check(name === 'EnrollRefused' && left.length === 0,
+            `enroll: a key the site refused is not left in the store (${left.length} left, ${name}) (F220)`); }
+
+    // The site answers yes: the key is confirmed, and it is the one enrolled.
+    { const store = new MemoryStore();
+      let during = null;
+      const r = await flows.enroll(client, store, want, async (id) => {
+        during = (await store.get(id.handle))?.unconfirmed;
+        return enroll(id.handle, id.publicImage);
+      });
+      const rec = await store.get(r.handle);
+      check(during === true, `enroll: the key is in the store, marked unconfirmed, before the site is asked (${during}) (F220)`);
+      check(r.answer.startsWith('OK') && rec !== null && rec.unconfirmed === false,
+            `enroll: a key the site enrolled is confirmed (unconfirmed=${rec && rec.unconfirmed}) (F220)`);
+      check(await logsIn(store, r.handle), 'enroll: and it logs in (the canary)'); }
+
+    // No answer, and the daemon had not enrolled it: kept, unconfirmed, and a
+    // login that fails leaves it so.
+    { const store = new MemoryStore();
+      let err = null;
+      try { await flows.enroll(client, store, want, async () => { throw new Error('HTTP 503'); }); }
+      catch (e) { err = e; }
+      const left = await store.list();
+      check(err !== null && err.name === 'EnrollUnconfirmed' && left.length === 1 && left[0].handle === err.handle &&
+            left[0].unconfirmed === true,
+            `enroll: a key the site did not answer for is kept, marked unconfirmed (${left.length} kept, ${err && err.name}) (F220)`);
+      const logged = left.length === 1 && await logsIn(store, left[0].handle);
+      const after = await store.list();
+      check(!logged && after.length === 1 && after[0].unconfirmed === true,
+            'enroll: a login the daemon refuses leaves it unconfirmed, and in the store (F220)'); }
+
+    // No answer, but the daemon HAD enrolled it (the reply was lost): it is
+    // the account's key, and the login that proves so confirms it.
+    { const store = new MemoryStore();
+      let err = null, committed = '';
+      try {
+        await flows.enroll(client, store, want, async (id) => {
+          committed = await enroll(id.handle, id.publicImage);
+          throw new Error('HTTP 503');
+        });
+      } catch (e) { err = e; }
+      const logged = err !== null && err.handle !== undefined && await logsIn(store, err.handle);
+      const rec = err !== null && err.handle !== undefined ? await store.get(err.handle) : null;
+      check(committed.startsWith('OK') && logged, 'enroll: a key enrolled behind a lost answer still logs in (F220)');
+      check(rec !== null && rec.unconfirmed === false, `enroll: and that login confirms it (unconfirmed=${rec && rec.unconfirmed}) (F220)`); }
+
+    // A refused passphrase stores nothing and asks the site nothing.
+    { const store = new MemoryStore();
+      let asked = false, status = null;
+      try { await flows.enroll(client, store, { ...want, passphrase: 'password1234' }, async () => { asked = true; }); }
+      catch (e) { status = e.statusName; }
+      check(status === 'passphrase-policy' && !asked && (await store.list()).length === 0,
+            'enroll: a passphrase the policy refuses stores nothing and asks the site nothing'); } }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

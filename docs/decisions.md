@@ -14978,3 +14978,51 @@ it: LF2 SURVIVED, the predicted check never reached.
 **Severity.** Medium. No attacker is involved, but every restart of
 the service could spend a user's recovery code, or replace all of them,
 and deliver nothing.
+
+## V4-138: a new key follows the site's answer (F220)
+
+**Found.** Reading `web/pages/enroll.mjs` after the site review named
+it. The page made a key, stored it, posted `/api/enroll`, and reported
+the outcome; a failed post left the stored key where it was. In
+headless Chromium, enrolling a name that is taken left two records in
+IndexedDB, and the login page offered both by handle.
+
+**Decisions.**
+
+- The order stays: store, then ask. Asking first can enroll a key that
+  the browser then fails to store, and a signup's first key has no
+  recovery codes behind it yet. An extra record is the cheaper failure.
+- The answer decides, and "no" and "nothing" are different answers.
+  A 4xx is the site refusing, or relaying the daemon's refusal, and the
+  daemon enrolls nothing it refuses (F47): the record is removed. No
+  connection or a 5xx says nothing: the site answers 503 when the
+  daemon did not reply in 10 s, and F219 was a daemon that had done the
+  work and not replied. That record is kept.
+- A kept record is marked `unconfirmed`, not retried. A retry cannot
+  be made safe from the browser: a second `ENROLL` of the same key as a
+  signup is answered `user-exists`, and with a ticket `ticket-invalid`,
+  whether or not the first one took. A login is the only question the
+  daemon answers truthfully about a key, so `flows.login()` clears the
+  mark when one succeeds, and the page tells the user to try that.
+- The logic is `flows.enroll()` in `web/client`, with the site's answer
+  behind a `submit` function, so Node can test every branch against the
+  real daemon. The page only maps an HTTP status to refusal or not.
+- A record with no `unconfirmed` field is confirmed. Every record
+  written before this step came from a completed or abandoned
+  enrollment, and marking them all would label every working key.
+- No removal button. A labelled record that the daemon never took
+  stays until the site's data is cleared; the audit row says so.
+
+**Tests.** `web_flows`: nine checks, one block per answer. The
+"answered nothing, but enrolled" block enrolls the key at the daemon
+inside `submit` and then throws, which is a lost reply as the browser
+sees it. `browser_e2e`: a taken name (red before: two records), and a
+503 given by the page's own `fetch`, then the login page's list.
+
+**Mutations.** By hand, ten: R1–R5 in `flows.mjs`, R6–R7 the page's
+status mapping, R8 the login label, R9 the store's flag, R10 the status
+on `post()`'s error. Ten killed by named checks. The campaign counts do
+not move: 488 mutations, 71 campaigns, 528 anchors.
+
+**Severity.** Low. Nothing is lost and nobody gets in; a user picks
+between two handles and a wrong pick looks like a wrong passphrase.

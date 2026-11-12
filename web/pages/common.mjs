@@ -32,7 +32,7 @@ export async function post(path, obj) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(obj ?? {}) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) { throw new Error(j.error || `HTTP ${r.status}`); }
+  if (!r.ok) { throw Object.assign(new Error(j.error || `HTTP ${r.status}`), { status: r.status }); }
   return j;
 }
 
