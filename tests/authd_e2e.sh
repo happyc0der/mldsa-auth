@@ -1156,7 +1156,8 @@ fi
 
 # Close nothing and the drain loop would wait forever: evloop_stop marks local
 # slots draining rather than closing them, so a still-open client socket wedges
-# shutdown. Every client above is one-shot and already gone.
+# shutdown. Every client above is one-shot and already gone; the site
+# holding a token closed its connection before it wrote hold.ready.
 kill -TERM "$DPID"
 i=0
 while kill -0 "$DPID" 2>/dev/null; do

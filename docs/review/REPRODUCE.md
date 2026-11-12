@@ -74,7 +74,7 @@ With Emscripten **6.0.9** exactly (configure refuses any other version):
 emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release && cmake --build build-wasm -j8
 ctest --test-dir build-wasm                                            # 100% tests passed out of 3
 cmake -S . -B build -DMLDSA_WASM_DIR="$PWD/build-wasm" && cmake --build build -j8
-ctest --test-dir build -R '^(wasm_interop|web_flows|browser_e2e|phone_timing_tool)$'   # 100% tests passed out of 4
+ctest --test-dir build -L needs-wasm                                   # 100% tests passed out of 5
 ```
 
 `wasm_module_gates` checks the module's exact export list; `test_client_core_kat`
@@ -179,8 +179,8 @@ is not compiled). ADVISORIES.md accounts for every one.
   headless-browser job, `caddy proxy (Linux, Docker)`, and the runbook
   rehearsed top to bottom under systemd (V4-99; on two Ubuntus since
   V4-103). 16 jobs; run
-  43186659599 on `c020e2c` (V4-124, now main): 16/16.
+  43214711282 on `11265f0` (V4-127, now main): 16/16.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
-  ProVerif model and its controls. Run 43186664027 on `c020e2c`: 84/84, all
-  69 campaigns among them.
+  ProVerif model and its controls. Run 43214716146 on `11265f0`: 85/85, all
+  70 campaigns among them.

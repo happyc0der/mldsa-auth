@@ -14602,3 +14602,17 @@ daemon is up leaves no process. Test hygiene, no finding number.
 **Spec.** v1.49, erratum 91, in §14 before the reference-site sentence.
 No C file changed, so no campaign: 483 mutations, 70 campaigns, 523
 anchors stand.
+
+## V4-128 — cleanup: REPRODUCE cites the current runs and the wasm label
+
+Every third step is cleanup. Three things, no behaviour changed:
+
+- `docs/review/REPRODUCE.md` cited CI and nightly runs on `c020e2c`
+  (84/84, 69 campaigns), three steps old. It now cites 43214711282
+  (16/16) and 43214716146 (85/85, 70 campaigns) on `11265f0`.
+- Its browser-client command was the same hand-written name list F211
+  found in CI, and it too left out `site_sessions`. It is now
+  `ctest -L needs-wasm`, 5 tests, run here before writing the number.
+- The drain comment in `tests/authd_e2e.sh` said every client was already
+  gone; V4-127 added one that is still alive there, with its connection
+  closed. The comment says so.
