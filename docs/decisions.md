@@ -14457,3 +14457,63 @@ tree they ran is main's. Main's own push CI on that commit is 43194342895,
 16/16.
 
 Nothing else changed.
+
+## V4-126 — F209: a daemon that hangs is restarted
+
+**What was wrong.** The unit had `Restart=on-failure` and no watchdog.
+systemd restarts a main process that dies; one that is alive and not
+serving is, to it, a healthy service. F206 and F208 were about deaths
+counted as clean stops. This is the case with no death at all.
+
+**Measured before the fix**, CI run 43195645358 on a throwaway branch
+holding main and the rehearsal step only. On the deployed service, on
+ubuntu-24.04 and ubuntu-26.04: `WatchdogUSec=0`; `kill -STOP <MainPID>`;
+76 s later the same main process, `ActiveState=active`,
+`SubState=running`. The two rehearsal jobs failed and the other fourteen
+passed, which is every job that runs the step.
+
+**How a hang is staged.** `SIGSTOP`. It stops the loop without a defect to
+plant, and it is what a hang looks like from outside: a process that
+exists and does nothing. It is also why the unit's signal has to be one a
+stopped process still acts on.
+
+**Severity.** Low. No hang is known, and reading the loop found no blocking
+call without a bound. What the finding costs if one exists, or if a later change adds
+one, is the whole service until a person looks.
+
+**Decisions.**
+
+- **The ping comes from the event loop and nowhere else.** A timer signal
+  or a thread would keep pinging while the loop was stuck, which is the
+  one state the watchdog is for.
+- **A quarter of the interval, at most 1 s apart.** systemd's advice is
+  half. The loop's idle wait is already 1 s, so at the unit's 30 s the
+  daemon pings each second at no added wake-ups, and thirty must be missed
+  before it is killed. For an interval under 4 s the idle wait is
+  shortened to the ping period; without that a 1.2 s watchdog would be
+  pinged each second, late (mutation WD4).
+- **`WatchdogSec=30s`.** The longest things a turn of the loop does are
+  the store's 250 ms busy timeout and the recovery check, under a second.
+  Thirty seconds is far from both and still short for an outage.
+- **`WatchdogSignal=SIGKILL`.** systemd's default is `SIGABRT`, which asks
+  for a core dump from a process holding the server key (the unit sets
+  `LimitCORE=0`, and this does not lean on it) and which a stopped process
+  does not act on until it is continued. Nothing in a hung daemon would
+  run a drain anyway.
+- **No log event.** A ping is not news, and a new event is a spec
+  vocabulary change. A failed ping is ignored: if systemd is not hearing
+  them it will say so itself, by restarting the daemon.
+- **`WATCHDOG_USEC` is parsed strictly**: decimal digits only, no sign, no
+  padding, overflow refused; anything else is no watchdog. `WATCHDOG_PID`,
+  when set, must be this process, as `sd_watchdog_enabled()` requires, so
+  a child that inherits the environment does not ping for its parent.
+- **The notify socket is opened for each ping**, as for `READY=1`. One
+  descriptor for a moment, inside the reserve F207 keeps.
+- **The watchdog starts at `READY=1`.** systemd arms it when start-up
+  completes, so the 256 MiB unseal is not timed by it.
+- **Not done: a watchdog on the work itself.** The ping says the loop
+  turns, not that logins succeed. A daemon whose loop turns and whose
+  store is broken is `active`; the journal says so and `authd_admin` can
+  ask. A health probe that logs in is the operator's monitoring.
+
+**Spec.** v1.48, erratum 90, in §16 after the exit status paragraph.

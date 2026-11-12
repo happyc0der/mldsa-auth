@@ -495,6 +495,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET\n");
     }
 
+    /* F209 (V4-126): the unit sets WatchdogSec=, and systemd kills a daemon
+     * whose WATCHDOG=1 stops coming -- the only thing that restarts one that
+     * hangs. The ping is sent from the loop itself, so it says what it should:
+     * the loop came round. READY=1 started systemd's timer, so the first ping
+     * is due one period from now. Not under a watchdog, wd_ms is 0 and
+     * nothing below does anything. */
+    const unsigned wd_ms = authd_sd_watchdog_period_ms();
+    uint64_t wd_last_ms = now_ms();
+    const int idle_wait_ms = (wd_ms != 0u && wd_ms < 1000u) ? (int)wd_ms : 1000;
+
     int draining = 0;
     /* F208: a loop that failed is a failure of the daemon. Exiting 0 after
      * it told systemd the stop was clean, and Restart=on-failure left the
@@ -520,8 +530,14 @@ int main(int argc, char **argv)
          * expiry cannot disagree. */
         app.now_ms = now_ms();
         app.now_unix = (int64_t)time(NULL);
+        if (wd_ms != 0u && app.now_ms - wd_last_ms >= (uint64_t)wd_ms) {
+            /* A ping that cannot be sent is not retried harder: if it goes
+             * on failing, systemd restarts the daemon, which is the point. */
+            (void)authd_sd_notify("WATCHDOG=1");
+            wd_last_ms = app.now_ms;
+        }
         authd_app_maybe_sweep(&app);
-        if (evloop_run_once(&ev, draining ? 50 : 1000, app.now_ms) < 0) {
+        if (evloop_run_once(&ev, draining ? 50 : idle_wait_ms, app.now_ms) < 0) {
             if (errno == EINTR) {
                 continue;
             }

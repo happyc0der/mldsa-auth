@@ -840,6 +840,14 @@ Common ones, and what they actually are:
   daemon exits 1 and systemd starts it again after `RestartSec`; sessions
   that were open are gone and their users log in again. If it recurs, look
   at the host's memory before the daemon.
+- **`Watchdog timeout (limit 30s)!` from systemd, then a restart** — the
+  daemon's loop stopped turning for thirty seconds: it is the loop that
+  tells systemd it is alive, once a second. systemd killed it (`SIGKILL`,
+  so no drain and no `stopped` lines) and started it again; sessions that
+  were open are gone. The daemon logs nothing about it, because a hung
+  daemon cannot. A machine suspended or a process stopped with `SIGSTOP`
+  for that long reads the same way. If it recurs with neither, the journal
+  lines just before it are the report to send.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
 - **`authd.conf: io (Permission denied)`** — the daemon cannot read its

@@ -600,6 +600,46 @@ jobs:
             || { echo "FAIL: systemd did not count a restart (F208)"; exit 1; }
           echo "PASS: a daemon whose loop failed exited nonzero and systemd restarted it"
 
+      # F209 (V4-126): a daemon that hangs. SIGSTOP stages it from outside:
+      # the process is there, its sockets are bound, and it never runs again.
+      # Before the fix nothing noticed -- the unit stayed "active" with the
+      # same main process for as long as anyone cared to wait. With
+      # WatchdogSec= the daemon's pings stop, systemd kills it and
+      # Restart=on-failure starts another.
+      - name: A daemon that hangs is restarted
+        run: |
+          systemctl is-active mldsa-authd
+          before=$(systemctl show -p MainPID --value mldsa-authd)
+          [ "$before" != 0 ] || { echo "FAIL: the service has no main process"; exit 1; }
+          restarts=$(systemctl show -p NRestarts --value mldsa-authd)
+          systemctl show -p WatchdogUSec -p WatchdogSignal mldsa-authd
+          sudo kill -STOP "$before"
+          i=0
+          while :; do
+            now=$(systemctl show -p MainPID --value mldsa-authd)
+            if [ "$now" != "$before" ] && [ "$now" != 0 ] \
+               && [ "$(systemctl is-active mldsa-authd)" = active ]; then break; fi
+            i=$((i + 1))
+            [ "$i" -gt 75 ] && break
+            sleep 1
+          done
+          echo "waited ${i}s"
+          systemctl show -p MainPID -p ActiveState -p SubState -p Result -p NRestarts -p ExecMainStatus mldsa-authd
+          sudo journalctl -u mldsa-authd --no-pager -n 12 || true
+          now=$(systemctl show -p MainPID --value mldsa-authd)
+          if [ "$now" = "$before" ]; then
+            sudo kill -CONT "$before" || true
+            echo "FAIL: a daemon stopped dead for ${i}s is still the unit's main process, and the unit is $(systemctl is-active mldsa-authd): nothing restarts a hung daemon (F209)"
+            exit 1
+          fi
+          [ "$(systemctl is-active mldsa-authd)" = active ] \
+            || { echo "FAIL: the hung daemon was killed and not restarted (F209)"; exit 1; }
+          [ "$(systemctl show -p NRestarts --value mldsa-authd)" -gt "$restarts" ] \
+            || { echo "FAIL: systemd did not count a restart (F209)"; exit 1; }
+          sudo journalctl -u mldsa-authd --no-pager -n 40 | grep -qi 'watchdog timeout' \
+            || { echo "FAIL: the journal does not say the watchdog ended the hung daemon (F209)"; exit 1; }
+          echo "PASS: a daemon that stopped running was killed by the watchdog after ${i}s and restarted"
+
       # What systemd actually delivers as a credential to a service with
       # User= -- owner, mode, ACL, filesystem -- measured in a throwaway unit
       # with the same two directives, rather than assumed (V4-99, R5).

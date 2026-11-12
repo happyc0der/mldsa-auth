@@ -1,0 +1,7 @@
+WD1|^authd_e2e$|a daemon given WATCHDOG_USEC sent 0 WATCHDOG=1 in 15 s, not 4
+WD2|^test_authd_cli$|sd_watchdog: without WATCHDOG_USEC there is no watchdog (0)
+WD3|^test_authd_cli$|sd_watchdog: WATCHDOG_PID naming another process means the watchdog is not this one's (0)
+WD4|^authd_e2e$|its loop does not wake for them (F209)
+WD5|^test_authd_cli$|sd_watchdog: a 2 s watchdog is pinged every 500 ms, a quarter of it
+WD6|^authd_e2e$|a daemon with no WATCHDOG_USEC pinged a watchdog nobody set -- the canary (F209)
+WD7|^test_authd_cli$|sd_watchdog: an empty, zero, signed, non-numeric, padded or overflowing WATCHDOG_USEC is no watchdog (0)

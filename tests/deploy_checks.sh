@@ -118,7 +118,8 @@ MISSING=""
 for d in NoNewPrivileges ProtectSystem ProtectHome PrivateTmp PrivateDevices \
          ProtectControlGroups ProtectProc RestrictAddressFamilies RestrictNamespaces \
          RestrictSUIDSGID LockPersonality MemoryDenyWriteExecute SystemCallFilter \
-         CapabilityBoundingSet UMask LimitCORE LimitMEMLOCK RuntimeDirectory; do
+         CapabilityBoundingSet UMask LimitCORE LimitMEMLOCK RuntimeDirectory \
+         Restart WatchdogSec WatchdogSignal; do
     grep -q "^${d}=" "$REPO/$UNIT" || MISSING="$MISSING $d"
 done
 [ -z "$MISSING" ] || fail "the unit omits directives spec 16 requires:$MISSING"

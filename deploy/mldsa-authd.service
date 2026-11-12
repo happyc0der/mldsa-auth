@@ -43,6 +43,18 @@ ExecStart=/usr/local/bin/mldsa-authd --config /etc/mldsa-authd/authd.conf
 Restart=on-failure
 RestartSec=2s
 
+# The watchdog (V4-126, F209). The daemon sends WATCHDOG=1 once a second from
+# its event loop; if none arrives for 30 s the loop is not coming round --
+# the daemon is hung -- and systemd kills it and, by Restart=on-failure,
+# starts another. Without this a hung daemon stays "active" and nobody can
+# log in until someone notices. 30 s is far above the longest thing the loop
+# does in one turn (a recovery-code check, under a second). SIGKILL rather
+# than the default SIGABRT: a process that holds the server key should not be
+# asked for a core dump, and a daemon that is stopped or stuck in the kernel
+# would not act on anything gentler.
+WatchdogSec=30s
+WatchdogSignal=SIGKILL
+
 # The passphrase that opens the MLDSAEK1 server key (spec §12). systemd
 # decrypts it into $CREDENTIALS_DIRECTORY. MEASURED (V4-99, Ubuntu 26.04): the
 # file is root:root, mode 0440, read by this service's user through an ACL, on

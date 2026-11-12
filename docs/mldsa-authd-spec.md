@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.47, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124 errata)
+# mldsa-authd — deployment specification (v1.48, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1280,6 +1280,20 @@ for the call is the ordinary cause.
 A daemon started by hand therefore outlives the terminal it was started in;
 stop it with `SIGTERM`.
 
+**Watchdog** (erratum 90). The unit sets `WatchdogSec=30s` and
+`WatchdogSignal=SIGKILL`. A daemon started with `$WATCHDOG_USEC` set to a
+positive decimal number of microseconds, `$NOTIFY_SOCKET` set, and
+`$WATCHDOG_PID` either unset or equal to its own process ID sends
+`WATCHDOG=1` to `$NOTIFY_SOCKET` **from its event loop**, at a quarter of
+that interval and never more than 1 s apart, and its loop wakes for each one
+when it has nothing else to do. A daemon given no watchdog sends none. A
+daemon whose loop stops turning therefore stops pinging; systemd kills it
+when the interval passes and `Restart=on-failure` starts it again. The
+watchdog begins when the daemon has said `READY=1`, so the unseal at start is
+not timed by it. Nothing is logged for a ping, and the daemon cannot log its
+own hang: systemd's journal line for the unit (`Watchdog timeout`) is the
+record.
+
 The systemd unit is `Type=notify` — the daemon sends `READY=1` to
 `$NOTIFY_SOCKET` once its key is unsealed and every listener is bound, so
 `systemctl start` returns only then (erratum 78) — and sets `NoNewPrivileges`, `ProtectSystem=strict`,
@@ -1838,3 +1852,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 89 | 16 | A daemon whose event loop fails exits 1, not 0 | it logged `loop-failed` and exited 0; systemd counts that a clean stop, and `Restart=on-failure` left the service down (F208) |
+
+### Revision v1.48 (V4-126)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 90 | 16 | The unit sets `WatchdogSec=30s` and `WatchdogSignal=SIGKILL`; the daemon sends `WATCHDOG=1` from its event loop at a quarter of `$WATCHDOG_USEC`, at most 1 s apart | a daemon that hung stayed `active (running)` for as long as it hung: its process was alive, so `Restart=on-failure` had nothing to act on and no login was answered until a person noticed (F209) |

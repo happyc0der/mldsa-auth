@@ -635,6 +635,74 @@ if [ "$(uname -s)" = Linux ] && command -v prlimit > /dev/null 2>&1; then
 else
     echo "SKIP: E2E: no Linux prlimit here, so a failing poll() is not staged (F208)"
 fi
+# F209 (V4-126): the watchdog. A daemon that hangs -- a loop that never
+# returns to poll() -- stayed "active" under systemd for ever, and nobody
+# could log in. The unit now sets WatchdogSec=, and the daemon must ping:
+# WATCHDOG=1 to $NOTIFY_SOCKET at a quarter of $WATCHDOG_USEC. A datagram
+# socket stands in for systemd's and stamps what arrives.
+python3 - "$TMP/wd.sock" "$TMP/wd.got" <<'PYEOF' &
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+s.bind(sys.argv[1])
+s.settimeout(60)
+with open(sys.argv[2], "a", buffering=1) as f:
+    while True:
+        try:
+            m = s.recv(256)
+        except socket.timeout:
+            break
+        f.write("%d %s\n" % (int(time.monotonic() * 1000), m.decode("ascii", "replace")))
+        if m == b"QUIT":
+            break
+PYEOF
+WDPY=$!
+i=0
+while [ ! -S "$TMP/wd.sock" ]; do
+    i=$((i + 1)); [ "$i" -gt 200 ] && fail "the stand-in notify socket never appeared"
+    sleep 0.05
+done
+# 1.2 s: a ping every 300 ms, and a loop that must wake that often for it.
+NOTIFY_SOCKET="$TMP/wd.sock" WATCHDOG_USEC=1200000 \
+    "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-wd.log" 2>&1 &
+SUPID=$!
+i=0
+while [ "$(grep -c ' WATCHDOG=1$' "$TMP/wd.got" 2>/dev/null || true)" -lt 4 ]; do
+    i=$((i + 1))
+    if [ "$i" -gt 300 ]; then
+        kill -TERM "$SUPID" 2>/dev/null || true
+        fail "a daemon given WATCHDOG_USEC sent $(grep -c ' WATCHDOG=1$' "$TMP/wd.got" 2>/dev/null || true) WATCHDOG=1 in 15 s, not 4: systemd would kill it as hung, or it has no watchdog (F209): $(cat "$TMP/wd.got" 2>/dev/null)"
+    fi
+    sleep 0.05
+done
+kill -TERM "$SUPID"
+if wait "$SUPID"; then rc=0; else rc=$?; fi
+SUPID=""
+[ "$rc" -eq 0 ] || fail "the watchdog daemon exited $rc on SIGTERM"
+[ "$(sed -n 1p "$TMP/wd.got" | cut -d' ' -f2)" = "READY=1" ] \
+    || fail "the first thing a watchdog daemon told systemd was not READY=1 (F209): $(cat "$TMP/wd.got")"
+T1=$(grep ' WATCHDOG=1$' "$TMP/wd.got" | sed -n 1p | cut -d' ' -f1)
+T4=$(grep ' WATCHDOG=1$' "$TMP/wd.got" | sed -n 4p | cut -d' ' -f1)
+[ $((T4 - T1)) -lt 2000 ] \
+    || fail "an idle daemon's four pings for a 1.2 s watchdog spanned $((T4 - T1)) ms, not under 2000: its loop does not wake for them (F209)"
+# The canary: the same daemon with no WATCHDOG_USEC says READY=1 and no more.
+: > "$TMP/wd.got"
+NOTIFY_SOCKET="$TMP/wd.sock" "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-wd2.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q ' READY=1$' "$TMP/wd.got" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 400 ] && fail "the canary daemon never said READY=1: $(cat "$TMP/su-wd2.log")"
+    sleep 0.05
+done
+sleep 2.5
+kill -TERM "$SUPID"
+if wait "$SUPID"; then :; fi
+SUPID=""
+[ "$(grep -c ' WATCHDOG=1$' "$TMP/wd.got" || true)" -eq 0 ] \
+    || fail "a daemon with no WATCHDOG_USEC pinged a watchdog nobody set -- the canary (F209): $(cat "$TMP/wd.got")"
+python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); s.sendto(b"QUIT", sys.argv[1])' "$TMP/wd.sock"
+wait "$WDPY" 2>/dev/null || true
+rm -f "$TMP/wd.sock"
+echo "PASS: E2E: a daemon given WATCHDOG_USEC says READY=1 and then WATCHDOG=1 at a quarter of it, waking for each; one given none sends none (F209)"
 echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 

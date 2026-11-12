@@ -1793,6 +1793,56 @@ static void test_sd_notify(void)
     (void)unlink(sp);
 }
 
+/* F209 (V4-126): the watchdog interval. systemd hands a service with
+ * WatchdogSec= the timeout in $WATCHDOG_USEC (and, when the variable is meant
+ * for one process only, that process in $WATCHDOG_PID). The daemon pings at a
+ * quarter of it, at most once a second -- its loop turns at least that often
+ * -- and not at all unless all of it is there and well-formed: a ping nobody
+ * asked for is harmless, but a period computed from garbage is not. */
+static void test_sd_watchdog(void)
+{
+    char pid[32];
+    (void)setenv("NOTIFY_SOCKET", "/run/systemd/notify", 1);
+    (void)unsetenv("WATCHDOG_PID");
+    (void)unsetenv("WATCHDOG_USEC");
+    CHECK(authd_sd_watchdog_period_ms() == 0u, "sd_watchdog: without WATCHDOG_USEC there is no watchdog (0)");
+    (void)setenv("WATCHDOG_USEC", "30000000", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 1000u, "sd_watchdog: a 30 s watchdog is pinged every second, the loop's own longest turn");
+    (void)setenv("WATCHDOG_USEC", "2000000", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 500u, "sd_watchdog: a 2 s watchdog is pinged every 500 ms, a quarter of it");
+    (void)setenv("WATCHDOG_USEC", "100000", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 25u, "sd_watchdog: a 100 ms watchdog is pinged every 25 ms");
+    (void)setenv("WATCHDOG_USEC", "3999", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 1u, "sd_watchdog: a watchdog shorter than 4 ms is pinged every millisecond, never every 0");
+    static const char *const bad[] = { "", "0", "-5", "abc", "12x", " 30000000", "+30000000",
+                                       "99999999999999999999999999" };
+    int all_zero = 1;
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        (void)setenv("WATCHDOG_USEC", bad[i], 1);
+        if (authd_sd_watchdog_period_ms() != 0u) { all_zero = 0; }
+    }
+    CHECK(all_zero, "sd_watchdog: an empty, zero, signed, non-numeric, padded or overflowing WATCHDOG_USEC is no watchdog (0)");
+    (void)setenv("WATCHDOG_USEC", "18446744073709551615", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 1000u, "sd_watchdog: the largest 64-bit WATCHDOG_USEC is still one ping a second");
+    (void)setenv("WATCHDOG_USEC", "2000000", 1);
+    /* The pid as systemd would write it -- an environment value, not a name
+     * (tests/scratch_dirs.sh forbids the latter, F114). */
+    const long self = (long)getpid();
+    (void)snprintf(pid, sizeof pid, "%ld", self);
+    (void)setenv("WATCHDOG_PID", pid, 1);
+    CHECK(authd_sd_watchdog_period_ms() == 500u, "sd_watchdog: WATCHDOG_PID naming this process keeps the watchdog");
+    const long parent = (long)getppid();
+    (void)snprintf(pid, sizeof pid, "%ld", parent);
+    (void)setenv("WATCHDOG_PID", pid, 1);
+    CHECK(authd_sd_watchdog_period_ms() == 0u, "sd_watchdog: WATCHDOG_PID naming another process means the watchdog is not this one's (0)");
+    (void)setenv("WATCHDOG_PID", "junk", 1);
+    CHECK(authd_sd_watchdog_period_ms() == 0u, "sd_watchdog: a WATCHDOG_PID that is not a number is not this process (0)");
+    (void)unsetenv("WATCHDOG_PID");
+    (void)unsetenv("NOTIFY_SOCKET");
+    CHECK(authd_sd_watchdog_period_ms() == 0u, "sd_watchdog: with nowhere to send a ping there is no watchdog (0)");
+    (void)unsetenv("WATCHDOG_USEC");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1821,6 +1871,7 @@ int main(void)
     test_passphrase_custody();
     test_credential_custody();
     test_sd_notify();
+    test_sd_watchdog();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

@@ -21,4 +21,19 @@
  */
 int authd_sd_notify(const char *msg);
 
+/*
+ * systemd's watchdog (F209, V4-126). A unit with WatchdogSec= expects
+ * WATCHDOG=1 on the same socket more often than that, and kills a service
+ * that stops sending it -- which is what restarts a daemon that hangs.
+ *
+ * Returns how often to send it, in milliseconds, or 0 when no watchdog is
+ * set for this process: $WATCHDOG_USEC must be a positive decimal number
+ * and nothing else, $WATCHDOG_PID (when set) must name this process, and
+ * $NOTIFY_SOCKET must be set. The period is a quarter of the timeout, at
+ * least 1 ms and at most AUTHD_SD_WATCHDOG_MAX_MS -- the event loop turns
+ * at least that often, so a longer period would buy nothing.
+ */
+#define AUTHD_SD_WATCHDOG_MAX_MS 1000u
+unsigned authd_sd_watchdog_period_ms(void);
+
 #endif /* MLDSA_AUTHD_SDNOTIFY_H */
