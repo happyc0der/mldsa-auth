@@ -16,6 +16,7 @@
 #include <sodium.h>
 
 #include "authd_log.h"
+#include "journal_scan.h"
 #include "proxy_v2.h"
 
 static int g_fail = 0;
@@ -172,6 +173,41 @@ static void test_ids(void)
       CHECK(strcmp(out, "info event=client-hello slot=0 id=x.event.login-code-issued.id.op1\n") == 0,
             "ids: a space or '=' in an identifier is escaped, so it adds no field");
       free(c.buf); }
+
+    /* V4-134 (F217): the journal scans' image of an id= field is the logger's.
+     * tests/journal_scan.h kept the rule from before F141 -- a space and '='
+     * printed as themselves -- so a secret holding either byte, logged where
+     * an identifier belongs, matched no window and the scan stayed clean: one
+     * random 32-byte nonce in 124. Here both bytes sit so that every 16-byte
+     * window holds one of them. */
+    { static const uint8_t leaked[] = "abcdefgh ijklmnopqrstuvw=xyz0123";
+      static const uint8_t other[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ456789";
+      cap_begin(&c);
+      authd_log_slot_id(AUTHD_LOG_INFO, "client-hello", 0u, leaked, 32u);
+      out = cap_end(&c);
+      CHECK(strcmp(out, "info event=client-hello slot=0 id=abcdefgh.ijklmnopqrstuvw.xyz0123\n") == 0,
+            "scan: the logged field is the escaped image (the canary)");
+      CHECK(log_holds_window(out, "leaked", leaked, 32u, 0) == 1,
+            "scan: a secret holding a space and '=' is found in the id= field it was logged to (F217)");
+      CHECK(log_holds_window(out, "other", other, 32u, 0) == 0,
+            "scan: and a buffer that was not logged is not found there");
+      free(c.buf);
+      for (unsigned b = 0; b < 256u; b++) {
+          const uint8_t one[1] = { (uint8_t)b };
+          cap_begin(&c);
+          authd_log_slot_id(AUTHD_LOG_INFO, "x", 0u, one, 1u);
+          const char *o1 = cap_end(&c);
+          const char *f = strstr(o1, " id=");
+          if (f == NULL || f[4] != journal_escaped((uint8_t)b)) {
+              CHECK(0, "scan: journal_escaped() is the logger's rule for every byte value (F217)");
+              printf("  (byte 0x%02x: the logger wrote '%c', the scan expects '%c')\n", b, f ? f[4] : '?', journal_escaped((uint8_t)b));
+              free(c.buf);
+              break;
+          }
+          free(c.buf);
+          if (b == 255u) { CHECK(1, "scan: journal_escaped() is the logger's rule for every byte value (F217)"); }
+      }
+    }
 
     /* HASHED: idh=<16 hex> from the callback, and the identifier nowhere */
     CHECK(authd_log_set_privacy(AUTHD_LOG_IDS_HASHED, AUTHD_LOG_IP_FULL, fake_pseudonym, NULL) == 0,

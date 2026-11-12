@@ -34,10 +34,14 @@ static inline int in_spans(size_t w, size_t len, const span_t *skip, size_t nski
 }
 
 /* How authd_log_slot_id writes a byte into an `id=` field: itself if
- * printable ASCII, '.' otherwise (apps/authd/authd_log.c). */
+ * printable ASCII other than a space and '=', '.' otherwise
+ * (apps/authd/authd_log.c). The logger stopped printing those two in V4-72
+ * (F141) and this rule did not follow until V4-134 (F217): a secret holding
+ * either byte matched no window around it. test_authd_log compares the two
+ * rules over every byte value. */
 static inline char journal_escaped(uint8_t b)
 {
-    return (b >= 0x20u && b <= 0x7eu) ? (char)b : '.';
+    return (b > 0x20u && b <= 0x7eu && b != (uint8_t)'=') ? (char)b : '.';
 }
 
 #define JOURNAL_ESC_WIN 16u

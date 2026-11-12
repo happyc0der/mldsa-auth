@@ -14819,3 +14819,38 @@ a cookie let through.
 **Still open from the reviewer's list:** rotating a key in two tabs can
 promote the wrong pending envelope (`web/client/flows.mjs`), reasoned
 only.
+
+## V4-134 — F217: the journal scan's escaping rule had drifted from the logger's
+
+**How it showed.** V4-133's nightly (43269079927) failed one job of 85:
+campaign v71, mutant EI2, `SURVIVED(BAD)`. EI2 logs the ClientHello's
+nonce where its id was; two named checks in `test_authd_conn` are meant
+to find it. V4-133 touched no C, and the same campaign had passed on the
+commit below it an hour earlier. The job passed on rerun.
+
+**Cause.** `tests/journal_scan.h` (V4-29) rebuilds the `id=` field's
+image of a secret and looks for 16-character windows of it. Its rule was
+"printable ASCII as itself". V4-72 (F141) made the logger print a space
+and `=` as `.` too, and the scan's copy was not updated. A window holding
+either byte could not match. A 32-byte nonce has 17 windows, and two
+such bytes placed apart, or one beside windows too sparse to count, hide
+it whole.
+
+**Measured.** Simulated over random 32-byte values: 16,182 misses in
+2,000,000 with the old rule (1 in 124), 16 in 500,000 with the logger's
+rule (1 in 31,000). The remainder are values with fewer than two
+printable bytes in every window, which the scan skips on purpose so that
+a run of dots is never evidence.
+
+**Fix.** One line: the scan's rule is the logger's. So that it cannot
+drift again, `test_authd_log` logs each of the 256 byte values and
+compares what the logger wrote with what the scan expects, and searches
+for a logged 32-byte value in which every window holds a space or `=`.
+Four `scan:` checks; two were red before the fix.
+
+**Severity.** Low. The daemon was never wrong; a test oracle was weaker
+than CLAIMS D13 said, and a campaign could fail about one night in 124
+for no reason.
+
+**Process note.** V4-133 was landed on the rerun's green result, with
+the first failure recorded here rather than hidden.
