@@ -14912,3 +14912,18 @@ No C changed: 483 mutations, 70 campaigns, 523 anchors as before.
 
 **Severity.** Medium. No attacker gains anything, but an ordinary
 action in two tabs destroyed the device's only key.
+
+## V4-135: cleanup after V4-131..136
+
+Done after V4-136 rather than before it, so that the runs it cites are
+the ones on the commit that is now main.
+
+- `docs/review/REPRODUCE.md` cites CI 43283037597 (16/16) and nightly
+  43283042095 (85/85, all 70 campaigns) on `159dd35`.
+- `tests/web_flows.mjs`: the header's scenario list names the V4-136
+  scenarios.
+
+For the record, the runs between: V4-131 43255190798 / 43255197501;
+V4-132 43257450781 / 43257456819; V4-133 43269073862 / 43269079927 (the
+nightly green on its second attempt, see V4-134); V4-134 43281033344 /
+43281038590. No code, test logic or count changed in this step.
