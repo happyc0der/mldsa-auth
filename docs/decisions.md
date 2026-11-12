@@ -14616,3 +14616,46 @@ Every third step is cleanup. Three things, no behaviour changed:
 - The drain comment in `tests/authd_e2e.sh` said every client was already
   gone; V4-127 added one that is still alive there, with its connection
   closed. The comment says so.
+
+## V4-129 — F212: the site's signup secret, compared in constant time and never absent
+
+**Where it came from.** Reading every place the reference site compares a
+secret. There is one it compares itself: the invite, with `!==`.
+
+**Two defects in `invite !== opt.invite`.**
+
+- **Variable time.** Not measured, and said so in the register: one
+  comparison of a 32-character string is nanoseconds, behind a proxy, and
+  the runbook's invite is 128 random bits. It is fixed because the route
+  is unlimited and the fix costs two hashes.
+- **Fail-open with no invite.** Found while writing the fix: the digest of
+  `String(undefined)` would have made the word "undefined" a valid invite,
+  which raised the question of what the old code did. Measured on the
+  unfixed site: `startSite` with no invite, then a signup offering none,
+  answered `200`. The command line exits 2 without `--invite-file`, so the
+  deployed site was closed; a site embedding `startSite` was not.
+
+**The fix.** The offered value must be a string; its SHA-256 digest is
+compared with the invite's by `timingSafeEqual`. Hashing first makes the
+lengths equal, which `timingSafeEqual` requires, and hides the invite's
+length. `startSite` throws unless the invite is a non-empty string.
+
+**Checks, 15, and what each kind is for.**
+
+- Ten wrong offers (two same-length, a prefix, an extension, empty, a
+  number, null, an array, an object, absent) each answer
+  `403 {"error":"signup refused"}`. All ten passed before the fix; they
+  exist for the new code, which can throw on a non-string where the old
+  could not (mutation K2: five answer 500).
+- Three sites that must not start. Red before the fix.
+- No `===`/`!==` on the invite in the source, and `timingSafeEqual`
+  present. Red before the fix. It is a source check because a test cannot
+  time one comparison; it is the only thing that kills a return to `!==`.
+- The canary: the invite itself is accepted.
+
+Six hand mutations, six killed by name, file restored byte-exact.
+
+**Not done.** No attempt limit on `/api/signup`. A 128-bit secret does
+not need one; a site that replaces the invite with its own account check
+brings its own. No spec change: the invite is the reference's stand-in
+(§14), not protocol.

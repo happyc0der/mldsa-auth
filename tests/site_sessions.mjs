@@ -10,6 +10,7 @@
 // F132: the session table had no bound. The checks below require a cap on
 // sessions nobody has logged into, idle expiry, and removal at logout.
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -253,6 +254,51 @@ try {
                    'X-Forwarded-For': `198.51.100.${i + 1}, 203.0.113.9` } })).status);
     }
     check(tst[2] === 429, `recover: a client rotating the X-Forwarded-For entries it prepends is still limited (${tst.join(', ')})`);
+  }
+
+  // V4-129, F212: the invite is the site's signup secret and was compared with
+  // `!==`, which stops at the first differing character. The comparison is
+  // now of two SHA-256 digests in constant time. Timing is not measured here
+  // (a test cannot time one comparison through HTTP); what is checked is every
+  // way the new comparison could accept or throw where the old one refused.
+  {
+    const wrong = [
+      ['the same length, last character wrong', 'the-invitf'],
+      ['the same length, first character wrong', 'uhe-invite'],
+      ['a prefix', 'the-invit'],
+      ['the invite and one more character', 'the-invite0'],
+      ['empty', ''],
+      ['a number', 7],
+      ['null', null],
+      ['an array holding it', ['the-invite']],
+      ['an object', { length: 10 }],
+      ['absent', undefined],
+    ];
+    for (const [what, invite] of wrong) {
+      const r = await post('/api/signup', { user: 'guesser', invite });
+      const t = await r.text();
+      check(r.status === 403 && t === '{"error":"signup refused"}',
+            `invite: ${what} is refused as any other (${r.status} ${t}) (F212)`);
+    }
+    const ok = await post('/api/signup', { user: 'guesser', invite: 'the-invite' });
+    check(ok.status === 200, `invite: the invite itself is accepted (${ok.status}) (the canary)`);
+    // A site given no invite: the old comparison was undefined !== undefined,
+    // so a signup offering none was accepted. It must not start at all.
+    for (const [what, inv] of [['no invite', undefined], ['an empty invite', ''], ['a non-string invite', 7]]) {
+      let outcome = 'refused to start';
+      try {
+        const st = await start({ invite: inv });
+        const r = await fetch(`http://127.0.0.1:${st.port}/api/signup`, { method: 'POST',
+          headers: { 'content-type': 'application/json', origin: `http://127.0.0.1:${st.port}` },
+          body: JSON.stringify({ user: 'anyone' }) });
+        outcome = `started, and a signup offering no invite answered ${r.status}`;
+      } catch (e) { if (!/invite is required/.test(String(e.message))) { outcome = `threw ${e.message}`; } }
+      check(outcome === 'refused to start', `invite: a site given ${what} ${outcome} (F212)`);
+    }
+    const src = readFileSync(join(repo, 'examples/site-node/server.mjs'), 'utf8');
+    const direct = src.split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l) && /\b(invite|offered)\b\s*[!=]==\s*(?!''|'string')['\w.]|[!=]==\s*(opt\.)?(invite|offered)\b/.test(l));
+    check(direct.length === 0 && /timingSafeEqual/.test(src),
+          `invite: the site compares it in constant time, never with === or !== (${direct.length} direct comparison(s)) (F212)`);
   }
 
   // V4-76, F145: a signup naming an EXISTING user cannot add a device to it.

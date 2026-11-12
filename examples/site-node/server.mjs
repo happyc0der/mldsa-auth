@@ -54,7 +54,7 @@
  */
 import http from 'node:http';
 import net from 'node:net';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -176,6 +176,14 @@ export async function startSite(opt) {
     b.tokens--;
     return true;
   };
+
+  // A site started with no invite refuses to start (V4-129, F212): the old
+  // comparison was `invite !== opt.invite`, and with neither side set that is
+  // undefined against undefined -- a signup that offered nothing was vouched.
+  if (typeof opt.invite !== 'string' || opt.invite === '') {
+    throw new Error('startSite: an invite is required');
+  }
+  const INVITE_DIGEST = createHash('sha256').update(opt.invite).digest();
 
   // One request to the daemon, given up on after AUTHD_TIMEOUT_MS (V4-127,
   // F210): a daemon that accepts and never answers held the browser's request
@@ -372,9 +380,15 @@ export async function startSite(opt) {
     },
     // The site's own account check. Here: an invite secret. A real site uses
     // whatever it already trusts (a verified e-mail, an admin approval...).
+    // The secret is compared as two SHA-256 digests in constant time (V4-129,
+    // audit F212): a string comparison stops at the first character that
+    // differs, and how long a refusal took would say how much of a guess was
+    // right. Hashing first also makes the two inputs the same length.
     'POST /api/signup': async (req, res, s) => {
-      const { user, invite } = await body(req);
-      if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || invite !== opt.invite) {
+      const { user, invite: offered } = await body(req);
+      const vouched = typeof offered === 'string' &&
+        timingSafeEqual(createHash('sha256').update(offered).digest(), INVITE_DIGEST);
+      if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || !vouched) {
         return send(res, 403, { error: 'signup refused' });
       }
       rotate(res, s).signupUser = user;                    // F131: the account a planted id must not be able to claim
