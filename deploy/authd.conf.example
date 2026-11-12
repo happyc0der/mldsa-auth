@@ -96,6 +96,9 @@ log_client_ip = prefix
 # ~91 KiB per slot, so 256 slots is about 24 MB. RAISE LimitMEMLOCK IN THE UNIT
 # IF YOU RAISE THIS: the requirement is 4 KiB x 10 x max_slots, and the daemon
 # logs `memlock-limit` at WARN when its own limit is short.
+# Each slot is also an open file. The daemon raises its own soft limit to
+# max_slots + max_local_slots + 32 and logs `fd-limit`; it can only warn when
+# the HARD limit is lower than that (systemd's default is not).
 max_slots = 256
 max_local_slots = 8
 

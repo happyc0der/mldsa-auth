@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.43, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118 errata)
+# mldsa-authd — deployment specification (v1.44, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1145,10 +1145,10 @@ Adding an event is therefore a change to this document — which is the point.
 Transport and lifecycle:
 
 ```
-started draining stopped loop-failed memlock-limit store-created
+started draining stopped loop-failed memlock-limit fd-limit store-created
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
-accept-refused-no-slot local-accept-refused-no-slot
+accept-refused-no-slot local-accept-refused-no-slot accept-failed
 closed-deadline closed-protocol
 ```
 
@@ -1285,6 +1285,31 @@ than refusing: the failure mode has no symptom of its own — every allocation
 still succeeds and the secrets merely become swappable — so the log line is
 what makes an unconfigured host visible, while refusing would turn a common
 misconfiguration into an outage.
+
+**Open files** (erratum 86). Every slot is an open descriptor, so the daemon
+needs **`max_slots` + `max_local_slots` + 32** of them: the 32 cover the
+listeners, the store, the standard streams and the descriptor an `accept()`
+holds for the moment before a full table refuses it. At the defaults that is
+296. systemd's default soft limit is 1024, so `max_slots` near 1000 or above
+is past it, and `max_slots` goes to 4096.
+
+At startup the daemon compares that number to its own `RLIMIT_NOFILE` and
+logs it (`fd-limit`, field `need`). When the soft limit is short and the hard
+limit is not, **the daemon raises its own soft limit** to exactly the
+requirement and logs at INFO; systemd's default hard limit is far above 4136,
+so the shipped unit needs no `LimitNOFILE`. When the hard limit is short too
+the daemon cannot fix it: it logs `fd-limit` at WARN, says so on standard
+error with the numbers, and starts — the `memlock-limit` precedent, a
+misconfiguration that is reported rather than turned into an outage. Set
+`LimitNOFILE` in the unit to at least the requirement.
+
+Past the limit `accept()` fails on **every** listener, the admin socket
+included, since the limit is the process's and not a listener's. The daemon
+logs `accept-failed` at WARN, once for each run of failures on a listener
+rather than once per attempt, and does not try that listener again for
+100 ms: on Linux the connection that could not be accepted stays in the
+queue and the listener stays readable, so retrying at once is a loop that
+never sleeps. Accepting resumes by itself when a descriptor is free.
 
 **A daemon that finds no store at `store_path` creates one, and says so**
 (erratum 81). That is the first start of a server whose key came from
@@ -1762,3 +1787,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 85 | 16 | A Unix socket path that something is listening on is refused at start-up (`in-use`) and left alone; only a socket nothing listens on is replaced | every existing socket at the path was unlinked and bound over. With a TCP listener configured a second daemon failed at that bind first; with `listen_port = 0` it started, and the running daemon stayed up with no socket anyone could reach (F204) |
+
+### Revision v1.44 (V4-120)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 86 | 15, 16 | The events `fd-limit` and `accept-failed`. The daemon needs `max_slots` + `max_local_slots` + 32 open files, raises its own soft `RLIMIT_NOFILE` to that at startup, and warns when the hard limit is short; an `accept()` that fails is logged once per run of failures and the listener is left alone for 100 ms | nothing compared the slot count to the descriptor limit, and a failed `accept()` returned without a word. Under a limit below the slot count the daemon stopped accepting on every socket, the admin socket included, and logged nothing (F205) |

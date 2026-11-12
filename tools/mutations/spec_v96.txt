@@ -1,0 +1,15 @@
+FD1|^authd_e2e$|a daemon whose descriptor limit is short did not log 'warn event=fd-limit need=296' (F205)
+FD2|^authd_e2e$|a daemon whose descriptor limit is short did not say so on stderr, with the numbers (F205)
+FD3|^test_authd_evloop$|fdlimit: the default 256 + 8 slots need 296 descriptors (32 beside the slots)
+FD4|^test_authd_evloop$|fdlimit: a soft limit equal to the need is OK and reported back (canary)
+FD5|^test_authd_evloop$|fdlimit: a hard limit equal to the need is enough (canary: LOW is not unconditional)
+FD6|^test_authd_evloop$|fdlimit: the raise is real, and to exactly the need (F205)
+FD7|^test_authd_evloop$|fdlimit: the raise is real, and to exactly the need (F205)
+FD8|^test_authd_evloop$|fdlimit: a limit that is short is logged at WARN
+AF1|^test_authd_evloop$|accept: with a connection waiting, the listener is not tried again before 100 ms -- no spin (F205)
+AF2|^test_authd_evloop$|accept: a run of failures is logged once, at WARN, as accept-failed (F205)
+AF3|^test_authd_evloop$|accept: and the run of failures is over, so the next one will be logged
+AF4|^test_authd_evloop$|accept: a run of failures is logged once, at WARN, as accept-failed (F205)
+AF5|^test_authd_evloop$|accept: an accept() with no descriptor left is counted, and takes no slot (F205)
+AF6|^test_authd_evloop$|accept: with a connection waiting, the listener is not tried again before 100 ms -- no spin (F205)
+AF7|^test_authd_evloop$|accept: at 100 ms it is tried again, once (F205)

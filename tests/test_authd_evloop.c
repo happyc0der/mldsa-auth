@@ -24,6 +24,7 @@
 #include <sys/un.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <poll.h>
 #include <signal.h>
 
@@ -35,6 +36,7 @@
 #include "listener.h"
 #include "authd_log.h"
 #include "memlock.h"
+#include "fdlimit.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -1125,6 +1127,189 @@ static void test_memlock(void)
     (void)setrlimit(RLIMIT_MEMLOCK, &saved);
 }
 
+/* ------------------------------------------------------- descriptors (F205) */
+
+static void test_fdlimit(void)
+{
+    /* From literals, for test_memlock's reason. */
+    CHECK(fdlimit_required(256u, 8u) == 296u,
+          "fdlimit: the default 256 + 8 slots need 296 descriptors (32 beside the slots)");
+    CHECK(fdlimit_required(4096u, 64u) == 4192u,
+          "fdlimit: the 4096 + 64 ceiling needs 4192");
+    CHECK(fdlimit_log_level(FDLIMIT_LOW) == AUTHD_LOG_WARN,
+          "fdlimit: a limit that is short is logged at WARN");
+    CHECK(fdlimit_log_level(FDLIMIT_OK) == AUTHD_LOG_INFO &&
+          fdlimit_log_level(FDLIMIT_RAISED) == AUTHD_LOG_INFO &&
+          fdlimit_log_level(FDLIMIT_UNKNOWN) == AUTHD_LOG_INFO,
+          "fdlimit: every other answer is logged at INFO (canary: WARN is not unconditional)");
+
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_NOFILE, &saved) != 0 ||
+        (saved.rlim_max != RLIM_INFINITY && saved.rlim_max < 200u)) {
+        printf("SKIP: fdlimit: cannot stage RLIMIT_NOFILE on this platform\n");
+        return;
+    }
+    struct rlimit rl = saved;
+    rl.rlim_cur = 100u;
+    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+        printf("SKIP: fdlimit: setrlimit(RLIMIT_NOFILE) refused on this platform\n");
+        return;
+    }
+    uint64_t limit = 0u;
+    CHECK(fdlimit_ensure(100u, &limit) == FDLIMIT_OK && limit == 100u,
+          "fdlimit: a soft limit equal to the need is OK and reported back (canary)");
+    struct rlimit now;
+    CHECK(getrlimit(RLIMIT_NOFILE, &now) == 0 && now.rlim_cur == 100u,
+          "fdlimit: and a limit that suffices is left as it was");
+    CHECK(fdlimit_ensure(101u, &limit) == FDLIMIT_RAISED && limit == 101u,
+          "fdlimit: a soft limit one below the need is raised, and says so (F205)");
+    CHECK(getrlimit(RLIMIT_NOFILE, &now) == 0 && now.rlim_cur == 101u,
+          "fdlimit: the raise is real, and to exactly the need (F205)");
+    CHECK(now.rlim_max == saved.rlim_max, "fdlimit: the hard limit is not touched");
+
+    /* A hard limit cannot be given back, so the short one is staged in a
+     * child and its answer comes home in the exit status. */
+    fflush(NULL);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        struct rlimit hard;
+        hard.rlim_cur = 90u;
+        hard.rlim_max = 150u;
+        if (setrlimit(RLIMIT_NOFILE, &hard) != 0) {
+            _exit(77);
+        }
+        uint64_t lim = 0u;
+        const fdlimit_status_t a = fdlimit_ensure(151u, &lim);
+        struct rlimit after;
+        const int kept = (getrlimit(RLIMIT_NOFILE, &after) == 0 && after.rlim_cur == 90u);
+        const fdlimit_status_t b = fdlimit_ensure(150u, NULL);
+        _exit((a == FDLIMIT_LOW ? 1 : 0) | (lim == 90u ? 2 : 0) | (kept ? 4 : 0) |
+              (b == FDLIMIT_RAISED ? 8 : 0));
+    }
+    int wst = 0;
+    CHECK(pid > 0 && waitpid(pid, &wst, 0) == pid && WIFEXITED(wst), "fdlimit: the child reports");
+    if (pid > 0 && WIFEXITED(wst) && WEXITSTATUS(wst) == 77) {
+        printf("SKIP: fdlimit: this platform will not lower the hard limit\n");
+    } else {
+        const int r = WIFEXITED(wst) ? WEXITSTATUS(wst) : 0;
+        CHECK((r & 1) != 0, "fdlimit: a hard limit one below the need is LOW (F205)");
+        CHECK((r & 2) != 0, "fdlimit: LOW reports the soft limit in force");
+        CHECK((r & 4) != 0, "fdlimit: LOW changes nothing");
+        CHECK((r & 8) != 0, "fdlimit: a hard limit equal to the need is enough (canary: LOW is not unconditional)");
+    }
+    (void)setrlimit(RLIMIT_NOFILE, &saved);
+}
+
+static int count_in_file(FILE *f, const char *needle)
+{
+    char line[512];
+    int n = 0;
+    rewind(f);
+    while (fgets(line, sizeof line, f) != NULL) {
+        if (strstr(line, needle) != NULL) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* A TCP socket made now and connected later: connect() needs no new
+ * descriptor, so this process can still be a client after the limit drops. */
+static int later_socket(void)
+{
+    return socket(AF_INET, SOCK_STREAM, 0);
+}
+
+static int connect_now(int fd, uint16_t port)
+{
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return connect(fd, (const struct sockaddr *)&a, sizeof a);
+}
+
+static void test_accept_failure(void)
+{
+    enum { NSLOTS = 4 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK, "accept: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 5000u, 20000u, on_frame, on_close, &h) == 0, "accept: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "accept: listener registered");
+
+    /* Everything that needs a descriptor is opened BEFORE the limit drops:
+     * this process is the client too. What becomes of a queued connection
+     * when accept() fails differs -- Linux keeps it queued, macOS drops it --
+     * so each step below brings its own connection. */
+    FILE *lf = tmpfile();
+    const int c1 = later_socket(), c2 = later_socket(), c3 = later_socket();
+    CHECK(lf != NULL && c1 >= 0 && c2 >= 0 && c3 >= 0, "accept: a log file and three client sockets");
+    if (lf == NULL || c1 < 0 || c2 < 0 || c3 < 0) {
+        return;
+    }
+    authd_log_init(lf, AUTHD_LOG_WARN);
+
+    struct rlimit saved;
+    const int probe = dup(0);            /* the lowest free descriptor */
+    if (probe >= 0) { (void)close(probe); }
+    struct rlimit rl;
+    int staged = (probe >= 0 && getrlimit(RLIMIT_NOFILE, &saved) == 0);
+    if (staged) {
+        rl = saved;
+        rl.rlim_cur = (rlim_t)probe;     /* nothing new can be opened */
+        staged = (setrlimit(RLIMIT_NOFILE, &rl) == 0);
+    }
+    if (!staged) {
+        printf("SKIP: accept: cannot lower RLIMIT_NOFILE on this platform\n");
+        authd_log_init(stderr, AUTHD_LOG_ERROR);
+        (void)fclose(lf); (void)close(c1); (void)close(c2); (void)close(c3); (void)close(lfd);
+        return;
+    }
+
+    CHECK(connect_now(c1, port) == 0, "accept: the first connection is queued");
+    (void)PUMP_UNTIL(&ev, 1000, ev.accept_failed >= 1u);
+    CHECK(ev.accept_failed == 1u && evloop_active(&ev) == 0u,
+          "accept: an accept() with no descriptor left is counted, and takes no slot (F205)");
+
+    CHECK(connect_now(c2, port) == 0, "accept: a second connection is queued behind the failure");
+    for (int i = 0; i < 50; i++) {
+        (void)evloop_run_once(&ev, 0, 1000u);
+        (void)evloop_run_once(&ev, 0, 1099u);
+    }
+    CHECK(ev.accept_failed == 1u,
+          "accept: with a connection waiting, the listener is not tried again before 100 ms -- no spin (F205)");
+    (void)PUMP_UNTIL(&ev, 1100, ev.accept_failed >= 2u);
+    CHECK(ev.accept_failed == 2u, "accept: at 100 ms it is tried again, once (F205)");
+    fflush(lf);
+    CHECK(count_in_file(lf, "warn event=accept-failed") == 1,
+          "accept: a run of failures is logged once, at WARN, as accept-failed (F205)");
+
+    (void)setrlimit(RLIMIT_NOFILE, &saved);
+    CHECK(connect_now(c3, port) == 0, "accept: a third connection, with descriptors back");
+    for (int i = 0; i < 20; i++) {
+        (void)evloop_run_once(&ev, 0, 1199u);
+    }
+    CHECK(ev.accepted == 0u, "accept: descriptors back, but still not before the retry time");
+    (void)PUMP_UNTIL(&ev, 1200, evloop_active(&ev) >= 1u);
+    CHECK(ev.accepted >= 1u && ev.accept_failed == 2u,
+          "accept: once a descriptor is free, connections are accepted again -- the canary (F205)");
+    CHECK(ev.accept_failing[0] == 0,
+          "accept: and the run of failures is over, so the next one will be logged");
+
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    (void)fclose(lf);
+    (void)close(c1); (void)close(c2); (void)close(c3);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1150,6 +1335,8 @@ int main(void)
     test_log_hygiene();
     test_poll_fairness();
     test_memlock();
+    test_fdlimit();
+    test_accept_failure();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);
     return g_fail ? 1 : 0;

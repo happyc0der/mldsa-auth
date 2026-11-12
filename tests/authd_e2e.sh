@@ -449,6 +449,41 @@ if (ulimit -S -l 1024) 2>/dev/null; then
 else
     echo "SKIP: E2E: this platform will not lower RLIMIT_MEMLOCK; the memlock-limit WARN line is not staged"
 fi
+# F205 (V4-120): the same for open files. Every slot is a descriptor; with too
+# few the daemon stops accepting on every socket and used to say nothing. The
+# default 256 + 8 slots need 296. Under a SOFT limit of 64 the daemon raises
+# its own limit and the line is INFO; under a HARD limit of 64 it cannot, and
+# must log `warn event=fd-limit need=296` and name the numbers on stderr.
+start_limited() {    # <log>: waits for started, then stops the daemon
+    i=0
+    while ! grep -q 'event=started' "$1" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "the daemon did not start under a 64-descriptor limit: $(cat "$1")"
+        [ "$i" -gt 400 ] && fail "the daemon under a 64-descriptor limit never logged event=started"
+        sleep 0.05
+    done
+    kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+}
+if (ulimit -S -n 64) 2>/dev/null; then
+    (ulimit -S -n 64; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-fs.log" 2>&1 &
+    SUPID=$!
+    start_limited "$TMP/su-fs.log"
+    grep -q '^info event=fd-limit need=296$' "$TMP/su-fs.log" \
+        || fail "a daemon that could raise its own descriptor limit did not log 'info event=fd-limit need=296' (F205): $(cat "$TMP/su-fs.log")"
+    if grep -q 'RLIMIT_NOFILE' "$TMP/su-fs.log"; then
+        fail "a daemon that could raise its own descriptor limit complained about it (F205)"
+    fi
+    (ulimit -S -n 64; ulimit -H -n 64; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-fh.log" 2>&1 &
+    SUPID=$!
+    start_limited "$TMP/su-fh.log"
+    grep -q '^warn event=fd-limit need=296$' "$TMP/su-fh.log" \
+        || fail "a daemon whose descriptor limit is short did not log 'warn event=fd-limit need=296' (F205): $(cat "$TMP/su-fh.log")"
+    grep -q 'RLIMIT_NOFILE is 64 but max_slots = 256 and max_local_slots = 8 need 296 open files' "$TMP/su-fh.log" \
+        || fail "a daemon whose descriptor limit is short did not say so on stderr, with the numbers (F205): $(cat "$TMP/su-fh.log")"
+    echo "PASS: E2E: under a soft limit of 64 descriptors the daemon raises it and logs fd-limit at info; under a hard limit of 64 it logs 'warn event=fd-limit need=296' and names the numbers on stderr (F205)"
+else
+    echo "SKIP: E2E: this platform will not lower RLIMIT_NOFILE; the fd-limit lines are not staged"
+fi
 echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 

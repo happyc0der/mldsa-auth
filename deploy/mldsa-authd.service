@@ -77,6 +77,12 @@ StateDirectoryMode=0700
 # when its own limit is short, so the journal will tell you.
 LimitMEMLOCK=32M
 
+# Open files: the daemon needs max_slots + max_local_slots + 32, and raises
+# its own soft limit to that at start (it logs `fd-limit`). systemd's default
+# hard limit is far above the most the configuration can ask for (4136), so
+# nothing is set here. If `fd-limit` is ever at WARN, something lowered the
+# hard limit: set LimitNOFILE= to at least the `need=` it prints.
+
 # --- hardening (spec §16's list, verbatim) --------------------------------
 NoNewPrivileges=yes
 ProtectSystem=strict

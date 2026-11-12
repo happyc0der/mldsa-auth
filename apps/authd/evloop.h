@@ -101,6 +101,8 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
  * is a silent no-service rather than an error, so the number is stated here
  * next to what occupies it. */
 #define AUTHD_MAX_LISTENERS 4u
+/* F205: how long a listener whose accept() failed is left unpolled. */
+#define EVLOOP_ACCEPT_RETRY_MS 100u
 
 /* Upper bound on slots the loop polls in one iteration. The two pools share
  * ONE poll set, so this is their SUM -- not the protocol pool's maximum.
@@ -164,6 +166,12 @@ typedef struct {
     uint64_t local_accepted;
     uint64_t local_refused_no_slot;
     uint64_t closed_refused_addr;    /* refused by on_addr (Req 12 / the limiter) */
+    uint64_t accept_failed;          /* accept() failed outright (F205) */
+
+    /* F205: per listener, whether accept() is in a run of failures (so the
+     * run is logged once) and when it is next polled. */
+    int      accept_failing[AUTHD_MAX_LISTENERS];
+    uint64_t accept_retry_ms[AUTHD_MAX_LISTENERS];
 } evloop_t;
 
 /* `slots` must have room for `n_slots` and outlive the loop. */

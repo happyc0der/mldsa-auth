@@ -29,6 +29,7 @@
 #include "authd_secret.h"
 #include "conn_io.h"
 #include "evloop.h"
+#include "fdlimit.h"
 #include "keyfile.h"
 #include "listener.h"
 #include "localapi.h"
@@ -437,6 +438,25 @@ int main(int argc, char **argv)
                     "Set LimitMEMLOCK in the service unit (spec 16).\n",
                     (unsigned long long)lim, cfg.max_slots, (unsigned long long)need,
                     (unsigned)MEMLOCK_BLOCKS_PER_SLOT);
+        }
+    }
+
+    /* F205: a descriptor for every slot, or say so. The soft limit is raised
+     * here when the hard limit allows; when it does not, the daemon serves up
+     * to the limit and the line below is the operator's warning. */
+    {
+        uint64_t lim = 0;
+        const uint64_t need = fdlimit_required(cfg.max_slots, cfg.max_local_slots);
+        const fdlimit_status_t fs = fdlimit_ensure(need, &lim);
+        authd_log_num(fdlimit_log_level(fs), "fd-limit", "need", need);
+        if (fs == FDLIMIT_LOW) {
+            fprintf(stderr,
+                    "mldsa-authd: RLIMIT_NOFILE is %llu but max_slots = %u and max_local_slots = %u "
+                    "need %llu open files: past the limit the daemon accepts no connection on any "
+                    "socket, the admin socket included. Set LimitNOFILE in the service unit "
+                    "(spec 16).\n",
+                    (unsigned long long)lim, cfg.max_slots, cfg.max_local_slots,
+                    (unsigned long long)need);
         }
     }
 

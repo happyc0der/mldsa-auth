@@ -229,6 +229,14 @@ the requirement and the daemon's secrets can be swapped to disk — fix
 `LimitMEMLOCK` and restart. Nothing else reports this: libsodium hands back
 unlocked memory without an error.
 
+`event=fd-limit` is the same check for open files: the daemon needs
+`max_slots + max_local_slots + 32` of them and raises its own soft limit to
+that, so with systemd's defaults the line is at `info` whatever `max_slots`
+is. **At `warn`** the hard limit is below the `need=` it prints, and standard
+error says so with the numbers: set `LimitNOFILE=` in the unit to at least
+that and restart. Left alone, a daemon that runs out of descriptors accepts
+nothing on any socket, the admin socket included.
+
 **`event=store-created` must not be there.** Step 5's `init` made the store,
 so a daemon that says it created one — the journal also has
 `created a new, empty store (no store was there)` with the path — found
@@ -811,6 +819,13 @@ Common ones, and what they actually are:
   second unit or a hand-started daemon uses the same configuration. The
   running daemon is not disturbed. A socket left behind by a killed daemon
   does not cause this; it is replaced.
+- **`warn event=accept-failed`** in the journal of a running daemon — an
+  `accept()` failed, which in practice means the process is out of open
+  files. Look for `warn event=fd-limit` at the last start (step 9): that is
+  a hard limit below what the slots need. Logged once per run of failures on
+  a listener, not once per connection; the daemon retries every 100 ms and
+  recovers by itself when connections close. While it lasts, `authd_admin`
+  cannot connect either.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
 - **`authd.conf: io (Permission denied)`** — the daemon cannot read its

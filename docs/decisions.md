@@ -14154,3 +14154,94 @@ now cites the runs on `76b4104` (V4-118): CI 43130935342, 16/16; nightly
 The cited runs are always one step behind this file's own commit, since a
 commit cannot name the run that tests it. What is checked is that the count
 in the sentence and the run it cites belong to the same commit.
+
+## V4-120 — F205: a descriptor for every slot, and a failed accept() that says so
+
+**What was wrong.** Every slot is an open descriptor. `max_slots` goes to
+4096, and nothing in the daemon compared it to `RLIMIT_NOFILE`. In the loop,
+`accept_ready` returned on any `accept()` error with no log line and no
+counter.
+
+**Reproduced before the fix**, with the built daemon: `ulimit -n 64`, the
+default `max_slots = 256`, a Unix-only configuration, 75 idle connections
+opened and held. 54 were accepted. From then on nothing was accepted on any
+socket; `authd_admin list-users` answered `malformed-response` with a hint
+about the uid allowlist, which is the wrong direction to send an operator;
+the log had nothing. On macOS the process slept in `poll`: macOS drops a
+queued connection when `accept()` fails with `EMFILE`. Linux keeps it queued
+and the listener stays readable, so the same loop would not sleep there.
+That half is from accept(2) and was not measured on this machine.
+
+**Who is affected.** Not the defaults under systemd: 296 needed, soft limit
+1024. A `max_slots` of about 1000 or more was, and the runbook's own table
+for raising it (1024, 2048, 4096, with the `LimitMEMLOCK` for each) said
+nothing about open files. The unit set no `LimitNOFILE`. With the
+configuration in that state the trigger is remote: holding connections open
+is enough, and the slot table that would have refused them with
+`accept-refused-no-slot` is never reached. Medium for that reason, and
+because the admin socket goes with the rest.
+
+**Decisions.**
+
+- **The daemon raises its own soft limit.** The hard limit is the
+  administrator's statement; the soft one is a default nobody chose.
+  systemd's is 1024 soft and 524288 hard, so the raise succeeds on every
+  stock host and the unit needs no new directive. It is raised to exactly
+  the requirement, not to the hard limit: macOS refuses a soft limit above
+  `OPEN_MAX` when the hard limit is unlimited, and the daemon has no use for
+  more than it derived.
+- **A short hard limit is a WARN and a line on standard error, not a refusal
+  to start.** This is `memlock-limit`'s reasoning (erratum 28): the daemon
+  works up to the limit, and refusing would turn a misconfiguration into an
+  outage at the next restart. Unlike locked memory this failure does have a
+  symptom now (`accept-failed`), so the two lines point at each other in the
+  runbook.
+- **The requirement is `max_slots + max_local_slots + 32`.** Counted on the
+  running daemon: three standard streams, up to four listeners, the store's
+  descriptor while it is being written, the log, and the one an `accept()`
+  holds before a full table closes it. That is about a dozen; 32 leaves room
+  for a library that opens something (`/dev/urandom`, a resolver) without
+  making the number look derived to the last unit.
+- **`accept-failed` is logged once per run of failures on a listener.** A
+  success ends the run. Under sustained exhaustion that is one line and not
+  ten a second; under a limit that is hit, cleared and hit again it is one
+  line each time, which is what happened in the manual run (two lines).
+  `accept_failed` counts every one.
+- **100 ms without polling that listener.** Long enough that a spin becomes
+  ten wake-ups a second; short enough that recovery after a connection
+  closes is not something a user would notice. The listener keeps its index
+  in the poll set with no events asked for, because the indices are
+  listener indices.
+- **`ECONNABORTED` is retried inside `listener_accept_ex`, like `EINTR`.**
+  It means the peer left while queued. Before this step it was a silent
+  return like any other error; now that an error is logged and paused on, a
+  client that hangs up early must not be able to cause either.
+
+**What is left.**
+
+- Under a hard limit that is short, the admin socket is still unreachable
+  once descriptors run out. The operator is told twice (at start, and when
+  it happens) and was told nothing before. Reserving a descriptor for the
+  admin listener was considered and not built: it needs the loop to close
+  the reserve, accept, and reopen it, on a path that cannot be tested
+  without the limit staged, for a configuration the start-up line already
+  flags.
+- No test stages `ECONNABORTED`, and no mutation covers its retry.
+- The Linux behaviour (the connection stays queued, the listener stays
+  readable) is exercised by the same unit test in CI and the nightly; the
+  pre-fix spin itself was never observed, only reasoned.
+
+**Evidence.** `test_authd_evloop`: the arithmetic from literals; the raise
+under a staged soft limit, to exactly the need, with the hard limit
+untouched; a short hard limit staged in a child process, which reports LOW,
+changes nothing, and (canary) accepts a hard limit equal to the need; and
+the accept path under a real `RLIMIT_NOFILE` lowered to the next free
+descriptor: counted, no slot taken, not retried before 100 ms with a
+connection waiting, retried once at 100 ms, logged once at WARN, and
+(canary) accepting again once descriptors are back. `authd_e2e.sh`: the
+built daemon under a soft limit of 64 logs `info event=fd-limit need=296`
+and prints nothing about it; under a hard limit of 64 it logs the line at
+`warn` and prints the numbers. After the fix the reproduction above accepts
+all of its connections under the soft limit, and under the hard limit
+accepts 54 and logs both lines. Campaign v96, fifteen mutations (FD1–FD8,
+AF1–AF7).

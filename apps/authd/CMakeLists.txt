@@ -74,6 +74,7 @@ target_link_options(mldsa_client_cli PUBLIC ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARD
 # local API and the CLIs' subcommands, over the client libraries above.
 add_library(mldsa_authd STATIC
   memlock.c
+  fdlimit.c
   store/store.c
   authd_config.c
   base32.c

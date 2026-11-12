@@ -258,8 +258,19 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
             continue;
         }
         if (st != LISTENER_OK) {
+            /* F205: accept() itself failed -- out of descriptors, in every
+             * case seen. Said once per run of failures, counted every time,
+             * and the listener is left out of the poll set for a moment: it
+             * stays readable, so polling it at once would spin. */
+            ev->accept_failed++;
+            if (!ev->accept_failing[li]) {
+                ev->accept_failing[li] = 1;
+                authd_log_event(AUTHD_LOG_WARN, "accept-failed");
+            }
+            ev->accept_retry_ms[li] = now_ms + (uint64_t)EVLOOP_ACCEPT_RETRY_MS;
             return;
         }
+        ev->accept_failing[li] = 0;
         authd_slot_t *s = take_slot(ev, kind);
         if (s == NULL) {
             /* Refusing is the correct behaviour at capacity: closing at once
@@ -454,7 +465,10 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
         for (size_t i = 0; i < ev->n_listeners; i++) {
             if (ev->listen_fd[i] >= 0) {
                 all[npfd].fd = ev->listen_fd[i];
-                all[npfd].events = POLLIN;
+                /* A listener whose accept() just failed keeps its place in
+                 * the set (the indices below are listener indices) and asks
+                 * for nothing until its retry time. */
+                all[npfd].events = (now_ms < ev->accept_retry_ms[i]) ? 0 : POLLIN;
                 all[npfd].revents = 0;
                 npfd++;
                 listener_count++;

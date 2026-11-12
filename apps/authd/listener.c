@@ -253,7 +253,10 @@ listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n
     int c;
     do {
         c = accept(listen_fd, NULL, NULL);
-    } while (c < 0 && errno == EINTR);
+        /* ECONNABORTED: the peer left while queued. That connection is gone
+         * and the next one is not; it is not a failure of the listener, which
+         * is what LISTENER_ERR_SOCKET now means to the loop (F205). */
+    } while (c < 0 && (errno == EINTR || errno == ECONNABORTED));
 
     if (c < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
