@@ -223,8 +223,14 @@ size_t evloop_local_active(const evloop_t *ev);
 int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms);
 
 /* Begin a graceful drain: stop accepting, let queued writes flush, close
- * connections as they finish. evloop_active() reaches 0 when done. */
+ * connections as they finish. evloop_drained() says when that is done. */
 void evloop_stop(evloop_t *ev);
+
+/* 1 once a drain has finished: evloop_stop() was called and no connection is
+ * left in EITHER pool. The local pool counts (V4-137, F219): the daemon's
+ * stop used to wait for the protocol pool alone, so a reply queued for the
+ * site or for an operator was dropped when the loop ended. */
+int evloop_drained(const evloop_t *ev);
 
 size_t evloop_active(const evloop_t *ev);
 

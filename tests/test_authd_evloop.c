@@ -557,10 +557,13 @@ static void test_evloop(void)
         (void)PUMP_UNTIL(&ev, 4000, evloop_active(&ev) == 1u);
         CHECK(evloop_active(&ev) == 1u, "ev: drain client is accepted before the stop");
         evloop_stop(&ev);
+        CHECK(evloop_drained(&ev) == 0,
+              "ev: a stopped loop whose protocol connection is still open is not drained");
         int late = dial(port);
         (void)PUMP_UNTIL(&ev, 4000, evloop_active(&ev) == 0u);
         CHECK(ev.accepted >= 1u, "ev: accepted counter is live");
         CHECK(evloop_active(&ev) == 0u, "ev: after the drain every slot is released");
+        CHECK(evloop_drained(&ev) == 1, "ev: ...and the loop then reports the drain finished");
         if (late >= 0) { (void)close(late); }
         (void)close(e);
     }
@@ -1034,6 +1037,91 @@ static void test_poll_fairness(void)
     free(proto); free(local);
 }
 
+/*
+ * Audit finding F219 (V4-137). The daemon's stop waited for the protocol
+ * pool alone. A reply is queued by the handler and written on the NEXT turn
+ * of the loop, so a SIGTERM that arrived while a site or admin request was
+ * being served -- an Argon2id computation is most of that time -- ended the
+ * loop with the reply still queued: a recovery code spent and its ticket
+ * never delivered, an enrolment committed and the site told nothing.
+ *
+ * The drain is what the daemon's loop does: stop, then turn until
+ * evloop_drained().
+ */
+static ev_action_t f219_on_line(void *user, authd_slot_t *slot, const uint8_t *line, size_t len)
+{
+    (void)user; (void)line; (void)len;
+    static const char reply[] = "OK ticket=1234\n";
+    (void)conn_io_queue(&slot->io, (const uint8_t *)reply, sizeof reply - 1u);
+    return EV_ACTION_CONTINUE;
+}
+
+static int g_f219_closed = 0;
+
+static void f219_on_close(void *user, authd_slot_t *slot)
+{
+    (void)user; (void)slot;
+    g_f219_closed++;
+}
+
+static void test_drain_local(void)
+{
+    static authd_slot_t proto[2];
+    static authd_slot_t local[2];
+    evloop_t ev;
+    CHECK(evloop_init(&ev, proto, 2u, 5000u, 20000u, on_frame, f219_on_close, NULL) == 0, "drain: init");
+    g_f219_closed = 0;
+    CHECK(evloop_set_local(&ev, local, 2u, f219_on_line) == 0, "drain: local pool registered");
+    CHECK(evloop_drained(&ev) == 0, "drain: a loop that was never stopped is not drained (the canary)");
+
+    int sp[2] = { -1, -1 };
+    int idle[2] = { -1, -1 };
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0 && socketpair(AF_UNIX, SOCK_STREAM, 0, idle) == 0,
+          "drain: socketpairs");
+    (void)fcntl(sp[0], F_SETFL, fcntl(sp[0], F_GETFL) | O_NONBLOCK);
+    (void)fcntl(idle[0], F_SETFL, fcntl(idle[0], F_GETFL) | O_NONBLOCK);
+    /* Two site connections: one mid-request, one idle. */
+    local[0].fd = sp[0];
+    local[0].kind = SLOT_KIND_LOCAL;
+    local[0].state = SLOT_ACTIVE;
+    local[0].deadline_ms = 1000u * 1000u;
+    local[1].fd = idle[0];
+    local[1].kind = SLOT_KIND_LOCAL;
+    local[1].state = SLOT_ACTIVE;
+    local[1].index = 1u;
+    local[1].deadline_ms = 1000u * 1000u;
+    ev.local_in_use = 2u;
+
+    CHECK(write(sp[1], "RECOVERY-USE\n", 13) == 13, "drain: the site sends a request");
+    (void)evloop_run_once(&ev, 100, 1000u);
+    CHECK(conn_io_pending(&local[0].io) > 0u,
+          "drain: the handler ran and its reply is queued, not yet written (this test is not vacuous)");
+
+    /* The signal arrives here: after the handler, before the write. */
+    evloop_stop(&ev);
+    CHECK(evloop_drained(&ev) == 0,
+          "drain: a loop with a reply queued for the site is NOT drained (F219)");
+    int turns = 0;
+    while (!evloop_drained(&ev) && turns < 50) {
+        (void)evloop_run_once(&ev, 100, 1001u);
+        turns++;
+    }
+    CHECK(evloop_drained(&ev) == 1 && evloop_local_active(&ev) == 0u && turns <= 3,
+          "drain: the drain ends within three turns, with no local connection left");
+    evloop_close_all(&ev);          /* what the daemon does after its loop */
+
+    char got[32] = {0};
+    const ssize_t n = read(sp[1], got, sizeof got - 1u);
+    CHECK(n == 15 && memcmp(got, "OK ticket=1234\n", 15) == 0,
+          "drain: the site reads the whole reply that was queued when the daemon was stopped (F219)");
+    char end = 0;
+    CHECK(read(sp[1], &end, 1) == 0 && read(idle[1], &end, 1) == 0,
+          "drain: both local connections are then closed, the idle one with nothing written");
+    CHECK(g_f219_closed == 2, "drain: each of the two connections was closed once");
+    (void)close(sp[1]);
+    (void)close(idle[1]);
+}
+
 static void test_memlock(void)
 {
     /* The derived need, from literals rather than from the macros the
@@ -1384,6 +1472,7 @@ int main(void)
     test_backpressure();
     test_log_hygiene();
     test_poll_fairness();
+    test_drain_local();
     test_memlock();
     test_fdlimit();
     test_slot_cap();

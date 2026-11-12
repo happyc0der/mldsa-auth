@@ -14927,3 +14927,54 @@ For the record, the runs between: V4-131 43255190798 / 43255197501;
 V4-132 43257450781 / 43257456819; V4-133 43269073862 / 43269079927 (the
 nightly green on its second attempt, see V4-134); V4-134 43281033344 /
 43281038590. No code, test logic or count changed in this step.
+
+## V4-137: a stop writes the replies it owes (F219)
+
+**The defect.** The daemon's loop left on `draining && evloop_active(&ev)
+== 0u`. `evloop_active` counts the protocol pool; the local API's
+connections are in their own pool (F62), counted by
+`evloop_local_active`. A handler queues its reply and the loop writes it
+on the next turn, so a `SIGTERM` that landed while a local request was
+in its handler ended the loop with the reply queued, and
+`evloop_close_all` then closed the connection. The effect of the
+request was already in the store. Measured on the unfixed daemon: 8 of
+8 stops sent 20 ms into a `RECOVERY-USE` lost its reply.
+
+**Decisions.**
+
+- The question moved into the loop library: `evloop_drained()` is true
+  after `evloop_stop()` once both pools are empty, and `authd_main.c`
+  asks only that. The daemon's loop cannot be unit-tested, the library
+  can; DR3 pins the daemon's use of it through `authd_e2e`.
+- No new timeout. A local connection with nothing queued is closed on
+  the first turn after the stop (`evloop_stop` marks it DRAINING), and
+  one whose peer does not read is closed at its deadline, which is what
+  already bounded a protocol connection's drain.
+- A request that had arrived but was not yet read when the stop came is
+  not served. Nothing was done for it, so nothing is owed; the site
+  sees the connection close and retries against the restarted daemon.
+- "Drain" was used by spec §16 and defined nowhere. Erratum 93 (v1.51)
+  defines it, including that a request acted on is answered.
+
+**Tests.** `test_authd_evloop` `test_drain_local`: a site connection
+whose handler has queued a reply and an idle one, then a stop; the loop
+is not drained until the reply is written, drains within three turns,
+and the peer reads all 15 bytes. Three checks red before the fix. Two
+checks added to the existing protocol drain. `authd_e2e`: the shipped
+daemon, `SIGTERM` 20 ms after a `RECOVERY-USE` for an unknown user (one
+Argon2id computation, F143). An attempt whose reply was already there
+before the signal is void and repeated, so the leg cannot pass on a
+slow signal; up to 8 attempts.
+
+**Mutations.** Campaign v101, DR1–DR5, five killed by named checks on
+`build-asan-p`. 488 mutations, 71 campaigns, 528 anchors. The nightly
+gains one job (86).
+
+Campaign v99's LF2 (every stop exits 1) is now killed by this step's
+check, which runs before the F208 canary and stops the test there; its
+spec line names the F219 check. The first nightly on this step showed
+it: LF2 SURVIVED, the predicted check never reached.
+
+**Severity.** Medium. No attacker is involved, but every restart of
+the service could spend a user's recovery code, or replace all of them,
+and deliver nothing.

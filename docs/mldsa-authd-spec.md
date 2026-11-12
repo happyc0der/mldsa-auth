@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.50, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136 errata)
+# mldsa-authd — deployment specification (v1.51, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1282,6 +1282,14 @@ configuration. It is validated by `--check-config` as the unit's
 it checks exist only while systemd starts the service (erratum 75).
 
 **Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
+**To drain** (erratum 93) is to accept no further connection, on any socket;
+to close at once every connection that has no reply queued; and to write each
+reply that is queued, on a protocol connection or a local one, before closing
+its connection. A request the daemon has acted on is therefore answered: a
+stop never leaves the site without the reply to an `ENROLL`, an `EXCHANGE` or
+a `RECOVERY-USE` whose effect is already in the store. A connection whose
+peer does not read its reply is closed at its deadline, as at any other time,
+and the daemon stops then.
 **`SIGHUP` is logged (`sighup-ignored`, at WARN) and otherwise ignored.** The
 daemon reads its configuration once, at start, and has no reload; the unit
 defines no `ExecReload=`. Left at its default action a `SIGHUP` kills the
@@ -1888,3 +1896,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 92 | 10.2 | In a browser, a rotation and the resolving of a pending envelope run only under a per-identity lock shared by every tab of the origin; a page that cannot take one does not rotate; the promoting transaction promotes only the envelope its caller staged | two tabs rotating one identity interleaved: the second took the first's pending envelope for a stale one and replaced it, the first's `ROTATE` committed, and its promote moved the second tab's envelope — a key the daemon never saw — over the only copy of the key the daemon now accepted. The identity could no longer log in from that browser (F218) |
+
+### Revision v1.51 (V4-137)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 93 | 16 | "Drain" is defined: no further connection is accepted, a connection with no reply queued is closed at once, and every queued reply — on a local connection as on a protocol one — is written before its connection is closed | the daemon ended its loop once no protocol connection was left. A reply is queued by its handler and written on the loop's next turn, so a `SIGTERM` that arrived while a site or admin request was being served — most of that time is one Argon2id computation — dropped the reply: a recovery code was spent and its ticket never delivered, new recovery codes replaced the old and were never shown, an enrolment was committed and the site was told nothing (F219) |

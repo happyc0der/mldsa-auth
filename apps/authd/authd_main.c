@@ -522,7 +522,7 @@ int main(int argc, char **argv)
             evloop_stop(&ev);
             draining = 1;
         }
-        if (draining && evloop_active(&ev) == 0u) {
+        if (draining && evloop_drained(&ev)) {
             break;
         }
         /* One clock, pushed to both: the loop and the connection layer see

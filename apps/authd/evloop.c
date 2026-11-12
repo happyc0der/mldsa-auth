@@ -160,6 +160,20 @@ size_t evloop_active(const evloop_t *ev)
     return (ev == NULL) ? 0u : ev->in_use;
 }
 
+int evloop_drained(const evloop_t *ev)
+{
+    if (ev == NULL || !ev->stopping) {
+        return 0;
+    }
+    /* Both pools (V4-137, F219). A handler queues its reply and the loop
+     * writes it on its next turn, so a stop that looked at the protocol pool
+     * alone ended the loop with a site or admin reply still unsent. A local
+     * connection cannot hold the stop for ever: one with nothing queued is
+     * closed on the next turn, and one whose peer will not read goes at its
+     * deadline like any other. */
+    return ev->in_use == 0u && ev->local_in_use == 0u;
+}
+
 void evloop_close_slot(evloop_t *ev, authd_slot_t *s)
 {
     if (ev == NULL || s == NULL || s->state == SLOT_FREE) {

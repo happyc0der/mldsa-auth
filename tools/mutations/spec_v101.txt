@@ -1,0 +1,5 @@
+DR1|^test_authd_evloop$|drain: a loop with a reply queued for the site is NOT drained (F219)
+DR2|^test_authd_evloop$|drain: a loop that was never stopped is not drained (the canary)
+DR3|^authd_e2e$|never delivered the reply it had computed (F219)
+DR4|^test_authd_evloop$|ev: a stopped loop whose protocol connection is still open is not drained
+DR5|^test_authd_evloop$|drain: the drain ends within three turns, with no local connection left

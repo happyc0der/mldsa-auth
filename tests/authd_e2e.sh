@@ -583,6 +583,83 @@ kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
 grep -q '^info event=stopped accepted=' "$TMP/su-hup.log" \
     || fail "after a SIGHUP, SIGTERM no longer drains and stops the daemon -- the canary (F206): $(cat "$TMP/su-hup.log")"
 echo "PASS: E2E: SIGHUP does not stop the daemon; each one is logged as 'warn event=sighup-ignored', and SIGTERM still drains and stops it (F206)"
+# F219 (V4-137): a stop while the site is being answered. A handler queues
+# its reply and the loop writes it on its next turn; the stop waited for the
+# protocol connections alone, so a SIGTERM that landed during a handler ended
+# the loop with the reply unsent. RECOVERY-USE for a user nobody enrolled
+# costs one Argon2id computation (F143), which is the window: the request is
+# sent, the signal follows 20 ms later, and the reply must still arrive.
+#
+# An attempt whose reply was already there before the signal proves nothing
+# and is repeated ("void"); so is one whose signal beat the daemon to the
+# request, which the daemon never served ("unserved": no Argon2id, so it
+# answers EOF well inside the computation's time).
+f219_got=""
+f219_seen=""
+for f219_try in 1 2 3 4 5 6 7 8; do
+    "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-dr.log" 2>&1 &
+    SUPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/su-dr.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && fail "the daemon for the drain leg never logged event=started: $(cat "$TMP/su-dr.log")"
+        sleep 0.05
+    done
+    python3 - "$TMP/su-a.sock" "$SUPID" > "$TMP/su-dr.txt" <<'PYEOF' || fail "the drain leg's client failed: $(cat "$TMP/su-dr.txt")"
+import os, signal, socket, sys, time
+c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+c.connect(sys.argv[1])
+# A cheap request first: once it is answered the connection is being served.
+c.sendall(b"PING\n")
+buf = b""
+while not buf.endswith(b"\n"):
+    d = c.recv(256)
+    if not d:
+        print("noping"); sys.exit(0)
+    buf += d
+c.sendall(b"RECOVERY-USE user=6e6f626f6479 code=0000000000000000\n")
+time.sleep(0.02)
+c.setblocking(False)
+try:
+    early = c.recv(256)
+except BlockingIOError:
+    early = None
+t0 = time.monotonic()
+os.kill(int(sys.argv[2]), signal.SIGTERM)
+if early is not None:
+    print("void"); sys.exit(0)
+c.setblocking(True)
+c.settimeout(30)
+got = b""
+while not got.endswith(b"\n"):
+    d = c.recv(256)
+    if not d:
+        break
+    got += d
+ms = int((time.monotonic() - t0) * 1000)
+if got == b"ERR code=invalid\n":
+    print("reply")
+elif got == b"":
+    print("lost %d" % ms)
+else:
+    print("other %r" % got)
+PYEOF
+    rc=0
+    wait "$SUPID" || rc=$?
+    [ "$rc" -eq 0 ] || fail "a daemon stopped while it was answering the site exited $rc, not 0 (F219): $(cat "$TMP/su-dr.log")"
+    f219_got="$(cat "$TMP/su-dr.txt")"
+    f219_seen="$f219_seen [$f219_got]"
+    case "$f219_got" in
+        reply) break ;;
+        void|lost*) ;;
+        *) fail "the drain leg's request was answered '$f219_got', not 'ERR code=invalid' (F219)" ;;
+    esac
+done
+[ "$f219_got" = reply ] \
+    || fail "a daemon stopped while it was answering the site never delivered the reply it had computed (F219); attempts:$f219_seen"
+grep -q '^info event=draining$' "$TMP/su-dr.log" && grep -q '^info event=stopped accepted=' "$TMP/su-dr.log" \
+    || fail "the daemon of the drain leg did not log draining and stopped (F219): $(cat "$TMP/su-dr.log")"
+echo "PASS: E2E: a daemon sent SIGTERM while it is answering the site writes the reply before it stops (F219)"
 # F208 (V4-124): a loop that fails. The daemon logged error event=loop-failed
 # and then exited 0, which systemd reads as a clean stop: Restart=on-failure
 # left the service down. Linux's prlimit can stage it from outside -- poll()
