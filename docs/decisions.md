@@ -14711,3 +14711,14 @@ daemon, which refuses it, and the site answers the same `403`.
   out. The server half is reproduced; the browser half is not yet.
 - Rotating a key in two tabs at once can promote an envelope the daemon
   never saw. Reasoned from the code only, not reproduced.
+
+## V4-131 — cleanup: REPRODUCE cites the runs on the current main
+
+Every third step is cleanup. One thing, no behaviour changed:
+`docs/review/REPRODUCE.md` cited CI and nightly runs on `11265f0`, three
+steps old. It now cites 43245503328 (16/16) and 43245510563 (85/85, 70
+campaigns) on `e10aa9a`, the commit that carries F213 and F214.
+
+Looked at and left: the specification's §14 sentence on a site answering
+503 (erratum 91) is still exact after F214, which changed what counts as
+the caller's error, not what the site does when the daemon is away.
