@@ -442,7 +442,9 @@ drive in a real browser. Use it, or hold your own site to the same seven rules:
    F131).
 6. **A bounded session table.** Expire idle sessions, remove a session at
    logout, and cap the sessions nobody has logged into, evicting the least
-   recently used (audit F132).
+   recently used (audit F132). Evict last the ones that hold a recovery
+   ticket or a pending signup: their visitor cannot simply start again
+   (audit F215).
 7. **New recovery codes need a login, not only a session.** Have the page log
    in again (device key and passphrase) and send that login's code; mint the
    codes only if `EXCHANGE` says it is the session's own user (V4-62).

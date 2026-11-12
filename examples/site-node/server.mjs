@@ -223,8 +223,9 @@ export async function startSite(opt) {
   //     own, and sessions nobody has logged into are capped, the least
   //     recently used evicted first; logged-in sessions are never evicted. A
   //     visitor whose pre-login session is evicted under load simply starts
-  //     the login again. A deployment also rate-limits per client in front of
-  //     the site.
+  //     the login again; one in the middle of a recovery or a signup cannot,
+  //     so those are evicted last (F215). A deployment also rate-limits per
+  //     client in front of the site.
   const COOKIE = opt.secure ? '__Host-sid' : 'sid';
   const COOKIE_RE = new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})(?=;|$)`);
   const IDLE_MS = opt.sessionIdleMs ?? 30 * 60 * 1000;
@@ -242,10 +243,19 @@ export async function startSite(opt) {
       if (now - old.seen <= IDLE_MS) { break; }
       drop(old);
     }
-    if (anon >= MAX_ANON) {
+    // Three passes (V4-132, F215). A session that holds a recovery ticket or a
+    // vouched signup is not logged in, but evicting it costs its visitor
+    // something a new login does not give back: the ticket's single-use
+    // recovery code is already spent. Cookieless requests cost nothing to
+    // send, so the sessions holding nothing go first. Vouched signups go
+    // next: the invite is shared and makes as many as its holder likes.
+    // Tickets go last: each one cost a valid recovery code.
+    const rank = (o) => (o.ticket !== null ? 2 : o.signupUser !== null ? 1 : 0);
+    for (const tier of [0, 1, 2]) {
+      if (anon < MAX_ANON) { break; }
       for (const old of sessions.values()) {
         if (anon < MAX_ANON) { break; }
-        if (!old.token) { drop(old); }
+        if (!old.token && rank(old) === tier) { drop(old); }
       }
     }
     const sid = randomBytes(32).toString('hex');

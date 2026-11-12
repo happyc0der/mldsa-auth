@@ -504,10 +504,48 @@ try {
                                                 headers: { Cookie: `sid=${pre}`, Origin: bb, 'Content-Type': 'application/json' } });
     const kept = idOf(li);
     check(li.status === 200 && kept !== undefined, 'bound: a visitor logs in before the flood (the canary)');
+    // V4-132, F215: two more visitors, neither logged in, each holding
+    // something the flood must not take: a recovery ticket (the single-use
+    // code behind it is already spent) and a signup the site has vouched for.
+    const bpost = (path, obj, sid) => fetch(`${bb}${path}`, {
+      method: 'POST', body: JSON.stringify(obj),
+      headers: { ...(sid ? { Cookie: `sid=${sid}` } : {}), Origin: bb, 'Content-Type': 'application/json' } });
+    const bsess = async (sid) => {
+      const r = await fetch(`${bb}/api/session`, { headers: { Cookie: `sid=${sid}` } });
+      return { ...(await r.json()), reissued: r.headers.get('set-cookie') !== null };
+    };
+    const rv = await bpost('/api/recover', { user, code: minted[1] });
+    const recovering = idOf(rv);
+    const su = await bpost('/api/signup', { user: 'mid-signup', invite: 'the-invite' });
+    const signing = idOf(su);
+    check(rv.status === 200 && su.status === 200 && (await bsess(recovering)).recovering === true &&
+          (await bsess(signing)).signupUser === 'mid-signup',
+          `bound: before the flood one visitor holds a recovery ticket and one a vouched signup (the canary) (${rv.status}, ${su.status})`);
     for (let i = 0; i < 1000; i++) { await (await fetch(`${bb}/api/session`)).arrayBuffer(); }
+    { const r = await bsess(recovering);
+      check(r.recovering === true && !r.reissued,
+            `bound: the flood did not evict the session holding a recovery ticket (recovering=${r.recovering}, new cookie=${r.reissued}) (F215)`);
+      const g = await bsess(signing);
+      check(g.signupUser === 'mid-signup' && !g.reissued,
+            `bound: the flood did not evict the session holding a vouched signup (signupUser=${g.signupUser}, new cookie=${g.reissued}) (F215)`); }
     check(bs.size <= 51, `bound: 1,000 cookieless requests leave at most the cap plus the logged-in session (${bs.size} sessions)`);
     check((await fetch(`${bb}/api/me`, { headers: { Cookie: `sid=${kept}` } })).status === 200,
           'bound: the flood evicted no logged-in session');
+    // Holding something is not a way round the cap: an invite's holder can
+    // make as many vouched sessions as they like, and the table stays bounded.
+    for (let i = 0; i < 200; i++) { await (await bpost('/api/signup', { user: `flood-${i}`, invite: 'the-invite' })).arrayBuffer(); }
+    check(bs.size <= 51, `bound: 200 vouched signups leave at most the cap plus the logged-in session (${bs.size} sessions) (F215)`);
+    check((await fetch(`${bb}/api/me`, { headers: { Cookie: `sid=${kept}` } })).status === 200,
+          'bound: and they evicted no logged-in session (F215)');
+    { const r = await bsess(recovering);
+      check(r.recovering === true && !r.reissued,
+            `bound: nor the session holding a recovery ticket, which an invite does not buy (recovering=${r.recovering}, new cookie=${r.reissued}) (F215)`); }
+    // A table full of tickets is still bounded. Fifty recovery codes are not
+    // to hand, so every session not logged in is given a ticket in the table
+    // itself, which startSite returns for this.
+    for (const x of bs.values()) { if (!x.token) { x.ticket = { user: 'x', ticket: '00' }; x.signupUser = null; } }
+    for (let i = 0; i < 20; i++) { await (await fetch(`${bb}/api/session`)).arrayBuffer(); }
+    check(bs.size <= 51, `bound: with every session holding a ticket, 20 more requests still leave the cap (${bs.size} sessions) (F215)`);
   }
   {
     const { port: ip, sessions: is } = await start({ sessionIdleMs: 150 });

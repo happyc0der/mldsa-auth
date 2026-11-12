@@ -14722,3 +14722,44 @@ campaigns) on `e10aa9a`, the commit that carries F213 and F214.
 Looked at and left: the specification's §14 sentence on a site answering
 503 (erratum 91) is still exact after F214, which changed what counts as
 the caller's error, not what the site does when the daemon is away.
+
+## V4-132 — F215: a cookieless flood no longer evicts a visitor mid-recovery
+
+**Where it came from.** The second of the independent reviewer's
+candidates (V4-130 lists them). Reproduced here before any change, with
+the cap at 50 and 1,000 requests: the session holding a recovery ticket
+and the one holding a vouched signup were both gone.
+
+**Why it matters more than F132's comment allowed.** F132 capped the
+sessions nobody has logged into, saying an evicted visitor starts again.
+A visitor in recovery cannot: the daemon consumed the code when it issued
+the ticket, and the ticket lives only in that session.
+
+**Choices considered.**
+
+- *Exempt those sessions from the cap, as logged-in ones are.* Refused: a
+  signup session costs only the shared invite, so its holder could grow
+  the table without limit until idle expiry.
+- *Make no session for a request without a cookie.* It would remove the
+  free flood, but `/api/session` is where a page gets its first cookie
+  and state; the flood would move there.
+- *Evict in order of what is lost.* Chosen. Three passes over sessions
+  not logged in: holding nothing, then a vouched signup, then a ticket.
+  The cap still bounds all of them.
+
+Signups rank below tickets because the first version, with two passes,
+let 200 signups evict the ticket session. A check for that was written,
+shown red, and the third pass added.
+
+**What is not claimed.** As many valid recovery codes as the cap, spent
+at once, still evict the oldest ticket; the recovery limiter and the daemon's
+lockout stand in front of that. Idle expiry is unchanged. A create can
+now scan the table up to three times when it is full of held sessions;
+at the default cap that is 30,000 map entries.
+
+**Checks, 7**, in the bounded-table block of `site_sessions`. Three were
+red before the final fix (two before any fix, one under two passes). The
+last one fills the table with tickets by writing to the session map that
+`startSite` returns, since fifty recovery codes are not to hand.
+
+**Mutations, six by hand, six killed by name.**
