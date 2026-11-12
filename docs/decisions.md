@@ -14142,3 +14142,15 @@ SIGKILL and a new daemon starts over its sockets, the canary that the probe
 did not turn every leftover into a refusal. Campaign v95, five mutations
 (LU1–LU5): the probe disabled, only-`ENOENT`-is-dead, the wrong status, the
 probe's sense inverted for a live socket, and the status name.
+
+## V4-119 — REPRODUCE cites the runs on the commit that is main
+
+Cleanup step. `docs/review/REPRODUCE.md` named the CI and nightly runs on
+`3e563b6` (V4-115), and after V4-118 its nightly sentence said "79/79, all 65
+campaigns among them": the campaign count had moved and the run had not. It
+now cites the runs on `76b4104` (V4-118): CI 43130935342, 16/16; nightly
+43130948863, 80/80. Nothing else changed.
+
+The cited runs are always one step behind this file's own commit, since a
+commit cannot name the run that tests it. What is checked is that the count
+in the sentence and the run it cites belong to the same commit.
