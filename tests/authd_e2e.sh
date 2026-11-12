@@ -573,6 +573,68 @@ kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
 grep -q '^info event=stopped accepted=' "$TMP/su-hup.log" \
     || fail "after a SIGHUP, SIGTERM no longer drains and stops the daemon -- the canary (F206): $(cat "$TMP/su-hup.log")"
 echo "PASS: E2E: SIGHUP does not stop the daemon; each one is logged as 'warn event=sighup-ignored', and SIGTERM still drains and stops it (F206)"
+# F208 (V4-124): a loop that fails. The daemon logged error event=loop-failed
+# and then exited 0, which systemd reads as a clean stop: Restart=on-failure
+# left the service down. Linux's prlimit can stage it from outside -- poll()
+# refuses more descriptors than RLIMIT_NOFILE allows, so lowering a running
+# daemon's limit to 1 fails its next poll() -- and nothing portable can, so
+# the leg is skipped elsewhere.
+#
+# The leak check is off for this one daemon. In an ASan build LeakSanitizer
+# runs at exit and must open /proc/<pid>/task; under a limit of 1 it cannot,
+# calls that a fatal error and exits 1 itself -- whatever main() returned. The
+# leg then passed with the defect in place (campaign v99's LF1 survived in
+# the first nightly). Every other daemon in this script keeps the leak check.
+if [ "$(uname -s)" = Linux ] && command -v prlimit > /dev/null 2>&1; then
+    ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=0" \
+        "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-lf.log" 2>&1 &
+    SUPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/su-lf.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && fail "the daemon for the loop-failed leg never logged event=started: $(cat "$TMP/su-lf.log")"
+        sleep 0.05
+    done
+    prlimit --pid "$SUPID" --nofile=1:1 \
+        || fail "prlimit could not lower the running daemon's RLIMIT_NOFILE"
+    i=0
+    while kill -0 "$SUPID" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 100 ] && { kill -KILL "$SUPID"; fail "a daemon whose poll() cannot succeed was still running after 5 s (F208): $(cat "$TMP/su-lf.log")"; }
+        sleep 0.05
+    done
+    rc=0
+    wait "$SUPID" || rc=$?
+    grep -q '^error event=loop-failed$' "$TMP/su-lf.log" \
+        || fail "a daemon whose poll() failed did not log 'error event=loop-failed' (F208): $(cat "$TMP/su-lf.log")"
+    [ "$rc" -eq 1 ] \
+        || fail "a daemon whose loop failed exited $rc, not 1: systemd would count that a clean stop and not restart it (F208)"
+    grep -q '^info event=stopped accepted=' "$TMP/su-lf.log" \
+        || fail "a daemon whose loop failed did not log its stopped lines (F208): $(cat "$TMP/su-lf.log")"
+    grep -q 'Sanitizer' "$TMP/su-lf.log" \
+        && fail "a sanitizer, not the daemon, ended the loop-failed leg, so its exit status proves nothing (F208): $(cat "$TMP/su-lf.log")"
+    for s in su-p.sock su-a.sock; do
+        [ ! -e "$TMP/$s" ] || fail "a daemon whose loop failed left $s behind (F208)"
+    done
+    # The canary: the same daemon, stopped by SIGTERM, exits 0.
+    "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-lf2.log" 2>&1 &
+    SUPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/su-lf2.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && fail "the daemon for the loop-failed canary never logged event=started: $(cat "$TMP/su-lf2.log")"
+        sleep 0.05
+    done
+    kill -TERM "$SUPID"
+    rc=0
+    wait "$SUPID" || rc=$?
+    [ "$rc" -eq 0 ] || fail "a daemon stopped by SIGTERM exited $rc, not 0 -- the canary (F208)"
+    grep -q 'event=loop-failed' "$TMP/su-lf2.log" \
+        && fail "a daemon stopped by SIGTERM logged loop-failed -- the canary (F208)"
+    echo "PASS: E2E: a daemon whose poll() fails logs 'error event=loop-failed', closes its sockets and exits 1, and one stopped by SIGTERM exits 0 (F208)"
+else
+    echo "SKIP: E2E: no Linux prlimit here, so a failing poll() is not staged (F208)"
+fi
 echo "PASS: E2E: a daemon that finds no store at store_path creates one and says so -- on stderr and as warn event=store-created, before started -- and creates it 0600 under a umask of 022; the next start on it says neither (F199, F200)"
 echo "PASS: E2E: the daemon refuses to start on a group-readable passphrase file or server key, the wrong passphrase, or a store that is not a database -- naming the file and the status each time, with exit code 3 for the first three and 1 for the store, and leaving no socket; the undamaged copies start"
 

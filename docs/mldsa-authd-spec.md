@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.46, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123 errata)
+# mldsa-authd — deployment specification (v1.47, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1270,6 +1270,13 @@ defines no `ExecReload=`. Left at its default action a `SIGHUP` kills the
 process with no drain, and systemd counts death by `SIGHUP` as a clean exit,
 so `Restart=on-failure` does not start it again: one `kill -HUP`, sent by
 someone expecting a reload, was the service down until a person noticed.
+
+**Exit status** (erratum 89). A daemon stopped by `SIGTERM` or `SIGINT` exits
+0. One whose event loop fails logs `loop-failed` at ERROR, closes its
+connections and its sockets as a stopping daemon does, and **exits 1**, so
+that `Restart=on-failure` starts it again. The loop fails when `poll()`
+returns an error other than an interruption; the kernel running out of memory
+for the call is the ordinary cause.
 A daemon started by hand therefore outlives the terminal it was started in;
 stop it with `SIGTERM`.
 
@@ -1825,3 +1832,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 88 | 16 | A daemon whose hard `RLIMIT_NOFILE` is below its requirement holds at most *limit* − `max_local_slots` − 32 remote connections and refuses the rest with `accept-refused-no-slot` | it accepted until `accept()` failed, and from then on the admin socket could not be reached either: the operator could not ask the daemon anything while it was in the state erratum 86 warns about (F207) |
+
+### Revision v1.47 (V4-124)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 89 | 16 | A daemon whose event loop fails exits 1, not 0 | it logged `loop-failed` and exited 0; systemd counts that a clean stop, and `Restart=on-failure` left the service down (F208) |

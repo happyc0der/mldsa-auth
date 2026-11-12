@@ -14389,3 +14389,58 @@ cap's arithmetic from literals (24 of 64; nothing capped at or above the
 need; one short is one fewer; never below one), and a table of 4 held to 2
 holds 2 of 3 and refuses one, then fills when the cap is lifted (canary).
 Campaign v98, seven mutations (SC1–SC7).
+
+## V4-124 — F208: a failed loop is a failed daemon
+
+**What was wrong.** `authd_main.c` ends its loop two ways: a drain after
+`SIGTERM`/`SIGINT`, and `evloop_run_once()` returning an error, which it
+logs as `error event=loop-failed`. Both fell through to the same `return
+0`. Under `Restart=on-failure` an exit of 0 is not a failure.
+
+**Measured before the fix**, CI run 43178597122 on a throwaway branch
+holding main and this step's tests only. On the deployed service, on
+ubuntu-24.04 and ubuntu-26.04: `prlimit --pid <MainPID> --nofile=1:1`, and
+thirty seconds later `ActiveState=inactive`, `SubState=dead`,
+`Result=success`, `ExecMainStatus=0`, `NRestarts=0`. In the test suite's
+Linux jobs the end-to-end leg failed with "a daemon whose loop failed
+exited 0, not 1".
+
+**How it is staged.** Linux's `poll()` returns `EINVAL` when asked about
+more descriptors than `RLIMIT_NOFILE` allows, and `prlimit` can lower that
+limit on a running process of the same user. The mechanism was checked
+first on a Linux machine with a four-socket Python process. Nothing
+comparable exists on macOS, so the leg is skipped there and says so.
+
+**Severity.** Low. `poll()` failing needs the kernel to be out of memory
+for the call, or an operator lowering limits on a running process. When it
+does happen, the service is down with nothing in systemd's view to say
+anything went wrong.
+
+**Decisions.**
+
+- **Exit 1, and nothing else changes.** The cleanup, the two `stopped`
+  lines and the socket removal are the same; only the status differs.
+  systemd waits `RestartSec` and starts a fresh process with the unit's
+  limits.
+- **No retry inside the daemon.** A loop that swallowed `ENOMEM` and went
+  round again would need a pause and a bound and a line for each, and what
+  it would save is the sessions in memory. A restart is the mechanism the
+  unit already has, and it also clears whatever state made `poll()` fail.
+- **No errno on the line.** `loop-failed` has no fields today and a new one
+  is a spec vocabulary change; the cause is the kernel's and the kernel's
+  log has it.
+- **Campaign v99 is killable on Linux only**, like v75's KC5: both
+  mutations live behind the `prlimit` leg. They were not run on macOS,
+  where they would survive; the branch nightly is their run.
+- **The leg's daemon runs with the leak check off, and the first nightly
+  is why.** Run 43179468032 reported LF1 SURVIVED: in an ASan build
+  LeakSanitizer runs at exit, cannot open `/proc/<pid>/task` under a limit
+  of 1, and exits 1 by itself, so the leg passed whatever `main()`
+  returned. The red run had already said so and it was not read: its ASan
+  jobs passed without the fix. Reproduced with a ten-line program on Linux
+  (exit 1 with the leak check, 0 without). The leg now sets
+  `detect_leaks=0` for that one daemon and fails by name if a sanitizer
+  line appears in its log. LF2 as first written did not compile under
+  `-Werror` (the variable became unused) and was rewritten.
+
+**Spec.** v1.47, erratum 89, in §16 beside the signals paragraph.

@@ -1,0 +1,2 @@
+LF1|^authd_e2e$|a daemon whose loop failed exited 0, not 1: systemd would count that a clean stop and not restart it (F208)
+LF2|^authd_e2e$|a daemon stopped by SIGTERM exited 1, not 0 -- the canary (F208)

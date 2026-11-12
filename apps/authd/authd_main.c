@@ -496,6 +496,10 @@ int main(int argc, char **argv)
     }
 
     int draining = 0;
+    /* F208: a loop that failed is a failure of the daemon. Exiting 0 after
+     * it told systemd the stop was clean, and Restart=on-failure left the
+     * service down. */
+    int loop_failed = 0;
     for (;;) {
         if (g_hup) {
             /* Cleared before it is logged: one that lands in between is
@@ -522,6 +526,7 @@ int main(int argc, char **argv)
                 continue;
             }
             authd_log_event(AUTHD_LOG_ERROR, "loop-failed");
+            loop_failed = 1;
             break;
         }
     }
@@ -541,7 +546,7 @@ int main(int argc, char **argv)
     free(conns);
     free(slots);
     free(local_slots);
-    return 0;
+    return loop_failed ? 1 : 0;
 
 listener_failed:
     listener_close(&site_fd, site_path);

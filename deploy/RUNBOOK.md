@@ -835,6 +835,11 @@ Common ones, and what they actually are:
   a listener, not once per connection; the daemon retries every 100 ms and
   recovers by itself when connections close. While it lasts, `authd_admin`
   cannot connect either.
+- **`error event=loop-failed`** as a daemon's last line but two — `poll()`
+  failed, which in practice means the kernel had no memory for it. The
+  daemon exits 1 and systemd starts it again after `RestartSec`; sessions
+  that were open are gone and their users log in again. If it recurs, look
+  at the host's memory before the daemon.
 - **`its directory does not exist`** — the daemon creates sockets and the
   store, never directories. Step 4 is the one that was skipped.
 - **`authd.conf: io (Permission denied)`** — the daemon cannot read its
