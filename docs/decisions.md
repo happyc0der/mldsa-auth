@@ -14318,3 +14318,16 @@ and (canary) must drain and log `stopped` on `SIGTERM`. CI's `rehearse` job
 sends the signal through systemd and requires the unit `active`, the same
 main PID, the log line, and a refused `systemctl reload`. Campaign v97,
 five mutations (SH1–SH5).
+
+## V4-122 — REPRODUCE cites the runs on the commit that is main
+
+Cleanup step. `docs/review/REPRODUCE.md` cited CI run 43130935342 and
+nightly run 43130948863, both on `76b4104` (V4-118). Two fixes have landed
+since (F205, F206) and the nightly has grown from 80 jobs to 82. It now
+cites the runs on `1a33f16`: CI 43160770627, 16/16, and nightly
+43160773908, 82/82 with all 67 campaigns. Both were dispatched on the
+V4-121 branch at the commit that was then fast-forwarded to main, so the
+tree they ran is main's. Main's own push CI on that commit is 43166920144,
+16/16.
+
+Nothing else changed.
