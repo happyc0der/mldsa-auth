@@ -120,6 +120,75 @@ try {
           'neither key works: refused, and the store is exactly as it was -- nothing deleted, nothing promoted');
     void store; }
 
+  // V4-136 (F218): two rotations of one identity at once -- two tabs of the
+  // account page. Tab A is held between staging its key and sending ROTATE,
+  // which is where tab B used to find "a pending key and a live current key",
+  // discard A's pending key as stale and stage its own; A's ROTATE then
+  // committed, and A promoted B's key -- one the daemon never saw -- over the
+  // only copy of the key the daemon now accepts. A waits for B to stage, or
+  // for 1.5 s: with the rotations serialized B cannot stage until A is done.
+  // B, once it has staged, waits for A's rotation to be answered.
+  { const { store, params } = await fresh();
+    let bStaged; const bHasStaged = new Promise((r) => { bStaged = r; });
+    let aStaged; const aHasStaged = new Promise((r) => { aStaged = r; });
+    const tab = (after) => new Proxy(store, { get: (t, k) => (k === 'stagePending'
+      ? async (...a) => { await t.stagePending(...a); await after(); }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    const tabA = tab(async () => { aStaged(); await Promise.race([bHasStaged, new Promise((r) => setTimeout(r, 1500))]); });
+    let a = null;
+    const tabB = tab(async () => { bStaged(); await a; });   // B's ROTATE leaves after A's has been answered
+    a = flows.rotate(client, tabA, params).then(() => 'ok', (e) => e.message);
+    await aHasStaged;
+    const b = flows.rotate(client, tabB, params).then(() => 'ok', (e) => e.message);
+    const [ra, rb] = await Promise.all([a, b]);
+    console.log(`  two rotations: A ${ra}; B ${rb}`);
+    let logged = false, why = '';
+    try { const s = await flows.login(client, store, params); logged = s.code.length === 32; await s.close(); }
+    catch (e) { why = e.message; }
+    check(logged, `two rotations at once: the identity still logs in afterwards ${why && `(${why})`}`);
+    const after = await store.get(params.handle);
+    check(ra === 'ok' && rb === 'ok' && after.pending === null,
+          'two rotations at once: they run one after the other, both succeed, nothing is left pending'); }
+
+  // A login in another tab while a rotation is between the daemon's ACK and
+  // its promote: it waits for the rotation instead of completing it underneath
+  // (which made the rotation that had succeeded report "nothing pending").
+  { const { store, params } = await fresh();
+    let atPromote; const reached = new Promise((r) => { atPromote = r; });
+    let loginDone; const loggedIn = new Promise((r) => { loginDone = r; });
+    const tabA = new Proxy(store, { get: (t, k) => (k === 'promote'
+      ? async (...a) => { atPromote(); await Promise.race([loggedIn, new Promise((r) => setTimeout(r, 1500))]); return t.promote(...a); }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    const a = flows.rotate(client, tabA, params).then(() => 'ok', (e) => e.message);
+    await reached;
+    let logged = false;
+    try { const s = await flows.login(client, store, params); logged = s.code.length === 32; await s.close(); } catch { logged = false; }
+    loginDone();
+    const ra = await a;
+    check(ra === 'ok' && logged, `a login during a rotation waits for it: the rotation reports success and the login uses its key (rotation: ${ra})`); }
+
+  // Where the lock cannot span tabs (no Web Locks), rotate refuses and stages nothing.
+  { const { store, params } = await fresh();
+    const before = await store.get(params.handle);
+    const pageOnly = new Proxy(store, { get: (t, k) => (k === 'sharedLock' ? false : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    let msg = '';
+    try { await flows.rotate(client, pageOnly, params); } catch (e) { msg = e.message; }
+    check(/no Web Locks/.test(msg) && isDeepStrictEqual(await store.get(params.handle), before),
+          'no cross-tab lock: rotate refuses, and the store is unchanged'); }
+
+  // The store promotes only the key the caller staged (compare-and-swap).
+  { const { store, params } = await fresh();
+    const mine = client.newIdentity(PASS, params.handle), theirs = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, theirs.envelope);
+    const before = await store.get(params.handle);
+    let refused = false;
+    try { await store.promote(params.handle, mine.envelope); } catch { refused = true; }
+    check(refused && isDeepStrictEqual(await store.get(params.handle), before),
+          'promote: a pending key that is not the one the caller staged is not promoted, and the store is unchanged');
+    await store.promote(params.handle, theirs.envelope);
+    check(isDeepStrictEqual((await store.get(params.handle)).envelope, theirs.envelope),
+          'promote: the staged key is promoted'); }
+
   { const weak = client.checkPassphrase('password1234');
     const good = client.checkPassphrase(PASS);
     let threw = false;

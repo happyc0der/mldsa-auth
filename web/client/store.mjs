@@ -21,8 +21,26 @@
 // Which of those to call after an interrupted rotation is client_key_plan's
 // decision, the same function the CLI uses (flows.mjs).
 //
-// MemoryStore has the same five methods and no durability, for tests that
-// run where IndexedDB does not (Node).
+// ONE ROTATION AT A TIME, IN EVERY TAB (V4-136, F218). A transaction makes one
+// step whole; it does not make a rotation whole, and a rotation is four steps
+// with the daemon in the middle. Two tabs rotating one identity interleaved
+// them: the second found the first's pending key beside a current key that
+// still logged in -- which is also what a crashed rotation looks like --
+// discarded it and staged its own; the first's ROTATE then committed and its
+// promote() moved the SECOND tab's key, one the daemon never saw, over the only
+// copy of the key the daemon now accepted. So:
+//   exclusive      runs a function while holding this identity's lock, a Web
+//                  Lock shared by every tab of the origin (and released by the
+//                  browser if the tab dies); flows.mjs rotates, and resolves an
+//                  interrupted rotation, only inside it. `sharedLock` says
+//                  whether the lock really spans tabs: where the browser has no
+//                  Web Locks it is only this page's, and rotate refuses;
+//   promote        takes the envelope the caller staged and promotes nothing
+//                  else: a pending key somebody else put there is not this
+//                  rotation's to promote.
+//
+// MemoryStore has the same methods and no durability, for tests that run
+// where IndexedDB does not (Node).
 
 const DB_NAME = 'mldsa-authd';
 const STORE = 'identities';
@@ -31,6 +49,23 @@ const done = (req) => new Promise((resolve, reject) => {
   req.onsuccess = () => resolve(req.result);
   req.onerror = () => reject(req.error);
 });
+const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const NOT_STAGED = 'the pending key is not the one this rotation staged; nothing was promoted';
+
+// One holder per name within this page; the fallback where there are no Web Locks.
+class PageLocks {
+  constructor() { this.tails = new Map(); }
+  async run(name, fn) {
+    const before = this.tails.get(name) ?? Promise.resolve();
+    let release; const mine = new Promise((r) => { release = r; });
+    const tail = before.then(() => mine);
+    this.tails.set(name, tail);
+    await before;
+    try { return await fn(); }
+    finally { release(); if (this.tails.get(name) === tail) { this.tails.delete(name); } }
+  }
+}
+
 const committed = (tx) => new Promise((resolve, reject) => {
   tx.oncomplete = () => resolve();
   tx.onerror = () => reject(tx.error);
@@ -44,7 +79,15 @@ export class IdentityStore {
     return new IdentityStore(await done(req));
   }
 
-  constructor(db) { this.db = db; }
+  constructor(db) { this.db = db; this.pageLocks = new PageLocks(); }
+
+  // Whether exclusive() excludes the other tabs of this origin too.
+  get sharedLock() { return typeof navigator !== 'undefined' && !!navigator.locks; }
+
+  async exclusive(handle, fn) {
+    const name = `${this.db.name}:${handle}`;
+    return this.sharedLock ? navigator.locks.request(name, () => fn()) : this.pageLocks.run(name, fn);
+  }
 
   // Asks the browser not to evict this origin's storage. Browsers may say no
   // (and headless ones often do); the answer is returned, not assumed.
@@ -78,9 +121,10 @@ export class IdentityStore {
     });
   }
 
-  async promote(handle) {
+  async promote(handle, staged) {
     await this.#update(handle, (r) => {
       if (!r.pending) { throw new Error('nothing pending to promote'); }
+      if (!staged || !sameBytes(r.pending, staged)) { throw new Error(NOT_STAGED); }
       r.envelope = r.pending;
       r.pending = null;
       r.rotatedAt = Date.now();
@@ -110,7 +154,9 @@ export class IdentityStore {
 }
 
 export class MemoryStore {
-  constructor() { this.m = new Map(); }
+  constructor() { this.m = new Map(); this.pageLocks = new PageLocks(); }
+  get sharedLock() { return true; }                 // one process is all there is
+  async exclusive(handle, fn) { return this.pageLocks.run(handle, fn); }
   async get(handle) { const r = this.m.get(handle); return r ? { ...r } : null; }
   async list() { return [...this.m.values()].map((r) => ({ ...r })); }
   async create(r) {
@@ -122,9 +168,10 @@ export class MemoryStore {
     if (r.pending) { throw new Error('a rotation is already pending; resolve it first'); }
     r.pending = envelope;
   }
-  async promote(handle) {
+  async promote(handle, staged) {
     const r = this.m.get(handle);
     if (!r.pending) { throw new Error('nothing pending to promote'); }
+    if (!staged || !sameBytes(r.pending, staged)) { throw new Error(NOT_STAGED); }
     r.envelope = r.pending; r.pending = null; r.rotatedAt = Date.now();
   }
   async discardPending(handle) { this.m.get(handle).pending = null; }

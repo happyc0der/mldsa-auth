@@ -66,7 +66,21 @@ async function probe(client, params, envelope) {
 
 // The envelope to log in with, after resolving an interrupted rotation.
 // `events` (optional) receives one string per decision, for the page to show.
+//
+// A pending key is resolved only while holding the identity's lock (V4-136,
+// F218): a pending key beside a live current key is what a crashed rotation
+// leaves, and also what a rotation running in another tab looks like half way.
+// The lock tells them apart -- the running one holds it, so this waits for it
+// and then reads the record again.
 export async function resolveKey(client, store, handle, params, events = () => {}) {
+  const r = await store.get(handle);
+  if (!r) { throw new Error(`no identity for ${handle}`); }
+  if (!r.pending) { return r.envelope; }
+  return store.exclusive(handle, () => resolveHeld(client, store, handle, params, events));
+}
+
+// resolveKey for a caller that already holds the identity's lock.
+async function resolveHeld(client, store, handle, params, events) {
   const r = await store.get(handle);
   if (!r) { throw new Error(`no identity for ${handle}`); }
   if (!r.pending) { return r.envelope; }
@@ -79,7 +93,7 @@ export async function resolveKey(client, store, handle, params, events = () => {
     events('the current key is live; the pending one was never committed');
     return r.envelope;
   case KEY_PLAN.PROMOTE_NEXT:
-    await store.promote(handle);
+    await store.promote(handle, r.pending);
     events('completed the interrupted rotation');
     return r.pending;
   default:
@@ -98,9 +112,19 @@ export async function login(client, store, params, events) {
 }
 
 // Rotates to a fresh key under the same passphrase (spec 10.2).
+// The whole of it runs holding the identity's lock, so a second rotation -- in
+// this tab or another -- starts only when this one has finished, and finds
+// this one's result rather than its half-way state (V4-136, F218).
 export async function rotate(client, store, offered, events = () => {}) {
   const params = await pinned(store, offered);
-  const envelope = await resolveKey(client, store, params.handle, params, events);
+  if (!store.sharedLock) {
+    throw new Error('this browser cannot keep two tabs from rotating at once (no Web Locks); nothing was changed');
+  }
+  return store.exclusive(params.handle, () => rotateHeld(client, store, params, events));
+}
+
+async function rotateHeld(client, store, params, events) {
+  const envelope = await resolveHeld(client, store, params.handle, params, events);
   const r = await store.get(params.handle);
   if (r.pending) {
     // resolveKey returned the CURRENT key and would not have without proving it
@@ -120,7 +144,7 @@ export async function rotate(client, store, offered, events = () => {}) {
     throw e;
   }
   await s.close();
-  await store.promote(params.handle);
+  await store.promote(params.handle, next.envelope);
   events('rotated; the old key no longer authenticates');
   return next.publicImage;
 }

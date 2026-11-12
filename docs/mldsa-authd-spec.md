@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.49, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127 errata)
+# mldsa-authd — deployment specification (v1.50, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -691,6 +691,18 @@ function, `client_key_plan` — probing the current key first: only the current
 key authenticating licenses discarding the pending one (and only a rotation
 discards it); the pending key authenticating, and the current one not, means
 the daemon committed and the page finishes the swap; neither changes nothing.
+
+A browser has what the CLI's one process does not: **several tabs on one
+store**. A pending envelope beside a current key that still authenticates is
+what an interrupted rotation leaves, and it is also what a rotation running in
+another tab looks like before its `ROTATE` is answered; the two must not be
+confused, because discarding the second one's pending envelope discards the
+only copy of the key the daemon is about to accept. So a page rotates, and
+resolves a pending envelope, only while holding a lock on that identity that
+every tab of the origin shares (the Web Locks API; the browser releases it
+when a tab dies), and reads the record again once it holds it. A page that
+cannot take such a lock does not rotate. And the promoting transaction
+promotes the envelope its caller staged and no other (erratum 92).
 
 **On the server there is no overlap window**: `one_active_key` makes two
 simultaneously-active keys for a handle unrepresentable, and that is enforced
@@ -1870,3 +1882,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 91 | 14 | A site ends a session only on the daemon's refusal of its token; with the daemon unreachable, silent for 10 s, or answering `internal` or `busy`, it answers 503 and keeps the session | the reference site read every failure of `VERIFY` as a refusal, so a daemon restart logged out every user who loaded a page during it, though their tokens were valid again a moment later; it also sent Node's socket error name to the browser and waited without limit on a daemon that did not answer (F210) |
+
+### Revision v1.50 (V4-136)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 92 | 10.2 | In a browser, a rotation and the resolving of a pending envelope run only under a per-identity lock shared by every tab of the origin; a page that cannot take one does not rotate; the promoting transaction promotes only the envelope its caller staged | two tabs rotating one identity interleaved: the second took the first's pending envelope for a stale one and replaced it, the first's `ROTATE` committed, and its promote moved the second tab's envelope — a key the daemon never saw — over the only copy of the key the daemon now accepted. The identity could no longer log in from that browser (F218) |

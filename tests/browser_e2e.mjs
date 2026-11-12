@@ -238,6 +238,44 @@ try {
   r = await act(b, 'login.html', { passphrase: PASS });
   check(r.result === 'ok', 'rotate: the rotated key logs in');
 
+  // ---- V4-136 (F218): one rotation at a time, and the lock is the browser's ----
+  // The lock a rotation holds is a Web Lock named for the identity, which the
+  // browser shares between every tab of the origin; and two rotations started
+  // together on the real IndexedDB store both finish, leaving a key that logs in.
+  const lock = await inPage(b, `
+    const h = ${JSON.stringify(handle)};
+    return store.exclusive(h, async () => {
+      const held = (await navigator.locks.query()).held.map((l) => l.name);
+      const second = await navigator.locks.request(held[0] ?? 'none', { ifAvailable: true }, async (l) => l !== null);
+      return { shared: store.sharedLock, held, second };
+    });`);
+  check(lock.shared && lock.held.length === 1 && lock.held[0].endsWith(`:${handle}`) && lock.second === false,
+        `rotate: the identity's lock is a Web Lock, held, and not available to a second request (${JSON.stringify(lock.held)})`);
+  const cas = await inPage(b, `
+    const h = ${JSON.stringify(handle)};
+    const theirs = client.newIdentity(${JSON.stringify(PASS)}, h), mine = client.newIdentity(${JSON.stringify(PASS)}, h);
+    await store.stagePending(h, theirs.envelope);
+    const before = JSON.stringify(Array.from((await store.get(h)).envelope));
+    let refused = false;
+    try { await store.promote(h, mine.envelope); } catch { refused = true; }
+    const rec = await store.get(h);
+    const same = JSON.stringify(Array.from(rec.envelope)) === before && rec.pending !== null;
+    await store.discardPending(h);
+    return { refused, same, staged: Array.from(theirs.envelope) };`);
+  held.push(['the key staged for the promote check', toHex(cas.staged)]);
+  check(cas.refused && cas.same, 'rotate: IndexedDB promotes only the key the caller staged; another is refused and the record is unchanged');
+  const both = await inPage(b, `
+    const flows = await import('/client/flows.mjs');
+    const h = ${JSON.stringify(handle)};
+    const one = () => flows.rotate(client, store, params(h)).then(() => 'ok', (e) => e.message);
+    const out = await Promise.all([one(), one()]);
+    const rec = await store.get(h);
+    return { out, pending: rec.pending !== null, env: Array.from(rec.envelope) };`);
+  held.push(['the key two rotations at once ended on', toHex(both.env)]);
+  r = await act(b, 'login.html', { passphrase: PASS });
+  check(both.out.join() === 'ok,ok' && !both.pending && r.result === 'ok',
+        `rotate: two rotations started together both finish and the key left logs in (${both.out.join('; ')}; ${r.status})`);
+
   // ---- timings, in the browser ----
   const t = await inPage(b, `
     let t0 = performance.now(); client.newIdentity(${JSON.stringify(PASS)}, 'd1timing'); const seal = performance.now() - t0;

@@ -14854,3 +14854,61 @@ for no reason.
 
 **Process note.** V4-133 was landed on the rerun's green result, with
 the first failure recorded here rather than hidden.
+
+## V4-136: one rotation at a time in a browser (F218)
+
+**Found.** Candidate 4 of the V4-130 review, reasoned from
+`web/client/flows.mjs` and until now unreproduced: two tabs rotating one
+identity.
+
+**Reproduced first.** `web_flows`, against the real daemon, with two
+views of one store. Tab A is held between staging its key and sending
+`ROTATE`; tab B runs until it has staged, then waits for A's answer.
+Before the fix: A reported success, B failed, and the next login failed
+with `bad-frame` — the store held B's key and the daemon held A's, of
+which no copy existed. A first attempt at the interleaving, with B not
+held, did not lose the key (B's rotation simply won); the loss needs A's
+`ROTATE` to commit after B has replaced the pending key.
+
+**Why the transactions were not enough.** Each store step is atomic. The
+rotation is not: stage, log in, `ROTATE`, promote, with the daemon
+between. And "a pending key beside a current key that logs in" has two
+meanings, a crashed rotation or a running one, which the store could
+not tell apart.
+
+**Fix.**
+- `store.exclusive(handle, fn)`: a Web Lock named for the database and
+  the handle, shared by every tab of the origin and released by the
+  browser if the tab dies. `MemoryStore` has an in-process queue.
+- `rotate` runs whole inside it. `resolveKey` takes it only when it
+  sees a pending key, then reads the record again; a login with nothing
+  pending takes no lock.
+- `rotate` refuses when `store.sharedLock` is false (a browser with no
+  Web Locks), before staging anything. Falling back to a page-only lock
+  would be the defect again, silently. Web Locks have been in Chromium
+  since 69, Firefox 96 and Safari 15.4.
+- `promote(handle, staged)` is a compare-and-swap. On its own it does
+  not save the key (mutation R1 shows the identity still lost with the
+  lock removed and the swap in place); it stops a store from being
+  handed a key nobody sent.
+
+**Spec.** v1.50, erratum 92, a paragraph in §10.2 after erratum 33's.
+
+**Not closed, and stated in the audit row.** A tab killed after its
+`ROTATE` left but before the daemon committed releases the lock; a
+rotation that starts in that instant probes the old key, finds it live,
+and discards the key about to be committed. The CLI has the same window
+when its process is killed mid-rotation. Closing it would need the
+daemon to tell a client that a rotation is in flight, a protocol change.
+
+**Tests.** `web_flows`: two rotations interleaved (2 checks), a login
+during a rotation, the no-shared-lock refusal, and the swap (2 checks);
+4 of the 6 red before the fix. `browser_e2e`: the lock is a real Web
+Lock that a second request cannot take, IndexedDB refuses to promote an
+unstaged key, and two rotations started together both finish on a key
+that logs in. Seven hand mutations (R1–R7) of `flows.mjs` and
+`store.mjs`, each killed by a named check and restored byte-exact.
+No C changed: 483 mutations, 70 campaigns, 523 anchors as before.
+
+**Severity.** Medium. No attacker gains anything, but an ordinary
+action in two tabs destroyed the device's only key.
