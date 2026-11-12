@@ -14444,3 +14444,16 @@ anything went wrong.
   `-Werror` (the variable became unused) and was rewritten.
 
 **Spec.** v1.47, erratum 89, in §16 beside the signals paragraph.
+
+## V4-125 — REPRODUCE cites the runs on the commit that is main
+
+Cleanup step. `docs/review/REPRODUCE.md` cited CI run 43160770627 and
+nightly run 43160773908, both on `1a33f16` (V4-121). Two fixes have landed
+since (F207, F208) and the nightly has grown from 82 jobs to 84. It now
+cites the runs on `c020e2c`: CI 43186659599, 16/16, and nightly
+43186664027, 84/84 with all 69 campaigns. Both were dispatched on the
+V4-124 branch at the commit that was then fast-forwarded to main, so the
+tree they ran is main's. Main's own push CI on that commit is 43194342895,
+16/16.
+
+Nothing else changed.
