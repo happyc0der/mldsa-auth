@@ -98,7 +98,8 @@ log_client_ip = prefix
 # logs `memlock-limit` at WARN when its own limit is short.
 # Each slot is also an open file. The daemon raises its own soft limit to
 # max_slots + max_local_slots + 32 and logs `fd-limit`; it can only warn when
-# the HARD limit is lower than that (systemd's default is not).
+# the HARD limit is lower than that (systemd's default is not), and then
+# holds fewer connections than max_slots so the admin socket keeps working.
 max_slots = 256
 max_local_slots = 8
 

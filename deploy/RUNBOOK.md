@@ -240,8 +240,9 @@ unlocked memory without an error.
 that, so with systemd's defaults the line is at `info` whatever `max_slots`
 is. **At `warn`** the hard limit is below the `need=` it prints, and standard
 error says so with the numbers: set `LimitNOFILE=` in the unit to at least
-that and restart. Left alone, a daemon that runs out of descriptors accepts
-nothing on any socket, the admin socket included.
+that and restart. Until then the daemon holds fewer connections than
+`max_slots` (the same line on standard error says how many) and refuses the
+rest with `accept-refused-no-slot`; `authd_admin` keeps working.
 
 **`event=store-created` must not be there.** Step 5's `init` made the store,
 so a daemon that says it created one — the journal also has
@@ -827,8 +828,10 @@ Common ones, and what they actually are:
   does not cause this; it is replaced.
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
-  files. Look for `warn event=fd-limit` at the last start (step 9): that is
-  a hard limit below what the slots need. Logged once per run of failures on
+  files. A daemon that knows its limit is short holds fewer connections so
+  that this does not happen (step 9, `warn event=fd-limit`), so seeing it
+  means the limit was reached some other way; the system-wide one is the
+  first to check. Logged once per run of failures on
   a listener, not once per connection; the daemon retries every 100 ms and
   recovers by itself when connections close. While it lasts, `authd_admin`
   cannot connect either.

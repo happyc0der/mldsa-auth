@@ -1127,6 +1127,46 @@ static void test_memlock(void)
     (void)setrlimit(RLIMIT_MEMLOCK, &saved);
 }
 
+/* ------------------------------------------- a table held below its size (F207) */
+
+static void test_slot_cap(void)
+{
+    enum { NSLOTS = 4 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK, "cap: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 5000u, 20000u, on_frame, on_close, &h) == 0, "cap: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "cap: listener registered");
+    CHECK(evloop_set_slot_cap(&ev, 0u) != 0 && evloop_set_slot_cap(&ev, (size_t)NSLOTS + 1u) != 0,
+          "cap: a cap of zero or above the table is refused (F207)");
+    CHECK(evloop_set_slot_cap(&ev, 2u) == 0, "cap: a table of 4 can be held to 2 (F207)");
+
+    const int a = dial(port), b = dial(port), c = dial(port);
+    CHECK(a >= 0 && b >= 0 && c >= 0, "cap: three clients connect");
+    (void)PUMP_UNTIL(&ev, 2000, evloop_active(&ev) >= 2u && ev.refused_no_slot >= 1u);
+    CHECK(evloop_active(&ev) == 2u,
+          "cap: a table held to 2 holds 2 connections of 3 (F207)");
+    CHECK(ev.refused_no_slot == 1u,
+          "cap: the connection beyond the cap is refused and counted as no-slot (F207)");
+
+    /* Canary: the cap is what refused it. Lifted, the same table takes more. */
+    CHECK(evloop_set_slot_cap(&ev, (size_t)NSLOTS) == 0, "cap: the cap can be lifted to the table's size");
+    const int d = dial(port), e = dial(port);
+    CHECK(d >= 0 && e >= 0, "cap: two more clients connect");
+    (void)PUMP_UNTIL(&ev, 2000, evloop_active(&ev) == (size_t)NSLOTS);
+    CHECK(evloop_active(&ev) == (size_t)NSLOTS && ev.refused_no_slot == 1u,
+          "cap: with the cap lifted the table fills and nothing more is refused (F207, canary)");
+
+    (void)close(a); (void)close(b); (void)close(c); (void)close(d); (void)close(e);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 /* ------------------------------------------------------- descriptors (F205) */
 
 static void test_fdlimit(void)
@@ -1142,6 +1182,16 @@ static void test_fdlimit(void)
           fdlimit_log_level(FDLIMIT_RAISED) == AUTHD_LOG_INFO &&
           fdlimit_log_level(FDLIMIT_UNKNOWN) == AUTHD_LOG_INFO,
           "fdlimit: every other answer is logged at INFO (canary: WARN is not unconditional)");
+    /* F207: how many connections a short limit leaves room for. */
+    CHECK(fdlimit_slot_cap(64u, 256u, 8u) == 24u,
+          "fdlimit: 64 descriptors leave 24 connections beside 8 local slots and 32 others (F207)");
+    CHECK(fdlimit_slot_cap(296u, 256u, 8u) == 256u && fdlimit_slot_cap(UINT64_MAX, 256u, 8u) == 256u,
+          "fdlimit: a limit that covers the need caps nothing (F207, canary)");
+    CHECK(fdlimit_slot_cap(295u, 256u, 8u) == 255u,
+          "fdlimit: one descriptor short is one connection fewer (F207)");
+    CHECK(fdlimit_slot_cap(40u, 256u, 8u) == 1u && fdlimit_slot_cap(0u, 256u, 8u) == 1u &&
+          fdlimit_slot_cap(41u, 256u, 8u) == 1u,
+          "fdlimit: the cap is never below one connection (F207)");
 
     struct rlimit saved;
     if (getrlimit(RLIMIT_NOFILE, &saved) != 0 ||
@@ -1336,6 +1386,7 @@ int main(void)
     test_poll_fairness();
     test_memlock();
     test_fdlimit();
+    test_slot_cap();
     test_accept_failure();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);

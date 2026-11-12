@@ -85,7 +85,8 @@ LimitMEMLOCK=32M
 # its own soft limit to that at start (it logs `fd-limit`). systemd's default
 # hard limit is far above the most the configuration can ask for (4136), so
 # nothing is set here. If `fd-limit` is ever at WARN, something lowered the
-# hard limit: set LimitNOFILE= to at least the `need=` it prints.
+# hard limit: set LimitNOFILE= to at least the `need=` it prints. Until then
+# the daemon holds fewer connections than max_slots.
 
 # --- hardening (spec §16's list, verbatim) --------------------------------
 NoNewPrivileges=yes

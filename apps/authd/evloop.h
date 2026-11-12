@@ -123,6 +123,7 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 typedef struct {
     authd_slot_t *slots;         /* PROTO pool */
     size_t        n_slots;
+    size_t        slot_cap;         /* remote slots in use at most; n_slots unless lowered (F207) */
     size_t        in_use;
 
     /* The local API gets its OWN pool. Sharing one would let a burst of
@@ -206,6 +207,11 @@ int evloop_add_local_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n
 
 /* Attaches the local pool and the line callback. Both are required before a
  * local listener is added. */
+/* Holds the remote pool to its first `cap` slots: beyond that a connection
+ * is refused with accept-refused-no-slot as if the table were that size.
+ * For a daemon with fewer descriptors than slots (F207). 1..n_slots. */
+int evloop_set_slot_cap(evloop_t *ev, size_t cap);
+
 int evloop_set_local(evloop_t *ev, authd_slot_t *local_slots, size_t n_local_slots,
                      evloop_on_line_fn on_line);
 

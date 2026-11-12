@@ -26,6 +26,16 @@ uint64_t fdlimit_required(uint32_t max_slots, uint32_t max_local_slots)
     return (uint64_t)max_slots + (uint64_t)max_local_slots + (uint64_t)FDLIMIT_OVERHEAD;
 }
 
+uint32_t fdlimit_slot_cap(uint64_t limit, uint32_t max_slots, uint32_t max_local_slots)
+{
+    const uint64_t aside = (uint64_t)max_local_slots + (uint64_t)FDLIMIT_OVERHEAD;
+    if (limit <= aside) {
+        return 1u;
+    }
+    const uint64_t fit = limit - aside;
+    return (fit >= (uint64_t)max_slots) ? max_slots : (uint32_t)fit;
+}
+
 fdlimit_status_t fdlimit_ensure(uint64_t need, uint64_t *limit_out)
 {
     if (limit_out != NULL) {

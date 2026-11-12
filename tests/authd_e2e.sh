@@ -481,6 +481,58 @@ if (ulimit -S -n 64) 2>/dev/null; then
     grep -q 'RLIMIT_NOFILE is 64 but max_slots = 256 and max_local_slots = 8 need 296 open files' "$TMP/su-fh.log" \
         || fail "a daemon whose descriptor limit is short did not say so on stderr, with the numbers (F205): $(cat "$TMP/su-fh.log")"
     echo "PASS: E2E: under a soft limit of 64 descriptors the daemon raises it and logs fd-limit at info; under a hard limit of 64 it logs 'warn event=fd-limit need=296' and names the numbers on stderr (F205)"
+    # F207 (V4-123): what a short HARD limit does once connections arrive.
+    # The daemon used to accept until accept() failed, and then the admin
+    # socket was as dead as the rest: the operator could not ask it anything.
+    # It must instead hold back enough descriptors for its own sockets: with
+    # 64, that is 64 - 8 local - 32 = 24 connections, refused beyond that by
+    # the slot table, and the admin socket answers throughout.
+    (ulimit -S -n 64; ulimit -H -n 64; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-fc.log" 2>&1 &
+    SUPID=$!
+    i=0
+    while ! grep -q 'event=started' "$TMP/su-fc.log" 2>/dev/null; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && fail "the daemon for the descriptor-cap leg never logged event=started: $(cat "$TMP/su-fc.log")"
+        sleep 0.05
+    done
+    python3 - "$TMP/su-p.sock" "$TMP/su-fc.held" <<'PYEOF' &
+import socket, sys, time
+held = []
+for _ in range(70):
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        c.connect(sys.argv[1])
+        held.append(c)
+    except OSError:
+        pass
+    time.sleep(0.01)
+time.sleep(0.5)
+open(sys.argv[2], "w").write("%d\n" % len(held))
+time.sleep(600)
+PYEOF
+    HOLDPID=$!
+    i=0
+    while [ ! -s "$TMP/su-fc.held" ]; do
+        i=$((i + 1))
+        [ "$i" -gt 400 ] && { kill "$HOLDPID" "$SUPID" 2>/dev/null; fail "the 70 held connections for the descriptor-cap leg were never opened"; }
+        sleep 0.05
+    done
+    rc=0
+    "$ADMIN" list-users --socket "$TMP/su-a.sock" > /dev/null 2> "$TMP/su-fc.err" || rc=$?
+    kill "$HOLDPID" 2>/dev/null; wait "$HOLDPID" 2>/dev/null || true
+    kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+    [ "$rc" -eq 0 ] \
+        || fail "with 64 descriptors and 70 connections held, the admin socket did not answer (F207): $(cat "$TMP/su-fc.err")"
+    if grep -q 'event=accept-failed' "$TMP/su-fc.log"; then
+        fail "with 64 descriptors and 70 connections held, the daemon ran out of descriptors instead of refusing at its cap (F207)"
+    fi
+    [ "$(grep -c '^info event=accepted ' "$TMP/su-fc.log")" -eq 24 ] \
+        || fail "with 64 descriptors the daemon did not accept exactly 24 connections (F207): $(grep -c '^info event=accepted ' "$TMP/su-fc.log")"
+    grep -q '^warn event=accept-refused-no-slot$' "$TMP/su-fc.log" \
+        || fail "connections beyond the descriptor cap were not refused with accept-refused-no-slot (F207)"
+    grep -q 'at most 24 connections' "$TMP/su-fc.log" \
+        || fail "a daemon whose descriptor limit is short did not say how many connections it will hold (F207): $(cat "$TMP/su-fc.log")"
+    echo "PASS: E2E: under a hard limit of 64 descriptors and 70 held connections the daemon holds 24, refuses the rest with accept-refused-no-slot, never fails an accept(), and its admin socket answers (F207)"
 else
     echo "SKIP: E2E: this platform will not lower RLIMIT_NOFILE; the fd-limit lines are not staged"
 fi

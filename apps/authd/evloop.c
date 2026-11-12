@@ -30,6 +30,7 @@ int evloop_init(evloop_t *ev, authd_slot_t *slots, size_t n_slots,
     memset(ev, 0, sizeof *ev);
     ev->slots = slots;
     ev->n_slots = n_slots;
+    ev->slot_cap = n_slots;
     ev->handshake_timeout_ms = handshake_timeout_ms;
     ev->idle_timeout_ms = idle_timeout_ms;
     ev->on_frame = on_frame;
@@ -59,6 +60,15 @@ int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr)
         return -1;
     }
     ev->on_addr = on_addr;
+    return 0;
+}
+
+int evloop_set_slot_cap(evloop_t *ev, size_t cap)
+{
+    if (ev == NULL || cap == 0u || cap > ev->n_slots) {
+        return -1;
+    }
+    ev->slot_cap = cap;
     return 0;
 }
 
@@ -228,7 +238,7 @@ void evloop_stop(evloop_t *ev)
 static authd_slot_t *take_slot(evloop_t *ev, slot_kind_t kind)
 {
     authd_slot_t *pool = (kind == SLOT_KIND_LOCAL) ? ev->local_slots : ev->slots;
-    const size_t n = (kind == SLOT_KIND_LOCAL) ? ev->n_local_slots : ev->n_slots;
+    const size_t n = (kind == SLOT_KIND_LOCAL) ? ev->n_local_slots : ev->slot_cap;
     for (size_t i = 0; i < n; i++) {
         if (pool[i].state == SLOT_FREE) {
             return &pool[i];

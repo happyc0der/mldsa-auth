@@ -450,21 +450,27 @@ int main(int argc, char **argv)
     }
 
     /* F205: a descriptor for every slot, or say so. The soft limit is raised
-     * here when the hard limit allows; when it does not, the daemon serves up
-     * to the limit and the line below is the operator's warning. */
+     * here when the hard limit allows; when it does not, the daemon holds
+     * only the connections it has descriptors for (F207), so that the slot
+     * table refuses before accept() fails and the admin socket still has one,
+     * and the line below is the operator's warning. */
     {
         uint64_t lim = 0;
         const uint64_t need = fdlimit_required(cfg.max_slots, cfg.max_local_slots);
         const fdlimit_status_t fs = fdlimit_ensure(need, &lim);
         authd_log_num(fdlimit_log_level(fs), "fd-limit", "need", need);
         if (fs == FDLIMIT_LOW) {
+            const uint32_t cap = fdlimit_slot_cap(lim, cfg.max_slots, cfg.max_local_slots);
+            if (evloop_set_slot_cap(&ev, (size_t)cap) != 0) {
+                fprintf(stderr, "mldsa-authd: cannot hold the slot table to %u connections\n", cap);
+                goto listener_failed;
+            }
             fprintf(stderr,
                     "mldsa-authd: RLIMIT_NOFILE is %llu but max_slots = %u and max_local_slots = %u "
-                    "need %llu open files: past the limit the daemon accepts no connection on any "
-                    "socket, the admin socket included. Set LimitNOFILE in the service unit "
-                    "(spec 16).\n",
+                    "need %llu open files: the daemon will hold at most %u connections and refuse "
+                    "the rest. Set LimitNOFILE in the service unit (spec 16).\n",
                     (unsigned long long)lim, cfg.max_slots, cfg.max_local_slots,
-                    (unsigned long long)need);
+                    (unsigned long long)need, cap);
         }
     }
 

@@ -43,6 +43,13 @@ const char *fdlimit_status_name(fdlimit_status_t st);
 #define FDLIMIT_OVERHEAD 32u
 uint64_t fdlimit_required(uint32_t max_slots, uint32_t max_local_slots);
 
+/* How many remote connections fit under `limit` descriptors once the local
+ * slots and the overhead are set aside: `max_slots` when they all fit, never
+ * less than 1. (V4-123, F207: a daemon that accepted until accept() failed
+ * had no descriptor left for the admin socket, so the operator could not ask
+ * it what was wrong. Held to this, the slot table refuses first.) */
+uint32_t fdlimit_slot_cap(uint64_t limit, uint32_t max_slots, uint32_t max_local_slots);
+
 /* Reads RLIMIT_NOFILE and, if the soft limit is below `need`, raises it to
  * exactly `need` when the hard limit allows. `*limit_out` receives the soft
  * limit in force afterwards (UINT64_MAX for unlimited); it may be NULL. */

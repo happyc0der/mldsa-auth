@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.45, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121 errata)
+# mldsa-authd — deployment specification (v1.46, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1314,8 +1314,17 @@ error with the numbers, and starts — the `memlock-limit` precedent, a
 misconfiguration that is reported rather than turned into an outage. Set
 `LimitNOFILE` in the unit to at least the requirement.
 
-Past the limit `accept()` fails on **every** listener, the admin socket
-included, since the limit is the process's and not a listener's. The daemon
+**A daemon whose hard limit is short holds fewer connections, not fewer
+descriptors than it needs** (erratum 88). It holds at most *limit* −
+`max_local_slots` − 32 remote connections at a time (never fewer than one)
+and names that number on standard error. Beyond it a connection is refused
+exactly as at a full table, with `accept-refused-no-slot`. The local slots
+keep their descriptors, so the admin socket answers while the daemon is at
+its cap: with a limit of 64 and the defaults that is 24 connections.
+
+If the process runs out of descriptors all the same, `accept()` fails on
+**every** listener, the admin socket included, since the limit is the
+process's and not a listener's. The daemon
 logs `accept-failed` at WARN, once for each run of failures on a listener
 rather than once per attempt, and does not try that listener again for
 100 ms: on Linux the connection that could not be accepted stays in the
@@ -1810,3 +1819,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 87 | 15, 16 | The event `sighup-ignored`: a `SIGHUP` is logged at WARN and ignored | the daemon installed no handler for it, so it died with no drain; systemd treats that death as a clean exit and `Restart=on-failure` left the service stopped (F206) |
+
+### Revision v1.46 (V4-123)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 88 | 16 | A daemon whose hard `RLIMIT_NOFILE` is below its requirement holds at most *limit* − `max_local_slots` − 32 remote connections and refuses the rest with `accept-refused-no-slot` | it accepted until `accept()` failed, and from then on the admin socket could not be reached either: the operator could not ask the daemon anything while it was in the state erratum 86 warns about (F207) |

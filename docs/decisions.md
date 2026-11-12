@@ -14331,3 +14331,61 @@ tree they ran is main's. Main's own push CI on that commit is 43166920144,
 16/16.
 
 Nothing else changed.
+
+## V4-123 — F207: with too few descriptors, hold fewer connections
+
+**What was wrong.** F205's fix warns when the hard `RLIMIT_NOFILE` is below
+the requirement and starts anyway. What the daemon then did with
+connections was unchanged: accept until `accept()` fails. From there every
+listener is dead, the admin socket with them. V4-120 recorded this as a
+residual.
+
+**Reproduced before the fix** with the built daemon: hard limit 64, the
+default 256 + 8 slots, 70 connections opened on the protocol socket and
+held. `authd_admin list-users` on the admin socket answered
+`malformed-response`. This is the end-to-end leg, which failed with "with
+64 descriptors and 70 connections held, the admin socket did not answer
+(F207)".
+
+**Severity.** Low. It needs a hard limit below the requirement, which
+systemd's defaults never produce and which is already announced at WARN.
+Given that, the trigger is remote and cheap (idle connections), and what is
+lost is the operator's only way to look at the daemon.
+
+**Decisions.**
+
+- **The table is held to what the descriptors cover.** The cap is *limit* −
+  `max_local_slots` − 32, the requirement's own arithmetic run backwards,
+  so the 32 keep the meaning V4-120 gave them. It is applied only when the
+  status is `below-requirement`; a daemon whose limit covers the need takes
+  the same path as before.
+- **Refused as a full table is refused**, with `accept-refused-no-slot` and
+  the same counter. To the peer and to the operator a daemon at this cap is
+  a daemon at capacity, and the reason is in the start-up line. No new log
+  event and no new field: the number is on standard error beside the
+  numbers already there.
+- **Never fewer than one.** A limit so low that nothing fits is a daemon
+  that will most likely fail before this matters; a cap of zero would make
+  the loop's "no slot" the only thing it ever says.
+- **A reserved descriptor for the admin socket was considered and not
+  built.** Holding one open and closing it to accept is the classic device,
+  and it races: the freed descriptor goes to whichever `accept()` runs
+  next. Keeping the remote pool inside its share needs no such trick.
+- **`accept-failed` stays.** The cap makes it unreachable through
+  connections alone, but the system-wide limit or a library that leaks can
+  still exhaust the table, and the pause and the line are what keep that
+  from being a silent spin.
+- **`ECONNABORTED`'s retry is still untested.** Staging a peer that leaves
+  between the kernel's queue and `accept()` is not something the test
+  harness can do deterministically; it remains a residual.
+
+**Spec.** v1.46, erratum 88, in §16 beside erratum 86's paragraphs.
+
+**Tests.** `authd_e2e.sh`: under a hard limit of 64 with 70 connections
+held, exactly 24 are accepted, the rest are refused with
+`accept-refused-no-slot`, `accept-failed` never appears, standard error
+names 24, and `authd_admin list-users` succeeds. `test_authd_evloop`: the
+cap's arithmetic from literals (24 of 64; nothing capped at or above the
+need; one short is one fewer; never below one), and a table of 4 held to 2
+holds 2 of 3 and refuses one, then fills when the cap is lifted (canary).
+Campaign v98, seven mutations (SC1–SC7).

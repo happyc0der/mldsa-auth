@@ -1,0 +1,7 @@
+SC1|^test_authd_evloop$|cap: a table held to 2 holds 2 connections of 3 (F207)
+SC2|^authd_e2e$|with 64 descriptors and 70 connections held, the admin socket did not answer (F207)
+SC3|^test_authd_evloop$|fdlimit: 64 descriptors leave 24 connections beside 8 local slots and 32 others (F207)
+SC4|^test_authd_evloop$|fdlimit: a limit that covers the need caps nothing (F207, canary)
+SC5|^test_authd_evloop$|fdlimit: the cap is never below one connection (F207)
+SC6|^test_authd_evloop$|cap: a cap of zero or above the table is refused (F207)
+SC7|^authd_e2e$|a daemon whose descriptor limit is short did not say how many connections it will hold (F207)
