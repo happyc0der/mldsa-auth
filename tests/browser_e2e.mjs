@@ -162,7 +162,27 @@ try {
   check(offered.length === 2 && offered[0][0] === handle && offered[0][1] === handle &&
         offered[1][0] === unsure[0] && /not confirmed/.test(offered[1][1]),
         `login: the confirmed key is offered first, and the other says it was never confirmed (${JSON.stringify(offered.map((o) => o[1].replace(/^\S+ ?/, '')))}) (F220)`);
-  await inPage(b, `await store.remove(${JSON.stringify(unsure[0] ?? '')});`);
+  // V4-140: the page can forget a key the site never confirmed -- only such
+  // a key, and only when asked twice.
+  const forgetState = () => b.eval(`(() => { const f = document.getElementById('forget');
+    return [f.hidden, f.textContent, document.getElementById('status').textContent]; })()`);
+  const stored = () => inPage(b, 'return (await store.list()).map((x) => x.handle);');
+  const hiddenForConfirmed = (await forgetState())[0];
+  await b.eval(`(() => { const l = document.getElementById('identity'); l.value = ${JSON.stringify(unsure[0] ?? '')};
+    l.dispatchEvent(new Event('change')); })()`);
+  check(hiddenForConfirmed === true && (await forgetState())[0] === false,
+        'forget: the button is offered for the unconfirmed key and not for the confirmed one (V4-140)');
+  await b.eval("document.getElementById('forget').click()");
+  await b.waitFor("document.getElementById('forget').dataset.armed === '1' || !!document.body.dataset.result", 'forget pressed once');
+  const asked = await forgetState();
+  check((await stored()).length === 2 && /recovery code/.test(asked[2]) && asked[1] !== 'Forget this key',
+        `forget: the first press removes nothing and says what would be lost (${asked[1]}) (V4-140)`);
+  await b.eval("delete document.body.dataset.result; document.getElementById('forget').click()");
+  await b.waitFor('!!document.body.dataset.result', 'forget result');
+  const left = await stored();
+  const options = await b.eval("Array.from(document.getElementById('identity').options, (o) => o.value)");
+  check(left.length === 1 && left[0] === handle && options.length === 1 && options[0] === handle && (await forgetState())[0] === true,
+        `forget: the second press removes that key alone, from IndexedDB and from the list (${left.length} left) (V4-140)`);
   // Every key this profile's store holds, as the test sees each one appear.
   const envOf = async (br, h) => toHex(await inPage(br, `return Array.from((await store.get(${JSON.stringify(h)})).envelope);`));
   const held = [['the enrolled key', await envOf(b, handle)]];

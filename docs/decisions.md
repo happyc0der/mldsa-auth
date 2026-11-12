@@ -15042,3 +15042,35 @@ For the record: V4-137 as first pushed (`5293498`) had CI 43302354375
 nightly 43317688576 86/86. V4-138 as first pushed (`d95d9d1`) had CI
 43305456959 16/16 and its nightly failed the same way; rebased as
 `4b6eda5`. No code, test logic or count changed in this step.
+
+## V4-140: the login page can forget a key the site never confirmed
+
+F220's fix kept the key of an enrollment the site did not answer, since
+the daemon may have enrolled it. Its audit row said what that left open:
+when the daemon had not, the key stayed on the login page with no way to
+remove it short of clearing the site's data, which takes every other
+key with it.
+
+**What was built.** `flows.forgetUnconfirmed(store, handle)` removes a
+record only if it is marked unconfirmed, under the identity's lock, and
+throws `ForgetRefused` for a confirmed or unknown handle. The login page
+shows a "Forget this key" button only while an unconfirmed key is
+selected. The first press removes nothing and says that, if the site did
+enroll the key, the account then needs a recovery code; the second
+removes it.
+
+**Why two presses and no passphrase.** The page cannot learn whether the
+daemon knows the key: a refused login looks the same for an unknown user
+and a wrong key, by design. So the choice is the person's, and the page's
+job is to say what it costs. Asking for the passphrase would protect
+nothing: anyone at the device can clear the site's data.
+
+**Not closed.** A login that has passed the daemon but not yet cleared
+the mark in another tab can lose a race with a removal in this one. The
+person would have to confirm a removal while logging in with the same
+key elsewhere.
+
+**Tests.** Four named checks in `tests/web_flows.mjs`, three in
+`tests/browser_e2e.mjs` (headless Chromium, real IndexedDB). Eight hand
+mutations, each killed by one of them. No C changed: 488 mutations, 71
+campaigns, 528 anchors, 220 findings as before. Spec v1.53, erratum 95.

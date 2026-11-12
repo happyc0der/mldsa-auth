@@ -51,7 +51,35 @@ export class EnrollUnconfirmed extends Error {
   }
 }
 
+// A key was not forgotten: the store does not hold it, or the site confirmed it.
+export class ForgetRefused extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = 'ForgetRefused';
+  }
+}
+
 const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+// FORGETTING A KEY THE SITE NEVER CONFIRMED (V4-140). An enrollment the site
+// did not answer leaves its key marked unconfirmed, and if the site in fact
+// never enrolled it nothing would ever confirm it: it stayed on the login
+// page for good. This removes such a key, and no other: a confirmed key is
+// an account's key, and this is not the way to give one up. The check and the
+// removal run under the identity's lock, so a key that a login in another tab
+// has just confirmed is seen confirmed and left.
+//
+// What it cannot know: whether the daemon enrolled the key. If it did, and
+// the person forgets it here without having logged in with it, that account
+// needs a recovery code. The page says so before it calls this.
+export async function forgetUnconfirmed(store, handle) {
+  return store.exclusive(handle, async () => {
+    const r = await store.get(handle);
+    if (!r) { throw new ForgetRefused(`no identity for ${handle} on this device`); }
+    if (r.unconfirmed !== true) { throw new ForgetRefused(`${handle} is an enrolled key; it was not removed`); }
+    await store.remove(handle);
+  });
+}
 
 // The server identity a login or a rotation trusts is the one pinned when the
 // identity was enrolled (spec 14, erratum 54, audit F137), not whatever the

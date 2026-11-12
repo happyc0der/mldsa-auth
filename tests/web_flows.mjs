@@ -296,7 +296,41 @@ try {
       try { await flows.enroll(client, store, { ...want, passphrase: 'password1234' }, async () => { asked = true; }); }
       catch (e) { status = e.statusName; }
       check(status === 'passphrase-policy' && !asked && (await store.list()).length === 0,
-            'enroll: a passphrase the policy refuses stores nothing and asks the site nothing'); } }
+            'enroll: a passphrase the policy refuses stores nothing and asks the site nothing'); }
+
+    // V4-140: a key the site never confirmed can be forgotten, and only such
+    // a key. Without this an enrollment the site never answered left its key
+    // on the login page for good.
+    { const store = new MemoryStore();
+      try { await flows.enroll(client, store, want, async () => { throw new Error('HTTP 503'); }); } catch { /* kept */ }
+      await flows.enroll(client, store, want, async (id) => { await enroll(id.handle, id.publicImage); });
+      const all = await store.list();
+      const unsure = all.find((r) => r.unconfirmed === true), sure = all.find((r) => r.unconfirmed === false);
+      const refusal = async (h) => { try { await flows.forgetUnconfirmed(store, h); return null; } catch (e) { return e; } };
+      let e = await refusal(sure.handle);
+      check(e !== null && e.name === 'ForgetRefused' && (await store.get(sure.handle)) !== null,
+            `forget: a confirmed key is refused and stays (${e && e.name}) (V4-140)`);
+      e = await refusal('no-such-handle');
+      check(e !== null && e.name === 'ForgetRefused' && (await store.list()).length === 2,
+            `forget: a handle the store does not hold is refused (${e && e.name}) (V4-140)`);
+      // A login in another tab confirms the key while the removal waits for
+      // the identity's lock: the removal sees the confirmed key and leaves it.
+      let release;
+      const held = store.exclusive(unsure.handle, () => new Promise((r) => { release = r; }));
+      const waiting = refusal(unsure.handle);
+      await new Promise((r) => setTimeout(r, 50));
+      try { await store.confirm(unsure.handle); } catch { /* already removed: the check below says so */ }
+      release(); await held;
+      e = await waiting;
+      check(e !== null && e.name === 'ForgetRefused' && (await store.get(unsure.handle)) !== null,
+            `forget: a key confirmed while the removal waited for the lock is left (${e && e.name}) (V4-140)`); }
+    { const store = new MemoryStore();
+      try { await flows.enroll(client, store, want, async () => { throw new Error('HTTP 503'); }); } catch { /* kept */ }
+      const [unsure] = await store.list();
+      let threw = null;
+      try { await flows.forgetUnconfirmed(store, unsure.handle); } catch (e) { threw = e; }
+      check(threw === null && (await store.list()).length === 0,
+            `forget: a key the site never confirmed is removed (${threw && threw.message}) (V4-140)`); } }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

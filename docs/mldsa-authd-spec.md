@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.52, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138 errata)
+# mldsa-authd — deployment specification (v1.53, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1028,6 +1028,12 @@ enrolled the key and the answer been lost; the page says which key that is,
 the login page lists it after the confirmed ones and says it was never
 confirmed, and a login the daemon accepts with it clears the mark.
 
+A marked key can be forgotten from the login page (erratum 95), and only a
+marked one: the page says first that, if the daemon did enroll it, the account
+then needs a recovery code, and removes the record on a second press. The
+check and the removal hold the identity's lock, so a key that a login in
+another tab has just confirmed is left.
+
 **The module's contract** (V4-13b, addition 32). It is built with **Emscripten
 6.0.9** exactly, and its known-answer test must reproduce the native golden
 (`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
@@ -1920,3 +1926,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 94 | 14 | A browser marks a newly stored key unconfirmed until the site answers its enrollment: confirmed on a yes, removed on a refusal, kept and still marked when there is no answer; the login page says which keys were never confirmed, and a login the daemon accepts confirms one | the enrollment page stored the key and then asked the site, and did nothing about the answer. A key the site refused stayed in IndexedDB, and so did one from an attempt the site never answered; the login page offered each beside the real one, by a random handle, with nothing to tell them apart, and the daemon had never seen them (F220) |
+
+### Revision v1.53 (V4-140)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 95 | 14 | The login page can forget a key the site never confirmed, after saying what that would cost and on a second press; a confirmed key is refused, and the check and removal hold the identity's lock | erratum 94 kept the key of an enrollment the site never answered, because the daemon may have enrolled it. When the daemon had not, nothing would ever confirm that key and nothing in the page could remove it: it stayed on the login page until the person cleared the site's data, which removes every other key too |
