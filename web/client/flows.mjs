@@ -25,6 +25,17 @@ export class RecoveryRefused extends Error {
   }
 }
 
+// A recovery that could not be decided (V4-147, F226): at least one key never
+// reached the daemon's verdict -- it would not open, or the daemon could not
+// be asked. That is not the daemon refusing it, and the remedy is to try
+// again (the right passphrase, a reachable site), not a new enrollment.
+export class RecoveryUnresolved extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RecoveryUnresolved';
+  }
+}
+
 export class PinMismatch extends Error {
   constructor(handle) {
     super(`the server key this page offers is not the one ${handle} pinned at enrollment; nothing was sent`);
@@ -98,16 +109,25 @@ async function pinned(store, params) {
   return { ...params, serverId: r.serverId, serverPub: r.serverPub };
 }
 
-// Logs in with a key; resolves to 1 if the daemon accepted it (and closes the
-// session), 0 if not. A login code obtained this way is simply never used --
-// it expires on its own, exactly as the CLI's probes do.
+// Logs in with a key and says what came of it: 'live' if the daemon accepted
+// it (the session is closed), otherwise
+//   'refused'   the daemon had the key and did not accept it: both handshake
+//               frames went and the core read its answer, or its silence;
+//   'unopened'  the key never left: the envelope did not open (a wrong
+//               passphrase, a damaged record);
+//   'unasked'   anything else -- no connection, no answer in time.
+// Only 'refused' is a fact about the key (V4-147, F226). A login code obtained
+// this way is simply never used -- it expires on its own, exactly as the CLI's
+// probes do.
 async function probe(client, params, envelope) {
   try {
     const s = await client.login({ ...params, envelope, timeoutMs: params.probeTimeoutMs ?? 5000 });
     await s.close();
-    return 1;
-  } catch {
-    return 0;
+    return { verdict: 'live' };
+  } catch (e) {
+    const core = e?.name === 'AuthdError';
+    const verdict = core && e.framesSent >= 2 ? 'refused' : core && e.framesSent === 0 ? 'unopened' : 'unasked';
+    return { verdict, why: String(e?.message ?? e) };
   }
 }
 
@@ -133,9 +153,9 @@ async function resolveHeld(client, store, handle, params, events) {
   if (!r.pending) { return r.envelope; }
 
   events('a rotation was interrupted; asking the daemon which key is live');
-  const ekOk = await probe(client, params, r.envelope);
-  const nextOk = ekOk ? 0 : await probe(client, params, r.pending);
-  switch (client.keyPlan(ekOk, 1, nextOk)) {
+  const ek = await probe(client, params, r.envelope);
+  const next = ek.verdict === 'live' ? { verdict: 'untried' } : await probe(client, params, r.pending);
+  switch (client.keyPlan(ek.verdict === 'live', 1, next.verdict === 'live')) {
   case KEY_PLAN.USE_EK:
     events('the current key is live; the pending one was never committed');
     return r.envelope;
@@ -144,9 +164,26 @@ async function resolveHeld(client, store, handle, params, events) {
     events('completed the interrupted rotation');
     return r.pending;
   default:
+    break;
+  }
+  if (ek.verdict === 'refused' && next.verdict === 'refused') {
     events('neither key authenticates; nothing has been changed');
     throw new RecoveryRefused(handle);
   }
+  // Not both refused, so the daemon's answer is not known (F226).
+  const unasked = [ek, next].find((p) => p.verdict === 'unasked');
+  let msg;
+  if (unasked) {
+    msg = `could not ask the daemon which key of ${handle} is live (${unasked.why})`;
+  } else if (ek.verdict === 'unopened' && next.verdict === 'unopened') {
+    msg = `neither key of ${handle} could be opened (${ek.why}), so the daemon was not asked`;
+  } else if (ek.verdict === 'refused') {
+    msg = `the current key of ${handle} does not authenticate and the pending key could not be opened (${next.why})`;
+  } else {
+    msg = `the pending key of ${handle} does not authenticate and the current key could not be opened (${ek.why})`;
+  }
+  events('the interrupted rotation could not be resolved; nothing has been changed');
+  throw new RecoveryUnresolved(`${msg}; nothing has been changed`);
 }
 
 // Logs in. `params` = { url, serverId, serverPub, handle, passphrase, ... } as

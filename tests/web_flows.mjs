@@ -18,6 +18,9 @@
 // (F220), that a new key follows the site's answer to its enrollment:
 // removed when refused, confirmed when enrolled, kept and marked when the
 // site did not answer, and confirmed by the first login that succeeds.
+// And, since V4-147 (F226), that a recovery whose probes never reached the
+// daemon's verdict (a wrong passphrase, an unreachable daemon, a pending key
+// that will not open) is reported as unresolved, not as two refused keys.
 // The IndexedDB store itself (its transactions) is tested in a real browser.
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -124,6 +127,51 @@ try {
     check(refused && isDeepStrictEqual(await orphan.get(params.handle), before),
           'neither key works: refused, and the store is exactly as it was -- nothing deleted, nothing promoted');
     void store; }
+
+  // V4-147 (F226): a probe that never reached the daemon's verdict is not the
+  // daemon refusing the key. Each of these used to end in RecoveryRefused,
+  // "neither the current nor the pending key authenticates", for an identity
+  // whose current key the daemon accepts.
+  const unresolved = async (label, alter, wants) => {
+    const { store, params } = await fresh();
+    const stale = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, stale.envelope);
+    const before = await store.get(params.handle);
+    let err = null;
+    try { const s = await flows.login(client, store, { ...params, ...alter }); await s.close(); }
+    catch (e) { err = e; }
+    check(err !== null && err.name !== 'RecoveryRefused',
+          `recovery, ${label}: not reported as two keys the daemon refused (F226)`);
+    check(err !== null && err.name === 'RecoveryUnresolved' && wants.test(err.message) &&
+          /nothing has been changed/.test(err.message) || (console.log(`  got: ${err?.name}: ${err?.message}`), false),
+          `recovery, ${label}: the error says the daemon was not asked, and why (F226)`);
+    check(isDeepStrictEqual(await store.get(params.handle), before),
+          `recovery, ${label}: the store is exactly as it was (F226)`);
+    // ... and with the obstacle gone the same store logs in.
+    const s = await flows.login(client, store, params);
+    check(s.code.length === 32, `recovery, ${label}: the same identity then logs in (F226)`);
+    await s.close();
+  };
+  await unresolved('wrong passphrase', { passphrase: 'not the passphrase at all, sorry' }, /neither key of .* could be opened .*decryption-failed.*the daemon was not asked/);
+  await unresolved('daemon unreachable', { url: 'ws://127.0.0.1:9/authd/v1' }, /could not ask the daemon/);
+
+  { // The daemon refuses the current key (the rotation committed) and the
+    // pending key will not open: that is not "neither authenticates" either.
+    const { store, params } = await fresh();
+    const next = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, next.envelope);
+    const cur = await store.get(params.handle);
+    const s = await client.login({ ...params, envelope: cur.envelope, keepForRotate: true });
+    await s.rotate(next.envelope, PASS);
+    await s.close();
+    const broken = next.envelope.slice(); broken[broken.length - 1] ^= 1;
+    const damaged = new MemoryStore();
+    await damaged.create({ handle: params.handle, serverId: info.server_id, serverPub, envelope: cur.envelope });
+    await damaged.stagePending(params.handle, broken);
+    let err = null;
+    try { const s2 = await flows.login(client, damaged, params); await s2.close(); } catch (e) { err = e; }
+    check(err !== null && err.name === 'RecoveryUnresolved' && /pending key could not be opened/.test(err.message),
+          'recovery, damaged pending key: the error says which key was refused and which would not open (F226)'); }
 
   // V4-136 (F218): two rotations of one identity at once -- two tabs of the
   // account page. Tab A is held between staging its key and sending ROTATE,

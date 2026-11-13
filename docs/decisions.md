@@ -15272,3 +15272,39 @@ the edit script and re-verified; dry runs now copy the file aside.
 
 Counts: 504 mutations, 74 campaigns, 546 anchors; 225 findings; spec v1.54,
 96 errata (unchanged).
+
+## V4-147: the browser's recovery makes the same distinction (F226)
+
+**The defect.** F225 again, in `web/client/flows.mjs`. `probe()` caught every
+error and returned 0, so with a pending key in the store a wrong passphrase,
+an unreachable site or a pending record that would not open all ended in
+`RecoveryRefused`: "neither the current nor the pending key authenticates".
+The store was untouched. Reproduced first: five new checks in
+`tests/web_flows.mjs` failed against the unfixed client.
+
+**The fix.** `probe()` returns a verdict: `live`; `refused` when the error is
+the core's and both handshake frames had gone (`AuthdError.framesSent >= 2`);
+`unopened` when it is the core's and nothing was sent; `unasked` otherwise.
+The key plan is still decided by the core's `ccw_key_plan` from the two
+`live` bits, so the CLI and the browser keep one rule. Only two refusals
+throw `RecoveryRefused`. The rest throw a new `RecoveryUnresolved` with one
+of four messages, each carrying the reason and "nothing has been changed".
+The pages show `e.message`, so they needed no change.
+
+**Tests.** `tests/web_flows.mjs`: wrong passphrase and unreachable daemon
+(not `RecoveryRefused`, the message, the store byte-identical, the same
+identity then logs in), and a committed rotation whose pending record is
+damaged. Hand mutations, each restored byte-exact: every failure a refusal
+(5 checks fail); `unopened` counted as `unasked` (2); two refusals not
+reported as refused (the older "neither key works" check); `unasked`
+ignored (1); the refused-and-unopened branch dropped (1).
+
+**Not pinned.** The two-frame boundary: a daemon that closes after the first
+frame is `unasked`, and no test has a server that does that.
+
+**Not changed.** A daemon that disappears after it has the key and before it
+answers still reads as a refusal, as in the CLI. No spec text names these
+messages; no erratum.
+
+Counts: 504 mutations, 74 campaigns, 546 anchors (unchanged, no C);
+226 findings; spec v1.54, 96 errata (unchanged).
