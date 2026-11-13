@@ -24,8 +24,8 @@ M = {
  "T1": (TK, [("    crypto_hash_sha256(token_hash, token_out, TOKEN_BYTES);",
               "    memcpy(token_hash, token_out, STORE_HASH_BYTES); /* MUTATION T1: token unhashed */")]),
  # VERIFY never slides the idle window, so a busy session dies on the idle clock
- "T2": (LA, [("        (void)store_verify_token(app->store, token_hash, app->now_unix,\n                                 tokens_idle_ttl_s(info.role), &v, &info);",
-              "        /* MUTATION T2: idle window never refreshed */")]),
+ "T2": (LA, [("        if (store_verify_token(app->store, token_hash, app->now_unix,\n                               tokens_idle_ttl_s(info.role), &v, &info) != STORE_OK) {",
+              "        if (0) { /* MUTATION T2: idle window never refreshed */")]),
  # the absolute lifetime stops being enforced
  "T3": (ST, [("    if (now >= expires) {\n        *verdict = STORE_TOKEN_EXPIRED;\n        return STORE_OK;\n    }",
               "    if (0) {\n        *verdict = STORE_TOKEN_EXPIRED;\n        return STORE_OK;\n    } /* MUTATION T3 */")]),

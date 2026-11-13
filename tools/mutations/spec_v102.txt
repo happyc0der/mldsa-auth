@@ -1,0 +1,5 @@
+SW1|^test_authd_localapi$|wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)
+SW2|^test_authd_localapi$|wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)
+SW3|^test_authd_localapi$|verify: a fresh token verifies
+SW4|^test_authd_localapi$|wfail: a wrong recovery code that could not be counted answers internal (F223)
+SW5|^test_authd_localapi$|wfail: a wrong recovery code that could not be counted answers internal (F223)

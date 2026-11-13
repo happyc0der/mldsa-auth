@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include <sqlite3.h>
+
 #include "authd_harness.h"
 #include "journal_scan.h"
 
@@ -2149,6 +2151,96 @@ static void test_local_close_spares_proto(void)
     h_stop(&d);
 }
 
+/* Run one statement on the store from a second connection, as a writer beside
+ * the daemon would. Used only to plant and remove the triggers below. */
+static int store_exec(const char *db, const char *sql)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", g_dir, db);
+    sqlite3 *h = NULL;
+    int ok = sqlite3_open_v2(path, &h, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK &&
+             sqlite3_busy_timeout(h, 2000) == SQLITE_OK &&
+             sqlite3_exec(h, sql, NULL, NULL, NULL) == SQLITE_OK;
+    (void)sqlite3_close(h);
+    return ok ? 0 : -1;
+}
+
+/* F222, F223 (V4-143): a store write that fails is `internal`, never a verdict.
+ *
+ * VERIFY reads the token twice: once to learn the role, once to slide the idle
+ * window by that role's interval. The status of the second call was dropped,
+ * and a failed call leaves the verdict at "unknown" -- so a valid token was
+ * answered `ERR code=unknown`, which a site must treat as a refusal and end
+ * the session (spec §14). RECOVERY-USE dropped the status of the write that
+ * counts a wrong code, and answered `invalid` for a guess it had not counted.
+ *
+ * The write is failed by a trigger planted from a second connection: it lets
+ * the first, non-sliding update through (the value does not change) and
+ * refuses the one that slides. Each half ends by removing the trigger and
+ * showing the ordinary answer, so `internal` is the trigger's doing. */
+static void test_store_write_failure(void)
+{
+    static const char DB[] = "wfail.sqlite3";
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, DB, 1) == 0, "wfail: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    h_client_t c;
+    uint8_t code[32];
+    CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "wfail: login");
+    CHECK(h_get_login_code(&d, &c, code) == 0, "wfail: login code received");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "wfail: connect to site.sock");
+
+    char hexcode[80], req[8192], resp[16384], vreq[512];
+    hx(hexcode, sizeof hexcode, code, sizeof code);
+    snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK token="),
+          "wfail: a token is issued");
+    char token_hex[80] = {0};
+    { const char *p = strstr(resp, "token=");
+      if (p != NULL) { sscanf(p + 6, "%79[0-9a-f]", token_hex); } }
+    CHECK(strlen(token_hex) == 64u, "wfail: the token is 32 bytes of hex");
+    snprintf(vreq, sizeof vreq, "VERIFY token=%s", token_hex);
+
+    d.app.now_unix += 10;   /* so that sliding the window changes its value */
+    CHECK(store_exec(DB,
+              "CREATE TRIGGER wfail_slide BEFORE UPDATE OF idle_expires_at ON tokens"
+              " WHEN NEW.idle_expires_at <> OLD.idle_expires_at"
+              " BEGIN SELECT RAISE(ABORT, 'wfail'); END;") == 0,
+          "wfail: a trigger that refuses the sliding update is planted");
+    CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
+          "wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)");
+    CHECK(store_exec(DB, "DROP TRIGGER wfail_slide;") == 0, "wfail: the trigger is removed");
+    CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "OK user="),
+          "wfail: the same token verifies once the write can succeed");
+
+    /* RECOVERY-USE: a wrong code that could not be counted */
+    char uh[160];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="),
+          "wfail: recovery codes issued");
+    char wrong[BASE32_CODE_CHARS + 1u];
+    memset(wrong, '0', BASE32_CODE_CHARS); wrong[BASE32_CODE_CHARS] = '\0';
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, wrong);
+    CHECK(store_exec(DB,
+              "CREATE TRIGGER wfail_count BEFORE UPDATE OF recovery_fail_count ON users"
+              " BEGIN SELECT RAISE(ABORT, 'wfail'); END;") == 0,
+          "wfail: a trigger that refuses the failure count is planted");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
+          "wfail: a wrong recovery code that could not be counted answers internal (F223)");
+    CHECK(store_exec(DB, "DROP TRIGGER wfail_count;") == 0, "wfail: the second trigger is removed");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "wfail: the same wrong code is invalid once it can be counted");
+
+    (void)close(fd);
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2189,6 +2281,7 @@ int main(void)
     test_issued_before_outlives();
     test_codes_outlive();
     test_revoke_ends_codes();
+    test_store_write_failure();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

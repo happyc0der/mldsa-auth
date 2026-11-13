@@ -375,7 +375,9 @@ add_test(NAME liboqs_minimal
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/liboqs_minimal.sh $<TARGET_FILE:oqs>)
 
 add_executable(test_authd_localapi test_authd_localapi.c)
-target_link_libraries(test_authd_localapi PRIVATE mldsa_authd)
+# sqlite3 directly too: test_store_write_failure plants triggers from a second
+# connection (V4-143).
+target_link_libraries(test_authd_localapi PRIVATE mldsa_authd sqlite3)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
 target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})

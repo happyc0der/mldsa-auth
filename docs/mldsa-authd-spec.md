@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.53, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata)
+# mldsa-authd — deployment specification (v1.54, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -492,6 +492,13 @@ this version does not define.
 `tools/audit/check_spec_vocabularies.py` checks it against the daemon in both
 directions: a code the implementation can emit and this section does not define
 is a build failure, and so is a code defined here that nothing emits.
+
+Any request can also answer `ERR code=internal`: the daemon could not carry
+the request out, usually because a read or a write of its store failed. It is
+not a verdict on what was presented (erratum 96). A request whose store
+operation failed is answered `internal` and with no other code, so a valid
+token is never called `unknown` and a wrong recovery code that was not counted
+is never called `invalid`; §14 says what a site does with it.
 
 **`site.sock`** — mode 0660, group = the site's group, uid allowlist:
 
@@ -1932,3 +1939,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 95 | 14 | The login page can forget a key the site never confirmed, after saying what that would cost and on a second press; a confirmed key is refused, and the check and removal hold the identity's lock | erratum 94 kept the key of an enrollment the site never answered, because the daemon may have enrolled it. When the daemon had not, nothing would ever confirm that key and nothing in the page could remove it: it stayed on the login page until the person cleared the site's data, which removes every other key too |
+
+### Revision v1.54 (V4-143)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 96 | 8 | Any request can answer `internal`, which is not a verdict; a request whose store operation failed is answered `internal` and no other code | `VERIFY` dropped the status of the write that slides a token's idle window and answered `unknown` for a valid token, on which a site ends the session (F222); `RECOVERY-USE` dropped the status of the write that counts a wrong code and answered `invalid` for a guess the lockout had not seen (F223). The table listed `internal` under `ENROLL` alone |

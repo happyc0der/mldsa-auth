@@ -616,8 +616,14 @@ static ev_action_t h_verify(authd_app_t *app, authd_slot_t *slot, const req_t *r
         return send_err(slot, "internal");
     }
     if (v == STORE_TOKEN_OK) {
-        (void)store_verify_token(app->store, token_hash, app->now_unix,
-                                 tokens_idle_ttl_s(info.role), &v, &info);
+        /* F222: a failed call leaves the verdict at UNKNOWN. Dropping its
+         * status answered `unknown` for a valid token, and a site ends the
+         * session on that; a store failure is `internal`. */
+        if (store_verify_token(app->store, token_hash, app->now_unix,
+                               tokens_idle_ttl_s(info.role), &v, &info) != STORE_OK) {
+            sodium_memzero(token_hash, sizeof token_hash);
+            return send_err(slot, "internal");
+        }
     }
     sodium_memzero(token_hash, sizeof token_hash);
 
@@ -1205,9 +1211,13 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     if (m == 0) {
         int now_locked = 0;
         int64_t until = 0;
-        (void)store_recovery_note_failure(app->store, user, user_len, app->now_unix,
-                                          app->recovery_lock_threshold, app->recovery_lock_seconds,
-                                          &now_locked, &until);
+        /* F223: a wrong code that was not counted is not answered `invalid`,
+         * or the lockout would not see the guess. */
+        if (store_recovery_note_failure(app->store, user, user_len, app->now_unix,
+                                        app->recovery_lock_threshold, app->recovery_lock_seconds,
+                                        &now_locked, &until) != STORE_OK) {
+            return send_err(slot, "internal");
+        }
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index,
                               now_locked ? "invalid (now locked)" : "invalid");

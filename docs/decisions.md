@@ -15113,3 +15113,51 @@ the runner answered `Unable to locate package ccache`. That job was rerun
 alone and passed; the other 85 are from the first attempt.
 
 Nothing else changed.
+
+## V4-143: a store failure is `internal`, never a verdict (F222, F223)
+
+Three reviewer agents read the daemon's local API, its network path, and the
+deployment files with the client CLI. The local-API review reported three
+places where `localapi.c` dropped a store call's status. Two were reproduced
+and are fixed here; the third is recorded below as open.
+
+`VERIFY` calls `store_verify_token` twice, the second time to slide the idle
+window by the role's interval, and ignored the second status. A failed call
+leaves the verdict at "unknown", so the daemon answered `ERR code=unknown`
+for a valid token, and a site ends the session on that (erratum 91).
+`RECOVERY-USE` ignored the status of the write that counts a wrong code and
+answered `invalid` for a guess the lockout had not seen.
+
+**Decision.** Both check the status and answer `internal`. The spec's §8 now
+says what was only implied by §14: any request can answer `internal`, it is
+not a verdict, and a failed store operation is answered with nothing else
+(v1.54, erratum 96).
+
+**How the write is failed.** `test_authd_localapi` links the shipped library,
+which carries no fault hook, and the hook must stay out of it
+(`check_store_fault_hook.sh`). The test plants a trigger from a second
+connection instead. For `VERIFY` the trigger refuses an update that changes
+`idle_expires_at`: the first call writes the same value and passes, the
+sliding call is refused, which is the one ordering that reaches the defect.
+Each half then drops its trigger and shows the ordinary answer, so `internal`
+is the trigger's doing and the token was not harmed.
+
+**Not chosen.** Merging the two calls into one, with the store choosing the
+interval by role, would halve the writes of every `VERIFY` and remove the
+window. It changes the store's interface and the token tests built on it;
+it is a performance change and belongs in its own step.
+
+**Evidence.** Before the fix, exactly two checks failed, the two new ones.
+After: 58/58 in the ASan, release and UBSan trees; gcc-16 compiles
+`localapi.c` and the test at -O0 and -O2 with no warning. Campaign v102,
+SW1-SW5, 5 killed. v49a's T2 anchored on the old `(void)` call and was
+repointed at the new condition; v49a was rerun.
+
+**Not closed.** `EXCHANGE` looks up the user's role with a read whose status
+it drops, and falls back to a user's token lifetimes. A trigger cannot fail a
+read, and the fault hook is not in this test's library, so there is no
+failing test and the code is unchanged. It needs a local-API test built
+against a hooked store.
+
+Counts: 493 mutations, 72 campaigns, 533 anchors; 223 findings; spec v1.54,
+96 errata.
