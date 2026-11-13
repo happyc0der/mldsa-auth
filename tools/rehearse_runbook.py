@@ -80,8 +80,10 @@ SUBST = {
           "journalctl -u mldsa-authd | grep -F \"$(grep -o 'idh=[0-9a-f]*' /tmp/idh.out)\" | tail -n 3",
           "the pseudonym the first command printed, not the example's")],
     12: [("BACKUP=/var/lib/mldsa-authd/backups/YYYY-MM-DD.sqlite3    # the one to restore",
-          "BACKUP=/var/lib/mldsa-authd/backups/$(date +%F).sqlite3",
-          "the placeholder, filled with the backup this step just took")],
+          "BACKUP=$(sudo sh -c 'ls /var/lib/mldsa-authd/backups/*.sqlite3' | tail -n 1)",
+          "the placeholder, filled with the backup this step just took: the "
+          "newest file there, not today's date, which is another day's when "
+          "the rehearsal crosses midnight (F221)")],
     13: [("emcmake cmake", ". \"$EMSDK_ENV\" && emcmake cmake",
           "emsdk's environment, which an operator's shell would already have")],
     14: [("sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \\",

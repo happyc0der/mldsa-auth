@@ -15074,3 +15074,32 @@ key elsewhere.
 `tests/browser_e2e.mjs` (headless Chromium, real IndexedDB). Eight hand
 mutations, each killed by one of them. No C changed: 488 mutations, 71
 campaigns, 528 anchors, 220 findings as before. Spec v1.53, erratum 95.
+
+## V4-141: the rehearsal restores the backup it took, not today's (F221)
+
+V4-140's branch CI failed in one job, the ubuntu-26.04 runbook rehearsal, on
+a change that touched no C and no runbook. The log shows why: the backup
+directory was written at 23:59 UTC on 12 November, and the restore ran at
+00:01 on the 13th. The runbook's restore block names its file with a
+placeholder, `YYYY-MM-DD`, for the operator to fill. The harness filled it
+with `$(date +%F)`, the same expression step 12 used to name the backup, and
+by then it meant another day. `install` could not stat the file, the store
+was not restored, and steps 19 to 21 failed behind it.
+
+**Decision.** The harness fills the placeholder with the newest file in the
+backup directory. On the rehearsal's fresh machine that is the backup it just
+took. The directory is the daemon's and mode 0700, so the listing runs under
+`sudo sh -c`.
+
+**Not chosen.** Capturing the name when step 12 runs would also work, but
+step 12's command is the runbook's own text and the harness would have to
+rewrite it to save the name; the restore block is already a substitution.
+Pinning the clock in the runner was not considered: the rehearsal's point is
+an unaltered machine.
+
+**Evidence.** Against a directory holding only yesterday's backup, the old
+expression finds nothing and the new one finds the file. A red CI run for
+this cannot be produced on demand, and the audit row says so.
+
+No C changed: 488 mutations, 71 campaigns, 528 anchors. 221 findings.
+Spec v1.53, 95 errata, unchanged.
