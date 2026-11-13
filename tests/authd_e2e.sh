@@ -1057,6 +1057,39 @@ grep -q "was never committed" "$TMP/rec1.err" || fail "recovery USE_EK: did not 
 [ -e "$NEXT" ] || fail "recovery USE_EK: login DELETED .ek.next -- login must not delete files"
 [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery USE_EK: login changed .ek"
 echo "PASS: E2E: recovery USE_EK -- a stale .ek.next is reported and left alone; .ek logs in"
+
+# 1b, 1c (F225). The same state -- .ek live, a stale .ek.next -- and a login
+#    that fails for a reason that has nothing to do with either key: the
+#    wrong passphrase, then a daemon that is not there. Both were reported
+#    as "neither authenticates ... an administrator must re-enrol this
+#    device", which sends a user with a typo, or an operator with a stopped
+#    daemon, to throw a working identity away.
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TMP/wpass"; chmod 600 "$TMP/wpass"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/wpass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1b.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "recovery, wrong passphrase: login succeeded"
+[ -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery, wrong passphrase: a key file was touched"
+if grep -q "re-enrol" "$TMP/rec1b.err"; then
+    cat "$TMP/rec1b.err"; fail "recovery, wrong passphrase: the client told the user to re-enrol the device (F225)"
+fi
+[ "$(grep -c "decryption-failed" "$TMP/rec1b.err")" -eq 2 ] \
+    || { cat "$TMP/rec1b.err"; fail "recovery, wrong passphrase: the client did not say that each key file failed to decrypt (F225)"; }
+grep -q "NOTHING has been deleted" "$TMP/rec1b.err" || fail "recovery, wrong passphrase: did not say that nothing was deleted"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/no-daemon.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1c.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "recovery, no daemon: login succeeded"
+[ -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery, no daemon: a key file was touched"
+if grep -q "re-enrol" "$TMP/rec1c.err"; then
+    cat "$TMP/rec1c.err"; fail "recovery, no daemon: the client told the user to re-enrol the device (F225)"
+fi
+grep -q "cannot ask the daemon which key is live: cannot connect" "$TMP/rec1c.err" \
+    || { cat "$TMP/rec1c.err"; fail "recovery, no daemon: the client did not say it could not connect (F225)"; }
+grep -q "NOTHING has been deleted" "$TMP/rec1c.err" || fail "recovery, no daemon: did not say that nothing was deleted"
+echo "PASS: E2E: recovery with a stale .ek.next -- a wrong passphrase and an unreachable daemon are each named, and neither is called a dead identity (F225)"
 rm -f "$NEXT"
 
 # 2. REFUSE: neither file authenticates. Deleting either would be guessing
@@ -1075,7 +1108,23 @@ rc=0
     || fail "recovery REFUSE: a key file was modified when neither authenticated"
 [ "$rc" -ne 0 ] || fail "recovery REFUSE: login succeeded although neither key is live"
 grep -q "NOTHING has been deleted" "$TMP/rec2.err" || fail "recovery REFUSE: did not say that nothing was deleted"
+# F225: THIS is the case the re-enrol advice belongs to -- the daemon was
+# asked about both keys and refused both.
+grep -q "neither .* authenticates.*an administrator must re-enrol this device" "$TMP/rec2.err" \
+    || { cat "$TMP/rec2.err"; fail "recovery REFUSE: two keys the daemon refused were not reported as a device to re-enrol (F225)"; }
 echo "PASS: E2E: recovery REFUSE -- neither key live, both files untouched"
+# 2b (F225). .ek is refused by the daemon and .ek.next is not a key file at
+#    all: the report must say which is which.
+head -c 64 /dev/urandom > "$NEXT"; chmod 600 "$NEXT"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec2b.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "recovery, unreadable .ek.next: login succeeded"
+grep -q "\.ek does not authenticate and .*\.ek\.next could not be opened" "$TMP/rec2b.err" \
+    || { cat "$TMP/rec2b.err"; fail "recovery, unreadable .ek.next: the client did not say which file was refused and which would not open (F225)"; }
+[ "$(hash_of "$EK")" = "$OLD_HASH" ] || fail "recovery, unreadable .ek.next: .ek was modified"
+echo "PASS: E2E: recovery with an unreadable .ek.next -- the refused key and the unopenable file are told apart (F225)"
 
 # 3. PROMOTE_NEXT: the server committed and the rename was interrupted --
 #    .ek is stale, .ek.next is live. Login must finish the rename.

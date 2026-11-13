@@ -1,0 +1,6 @@
+RK1|^authd_e2e$|recovery REFUSE: two keys the daemon refused were not reported as a device to re-enrol (F225)
+RK2|^authd_e2e$|recovery, no daemon: the client told the user to re-enrol the device (F225)
+RK3|^authd_e2e$|recovery, wrong passphrase: the client told the user to re-enrol the device (F225)
+RK4|^authd_e2e$|recovery, no daemon: the client told the user to re-enrol the device (F225)
+RK5|^authd_e2e$|recovery, wrong passphrase: the client did not say that each key file failed to decrypt (F225)
+RK6|^authd_e2e$|recovery, unreadable .ek.next: the client did not say which file was refused and which would not open (F225)

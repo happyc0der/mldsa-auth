@@ -214,6 +214,22 @@ static int cs_recv_for_core(client_session_t *cs, uint8_t *buf, size_t *msg_len)
     return 0;
 }
 
+/* Why the last client_open_session_ex failed, for a caller that asked it to
+ * be quiet (F225). `g_open_judged` is set only when the failure came AFTER
+ * ClientAuth was sent: that is the one point at which the daemon has seen
+ * the key and can have refused it. Everything earlier -- no connection, no
+ * upgrade, a ServerHello that did not arrive or did not verify -- says
+ * nothing about whether the key is live, and `g_open_why` says what it was. */
+static int g_open_judged;
+static char g_open_why[96];
+
+static void open_failed_before_key(const char *what, const char *detail)
+{
+    g_open_judged = 0;
+    (void)snprintf(g_open_why, sizeof g_open_why, "%s%s%s", what,
+                   (detail != NULL) ? ": " : "", (detail != NULL) ? detail : "");
+}
+
 /* Handshake, then receive the LOGIN_CODE the daemon sends as its first record.
  * Returns EX_OK with `cs` live, or an exit status with everything wiped.
  *
@@ -237,8 +253,11 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
     cs->cc = &g_cc;
     cc_init(cs->cc, NULL, NULL);
     cs->deadline = net_deadline_in(LOGIN_TIMEOUT_MS);
+    g_open_judged = 0;
+    g_open_why[0] = '\0';
 
     if (cc_pin_server(cs->cc, sid, sid_len, server_pk) != CC_OK) {
+        open_failed_before_key("the server's public key was not accepted", NULL);
         cc_wipe(cs->cc);
         return EX_FAIL;
     }
@@ -249,6 +268,7 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
         if (!quiet) {
             fprintf(stderr, "%s %s: cannot connect: %s\n", prog, sub, net_status_name(ns));
         }
+        open_failed_before_key("cannot connect", net_status_name(ns));
         cc_wipe(cs->cc);
         return EX_FAIL;
     }
@@ -264,6 +284,7 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
         if (!quiet) {
             fprintf(stderr, "%s %s: could not send the PROXY v2 preamble\n", prog, sub);
         }
+        open_failed_before_key("could not send the PROXY v2 preamble", NULL);
         net_close(&cs->conn);
         cc_wipe(cs->cc);
         return EX_FAIL;
@@ -272,6 +293,7 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
         if (!quiet) {
             fprintf(stderr, "%s %s: WebSocket upgrade failed\n", prog, sub);
         }
+        open_failed_before_key("WebSocket upgrade failed", NULL);
         net_close(&cs->conn);
         cc_wipe(cs->cc);
         return EX_FAIL;
@@ -282,11 +304,13 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
     size_t n = 0, m = 0;
     const char *io_stage = "client-hello";   /* where a transport failure is reported */
 
+    open_failed_before_key("failed at", io_stage);
     if (cc_login_begin(cs->cc, hid, hid_len, kp, flags, tx, sizeof tx, &n) != CC_OK) {
         goto fail_core;
     }
     if (cs_send(cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) { goto fail_io; }
     io_stage = "server-hello";
+    open_failed_before_key("failed at", io_stage);
     if (cs_recv_for_core(cs, rx, &m) != 0) { goto fail_io; }
     /* Spec 4: the core refuses a ServerHello not signed by the pinned key, and
      * then there is no ClientAuth to send -- this device authenticates to
@@ -295,8 +319,10 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
         goto fail_core;
     }
     io_stage = "client-auth";
+    open_failed_before_key("failed at", io_stage);
     if (cs_send(cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) { goto fail_io; }
     io_stage = "login-code";
+    g_open_judged = 1;   /* the daemon has the key now; a failure is its answer */
     if (cs_recv_for_core(cs, rx, &m) != 0) { goto fail_io; }
     if (cc_login_on_record(cs->cc, rx, m, &cs->code) != CC_OK) {
         goto fail_core;
@@ -592,19 +618,36 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     memset(&next_kp, 0, sizeof next_kp);
     client_session_t probe;
 
-    if (keyfile_open(a->key_path, a->hid, a->hid_len, pass, pass_len, &ek_kp, NULL) == KEYFILE_OK) {
+    /* F225: WHY each file did not authenticate is kept. "The daemon refused
+     * this key" is the only reason that makes an identity dead; a file that
+     * would not open, or a daemon that was never asked, is something else. */
+    keyfile_status_t ks_ek = KEYFILE_OK, ks_next = KEYFILE_OK;
+    int unasked = 0;             /* a probe failed before the daemon saw the key */
+    char unasked_why[sizeof g_open_why];
+    unasked_why[0] = '\0';
+
+    ks_ek = keyfile_open(a->key_path, a->hid, a->hid_len, pass, pass_len, &ek_kp, NULL);
+    if (ks_ek == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &ek_kp, a->hid, a->hid_len, a->sid, a->sid_len,
                                 server_pk, a->unix_path, a->port, a->state, a->proxy_v2, a->ws, &probe) == EX_OK) {
             ek_ok = 1;
             client_say_bye(&probe);
+        } else if (!g_open_judged) {
+            unasked = 1;
+            memcpy(unasked_why, g_open_why, sizeof unasked_why);
         }
     }
-    if (!ek_ok &&
-        keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL) == KEYFILE_OK) {
+    if (!ek_ok) {
+        ks_next = keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL);
+    }
+    if (!ek_ok && ks_next == KEYFILE_OK) {
         if (client_open_session(prog, sub, 1, &next_kp, a->hid, a->hid_len, a->sid, a->sid_len,
                                 server_pk, a->unix_path, a->port, a->state, a->proxy_v2, a->ws, &probe) == EX_OK) {
             next_ok = 1;
             client_say_bye(&probe);
+        } else if (!g_open_judged) {
+            unasked = 1;
+            memcpy(unasked_why, g_open_why, sizeof unasked_why);
         }
     }
 
@@ -636,10 +679,32 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     case KEY_PLAN_REFUSE:
     default:
         /* Neither worked. Deleting either one now would be guessing with the
-         * only copies of the identity, so nothing is touched. */
-        fprintf(stderr, "%s %s: neither %s nor %s authenticates. NOTHING has been deleted; "
-                        "an administrator must re-enrol this device.\n",
-                prog, sub, a->key_path, next_path);
+         * only copies of the identity, so nothing is touched -- and the
+         * report says which of three different things happened (F225). */
+        if (ks_ek != KEYFILE_OK) {
+            fprintf(stderr, "%s %s: %s: %s\n", prog, sub, a->key_path, keyfile_status_name(ks_ek));
+        }
+        if (ks_next != KEYFILE_OK) {
+            fprintf(stderr, "%s %s: %s: %s\n", prog, sub, next_path, keyfile_status_name(ks_next));
+        }
+        if (ks_ek != KEYFILE_OK && ks_next != KEYFILE_OK) {
+            fprintf(stderr, "%s %s: neither key file could be opened, so the daemon was not asked. "
+                            "NOTHING has been deleted.\n", prog, sub);
+        } else if (unasked) {
+            fprintf(stderr, "%s %s: cannot ask the daemon which key is live: %s. "
+                            "NOTHING has been deleted; run this again when the daemon answers.\n",
+                    prog, sub, unasked_why);
+        } else if (ks_ek != KEYFILE_OK || ks_next != KEYFILE_OK) {
+            fprintf(stderr, "%s %s: %s does not authenticate and %s could not be opened. "
+                            "NOTHING has been deleted; if that file cannot be recovered, "
+                            "an administrator must re-enrol this device.\n",
+                    prog, sub, (ks_ek == KEYFILE_OK) ? a->key_path : next_path,
+                    (ks_ek == KEYFILE_OK) ? next_path : a->key_path);
+        } else {
+            fprintf(stderr, "%s %s: neither %s nor %s authenticates. NOTHING has been deleted; "
+                            "an administrator must re-enrol this device.\n",
+                    prog, sub, a->key_path, next_path);
+        }
         break;
     }
     mldsa_keypair_free(&ek_kp);

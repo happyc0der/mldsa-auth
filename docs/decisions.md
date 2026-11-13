@@ -15228,3 +15228,47 @@ daemon.
 
 Counts: 498 mutations, 73 campaigns, 540 anchors; 224 findings; spec v1.54,
 96 errata (unchanged).
+
+## V4-146: a recovery that could not ask is not a refusal (F225)
+
+**The defect.** After an interrupted rotation `authd_client` holds `.ek` and
+`.ek.next` and finds the live one by trying a login with each (spec §10.2).
+`client_resolve_key` counted every failed try as "the daemon refused this
+key". A wrong passphrase, a daemon that was down, or a damaged `.ek.next`
+all ended in "an administrator must re-enrol this device". Nothing was
+deleted, so no key was lost; the instruction was wrong, and following it
+discards a working enrolment. Reproduced first: the new `authd_e2e` leg with
+a wrong passphrase failed against the unfixed client.
+
+**The fix.** `client_open_session_ex` records whether the try reached the
+point where the daemon holds the client's key (`g_open_judged`, set when the
+client-auth message has gone and the login code is awaited) and, when it did
+not, why. `client_resolve_key` keeps each file's open status and each try's
+verdict, and the refusal says which of four things happened:
+
+- neither file could be opened: the daemon was not asked;
+- the daemon could not be asked, with the reason: run it again;
+- one key is refused and the other file will not open;
+- both keys were refused: re-enrol, the old text.
+
+Each prints the per-file status first and keeps "NOTHING has been deleted".
+The message text is not in the spec (§10.2 states the rule, not the words),
+so no erratum.
+
+**Tests.** `authd_e2e` rotation-recovery legs 1b (wrong passphrase), 1c (no
+daemon), an added assertion on leg 2 (both refused still says re-enrol) and
+2b (random bytes in `.ek.next`). Campaign v104, RK1-RK6, six of six killed
+by name, registered in the nightly.
+
+**Not changed.** A lockout or rate-limit answer arrives after the key is
+sent and the responder answers uniformly, so it still reads as "refused".
+That is the protocol hiding the reason on purpose. The browser client's
+`resolveHeld` (`web/client/flows.mjs`) throws `RecoveryRefused` whatever
+made its probe fail; read, not reproduced, next bug step.
+
+**A mistake in this step.** A dry run of the mutants restored the file with
+`git checkout` while the fix was uncommitted and wiped it. Re-applied from
+the edit script and re-verified; dry runs now copy the file aside.
+
+Counts: 504 mutations, 74 campaigns, 546 anchors; 225 findings; spec v1.54,
+96 errata (unchanged).
