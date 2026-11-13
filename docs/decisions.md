@@ -15103,3 +15103,13 @@ this cannot be produced on demand, and the audit row says so.
 
 No C changed: 488 mutations, 71 campaigns, 528 anchors. 221 findings.
 Spec v1.53, 95 errata, unchanged.
+
+## V4-142: cleanup
+
+`docs/review/REPRODUCE.md` cites the runs on `86694d5` (V4-141, main): CI
+43349870492, 16/16, and nightly 43340022882, 86/86. The nightly's first
+attempt lost one job, `mutations · v94`, before it built anything: apt on
+the runner answered `Unable to locate package ccache`. That job was rerun
+alone and passed; the other 85 are from the first attempt.
+
+Nothing else changed.
