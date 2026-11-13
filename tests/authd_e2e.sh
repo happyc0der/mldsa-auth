@@ -497,7 +497,13 @@ if (ulimit -S -n 64) 2>/dev/null; then
     # It must instead hold back enough descriptors for its own sockets: with
     # 64, that is 64 - 8 local - 32 = 24 connections, refused beyond that by
     # the slot table, and the admin socket answers throughout.
-    (ulimit -S -n 64; ulimit -H -n 64; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-fc.log" 2>&1 &
+    # The handshake deadline is set well past the admin client's 10 s wait:
+    # at the default the two are equal, so a daemon that HAD run out of
+    # descriptors got some back just as the client gave up, and whether the
+    # admin socket "answered" was a race (seen on Linux once F224 made the
+    # deadline punctual).
+    { cat "$TMP/su.conf"; echo "handshake_timeout_ms = 60000"; } > "$TMP/su-fc.conf"
+    (ulimit -S -n 64; ulimit -H -n 64; exec "$DAEMON" --config "$TMP/su-fc.conf") > "$TMP/su-fc.log" 2>&1 &
     SUPID=$!
     i=0
     while ! grep -q 'event=started' "$TMP/su-fc.log" 2>/dev/null; do
@@ -1411,6 +1417,53 @@ n = c.execute("SELECT COUNT(*) FROM audit WHERE handle = ?", (sys.argv[2].encode
 sys.exit(0 if n >= 1 else 1)
 PYEOF
 echo "PASS: E2E: the audit chain still records carol's real handle and verifies"
+
+# ------------------------------- a login that arrives while the daemon sleeps
+#
+# F224. The daemon read the clock, then slept in poll() for up to a second,
+# and a connection accepted when poll() returned had its handshake deadline
+# counted from before the sleep. At the default 10 s that only shortens the
+# handshake by up to a second. Below a second it refuses logins by arrival
+# time alone: every login that arrived later into the sleep than the timeout
+# was closed before its first frame was answered.
+#
+# The sleep restarts whenever the daemon has something to do, so each login
+# follows an admin request by a different delay: seven delays 150 ms apart
+# cover a whole one-second sleep whatever the client's own start-up takes, and
+# at least two of them land in the 400 ms in which the old daemon refused.
+sed '/^listen_port/d' "$TMP/authd.conf" > "$TMP/hs.conf"
+printf 'handshake_timeout_ms = 600\n' >> "$TMP/hs.conf"
+"$ADMIN" --check-config --config "$TMP/hs.conf" > /dev/null || fail "the short-handshake config is invalid"
+"$DAEMON" --config "$TMP/hs.conf" > "$TMP/hs.log" 2>&1 &
+DPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/hs.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$DPID" 2>/dev/null || fail "the short-handshake daemon exited during start-up"
+    [ "$i" -gt 400 ] && fail "the short-handshake daemon never logged event=started"
+    sleep 0.05
+done
+for gap in 0 0.15 0.3 0.45 0.6 0.75 0.9; do
+    "$ADMIN" list-users --socket "$TMP/a.sock" > /dev/null || fail "the short-handshake daemon's admin socket does not answer"
+    sleep "$gap"
+    "$CLIENT" login --handle "$CAROL" --key "$TMP/carol/$CAROL.ek" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err" \
+        || { cat "$TMP/hs.log"; fail "a login ${gap}s into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)"; }
+done
+grep -q 'event=closed-deadline' "$TMP/hs.log" \
+    && { cat "$TMP/hs.log"; fail "the short-handshake daemon closed a connection on a deadline (F224)"; }
+[ "$(grep -c 'event=login-code-issued' "$TMP/hs.log")" -eq 7 ] \
+    || { cat "$TMP/hs.log"; fail "the short-handshake daemon did not issue seven login codes"; }
+echo "PASS: E2E: seven logins spread across the daemon's one-second sleep all succeed at handshake_timeout_ms = 600 (F224)"
+kill -TERM "$DPID"
+i=0
+while kill -0 "$DPID" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -gt 200 ] && fail "the short-handshake daemon did not exit on SIGTERM"
+    sleep 0.05
+done
+wait "$DPID" 2>/dev/null || true
+DPID=""
 
 # -------------------------------------- peer credentials at accept (V4-15a)
 #

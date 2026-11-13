@@ -63,6 +63,16 @@ int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr)
     return 0;
 }
 
+int evloop_set_clock(evloop_t *ev, evloop_clock_fn clock, void *ctx)
+{
+    if (ev == NULL || clock == NULL) {
+        return -1;
+    }
+    ev->clock = clock;
+    ev->clock_ctx = ctx;
+    return 0;
+}
+
 int evloop_set_slot_cap(evloop_t *ev, size_t cap)
 {
     if (ev == NULL || cap == 0u || cap > ev->n_slots) {
@@ -552,6 +562,11 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
         if (rc < 0) {
             return -1;
         }
+    }
+    /* F224: poll() may have slept for the whole timeout, and `now_ms` was
+     * read before it. Everything below happens NOW. */
+    if (ev->clock != NULL) {
+        now_ms = ev->clock(ev->clock_ctx);
     }
 
     int activity = 0;

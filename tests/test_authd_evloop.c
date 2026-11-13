@@ -1255,6 +1255,84 @@ static void test_slot_cap(void)
     (void)close(lfd);
 }
 
+/* ------------------------------------------- the clock after poll() (F224) */
+
+typedef struct {
+    uint64_t now;
+    int asked;
+} f224_clock_t;
+
+static uint64_t f224_clock(void *ctx)
+{
+    f224_clock_t *c = ctx;
+    c->asked++;
+    return c->now;
+}
+
+/* evloop_run_once() takes the time as it was BEFORE poll(), and poll() can
+ * then sleep for its whole timeout. The daemon's is a second, so a connection
+ * accepted late in one had up to a second less than handshake_timeout_ms, and
+ * with a timeout under a second its deadline had passed before it was
+ * accepted: the shipped daemon at handshake_timeout_ms = 500 refused three
+ * logins of five by their arrival time alone. */
+static void test_clock_after_poll(void)
+{
+    enum { NSLOTS = 2 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    f224_clock_t ck = { 0u, 0 };
+    int lfd = -1;
+    uint16_t port = 0;
+
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK, "clock: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 300u, 20000u, on_frame, on_close, &h) == 0, "clock: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "clock: listener registered");
+    CHECK(evloop_set_clock(NULL, f224_clock, &ck) != 0 && evloop_set_clock(&ev, NULL, &ck) != 0,
+          "clock: no loop or no clock is refused");
+
+    /* Canary: with no clock registered the argument stands, as every other
+     * test in this file relies on. */
+    const int a = dial(port);
+    CHECK(a >= 0, "clock: a client connects");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+    CHECK(slots[0].opened_ms == 1000u && slots[0].deadline_ms == 1000u + 300u,
+          "clock: with no clock registered a deadline counts from the argument (the canary)");
+    (void)close(a);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 0u);
+
+    /* The iteration began at 1000 and poll() returned at 1700. */
+    CHECK(evloop_set_clock(&ev, f224_clock, &ck) == 0, "clock: registered");
+    ck.now = 1700u;
+    const int b = dial(port);
+    CHECK(b >= 0, "clock: a second client connects");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+    CHECK(ck.asked >= 1, "clock: the loop asked the clock (F224)");
+    CHECK(slots[0].opened_ms == 1700u,
+          "clock: a connection is opened at the time poll() returned, not the time it began (F224)");
+    CHECK(slots[0].deadline_ms == 1700u + 300u,
+          "clock: its handshake deadline counts from the time poll() returned (F224)");
+    /* What the stale deadline cost: at 1700 a deadline of 1000 + 300 has
+     * passed, so the next turn closed a connection that was 0 ms old. */
+    pump_n(&ev, 1000, 3);
+    CHECK(evloop_active(&ev) == 1u && ev.closed_deadline == 0u,
+          "clock: a connection accepted late in a poll is not closed by a deadline it never had (F224)");
+    /* The sweep uses the same answer, in both directions. */
+    ck.now = 1999u;
+    pump_n(&ev, 5000, 3);
+    CHECK(evloop_active(&ev) == 1u && ev.closed_deadline == 0u,
+          "clock: one millisecond before its deadline the connection stands, whatever the argument said (F224)");
+    ck.now = 2000u;
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 0u);
+    CHECK(ev.closed_deadline == 1u,
+          "clock: at its deadline by the clock the connection is closed, whatever the argument said (F224)");
+
+    (void)close(b);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 /* ------------------------------------------------------- descriptors (F205) */
 
 static void test_fdlimit(void)
@@ -1477,6 +1555,7 @@ int main(void)
     test_fdlimit();
     test_slot_cap();
     test_accept_failure();
+    test_clock_after_poll();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);
     return g_fail ? 1 : 0;

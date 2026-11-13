@@ -27,6 +27,13 @@
  * is what makes deadline behaviour testable exactly -- a test can prove a
  * connection is still alive one millisecond before its deadline and gone one
  * millisecond after, which a wall-clock test could only do flakily.
+ *
+ * One iteration can outlast its argument, though: `now_ms` is read before
+ * poll(), and poll() may then sleep for the whole of `poll_timeout_ms`. A
+ * caller whose timeout is not zero registers a clock with evloop_set_clock(),
+ * and the loop asks it once, when poll() returns (F224). The loop still makes
+ * no time syscall of its own, and a test that registers none keeps the clock
+ * it passed.
  */
 
 typedef enum {
@@ -91,6 +98,12 @@ typedef ev_action_t (*evloop_on_line_fn)(void *user, authd_slot_t *slot,
  * spent token means refusal is policy, and policy lives with the log line that
  * explains it. */
 typedef ev_action_t (*evloop_on_addr_fn)(void *user, authd_slot_t *slot);
+
+/* Called once per iteration, when poll() has returned: the time NOW, on the
+ * same clock as evloop_run_once()'s `now_ms`. Everything the iteration then
+ * does -- a deadline set at accept, a frame served, the deadline sweep -- uses
+ * the answer. */
+typedef uint64_t (*evloop_clock_fn)(void *ctx);
 
 /* Called when a slot is released, so V4-8b can wipe its handshake state. */
 typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
@@ -158,6 +171,9 @@ typedef struct {
     evloop_on_close_fn on_close;
     void *user;
 
+    evloop_clock_fn clock;           /* NULL: `now_ms` stands for the whole iteration */
+    void *clock_ctx;
+
     /* counters, for tests and for the operator */
     uint64_t accepted;
     uint64_t refused_no_slot;
@@ -198,6 +214,13 @@ int evloop_add_ws_listener(evloop_t *ev, int fd, const uid_t *allow, size_t n_al
 /* Attaches the address callback. Optional; without it a PROXY-v2 listener
  * still parses the preamble and simply admits everything. */
 int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr);
+
+/* Registers the clock the loop asks after poll() returns (F224). Without one
+ * a connection accepted late in a long poll() had its deadline counted from
+ * before the poll began: up to a whole poll timeout was missing from its
+ * handshake time, and a handshake timeout shorter than the poll timeout
+ * refused logins by their arrival time alone. */
+int evloop_set_clock(evloop_t *ev, evloop_clock_fn clock, void *ctx);
 
 /* Registers a LINE-oriented local-API listener: its connections come from the
  * local pool, are dispatched to on_line, and are accepted only from a uid in

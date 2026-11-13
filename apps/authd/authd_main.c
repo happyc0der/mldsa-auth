@@ -68,6 +68,20 @@ static uint64_t now_ms(void)
     return 0u;
 }
 
+/* The loop's clock (F224). The main loop reads the time before each
+ * iteration, and the iteration then sleeps in poll() for up to a second; the
+ * loop asks this when poll() returns. It refreshes the app's two clocks as
+ * well as answering, so the loop and the connection layer still see ONE
+ * instant: a login code issued in this iteration expires from now, not from
+ * before the sleep. */
+static uint64_t loop_clock(void *ctx)
+{
+    authd_app_t *app = ctx;
+    app->now_ms = now_ms();
+    app->now_unix = (int64_t)time(NULL);
+    return app->now_ms;
+}
+
 _Static_assert(AUTHD_LOG_PSEUDONYM_BYTES == STORE_PSEUDONYM_BYTES,
                "the log prints exactly the pseudonym the store computes");
 
@@ -330,6 +344,12 @@ int main(int argc, char **argv)
         store_close(store); mldsa_keypair_free(&server_kp);
         free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: address callback init failed\n");
+        return 1;
+    }
+    if (evloop_set_clock(&ev, loop_clock, &app) != 0) {
+        store_close(store); mldsa_keypair_free(&server_kp);
+        free(slots); free(conns); free(local_slots);
+        fprintf(stderr, "mldsa-authd: clock init failed\n");
         return 1;
     }
     if (evloop_set_local(&ev, local_slots, (size_t)cfg.max_local_slots, localapi_on_line) != 0) {

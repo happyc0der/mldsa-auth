@@ -15161,3 +15161,70 @@ against a hooked store.
 
 Counts: 493 mutations, 72 campaigns, 533 anchors; 223 findings; spec v1.54,
 96 errata.
+
+## V4-144: the loop asks the time when it wakes (F224)
+
+The network review of V4-143 reported that `accept_ready()` stamps a new
+connection with the time read before `poll()`. `authd_main.c` reads the clock,
+calls `evloop_run_once()` with a one-second timeout, and the loop used that one
+reading for everything it did after `poll()` returned: the accept, the frames
+it served and the deadline sweep.
+
+**Reproduced first.** The shipped daemon at `handshake_timeout_ms = 500`, five
+logins, each following an admin request (which restarts the wait) by 0, 0.2,
+0.4, 0.6 and 0.8 s: three were refused, with `closed-deadline` logged three
+times and the client reporting a failed WebSocket upgrade. After the fix the
+same script passes 5 of 5 at 500 and at 100.
+
+**The fix keeps time an argument.** `evloop.h` says the loop makes no time
+syscall, and the tests rely on it: they pass a fixed `now_ms` and check
+deadlines to the millisecond. Reading the clock inside the loop would have
+ended that. Instead the loop takes an optional clock function and asks it
+once, after `poll()`. A test that registers none sees no change. The daemon's
+function refreshes `app.now_ms` and `app.now_unix` before answering, because
+`authd_main.c` promises the loop and the connection layer one clock; with only
+the loop refreshed, a login code issued in a turn would have been stamped up
+to a second earlier than the turn's own deadlines.
+
+**Rejected:** shortening the daemon's poll timeout. It narrows the error and
+keeps it, and wakes an idle daemon more often. Also rejected: asking the clock
+before `poll()`; that is the bug with one more call, and campaign v103's CK5
+is exactly that change.
+
+**Severity Low.** The default timeout loses at most a tenth of itself. The
+refusals need a timeout under a second, which the configuration accepts and
+no shipped file suggests.
+
+**No spec change.** The spec names `handshake_timeout_ms` only in its capacity
+table and does not define the instant the timeout counts from.
+
+**Tests.** `test_authd_evloop` gains `test_clock_after_poll`: a canary with no
+clock registered, then a clock that says 1700 while the argument says 1000;
+the slot must be opened at 1700, its deadline 2000, standing at 1999 and
+closed at 2000 whatever the argument says. `authd_e2e` gains a leg with seven
+logins 150 ms apart across the wait at `handshake_timeout_ms = 600`; at least
+two of the seven land where the old daemon refused. Campaign v103, CK1-CK5.
+
+**Not pinned.** A daemon clock that refreshed `now_ms` and left `now_unix`
+stale would pass every test: nothing measures a one-second error in the
+wall-clock second.
+
+**What the fix did to two older campaigns** (the first nightly on this step,
+43474381387, 86 of 88 jobs). Both were the campaign being wrong, not the
+daemon.
+
+- v74 CK1 stopped the wall clock at the main loop's assignment. The loop
+  clock is now a second assignment, so the mutant kept time and survived. CK1
+  now stops both.
+- v98 SC2 (the descriptor cap computed and never applied) was named by "the
+  admin socket did not answer". The admin client waits 10 s and the default
+  handshake deadline is 10 s, so on Linux the answer was a race: the held
+  connections expired and gave descriptors back just as the client gave up.
+  The late deadline lost that race by up to a second; the punctual one wins
+  it, and the mutant was caught by the NEXT check instead (`accept-failed` in
+  the log), which the spec did not name. On macOS the client is refused at
+  once and nothing changed. The leg's daemon now runs with
+  `handshake_timeout_ms = 60000`, so the race is gone on both.
+
+Counts: 498 mutations, 73 campaigns, 540 anchors; 224 findings; spec v1.54,
+96 errata (unchanged).

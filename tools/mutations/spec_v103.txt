@@ -1,0 +1,5 @@
+CK1|^test_authd_evloop$|clock: the loop asked the clock (F224)
+CK2|^test_authd_evloop$|clock: a connection is opened at the time poll() returned, not the time it began (F224)
+CK3|^test_authd_evloop$|clock: the loop asked the clock (F224)
+CK4|^authd_e2e$|into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)
+CK5|^authd_e2e$|into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)

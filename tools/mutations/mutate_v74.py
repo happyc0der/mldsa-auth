@@ -16,7 +16,11 @@ MAIN = "apps/authd/authd_main.c"
 
 M = {
     "CK1": [(MAIN, "        app.now_unix = (int64_t)time(NULL);\n",
-                   "        app.now_unix = app.now_unix + 0; /* MUTATION CK1: the clock stops at start-up */\n")],
+                   "        app.now_unix = app.now_unix + 0; /* MUTATION CK1: the clock stops at start-up */\n"),
+            # F224 (V4-144) gave the loop a second place that reads the clock,
+            # after poll(); with only the first stopped, the second kept time.
+            (MAIN, "    app->now_unix = (int64_t)time(NULL);\n    return app->now_ms;\n",
+                   "    app->now_unix = app->now_unix + 0; /* MUTATION CK1 */\n    return app->now_ms;\n")],
 }
 
 
