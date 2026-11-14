@@ -258,6 +258,29 @@ int main(int argc, char **argv)
         }
     }
 
+    /* F229: the audit chain is keyed from the store root key in the server
+     * key file. A store another key wrote -- a backup restored beside a new
+     * key, a key_path that names the wrong file -- opened without complaint:
+     * the daemon refused every client (they pin the other key) and appended
+     * to a chain it could not verify, which no key verifies afterwards. So
+     * the last entry is checked before anything can be appended, and a store
+     * that fails is not served. */
+    {
+        const store_status_t ts = store_audit_tail_check(store);
+        if (ts != STORE_OK) {
+            fprintf(stderr, "mldsa-authd: %s: %s%s\n", cfg.store_path, store_status_name(ts),
+                    (ts == STORE_ERR_CORRUPT)
+                        ? ": the last audit entry was not written under this server key -- "
+                          "key_path names another server's key, or the store was altered; "
+                          "not started, so nothing is appended to it"
+                        : "");
+            store_close(store);
+            mldsa_keypair_free(&server_kp);
+            free(slots); free(conns);
+            return 1;
+        }
+    }
+
     /* F199: store_open creates what it does not find, which is right once --
      * at the first start after keygen-server -- and wrong ever after, when it
      * means store_path names the wrong file and every user is unknown. The

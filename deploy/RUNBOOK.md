@@ -837,6 +837,15 @@ Common ones, and what they actually are:
   second unit or a hand-started daemon uses the same configuration. The
   running daemon is not disturbed. A socket left behind by a killed daemon
   does not cause this; it is replaced.
+- **`…/store.sqlite3: audit-chain-corrupt: the last audit entry was not
+  written under this server key`** (exit 1, since V4-151) — the store and
+  `server.ek` do not belong together. The usual cause is a store backup
+  restored beside a newly made key, or `key_path` naming the wrong file: put
+  the `server.ek` that store was made with in place. If the key is the right
+  one, the end of the store was altered: treat it as an incident and restore
+  a backup (step 12). The daemon does not start in either case, because
+  every entry it appended would be under a key the chain does not verify
+  with.
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

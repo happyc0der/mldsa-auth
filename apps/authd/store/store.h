@@ -414,6 +414,13 @@ store_status_t store_audit_head_mac(const store_t *s, uint8_t out[STORE_AUDIT_MA
 /* Walks the whole chain, recomputing every MAC from key_audit; returns
  * STORE_ERR_CORRUPT on the first mismatch or a broken prev_mac link, else OK. */
 store_status_t store_audit_verify(const store_t *s);
+/* Is the chain's LAST entry one this store's key wrote? One row read and one
+ * MAC, so the daemon can ask at every start (F229): a store beside the wrong
+ * server key answers STORE_ERR_CORRUPT here, before anything is appended to
+ * a chain this key cannot verify. OK for an empty chain. It is not
+ * store_audit_verify: an entry altered anywhere but the end, and a chain cut
+ * short, both pass. */
+store_status_t store_audit_tail_check(const store_t *s);
 
 /* --- backup ------------------------------------------------------------ */
 /* Consistent snapshot via `VACUUM INTO` to `dest_path` (must not exist). */

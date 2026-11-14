@@ -418,6 +418,50 @@ store_status_t store_audit_verify(const store_t *s)
     return r;
 }
 
+store_status_t store_audit_tail_check(const store_t *s)
+{
+    if (s == NULL) {
+        return STORE_ERR_ARG;
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(s->db,
+            "SELECT seq, at, event, user_id, handle, detail, prev_mac, mac FROM audit "
+            "ORDER BY seq DESC LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    store_status_t r = STORE_OK;
+    const int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        const int64_t seq = sqlite3_column_int64(st, 0);
+        const int64_t at = sqlite3_column_int64(st, 1);
+        const unsigned char *event = sqlite3_column_text(st, 2);
+        const unsigned char *detail = sqlite3_column_text(st, 5);
+        uint8_t uid[STORE_ID_MAX], hnd[STORE_ID_MAX];
+        size_t uid_len = 0, hnd_len = 0, n_prev = 0, n_mac = 0;
+        uint8_t stored_prev[STORE_AUDIT_MAC_BYTES], stored_mac[STORE_AUDIT_MAC_BYTES];
+        uint8_t inbuf[1024], want[STORE_AUDIT_MAC_BYTES];
+        size_t in_len = 0;
+        if (copy_blob_col(st, 3, uid, sizeof uid, &uid_len) != STORE_OK ||
+            copy_blob_col(st, 4, hnd, sizeof hnd, &hnd_len) != STORE_OK ||
+            copy_blob_col(st, 6, stored_prev, sizeof stored_prev, &n_prev) != STORE_OK ||
+            copy_blob_col(st, 7, stored_mac, sizeof stored_mac, &n_mac) != STORE_OK ||
+            n_prev != STORE_AUDIT_MAC_BYTES || n_mac != STORE_AUDIT_MAC_BYTES ||
+            (in_len = audit_mac_input(inbuf, sizeof inbuf, stored_prev, seq, at, (const char *)event,
+                                      uid, uid_len, hnd, hnd_len, (const char *)detail)) == 0u) {
+            r = STORE_ERR_CORRUPT;
+        } else if (crypto_auth(want, inbuf, in_len, s->key_audit) != 0) {
+            r = STORE_ERR_CRYPTO;
+        } else if (sodium_memcmp(want, stored_mac, STORE_AUDIT_MAC_BYTES) != 0) {
+            r = STORE_ERR_CORRUPT;
+        }
+        sodium_memzero(inbuf, sizeof inbuf);
+    } else if (rc != SQLITE_DONE) {
+        r = STORE_ERR_DB;
+    }
+    sqlite3_finalize(st);
+    return r;
+}
+
 /* --- open / close ------------------------------------------------------- */
 
 static store_status_t meta_get(sqlite3 *db, const char *key, uint8_t *out, size_t cap, size_t *out_len, int *found)

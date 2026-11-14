@@ -15404,3 +15404,57 @@ timestamp) and `store_audit_tail` in `audit-verify` (the entry count it prints).
 
 Counts: 510 mutations, 76 campaigns, 552 anchors; 228 findings; spec v1.54,
 96 errata (unchanged).
+
+## V4-151: the daemon does not serve a store its key did not write (F229)
+
+**How it was found.** By asking what the runbook's backup step (step 12) is
+enough to restore, and trying it with the shipped binaries. A store backup
+beside its own `server.ek` and passphrase: the daemon starts, the enrolled
+device logs in with its unchanged pin, `audit-verify` verifies. The same
+backup beside a NEW `server.ek`: the daemon starts just the same, the device
+is refused at `server-hello: signature`, and `audit-verify` says
+`audit-chain-corrupt`.
+
+**The defect.** `store_open` takes whatever key it is given and derives
+`key_audit` from it; nothing ties the key to the store. So a daemon with the
+wrong key for its store ran, refused everyone without saying why, and
+appended entries under the wrong key to the chain. A chain with entries
+under two keys verifies under neither, and nothing was said when the damage
+was done. `init` refuses to re-key an existing store for exactly this reason
+(the comment in `cmd_init`); the daemon did not.
+
+**The fix.** `store_audit_tail_check`: read the last audit row, recompute its
+MAC under `key_audit`, compare in constant time. The daemon calls it after
+opening the store and before binding anything; on a mismatch it prints the
+path, `audit-chain-corrupt` and one sentence on the two causes, and exits 1.
+Exit 1, not 3: the store's other start-up refusals are 1, and the daemon
+cannot tell a wrong key from an altered store.
+
+**Why refuse, not warn.** Every entry appended after the mismatch makes the
+chain worse and cannot be taken back. The conservative default is not to
+write. The cost is that a store altered at its very end now stops the daemon
+from starting, where before it ran: that is an outage, and it is the owner's
+to reverse if a warning is preferred. No deployment exists yet whose chain
+is already broken (a version-1 key file whose passphrase was changed before
+V4-108 would be one, F190).
+
+**What it is not.** Not `audit-verify`: one row. An edit that is not at the
+end, and a truncated chain, pass; the hourly timer and the head MAC kept off
+the host are still what catch those. The unit test states this limit as a
+check, so it cannot quietly change.
+
+**Spec.** §9.2 invariant 4, erratum 97, v1.55. No new log event or error
+code: the refusal is a start-up message on stderr, like the store's others.
+
+**Tests.** `test_authd_store`: empty chain, right key, another key, last
+entry edited, earlier entry edited. `authd_e2e`: the backup beside a second
+`init`'s key is refused by name with exit 1 and leaves no socket; beside its
+own key it starts and the device logs in. Campaign v107, TC1-TC4. The new
+comparison is in `tests/constant_time_sites.txt` (29 sites).
+
+**Not done here.** The runbook still does not say what to keep off the host
+or how to restore onto a new one; this step found that gap and fixed only
+what the daemon did wrong. Next.
+
+Counts: 514 mutations, 77 campaigns, 556 anchors; 229 findings; spec v1.55,
+97 errata.

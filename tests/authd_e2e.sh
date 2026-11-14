@@ -1208,6 +1208,43 @@ case "$(ls -l "$TMP/backup.sqlite3")" in
     *) fail "the backup is not 0600" ;;
 esac
 
+# --------------- a store and a server key that do not belong together (F229)
+#
+# The audit chain is keyed from the store root key sealed in server.ek (spec
+# 9.2). A daemon given a store that another server key wrote -- a backup
+# restored beside a newly made key, a mistyped key_path -- used to start,
+# refuse every client (they pin the other key) and append its own entries to
+# a chain it could not verify, which no key verifies afterwards. It must not
+# start. The canary is the same backup beside its OWN key: that is a restore
+# onto a new host, it starts, and the device enrolled above logs in.
+"$ADMIN" init --dir "$TMP/fk" --server-id authd --passphrase-file "$TMP/fk/pass" \
+    > /dev/null 2>&1 || fail "could not make a second server key for the foreign-store leg"
+cp "$TMP/backup.sqlite3" "$TMP/fk/foreign.sqlite3" && chmod 0600 "$TMP/fk/foreign.sqlite3" \
+    || fail "could not copy the backup for the foreign-store leg"
+su_conf "$TMP/fk/foreign.sqlite3" "$TMP/fk/server.ek" "$TMP/fk/pass"
+su_refused "$TMP/fk/foreign.sqlite3: audit-chain-corrupt" "a store whose audit chain another server key wrote (F229)" 1
+grep -qF "not written under this server key" "$TMP/su.log" \
+    || fail "the daemon refused a foreign store without saying what was wrong with it (F229): $(cat "$TMP/su.log")"
+cp "$TMP/backup.sqlite3" "$TMP/su/restored.sqlite3" && chmod 0600 "$TMP/su/restored.sqlite3" \
+    || fail "could not copy the backup for the restore canary"
+su_conf "$TMP/su/restored.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
+"$DAEMON" --config "$TMP/su.conf" > "$TMP/su-rest.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/su-rest.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "a backup beside its own server key did not start (the F229 canary): $(cat "$TMP/su-rest.log")"
+    [ "$i" -gt 400 ] && fail "a backup beside its own server key never logged event=started (the F229 canary)"
+    sleep 0.05
+done
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/su-p.sock" > "$TMP/rest-code.txt" 2> "$TMP/rest-login.err" \
+    || { cat "$TMP/rest-login.err"; fail "the enrolled device could not log in to a backup restored beside its own server key (the F229 canary)"; }
+[ "$(wc -c < "$TMP/rest-code.txt" | tr -d ' ')" -eq 44 ] || fail "the restored daemon issued no 43-character login code"
+kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+echo "PASS: E2E: a store whose audit chain another server key wrote is refused at start, by name, with exit 1; the same backup beside its own key starts and the enrolled device logs in (F229)"
+
 # ------------------------------------------ revocation, end to end (V4-15a)
 #
 # Req 9 through the shipped binaries. Until V4-15a nothing in this script

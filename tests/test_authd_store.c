@@ -1102,6 +1102,44 @@ int main(void)
         }
     }
     {
+        /* F229: the tail check the daemon makes at every start. One row, one
+         * MAC: it answers "did this key write the end of this chain", which
+         * is what a store beside the wrong server key gets wrong. */
+        static const uint8_t OTHER_KEK[STORE_KEK_BYTES] = { 0x5a, 0x01, 0x02 };
+        store_t *s = fresh_store("tail.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open tail\n"); return 1; }
+        CHECK(store_audit_tail_check(s) == STORE_OK, "tail: an empty chain passes the tail check");
+        CHECK(store_audit_tail_check(NULL) == STORE_ERR_ARG, "tail: no store is an argument error");
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_add_user(s, U2, sizeof U2, STORE_ROLE_USER) == STORE_OK, "tail: two entries written");
+        CHECK(store_audit_tail_check(s) == STORE_OK, "tail: the key that wrote the chain passes the tail check");
+        store_close(s);
+        { store_t *o = NULL;
+          CHECK(store_open(dbp, OTHER_KEK, &o) == STORE_OK && o != NULL,
+                "tail: a store opens under another key (the control: opening does not check)");
+          if (o != NULL) {
+              CHECK(store_audit_tail_check(o) == STORE_ERR_CORRUPT,
+                    "tail: a chain another key wrote fails the tail check (F229)");
+              store_close(o);
+          } }
+        CHECK(raw_sql(dbp, "UPDATE audit SET detail='tampered' WHERE seq=1;") == 0, "tail: an earlier entry is edited");
+        { store_t *o = NULL;
+          CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "tail: reopen under the right key");
+          if (o != NULL) {
+              CHECK(store_audit_tail_check(o) == STORE_OK && store_audit_verify(o) == STORE_ERR_CORRUPT,
+                    "tail: an edit that is not at the end passes the tail check and fails the full one (the limit)");
+              store_close(o);
+          } }
+        CHECK(raw_sql(dbp, "UPDATE audit SET detail='tampered' WHERE seq=2;") == 0, "tail: the last entry is edited");
+        { store_t *o = NULL;
+          CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "tail: reopen again");
+          if (o != NULL) {
+              CHECK(store_audit_tail_check(o) == STORE_ERR_CORRUPT,
+                    "tail: an edited last entry fails the tail check (F229)");
+              store_close(o);
+          } }
+    }
+    {
         /* truncation: deleting the newest row must be detectable. The head MAC
          * is the published value (§9.2.4: written to the journal), so a
          * truncated log verifies internally but no longer matches the head a

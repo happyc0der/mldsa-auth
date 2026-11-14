@@ -1,0 +1,4 @@
+TC1|^authd_e2e$|the daemon started with a store whose audit chain another server key wrote (F229)
+TC2|^test_authd_store$|tail: a chain another key wrote fails the tail check (F229)
+TC3|^test_authd_store$|tail: an edit that is not at the end passes the tail check and fails the full one (the limit)
+TC4|^authd_e2e$|the daemon refused a foreign store without saying what was wrong with it (F229)

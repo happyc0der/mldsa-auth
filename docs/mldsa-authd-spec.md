@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.54, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143)
+# mldsa-authd — deployment specification (v1.55, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -624,7 +624,12 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    KEK of a version-1 one (§12). The head MAC is
    printed by `authd_admin audit-verify` (§13), which re-computes the whole
    chain offline and is the operator's means of detecting truncation or
-   tampering. **Periodic publication of the head MAC to the system journal —
+   tampering. **The daemon checks the last entry at every start** (erratum
+   97): it recomputes that entry's MAC under `key_audit`, and on a mismatch
+   it prints the store's path and `audit-chain-corrupt`, exits 1 and serves
+   nothing, so it never appends to a chain its key did not write. This is
+   one row and one MAC, not `audit-verify`: an entry altered anywhere but
+   the end, and a chain cut short, pass it. **Periodic publication of the head MAC to the system journal —
    the second trust domain — is not implemented** (§18): an operator who wants
    one runs `audit-verify` on a timer and keeps its output.
 
@@ -1945,3 +1950,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 96 | 8 | Any request can answer `internal`, which is not a verdict; a request whose store operation failed is answered `internal` and no other code | `VERIFY` dropped the status of the write that slides a token's idle window and answered `unknown` for a valid token, on which a site ends the session (F222); `RECOVERY-USE` dropped the status of the write that counts a wrong code and answered `invalid` for a guess the lockout had not seen (F223). The table listed `internal` under `ENROLL` alone |
+
+### Revision v1.55 (V4-151)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 97 | 9.2 | At every start the daemon recomputes the last audit entry's MAC under its own `key_audit`; on a mismatch it names the store and `audit-chain-corrupt`, exits 1 and serves nothing | a store opened under any key: a backup restored beside a newly made server key, or a `key_path` naming another server's key, started normally, refused every client (they pin the other key) and appended entries under the wrong key to a chain that no key verified afterwards, with nothing said at the moment of damage (F229). `init` has refused to re-key an existing store for the same reason since V4-9 |

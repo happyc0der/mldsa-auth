@@ -25,6 +25,7 @@ apps/authd/store/store.c|if (sodium_memcmp(cur, new_pk, STORE_PK_BYTES) == 0) {
 apps/authd/store/store.c|if (sodium_memcmp(cur, pk, STORE_PK_BYTES) == 0) {
 apps/authd/store/store.c|if (sodium_memcmp(stored_prev, running, STORE_AUDIT_MAC_BYTES) != 0) { r = STORE_ERR_CORRUPT; break; }
 apps/authd/store/store.c|if (sodium_memcmp(want, stored_mac, STORE_AUDIT_MAC_BYTES) != 0) { r = STORE_ERR_CORRUPT; break; }
+apps/authd/store/store.c|} else if (sodium_memcmp(want, stored_mac, STORE_AUDIT_MAC_BYTES) != 0) {
 apps/authd/store/store.c|if (user_len != expect_user_len || sodium_memcmp(user, expect_user, user_len) != 0) {
 apps/authd/store/store.c|sodium_memcmp(stored_state, state_hash, STORE_HASH_BYTES) != 0) {
 apps/demo_keys.c|const int intact = (sodium_memcmp(computed, stored, DEMO_KEY_DIGEST_BYTES) == 0);
