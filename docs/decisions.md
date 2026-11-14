@@ -16043,3 +16043,49 @@ No code. Written after V4-169 and V4-170, so it sits on top of them.
 
 Counts: 545 mutations, 86 campaigns, 587 anchors; 244 findings; spec v1.59,
 101 errata (all unchanged by this step).
+
+## V4-172: the fuzz gates require evidence, and :memory: is not a file (F245, F246)
+
+**F245.** A reviewer agent was asked to read the verification apparatus for
+gates that pass vacuously. The fuzz steps were the clearest: a pipe into
+`tee` with no `pipefail`, then a grep for the word "crash". The runner's
+exit status never reached the step, and nothing asked whether the fuzzers
+had run. A log from a run that refused to start is green under that grep;
+shown here before the fix.
+
+**The gate.** `tests/fuzz/check_fuzz_log.sh LOG [targets]` asks for the
+positive: one summary line per expected target, a run count that is a
+number above zero, `crashes=0 artifacts=0`, and no `FAIL:` or `SKIP:` line.
+Both workflow steps now set `pipefail` and end with it. The stale comment
+in the nightly ("never exits nonzero on them") is gone; the runner does.
+
+**The gate's own test.** `fuzz_log_gate` (CTest, shell only, in every tree):
+a clean log passes; ten logs are refused (never started; `runs=?`; a target
+missing; a SKIP-only log; a clean log with a SKIP line; one with a FAIL
+line; zero inputs; a crash; an artifact; no file). It also compares the
+nightly's fuzz matrix with `FUZZ_TARGETS`, and checks that both workflows
+contain the runner, `pipefail` and the gate, so removing either from a
+workflow turns a test red on every push.
+
+**Hand mutations.** The run count unchecked (2 fixtures pass the gate, test
+red); crashes unchecked (2); `pipefail` removed from ci.yml (red); a target
+removed from the nightly matrix (red). A fifth, tolerating a missing
+summary line, changed nothing: the later run-count check refuses the same
+log. That showed the FAIL:/SKIP: line check had no fixture only it could
+catch, and two were added.
+
+**On a real run.** `run_fuzz.sh smoke` over all twelve targets, 60 s each,
+through the new gate: exit 0, twelve summary lines, PASS.
+
+**F246, found by that run.** It left an untracked file `:memory:` in the
+repository root. `store_open` has pre-created the store file 0600 since
+F200, and did so for SQLite's in-memory name. One condition added. v90's
+SC3 anchored on that line and is re-anchored; applied by hand it still
+fails its named check.
+
+**Counts.** The suite is one test larger (54 native, 59 with the wasm tree
+and a browser), and `doc_test_counts` went red until the README's sentence
+and table said so.
+
+Counts: 546 mutations, 87 campaigns, 588 anchors; 246 findings; spec v1.59,
+101 errata (unchanged).

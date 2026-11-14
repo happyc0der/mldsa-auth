@@ -559,7 +559,10 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * names no file is an I/O failure, and a file with no meta table -- an
      * empty file, some other database -- is refused before the schema below
      * would turn it into a store (F193). */
-    if (!existing) {
+    /* ":memory:" is SQLite's name for no file at all, not a path (F246): the
+     * pre-creation below made an empty file of that name in the working
+     * directory for every in-memory store. */
+    if (!existing && strcmp(path, ":memory:") != 0) {
         /* A store this call creates is 0600 whatever the caller's umask is
          * (F200): SQLite would create it 0644 under a shell's 022, and give
          * -wal and -shm the same mode. O_EXCL: a file that is already there

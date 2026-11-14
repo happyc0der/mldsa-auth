@@ -161,6 +161,12 @@ add_test(NAME store_fault_hook
 # V4-15b (CLAIMS P3/D3): the constant-time comparison sites, checked both ways
 # against constant_time_sites.txt. tools/audit/constant_time_inventory.sh is
 # the report; this is the gate that sees a sodium_memcmp swapped for memcmp.
+# V4-172 (F245): the gate CI's fuzz steps end with, fed every way a run can
+# fail to have fuzzed; and the nightly's hand-written fuzz matrix against
+# FUZZ_TARGETS. Shell only, so it runs in every tree.
+add_test(NAME fuzz_log_gate
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/fuzz_log_gate.sh ${PROJECT_SOURCE_DIR})
+
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure

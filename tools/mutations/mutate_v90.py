@@ -28,7 +28,8 @@ M = {
                  "        s->created = 0; /* MUTATION SC1 */\n")],
     "SC2": [(ST, "    return (s != NULL) ? s->created : 0;\n",
                  "    return (s != NULL) ? 1 : 0; /* MUTATION SC2 */\n")],
-    "SC3": [(ST, "    if (!existing) {\n"
+    # Since V4-172 (F246) the condition also leaves SQLite's ":memory:" alone.
+    "SC3": [(ST, "    if (!existing && strcmp(path, \":memory:\") != 0) {\n"
                  "        /* A store this call creates is 0600 whatever the caller's umask is\n",
                  "    if (0 && !existing) { /* MUTATION SC3 */\n"
                  "        /* A store this call creates is 0600 whatever the caller's umask is\n")],

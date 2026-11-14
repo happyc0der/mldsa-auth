@@ -28,8 +28,8 @@ cmake -S . -B build && cmake --build build -j8
 tools/check_build_current.sh build && ctest --test-dir build
 ```
 
-`OK: build is current`, then `100% tests passed out of 53` (56 with
-`-DMLDSA_WASM_DIR` pointing at a wasm tree, 58 with a Chromium-family browser
+`OK: build is current`, then `100% tests passed out of 54` (57 with
+`-DMLDSA_WASM_DIR` pointing at a wasm tree, 59 with a Chromium-family browser
 found as well; V4-38's run printed two fewer of each, before V4-39 added
 `backend_symbols` and V4-41 `doc_test_counts`); `ubsan_aborts` and
 `fuzz_libfuzzer` report *Skipped* outside the trees they are for.
@@ -43,7 +43,7 @@ tools/check_build_current.sh build-ubsan && tools/check_sanitizer_link.sh build-
 
 Each prints `OK: … is current`, `OK: asan|ubsan instrumentation present in all
 … executable(s)` -- 43 in the ASan tree, 44 in the UBSan tree, which also
-builds `ubsan_canary` -- and `100% tests passed out of 53`, or 58 when
+builds `ubsan_canary` -- and `100% tests passed out of 54`, or 59 when
 configured as this packet's trees were, with `-DMLDSA_WASM_DIR` and a browser
 found (the browser section below). Since V4-14c the UBSan build aborts on
 undefined behaviour (audit F94); before it, a UB report printed and the test
@@ -63,7 +63,7 @@ A gcc 16 Release tree (the configuration no CI job uses):
 
 ```bash
 cmake -S . -B build-gcc16 -DCMAKE_C_COMPILER=gcc-16 -DCMAKE_BUILD_TYPE=Release && cmake --build build-gcc16 -j8
-ctest --test-dir build-gcc16                                           # 100% tests passed out of 53
+ctest --test-dir build-gcc16                                           # 100% tests passed out of 54
 ```
 
 ## The browser client
@@ -98,7 +98,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-545 committed mutations in 86 campaigns, each a defect the tests must catch
+546 committed mutations in 87 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -117,7 +117,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (587 anchors checked; 545 mutations across 86 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (588 anchors checked; 546 mutations across 87 campaigns)
 ```
 
 ## The formal model

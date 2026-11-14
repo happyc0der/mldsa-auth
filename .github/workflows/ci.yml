@@ -201,12 +201,15 @@ jobs:
       - name: Standing rule 3 + fuzz-labelled tests
         run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --output-on-failure
 
-      - name: Fuzz smoke (60 s per target) — any crash or artifact fails
+      # V4-172 (F245): pipefail, so run_fuzz.sh's own exit status counts and
+      # not tee's; and the gate asks for evidence that every target RAN, not
+      # only for the absence of the word "crash". Before, a run that refused to
+      # start or a fuzzer that died silently left this step green.
+      - name: Fuzz smoke (60 s per target) — every target must run, and any crash or artifact fails
         run: |
-          tests/fuzz/run_fuzz.sh smoke build-fuzz | tee smoke.log
-          if grep -qE "crashes=[1-9]|artifacts=[1-9]" smoke.log; then
-            echo "::error::fuzzing produced a crash or artifact"; exit 1
-          fi
+          set -o pipefail
+          sh tests/fuzz/run_fuzz.sh smoke build-fuzz | tee smoke.log
+          sh tests/fuzz/check_fuzz_log.sh smoke.log
 
       - name: Repository secret scan
         run: |

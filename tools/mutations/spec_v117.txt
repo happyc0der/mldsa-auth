@@ -1,0 +1,1 @@
+MM1|^test_authd_store$|memory: opening an in-memory store creates no file named ":memory:" in the working directory (F246)

@@ -1064,6 +1064,24 @@ int main(void)
         store_close(t);
     }
 
+    /* F246 (V4-172): SQLite's in-memory name is not a file to create. Since
+     * F200 store_open has pre-created the store's file 0600 before SQLite
+     * opens it, and it did so for ":memory:" too: every in-memory store (the
+     * fuzz targets open one each) left an empty file called ":memory:" in the
+     * working directory. Found as an untracked file after a fuzz run. */
+    {
+        (void)unlink(":memory:");
+        store_t *m = NULL;
+        CHECK(store_open(":memory:", KEK, &m) == STORE_OK && m != NULL, "memory: an in-memory store opens");
+        CHECK(access(":memory:", F_OK) != 0,
+              "memory: opening an in-memory store creates no file named \":memory:\" in the working directory (F246)");
+        if (m != NULL) {
+            CHECK(store_add_user(m, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK, "memory: and it works as a store");
+            store_close(m);
+        }
+        (void)unlink(":memory:");
+    }
+
     /* ---- audit chain: tamper and truncation are detected ---------------- */
     {
         store_t *s = fresh_store("e.sqlite3", dbp, sizeof dbp);
