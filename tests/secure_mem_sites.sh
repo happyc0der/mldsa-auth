@@ -30,7 +30,7 @@ LIST="$HERE/secure_mem_sites.txt"
 raw=$(cd "$REPO" && grep -rnE '\bsodium_(malloc|allocarray|free)[[:space:]]*\(' src apps --include='*.c' --include='*.h' |
       grep -v '^src/util/secure_mem\.[ch]:' |
       awk '{ i = index($0, ":"); r = substr($0, i + 1); j = index(r, ":"); t = substr(r, j + 1);
-             gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); if (t ~ /^(\/\*|\*|\/\/)/) next; print }')
+             gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); if (t ~ /^(\/\*|\*$|\*\/|\* |\/\/)/) next; print }')
 if [ -n "$raw" ]; then
     printf '%s\n' "$raw" | while IFS= read -r l; do
         echo "FAIL: a raw libsodium allocator call outside secure_mem.c (the list cannot see it): $l"
@@ -50,7 +50,7 @@ awk -v list="$LIST" '
     {
         i = index($0, ":"); f = substr($0, 1, i - 1); t = substr($0, i + 1)
         gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); sub(/ $/, "", t)
-        if (t ~ /^(\/\*|\*|\/\/)/) { next }
+        if (t ~ /^(\/\*|\*$|\*\/|\* |\/\/)/) { next }
         have[f "|" t]++; nh++
     }
     END {

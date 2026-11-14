@@ -15,7 +15,9 @@
 #   - a site the list lacks: the list is incomplete -- add it, same commit.
 #
 # Comment lines are skipped: a comment may NAME the function; only code may
-# call it. A FAIL line prints a site as `file: call` -- the list's `|` is a
+# call it. Inside a block comment a line is `*`, `*/` or `* text`; a line such
+# as `*same = sodium_memcmp(...)` is a statement and is NOT skipped (V4-183,
+# F260: every line beginning with `*` used to be). A FAIL line prints a site as `file: call` -- the list's `|` is a
 # field separator in the mutation specs that name these lines. Timing is still not measured -- this pins WHICH function compares,
 # not how long it takes.
 set -u
@@ -36,7 +38,7 @@ awk -v list="$LIST" '
     {
         i = index($0, ":"); f = substr($0, 1, i - 1); t = substr($0, i + 1)
         gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); sub(/ $/, "", t)
-        if (t ~ /^(\/\*|\*|\/\/)/) { next }
+        if (t ~ /^(\/\*|\*$|\*\/|\* |\/\/)/) { next }
         have[f "|" t]++; nh++
     }
     END {

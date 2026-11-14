@@ -185,6 +185,11 @@ add_test(NAME runbook_gate
 add_test(NAME mutation_runner_gate
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/mutation_runner_gate.sh ${PROJECT_SOURCE_DIR})
 
+# V4-183 (F260): the two site gates below, each run on a copy of src/ and
+# apps/ with one call added on a line that begins with `*`.
+add_test(NAME site_gates_gate
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/site_gates_gate.sh ${PROJECT_SOURCE_DIR})
+
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure

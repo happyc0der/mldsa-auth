@@ -210,7 +210,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-57 tests in a native tree (55 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 60 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 62 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+58 tests in a native tree (56 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 61 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 63 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -224,6 +224,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `spec_constants_gate` | `tools/audit/check_spec_constants.sh` run against copies of the tree in which a number changed or can no longer be derived (a `#define` rewritten as an expression; a handshake id of 32 bytes; an identity limit of 32; a rate-limit default, a token lifetime and a recovery-code size it cannot read), each of which it must refuse, and the tree as it is, which it must pass (V4-173, F247) |
 | `runbook_gate` | `tools/rehearse_runbook.py --check-substitutions` run against copies of the runbook in which one command block is fenced as anything but ` ```bash ` (six spellings, each of the 35 blocks in turn), a second plain block is added, the one named configuration block is changed, or a block is never closed. It must refuse every copy (F251). |
 | `mutation_runner_gate` | `tools/run_mutations_v2.sh` on a toy tree with no build directory: a tree that still holds a `MUTATION` marker is refused with the scratch directory's old snapshot untouched (F258); a spec that is empty, missing or does not end in a newline is refused before anything is touched (F259); every committed spec ends in a newline. |
+| `site_gates_gate` | `constant_time_sites` and `secure_mem_sites` run on copies of `src/` and `apps/` with one call added on a line that begins with `*` (`*p = sodium_malloc(32);`): each must refuse its copy, and a block comment naming the calls must still pass (F260). |
 | `fuzz_log_gate` | The gate CI's two fuzz steps end with (`tests/fuzz/check_fuzz_log.sh`), fed a clean log and eight that must be refused: a run that never started, a fuzzer that died before reporting, a missing target, a SKIP, zero inputs, a crash, an artifact, no log. Also that the nightly's hand-written fuzz matrix is exactly `FUZZ_TARGETS`, and that both workflows run the fuzzers under `pipefail` and end with the gate (V4-172, F245) |
 | `constant_time_sites` | Every `sodium_memcmp`/`sodium_is_zero` call site checked both ways against a list, so a constant-time comparison swapped for `memcmp` fails by name (V4-15b) |
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |

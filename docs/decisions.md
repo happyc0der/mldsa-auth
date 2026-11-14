@@ -16440,3 +16440,23 @@ Against the runner as it was, four of its checks fail.
 Counts: 554 mutations, 91 campaigns, 596 anchors (unchanged); 259 findings;
 spec v1.59, 101 errata (unchanged); 62 tests with wasm and a browser (57
 native).
+
+## V4-183: a line beginning with an asterisk is not always a comment (F260)
+
+The site gates decide "comment or code" one line at a time, with no parser,
+and a line of a block comment begins with an asterisk. So does an
+assignment through a pointer. The rule is now narrower: an asterisk alone,
+an asterisk and a slash, or an asterisk and a space. `* p = f();` with a
+space after the asterisk would still be skipped; nobody in this tree writes
+a dereference that way, and clang-format would not leave it.
+
+A real parser was not written. The gates are forty lines of awk each and
+the remaining gap needs a statement spelled as no formatter spells it.
+
+**Tests.** `site_gates_gate` (CTest): each gate on a copy with one added
+line; three checks failed before the fix. The gates themselves still pass
+the tree: 29 constant-time and 39 secure-memory sites, unchanged.
+
+Counts: 554 mutations, 91 campaigns, 596 anchors (unchanged); 260 findings;
+spec v1.59, 101 errata (unchanged); 63 tests with wasm and a browser (58
+native).
