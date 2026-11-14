@@ -15458,3 +15458,51 @@ what the daemon did wrong. Next.
 
 Counts: 514 mutations, 77 campaigns, 556 anchors; 229 findings; spec v1.55,
 97 errata.
+
+## V4-153: what to keep off the host, and the way back (runbook step 24)
+
+Numbered 153 because 152 is the cleanup that follows V4-151's landing; this
+was written while V4-151's runs were in flight.
+
+**The gap.** Step 12 took a store backup into `backups/` on the same disk and
+stopped. Nothing said that a store backup alone restores nothing: the audit
+chain is keyed from `server.ek`, every client pins `server.pub`, and
+`passphrase.cred` is encrypted to the host that made it. An operator who
+followed the runbook exactly and lost the host had a store they could not
+serve. V4-151 came out of measuring this.
+
+**What was added.**
+
+- Step 12, "What to keep off this host": the three things, one block that
+  collects them into `/root/mldsa-authd-offhost`, what the copy does and does
+  not expose (the key is sealed; the store backups are not encrypted and
+  hold personal data), and when to take a new copy (after each backup worth
+  keeping, and after step 23).
+- Step 24, "Restore onto a new host": which earlier steps to repeat, that
+  step 5 must NOT be run, one block that puts the key and the store in place
+  and starts, and what comes back.
+- The preamble said steps 1-16 are rehearsed; it has been 1-16 and 19-23
+  since Part III, and is 19-24 now.
+
+**Measured, not assumed** (shipped binaries, this Mac):
+
+- backup + its own `server.ek` + passphrase in an empty directory: starts,
+  the enrolled device logs in with its unchanged pin, `audit-verify` verifies;
+- a device that rotated after the backup: login fails at `login-code`, and
+  enrolling its current `.pub` under the same handle is refused
+  `exists-different-key`. The runbook says so and says what to do (a new
+  key, step 11). There is no way to bring such a device back under its old
+  handle; that is the store's rule that a handle's key is not replaced by
+  enrolment (Req 7), and not something this step changes.
+
+**How step 24 is rehearsed, and what that does not show.** CI has one host.
+The harness takes a backup, runs step 12's own copy block again, stops the
+daemon and deletes the key, the public key and the store; then step 24's
+block runs as written, the device from step 11 logs in, and step 12's
+`audit-verify` block verifies. Not shown: the credential being re-created on
+a different machine (on the same host the old one still opens; step 6 is
+rehearsed where it stands), and steps 1-4 and 7-10 being repeated. `PRE`
+lines in `tools/rehearse_runbook.py` may now name a runbook block, as `POST`
+lines could.
+
+No code, no counts changed.

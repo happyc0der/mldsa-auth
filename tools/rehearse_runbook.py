@@ -109,6 +109,9 @@ SUBST.update({
           "authd_client login --handle $HANDLE --key ~/.mldsa/$HANDLE.ek \\\n"
           "    --passphrase-file ~/op.pass --server-id authd --server-pub ./server.pub --port 8443",
           "the placeholder and the scripted passphrase, as in step 11")],
+    24: [("BACKUP=$OFFHOST/YYYY-MM-DD.sqlite3                # the store backup to restore",
+          "BACKUP=$(sudo sh -c \"ls -t $OFFHOST/*.sqlite3\" | head -n 1)",
+          "the placeholder, filled with the newest backup in the copy")],
     22: [("git pull --ff-only",
           "# (git pull: this host already holds the source under test)",
           "the runner's copy is the commit under test, with nowhere to pull from")],
@@ -130,6 +133,17 @@ PRE = {
     # device's in /tmp/idh.out, under the old passphrase.
     23: ["cp /tmp/idh.out /tmp/idh.before",
          "sudo od -An -tu1 -j8 -N1 /var/lib/mldsa-authd/server.ek | tr -d ' ' | sed 's/^/ek-version-before=/'"],
+    # Step 24 restores onto a host that has lost everything. This host has
+    # not, so the harness plays what came before: the operator's latest
+    # backup, the runbook's OWN copy-off block (step 12) run again as the
+    # runbook says to after step 23, and then the loss itself.
+    24: ["sudo authd_admin backup --socket /run/mldsa-authd/admin.sock "
+         "--path /var/lib/mldsa-authd/backups/before-loss.sqlite3",
+         "@runbook:12:mldsa-authd-offhost/",
+         "sudo systemctl stop mldsa-authd; "
+         "sudo sh -c 'rm -f /var/lib/mldsa-authd/server.ek /var/lib/mldsa-authd/server.pub "
+         "/var/lib/mldsa-authd/store.sqlite3*'; "
+         "echo \"left-after-loss=$(sudo ls /var/lib/mldsa-authd/ | grep -cE '^(server\\.(ek|pub)|store\\.sqlite3.*)$' || true)\""],
     11: ["sudo cp /var/lib/mldsa-authd/server.pub ./server.pub",
          "openssl rand -base64 33 | tr -d '\\n' > ~/op.pass; chmod 600 ~/op.pass"],
 }
@@ -145,6 +159,9 @@ POST = {
     20: [LOGIN + " > /tmp/dis.out 2>&1 && echo disabled-user-ACCEPTED || echo disabled-user-refused; tail -n 2 /tmp/dis.out"],
     21: [LOGIN],
     22: [LOGIN],
+    # V4-153: the restored daemon serves the device enrolled in step 11 with
+    # the pin it has had since then, and the restored chain verifies.
+    24: [LOGIN, "@runbook:12:audit-verify"],
     # V4-108 (F190): after the passphrase change the daemon is running on the
     # swapped key and credential; a device logs in, the runbook's OWN
     # audit-verify block (which names the standard paths, so it now reads the
@@ -267,6 +284,8 @@ EXPECT = {
          # and step 12's block after it
          r"(?s)the audit chain verifies \(\d+ entries\).*the audit chain verifies \(\d+ entries\)",
          r"(?m)^pseudonym-same=1$", r"(?m)^listed=2$", r"(?m)^leftovers=0$"],
+    24: [r"(?m)^left-after-loss=0$", r"(?m)^active$", r"(?m)^[A-Za-z0-9_-]{43}$",
+         r"the audit chain verifies \(\d+ entries\)"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
          r"PASS: BROWSER: recovery: a fresh browser recovered with a code, enrolled a new device and logged in",
@@ -308,7 +327,7 @@ FORBID_CLEAN = {
         "Nov 11 10:00:00 host mldsa-authd[812]: info event=started"],
 }
 # commands whose nonzero exit is the documented result, not a failure
-ALLOW_NONZERO = {16: ["grep"], 23: ["grep"]}
+ALLOW_NONZERO = {16: ["grep"], 23: ["grep"], 24: ["grep"]}
 
 
 def steps(md):
@@ -370,7 +389,7 @@ def check_substitutions(st):
     for n in sorted(set(SKIP) | set(PRE) | set(POST) | set(EXPECT)):
         if n not in st:
             bad.append("step %d is configured here but not in the runbook" % n)
-    for n, cmds in POST.items():
+    for n, cmds in list(POST.items()) + list(PRE.items()):
         for c in cmds:
             if c.startswith("@runbook:"):
                 try:
@@ -431,7 +450,7 @@ def main():
         trap = ("trap 'rc=$?; case \"$BASH_COMMAND\" in %s) ;; *) "
                 "echo \"REHEARSAL-CMD-FAILED rc=$rc: $BASH_COMMAND\" >&2; exit 1;; esac' ERR\n"
                 % ("|".join("*%s*" % a for a in allow) or "__never__"))
-        pre = "".join("echo 'HARNESS: %s'\n%s\n" % (c.replace("'", ""), c) for c in PRE.get(n, []))
+        pre = "".join(post_line(st, c) for c in PRE.get(n, []))
         post = "".join(post_line(st, c) for c in POST.get(n, []))
         script = ("set -o pipefail\ncd %s\n. %s\n%s%s%s\n%s\nexit 0\n"
                   % (SRC, STATE, trap, pre, text, post))

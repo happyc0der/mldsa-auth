@@ -7,7 +7,7 @@ people enrolling and logging in from a browser, phones included, through your
 site behind the TLS proxy. Do Part I first; Part II only adds to it.
 
 **This runbook is rehearsed on every push.** CI's `rehearse` job takes a fresh
-Ubuntu 26.04 host with systemd, runs every command block in steps 1–16 below
+Ubuntu 26.04 host with systemd, runs every command block in steps 1–16 and 19–24 below
 **as written** (`tools/rehearse_runbook.py`), and checks what each step says it
 prints: a real operator login, a verified audit chain, the site's code
 exchange reaching the daemon, and a journal with no plain identifier or
@@ -393,6 +393,37 @@ back with everything since the backup: rehearsed (V4-100, F188), a user
 enrolled after the backup was still there after a restore that only replaced
 the file. If you are restoring to undo something — a device you did not
 enrol — that is exactly what would survive.
+
+**What to keep off this host.** Everything above is on one disk. A backup in
+`backups/` survives a bad day, not a lost host, and a store backup alone
+restores nothing: three things have to exist somewhere else.
+
+1. **The store backups.**
+2. **`server.ek` and `server.pub`.** The store's audit chain is keyed from
+   `server.ek`, and every client pins `server.pub`. A store restored beside a
+   newly made key is refused at start (`audit-chain-corrupt`, since V4-151),
+   and if you made a new key anyway every device would have to be enrolled
+   again.
+3. **The passphrase itself, offline** (step 6). `passphrase.cred` is no use
+   elsewhere: `systemd-creds` encrypts it to this host.
+
+`authd.conf` is worth keeping with them. Collect the files, then move the
+directory to another machine by whatever you already trust for that:
+
+```bash
+sudo install -d -m 0700 /root/mldsa-authd-offhost
+sudo cp -p /var/lib/mldsa-authd/server.ek /var/lib/mldsa-authd/server.pub \
+     /etc/mldsa-authd/authd.conf /root/mldsa-authd-offhost/
+sudo sh -c 'cp -p /var/lib/mldsa-authd/backups/*.sqlite3 /root/mldsa-authd-offhost/'
+sudo ls -l /root/mldsa-authd-offhost
+```
+
+`server.ek` is sealed under the passphrase, so the copy opens nothing without
+it; keep the two apart. The store backups are not encrypted: they hold user
+ids, device labels and public keys — personal data, though no secret that
+logs anyone in (tokens and codes are stored hashed). Take a new copy after
+every backup you want to keep, and after step 23, which replaces `server.ek`.
+Step 24 is the way back.
 
 ---
 
@@ -807,6 +838,53 @@ Three things this does not do:
   build. A key file made before V4-108 (version 1) needs nothing done to it:
   the daemon reads both, and its store keeps verifying; the first `rewrap`
   makes it version 2 with the same keys.
+
+## 24. Restore onto a new host
+
+When the host is gone and what you have is the directory from step 12
+("What to keep off this host") and the passphrase.
+
+On the new host, do steps 1–4 as written. **Do not run step 5**: `init`
+would make a new server identity, and the point is to keep the old one. Copy
+the directory back to `/root/mldsa-authd-offhost`. Write the passphrase you
+kept into `/var/lib/mldsa-authd/pass` (mode 0600, owned by `mldsa-authd`) and
+run step 6, which encrypts it for *this* host and shreds the file. Install
+your `authd.conf` from the directory instead of the example in step 7, and do
+step 8. Then put the key and the store in place and start:
+
+```bash
+OFFHOST=/root/mldsa-authd-offhost                 # the copies, back on this host
+BACKUP=$OFFHOST/YYYY-MM-DD.sqlite3                # the store backup to restore
+sudo install -o mldsa-authd -g mldsa-authd -m 0600 $OFFHOST/server.ek /var/lib/mldsa-authd/server.ek
+sudo install -o mldsa-authd -g mldsa-authd -m 0644 $OFFHOST/server.pub /var/lib/mldsa-authd/server.pub
+sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
+sudo systemctl start mldsa-authd
+systemctl is-active mldsa-authd
+```
+
+`active`. Run `audit-verify` (step 12) and compare the head MAC with the one
+you recorded off the host for that backup; then steps 10 and, for the site,
+13–14. Clients need nothing: the server key is the one they pinned.
+
+What comes back is the store **as of that backup**:
+
+- A device enrolled after it is not there. Enrol it again (step 11).
+- A device that **rotated its key** after it (step 19) cannot log in: the
+  store holds the old public key and the device holds only the new secret.
+  Its login fails at `login-code`, and enrolling its current `.pub` under the
+  same handle is refused (`exists-different-key`). Make that device a new key
+  with `authd_client keygen` and enrol it as in step 11.
+- Sessions and recovery codes are as they were at the backup.
+
+If the daemon does not start and says `audit-chain-corrupt`, the `server.ek`
+is not the one this store was made with ("When it will not start", below).
+
+**How this step is rehearsed.** CI has one host, so it cannot lose it. The
+rehearsal takes a fresh backup and a fresh copy with step 12's commands,
+stops the daemon, deletes `server.ek`, `server.pub` and the store, and runs
+the block above; then the operator's device logs in with its unchanged pin
+and `audit-verify` verifies. The credential is not re-created there: on the
+same host the old one still opens, and step 6 is rehearsed in its own place.
 
 ---
 
