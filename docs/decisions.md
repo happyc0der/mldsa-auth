@@ -15666,3 +15666,17 @@ the suite; the throwing expression was run alone.
 
 Counts: 524 mutations, 80 campaigns, 566 anchors (unchanged, no C);
 234 findings; spec v1.55, 97 errata (unchanged).
+
+## V4-156: cleanup after V4-152, V4-154 and V4-155 landed
+
+No code. Written after V4-157 and V4-158, so it sits on top of them; its
+number is its place in the cadence.
+
+- `docs/review/REPRODUCE.md` cites the runs on `3138b38`, now main: CI
+  43572142183 (16/16), nightly 43572144105 (94/94, 79 campaigns).
+- Read for staleness and left alone: the runbook's step 12 (updated in
+  V4-154 for the new failure message), the README's workflow table (counts
+  follow the gate).
+
+Counts: 524 mutations, 80 campaigns, 566 anchors; 234 findings; spec v1.55,
+97 errata (all unchanged by this step).
