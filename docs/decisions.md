@@ -16828,3 +16828,27 @@ v125, RS1-RS2.
 
 Counts: 562 mutations, 95 campaigns, 604 anchors; 275 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-198: the specification states the order ROTATE is checked in (F276, erratum 102)
+
+**Read before written.** Spec 6.3: differs-from-old, unused, sig_old,
+sig_new, re-read. The code: handle, sig_old, sig_new, then
+`store_rotate_key`, whose transaction checks active device and user, the
+pinned old key, unchanged, and unused. The comment above the code and audit
+F37 both described the spec's order as the one in force.
+
+**Which is right.** The code's. F37 exists because asking the store first
+makes "that key is enrolled" visible in how long a refusal takes. With the
+signatures first, a peer reaches the store's refusal only with a signature
+by the key it names. So the erratum changes the document, the comment and
+F37's status, and no behaviour.
+
+**Now pinned.** The existing test compared the error code for "key in use"
+with the one for "bad signature", which is the same in either order. The
+new one sends both at once, an in-use key under a sig_new that does not
+verify, and reads the journal: `rotate-sig-new`, and no store refusal.
+RO1 removes the sig_new check; the store then refuses the key as in use
+and the journal says so.
+
+Counts: 563 mutations, 96 campaigns, 605 anchors; 276 findings; spec v1.60,
+102 errata.

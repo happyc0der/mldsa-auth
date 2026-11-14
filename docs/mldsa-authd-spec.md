@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.59, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168)
+# mldsa-authd — deployment specification (v1.60, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -297,13 +297,21 @@ the session, and that pin outlives the rotation: without it, the holder of the
 key being rotated *away from* could keep rotating, which is precisely the
 capability rotation is meant to end.
 
-**Acceptance order** (first failure wins, nothing is written until all pass):
+**Acceptance order** (first failure wins, nothing is written until all pass;
+erratum 102):
 session confirmed → not already rotated on this session → strict decode →
-handle equals the authenticated id →
-`pk_new` ≠ `pk_old` → `pk_new` unused by any device, in any state → verify
-`sig_old` against the session's key → verify `sig_new` against `pk_new` →
-re-read the store and confirm device and user are still active → one
-transaction (§9.3).
+handle equals the authenticated id → verify `sig_old` against the session's
+key → verify `sig_new` against `pk_new` → then, inside one transaction
+(§9.3): device and user still active, the device's active key still the one
+this session authenticated with, `pk_new` ≠ `pk_old`, `pk_new` unused by any
+device in any state.
+
+Both signatures come **before** anything is asked of the store about
+`pk_new`. Every refusal answers the same `ERROR(0x03)`; with the store asked
+first, how long a refusal took told an authenticated peer whether a key it
+named was enrolled somewhere. In this order that question is reached only
+with a valid `sig_new`, which only the holder of `pk_new`'s private half can
+make.
 
 ### 6.4 `ROTATE_ACK` (0x12)
 
@@ -1996,3 +2004,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 101 | 5 | Req 4 says recovery codes are stored as Argon2id hashes in §10.3's form, not as `crypto_pwhash_str` | erratum 57 (V4-76) changed the stored form to `$mrc1$<ops>$<mem>$<salt>$<hash>` with one salt per issue, and §10.3 says so; Req 4's wording was left behind. The requirement itself, never in the clear, is unchanged |
+
+### Revision v1.60 (V4-198)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 102 | 6.3 | The acceptance order of `ROTATE` is: both signatures first, then every store check inside the one transaction. §6.3 had the two `pk_new` checks (differs from `pk_old`; unused) before the signatures | the daemon has checked in this order since the store's rotation became one transaction that re-reads everything it relies on; the section, and the comment above the code, still stated the old order, and audit finding F37 recorded as an accepted residual a timing difference that order implied and this one does not have. No behaviour changes with this erratum: the text now says what is done, and `test_authd_conn` pins it |

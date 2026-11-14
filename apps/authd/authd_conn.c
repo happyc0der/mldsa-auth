@@ -540,8 +540,10 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
 
 /* Handles one ROTATE, already decrypted into `pt`.
  *
- * ACCEPTANCE ORDER is the spec's, first failure wins, nothing written until
- * all of it passes. What the PEER learns is one bit: it failed. Every
+ * ACCEPTANCE ORDER is the spec's (6.3, erratum 102), first failure wins,
+ * nothing written until all of it passes: decode, handle, sig_old, sig_new,
+ * and only then the store, which makes its own checks inside one
+ * transaction. What the PEER learns is one bit: it failed. Every
  * rejection below answers ERROR(0x03 REJECTED) -- handle mismatch, key in use,
  * either signature, the store's refusals -- because a distinct code for "that
  * public key is already enrolled" would hand any authenticated user an oracle
@@ -549,10 +551,10 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
  * 7.3's decoy flow exists to close. The fine-grained reason goes to the
  * operator's journal through `why`, which never reaches the wire.
  *
- * Known residual, recorded in docs/v4/audit.md rather than silently deviated
- * from: 6.3 orders the cheap store query BEFORE the ~100 us signature
- * verification, so "in use" is still distinguishable by TIMING even with a
- * uniform code. Reordering would contradict the spec. */
+ * Both signatures are verified BEFORE the store is asked anything about
+ * pk_new. With the store first, "that key is in use" was distinguishable by
+ * TIMING even with a uniform code (audit F37); in this order the question is
+ * reached only with a valid sig_new, which needs pk_new's private half. */
 static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c,
                              const uint8_t *pt, size_t pt_len)
 {

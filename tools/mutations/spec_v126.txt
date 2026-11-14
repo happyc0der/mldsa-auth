@@ -1,0 +1,1 @@
+RO1|^test_authd_conn$|rotate: ...for its signature: the journal says rotate-sig-new (erratum 102)
