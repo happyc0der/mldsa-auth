@@ -20,7 +20,9 @@ that must catch it (F90).
 import sys, pathlib
 CH = "apps/authd/authd_conn.h"
 CC = "apps/authd/authd_conn.c"
-LOOKUP = ("    if (store_lookup_active(app->store, handle, handle_len, pk, user_id, user_id_cap, user_id_len, NULL) == STORE_OK) {\n"
+# Since V4-163 (F239) the lookup's status is kept, so the lookup is two lines.
+LOOKUP = ("    g_pin_lookup = store_lookup_active(app->store, handle, handle_len, pk, user_id, user_id_cap, user_id_len, NULL);\n"
+          "    if (g_pin_lookup == STORE_OK) {\n"
           "        pin = 0;\n"
           "    } else if (store_get_decoy_pk(app->store, pk) == STORE_OK) {\n"
           "        *user_id_len = 0;\n"

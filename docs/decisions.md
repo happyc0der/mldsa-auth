@@ -15803,3 +15803,53 @@ No code. Written after V4-159, V4-160 and V4-162, so it sits on top of them.
 
 Counts: 530 mutations, 81 campaigns, 572 anchors; 238 findings; spec v1.56,
 98 errata.
+
+## V4-163: a failed store read during a handshake is said (F239)
+
+**The defect.** `authd_conn_resolve_pin` treated every answer of
+`store_lookup_active` except OK as "pin the decoy". For an unknown, revoked
+or disabled handle that is the uniform responder. For `database-error` or
+`store-corrupt` it is the same wire behaviour, which is also right, and no
+log line at all, which is not: the device's owner sees a refused login, the
+journal says `client-auth-failed`, and nothing anywhere says the store
+could not be read. At the F158 re-check the same failure was logged as
+`client-auth-key-changed`. Reproduced first.
+
+**The fix.** The status is kept in a file-static and read by
+`on_client_hello`, which logs `store-read-failed` at ERROR with the store's
+status name for anything that is neither found nor not-found, and carries
+on with the decoy. The re-check logs the same event and closes. The wire is
+untouched: no byte, count or close point differs, so nothing new can be
+learned by probing. A damaged row belongs to a handle that exists, which is
+exactly why the answer on the wire must stay the decoy's.
+
+**A new log event is a spec change** (the vocabulary gate went red on it):
+§15's list, a paragraph in §7.3, erratum 99, v1.57.
+
+**Why a static.** `authd_conn_resolve_pin` is also the benchmark's entry
+point and has a fixed signature in three callers; the daemon is one thread.
+
+**An older campaign re-anchored.** v87's FL3 (the floor's clock started
+after the lookup) anchored on the lookup's old single line. Re-anchored on
+the two it became; applied by hand it still fails its named check.
+
+**Tests.** `test_authd_localapi` `test_store_read_failure`, two cases on a
+one-byte key column written from a second connection. At ClientAuth: a
+handshake is taken to the point where the client has sent its ClientAuth
+and the daemon has not read it, the store is damaged, and the journal must
+hold one `store-read-failed` and no `client-auth-key-changed`. At
+ClientHello: a ServerHello still comes, no code, a second
+`store-read-failed`, and `client-auth-failed` after it. Campaign v112,
+SR1-SR4.
+
+**Two survivors, and what they showed.** The first form of the test let
+its canary login stop where `h_login` returns, which is before the daemon
+has read the ClientAuth. Damaging the store then made that half-finished
+login fail at the re-check, and ITS log line satisfied the check meant for
+the ClientHello site: SR1 and SR2 passed the whole suite. The canary now
+runs to its login code, the two sites are counted separately, and the
+accident became the ClientAuth case, which the audit row had first listed
+as impossible to pin.
+
+Counts: 534 mutations, 82 campaigns, 576 anchors; 239 findings; spec v1.57,
+99 errata.

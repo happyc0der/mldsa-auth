@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.56, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161)
+# mldsa-authd — deployment specification (v1.57, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -404,6 +404,14 @@ initialisation whose secret was discarded — and proceeds normally. The
 `ServerHello` is produced and signed as usual; the handshake then fails at
 `ClientAuth` with the same status, the same message count and the same close
 point as a valid identity presenting a wrong signature (Req 6).
+
+**A lookup that fails is not an identity that is absent** (erratum 99). When
+the store cannot be read at `ClientHello` the daemon still pins the decoy and
+proceeds, because the wire must not say which handles exist; and it logs
+`store-read-failed` at ERROR with the store's status in `detail=`. The same
+read is made again at `ClientAuth` (erratum 61); if it fails there the
+connection closes and the event is `store-read-failed`, not
+`client-auth-key-changed`.
 
 **Any failed `ClientAuth` closes the connection** (erratum 72), as spec-v2 §8
 item 4 requires: a bad signature, a malformed `ClientAuth` and a handshake-id
@@ -1212,7 +1220,7 @@ The handshake and the session (§6, §7.3):
 ```
 client-hello client-hello-malformed client-hello-rejected
 responder-init-failed decoy-unavailable server-hello-failed
-client-auth-failed client-auth-key-changed
+client-auth-failed client-auth-key-changed store-read-failed
 authenticated-without-identity
 login-code-issued login-code-failed
 record-refused record-rejected bye
@@ -1963,3 +1971,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 98 | 16 | The most open files a configuration can require is 4192 (`max_slots` 4096 + `max_local_slots` 64 + 32), not 4136 | 4136 is the figure at the default `max_local_slots = 8`; the bound on that setting is 64 (`AUTHD_LOCAL_SLOTS_MAX`). The unit's comment said the same. The conclusion, that the shipped unit needs no `LimitNOFILE`, is unchanged (F238) |
+
+### Revision v1.57 (V4-163)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 99 | 7.3, 15 | A store read that fails during a handshake is logged `store-read-failed` at ERROR with the store's status; at `ClientHello` the decoy is still pinned, at `ClientAuth` the connection closes | every outcome of the lookup but "found" pinned the decoy without a word, a failed read included: an enrolled device was refused as `client-auth-failed`, like a wrong key, and a store that could not be read left nothing in the journal; at `ClientAuth` the same failure was logged as `client-auth-key-changed`, a cause that had not happened (F239) |

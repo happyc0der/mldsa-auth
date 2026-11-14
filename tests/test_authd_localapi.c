@@ -2264,6 +2264,80 @@ static void test_store_write_failure(void)
     h_stop(&d);
 }
 
+static size_t count_of(const char *hay, const char *needle)
+{
+    size_t n = 0;
+    for (const char *q = hay; (q = strstr(q, needle)) != NULL; q += strlen(needle)) { n++; }
+    return n;
+}
+
+/* F239 (V4-163): a store READ that fails during a handshake is said.
+ *
+ * At ClientHello the daemon looks the handle up; anything but "found" pinned
+ * the decoy, a failed read included. On the wire that is right -- the answer
+ * must not say whether the handle exists -- but nothing was logged either:
+ * an enrolled device was refused as `client-auth-failed`, like a wrong key,
+ * and a store that could not be read left no trace in the journal. The read
+ * is failed here by a key column of the wrong length, written from a second
+ * connection. */
+static void test_store_read_failure(void)
+{
+    static const char DB[] = "rfail.sqlite3";
+    static const char DAMAGE[] =
+        "PRAGMA ignore_check_constraints=ON; UPDATE device_keys SET pk = x'00' WHERE status='active';";
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    if (f == NULL) { printf("SKIP: open_memstream unavailable\n"); return; }
+
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    uint8_t code[32];
+    CHECK(h_start(&d, g_dir, DB, 1) == 0, "rfail: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    /* The canary, run to its END: a login the daemon has not finished is the
+     * second case below, and left half way it would be mistaken for the
+     * first (it was: two mutants survived the first form of this test). */
+    { h_client_t c0;
+      CHECK(h_login(&d, &c0, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c0, code) == 0,
+            "rfail: the device logs in while the store reads (the canary)");
+      h_client_close(&c0); }
+
+    authd_log_init(f, AUTHD_LOG_INFO);
+
+    /* At ClientAuth. The handshake's first lookup succeeds; the store is
+     * damaged before the daemon reads the ClientAuth, so the SECOND lookup
+     * (F158's re-check) is the one that fails. It used to be logged as a key
+     * that had changed. */
+    h_client_t c1;
+    CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0, "rfail: a handshake reaches ClientAuth on the whole store");
+    CHECK(store_exec(DB, DAMAGE) == 0, "rfail: the active key's column is made unreadable");
+    CHECK(h_get_login_code(&d, &c1, code) != 0, "rfail: no login code when the re-check cannot read the store");
+    fflush(f);
+    CHECK(count_of(buf, "error event=store-read-failed") == 1u && strstr(buf, "detail=store-corrupt") != NULL &&
+          strstr(buf, "client-auth-key-changed") == NULL,
+          "rfail: a store read that fails at ClientAuth is logged as that, not as a changed key (F239)");
+    h_client_close(&c1);
+
+    /* At ClientHello, on the same damaged store. */
+    h_client_t c;
+    const int hs = h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp);
+    CHECK(hs == 0, "rfail: the handshake is answered as for any handle that is not active: a ServerHello comes (the decoy) (F239)");
+    CHECK(hs != 0 || h_get_login_code(&d, &c, code) != 0,
+          "rfail: no login code is issued on a key that cannot be read");
+    fflush(f);
+    CHECK(count_of(buf, "error event=store-read-failed") == 2u && count_of(buf, "detail=store-corrupt") == 2u,
+          "rfail: a store read that fails at ClientHello is logged as an error, with the store's status (F239)");
+    CHECK(strstr(buf, "event=client-auth-failed") != NULL,
+          "rfail: and it ends where a wrong key ends, at ClientAuth");
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    (void)fclose(f);
+    free(buf);
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2305,6 +2379,7 @@ int main(void)
     test_codes_outlive();
     test_revoke_ends_codes();
     test_store_write_failure();
+    test_store_read_failure();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

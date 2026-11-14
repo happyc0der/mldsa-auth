@@ -1,0 +1,4 @@
+SR1|^test_authd_localapi$|rfail: a store read that fails at ClientHello is logged as an error, with the store's status (F239)
+SR2|^test_authd_localapi$|rfail: a store read that fails at ClientHello is logged as an error, with the store's status (F239)
+SR3|^test_authd_localapi$|rfail: the handshake is answered as for any handle that is not active: a ServerHello comes (the decoy) (F239)
+SR4|^test_authd_localapi$|rfail: a store read that fails at ClientAuth is logged as that, not as a changed key (F239)

@@ -226,6 +226,11 @@ static int mono_ns(uint64_t *out)
 int authd_conn_pin_clock_now(uint64_t *now_ns);
 int authd_conn_pin_clock_now(uint64_t *now_ns) { return mono_ns(now_ns); }
 
+/* What the last pin lookup answered (F239). The decoy is pinned for every
+ * answer but "found", a failed read among them, and that is right on the
+ * wire; the caller reads this to SAY that a read failed, which nothing did. */
+static store_status_t g_pin_lookup = STORE_OK;
+
 int authd_conn_resolve_pin(authd_app_t *app, const uint8_t *handle, size_t handle_len,
                            uint8_t pk[STORE_PK_BYTES],
                            uint8_t *user_id, size_t user_id_cap, size_t *user_id_len)
@@ -234,7 +239,8 @@ int authd_conn_resolve_pin(authd_app_t *app, const uint8_t *handle, size_t handl
     uint64_t t0 = 0, t = 0;
     const int timed = (now(&t0) == 0);
     int pin;
-    if (store_lookup_active(app->store, handle, handle_len, pk, user_id, user_id_cap, user_id_len, NULL) == STORE_OK) {
+    g_pin_lookup = store_lookup_active(app->store, handle, handle_len, pk, user_id, user_id_cap, user_id_len, NULL);
+    if (g_pin_lookup == STORE_OK) {
         pin = 0;
     } else if (store_get_decoy_pk(app->store, pk) == STORE_OK) {
         *user_id_len = 0;
@@ -278,6 +284,14 @@ static ev_action_t on_client_hello(authd_app_t *app, authd_slot_t *slot, authd_c
     if (pin < 0) {
         authd_log_slot(AUTHD_LOG_ERROR, "decoy-unavailable", slot->index);
         return EV_ACTION_CLOSE;
+    }
+    /* F239: "not found" is an answer; anything else that is not "found" is a
+     * store that could not be read. The handshake goes on with the decoy, as
+     * for any handle that is not active -- the wire must not say which -- and
+     * the journal says what happened, which it did not: an enrolled device
+     * was refused as client-auth-failed with no store error anywhere. */
+    if (g_pin_lookup != STORE_OK && g_pin_lookup != STORE_ERR_NOT_FOUND) {
+        authd_log_slot_detail(AUTHD_LOG_ERROR, "store-read-failed", slot->index, store_status_name(g_pin_lookup));
     }
     if (pin == 0) {
         c->decoy = 0;
@@ -486,6 +500,12 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
                           owner_len == c->user_id_len &&
                           sodium_memcmp(owner, c->user_id, owner_len) == 0);
         sodium_memzero(cur, sizeof cur);
+        if (ls != STORE_OK && ls != STORE_ERR_NOT_FOUND) {
+            /* F239: a read that failed is not a key that changed. */
+            authd_log_slot_detail(AUTHD_LOG_ERROR, "store-read-failed", slot->index, store_status_name(ls));
+            app->handshakes_failed++;
+            return EV_ACTION_CLOSE;
+        }
         if (!same) {
             authd_log_slot(AUTHD_LOG_INFO, "client-auth-key-changed", slot->index);
             app->handshakes_failed++;
