@@ -16852,3 +16852,22 @@ and the journal says so.
 
 Counts: 563 mutations, 96 campaigns, 605 anchors; 276 findings; spec v1.60,
 102 errata.
+
+## V4-199: cleanup after V4-186 to V4-189 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `4230fd4`, now main: CI
+  43640936797 (16/16), nightly 43640939815 (108/108, 93 campaigns).
+- Main's push CI on the landing before it, 43640908714 on `b35f0b0`: 16/16.
+- V4-190 to V4-198 were written while that branch was in CI and sit under
+  this entry. V4-190 to V4-193 have already been through CI once, on a
+  branch pushed early for the runbook's sake (43642585917, 16/16, both
+  runbook jobs); the whole stack goes to CI and the nightly now as one
+  branch.
+- Open for the owner, unchanged by this step: F273 (what the unit should do
+  with a refused configuration), and the site's one login state per
+  session (V4-187's notes).
+
+Counts: 563 mutations, 96 campaigns, 605 anchors; 276 findings; spec v1.60,
+102 errata (all unchanged by this step).
