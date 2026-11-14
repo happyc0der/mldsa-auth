@@ -1,0 +1,2 @@
+UC1|^test_handshake$|step4 store: an insert at an unreadable clock is refused (F250)
+UC2|^test_handshake$|step4 store: an insert at an unreadable clock is refused (F250)

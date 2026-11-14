@@ -189,6 +189,12 @@ pending_status_t handshake_pending_insert(handshake_pending_store_t *s,
     }
 
     const uint64_t now = store_now(s);
+    /* V4-176, F250: an unreadable clock stores nothing. The deadline below
+     * would saturate to UINT64_MAX, and once the clock read again no time
+     * could reach it: the entry would hold its slot until consumed. */
+    if (now == UINT64_MAX) {
+        return PENDING_ERR_EXPIRED;
+    }
     /* Saturating add: an overflowed deadline would otherwise wrap to a small
      * value and the entry would never expire (fail open). */
     const uint64_t deadline = (now > UINT64_MAX - s->ttl_ms) ? UINT64_MAX : now + s->ttl_ms;

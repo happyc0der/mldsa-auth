@@ -213,7 +213,9 @@ void handshake_pending_store_wipe(handshake_pending_store_t *s);
 /* Sweeps expired entries first, then inserts an ACTIVE entry with
  * deadline = now + ttl (saturating). Never evicts a live, unexpired entry
  * to make room -> PENDING_ERR_FULL. A handshake_id already present ->
- * PENDING_ERR_INVALID_ARG. */
+ * PENDING_ERR_INVALID_ARG. An unreadable clock (UINT64_MAX) ->
+ * PENDING_ERR_EXPIRED with nothing stored: an entry made then could never
+ * expire once the clock read again (F250). */
 pending_status_t handshake_pending_insert(handshake_pending_store_t *s,
                                           const uint8_t handshake_id[WIRE_HANDSHAKE_ID_LEN],
                                           const uint8_t th_client_auth[HANDSHAKE_TRANSCRIPT_HASH_BYTES]);

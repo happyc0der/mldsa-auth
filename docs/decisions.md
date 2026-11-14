@@ -16204,3 +16204,40 @@ campaign: hand mutations M1-M7 with the two files restored byte for byte.
 
 Counts: 546 mutations, 87 campaigns, 588 anchors (unchanged); 249 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-176: the ledger stores nothing while its clock cannot be read (F250)
+
+**What was wrong.** The ledger's deadline is `now + ttl`, saturating at
+`UINT64_MAX`. The default clock answers `UINT64_MAX` when it cannot be
+read, and the header says that makes every entry read as expired. It does,
+for entries that already exist. An entry inserted during the failure got
+the deadline `UINT64_MAX` itself, and after the clock came back no reading
+is ever `>=` that.
+
+**The fix.** `handshake_pending_insert` refuses at `now == UINT64_MAX` and
+stores nothing. `PENDING_ERR_EXPIRED` is the status: the entry would be
+expired at the only time the ledger can see. The one caller maps every
+status but FULL to an internal error, which is what a responder without a
+clock should answer.
+
+**The existing test stays.** `insert near UINT64_MAX` (ten milliseconds
+short of it) still succeeds and still expires when the clock reaches the
+end: that is the saturating add, a different case.
+
+**The daemon's own clock, not changed.** `now_ms()` in `authd_main.c`
+answers 0 on a failed read, not `UINT64_MAX`. Read through for what 0 does:
+ledger entries and connection deadlines made earlier do not fire until the
+clock returns and then fire at once; the rate limiter refills nothing; a
+session whose clock went backwards is expired (S16); token lifetimes use
+the wall clock and are not involved. Nothing is admitted that a readable
+clock would refuse, so it is left as it is. `CLOCK_MONOTONIC` failing on a
+running Linux system is not something that has been observed; this is about
+what the code states, which the header's "fails CLOSED" now matches.
+
+**Tests.** `test_handshake`: the insert is refused; nothing is in the
+ledger; nothing is alive a thousand lifetimes later; with the clock back
+the same id is inserted. Before the fix all four failed. Campaign v118,
+UC1-UC2.
+
+Counts: 548 mutations, 88 campaigns, 590 anchors; 250 findings; spec v1.59,
+101 errata (unchanged).

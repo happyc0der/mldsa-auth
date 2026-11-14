@@ -3531,6 +3531,26 @@ static void test_step4_store_api(void) {
     CHECK(handshake_pending_get_digest(&s, h, scratch) == PENDING_ERR_EXPIRED,
           "step4 store: saturating deadline -- the entry expires instead of wrapping to 'never'");
     handshake_pending_store_wipe(&s);
+    /* V4-176, F250: an entry inserted WHILE the clock is unreadable. Its
+     * deadline saturated to UINT64_MAX, and when the clock came back no
+     * reading could reach it: the entry lived until something consumed it,
+     * holding a slot of a ledger that never evicts a live entry. The insert
+     * is refused instead, and nothing is stored. */
+    clock_reset();
+    store_fresh(&s, 2);
+    g_clock.now = UINT64_MAX;
+    const pending_status_t blind = handshake_pending_insert(&s, h, th);
+    CHECK(blind == PENDING_ERR_EXPIRED, "step4 store: an insert at an unreadable clock is refused (F250)");
+    g_clock.now = TEST_BASE_MS;
+    CHECK(handshake_pending_active_count(&s) == 0 &&
+              handshake_pending_get_digest(&s, h, scratch) == PENDING_ERR_NOT_FOUND,
+          "step4 store: and it left nothing in the ledger (F250)");
+    g_clock.now = TEST_BASE_MS + 1000u * TEST_TTL_MS;
+    CHECK(handshake_pending_get_digest(&s, h, scratch) != PENDING_OK,
+          "step4 store: nothing inserted at an unreadable clock is alive a thousand lifetimes later (F250)");
+    CHECK(handshake_pending_insert(&s, h, th) == PENDING_OK && handshake_pending_active_count(&s) == 1,
+          "step4 store: with the clock readable again the same id is inserted (the canary)");
+    handshake_pending_store_wipe(&s);
 }
 
 static void run_step4_tests(void) {
