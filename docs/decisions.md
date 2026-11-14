@@ -16348,3 +16348,22 @@ EXISTS. Campaign v120, ST1-ST2.
 
 Counts: 552 mutations, 90 campaigns, 594 anchors; 253 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-180: cleanup after V4-174 to V4-177 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `6aaa74f`, now main: CI
+  43617436745 (16/16), nightly 43617439294 (103/103, 88 campaigns).
+- Main's own push CI, 43622502645, was 15/16 on its first attempt and 16/16
+  on a rerun of the failed job. `authd_e2e` failed on `macos-26·clang·asan`
+  in the F219 leg: `attempts: [void] [void] [void] [void] [void] [void]
+  [void] [void]`. "void" is the leg's word for a reply that arrived before
+  the test sent SIGTERM. The leg sleeps 20 ms between the request and the
+  signal and assumes the daemon's Argon2id takes longer; on that runner, in
+  that minute, it did not, eight times. The same commit passed the same job
+  on the branch. It is the test's assumption, recorded as F254 and repaired
+  in V4-181.
+
+Counts: 552 mutations, 90 campaigns, 594 anchors; 253 findings; spec v1.59,
+101 errata (all unchanged by this step).
