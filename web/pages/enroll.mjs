@@ -17,9 +17,23 @@ document.body.dataset.ready = '1';
 
 action('go', async () => {
   const passphrase = secret('passphrase');     // emptied whatever happens next (F237)
+  // The invitation is the site's secret: read once and emptied, like the
+  // passphrase (V4-188).
+  const invite = secret('invite');
   try {
     const sess = await session();
-    if (!sess.recovering) { await post('/api/signup', { user: val('user'), invite: val('invite') }); }
+    // V4-188, F267: with a recovery in progress the key goes to the account
+    // being recovered -- the site holds that account's ticket -- and the name
+    // and invitation typed here were silently ignored. Someone signing up
+    // under their own name at a browser where another person's recovery was
+    // still open got a device on that person's account. A different name is
+    // now refused, before any key is made.
+    if (sess.recovering) {
+      const problem = flows.recoveryNameProblem(val('user'), sess.recoveringUser);
+      if (problem) { throw new Error(problem); }
+    } else {
+      await post('/api/signup', { user: val('user'), invite });
+    }
     // A 4xx is the site's refusal: the key was not enrolled, and flows.enroll
     // removes it. Anything else -- no answer, a 5xx -- says nothing about
     // whether it was, and the key is kept, marked unconfirmed (F220).

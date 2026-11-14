@@ -461,7 +461,21 @@ try {
                  document.getElementById('go').click();`);
   await b2.waitFor("location.pathname === '/enroll.html' && document.body.dataset.ready === '1'",
                    'the redirect to enroll after a recovery code is accepted');
-  r = await act(b2, 'enroll.html', { passphrase: PASS });
+  // V4-188, F267: with a recovery in progress the enroll page ignored the
+  // account name and the invitation and enrolled the key into the RECOVERING
+  // account. Someone who sat down at that browser inside the session's
+  // lifetime and "signed up" under their own name got a device on the other
+  // person's account, and spent that person's recovery ticket.
+  r = await act(b2, 'enroll.html', { user: 'mallory', invite: INVITE, passphrase: PASS });
+  { const keys = await inPage(b2, 'return (await store.list()).length;');
+    const still = await b2.eval("fetch('/api/session').then((x) => x.json()).then((j) => j.recovering)");
+    check(r.result.startsWith('error') && /recovering alice/.test(r.status) && !/Enrolled/.test(r.status),
+          `recovery: a different account name typed during a recovery is refused, and says whose recovery it is (${r.status}) (F267)`);
+    check(keys === 0, `recovery: and no key was made for it (${keys} in the store) (F267)`);
+    check(still === true, 'recovery: and the recovery is still there to finish (F267)');
+    const left = await b2.eval("document.getElementById('invite').value.length + document.getElementById('passphrase').value.length");
+    check(left === 0, `recovery: the invitation and the passphrase typed for it are not left in their fields (${left} characters) (F267)`); }
+  r = await act(b2, 'enroll.html', { passphrase: PASS });      // no name: the recovery being finished
   check(r.result === 'ok' && /Enrolled alice/.test(r.status), `recovery: a fresh profile enrolls a new device with a code (${r.status})`);
   r = await act(b2, 'login.html', { passphrase: PASS });
   check(r.result === 'ok' && /Logged in as alice/.test(r.status), 'recovery: and the new device logs in');

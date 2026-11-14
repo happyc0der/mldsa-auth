@@ -469,6 +469,18 @@ try {
     for (const c of held) { c.destroy(); }
     await new Promise((r) => mute.close(r)); }
 
+  // V4-188, F267: which account names may be typed while a recovery is open.
+  { const cases = [['', null], ['   ', null], [undefined, null], ['alice', null], [' alice ', null],
+                   ['mallory', /recovering alice/], ['Alice', /recovering alice/], ['alice2', /recovering alice/]];
+    const wrong = cases.filter(([typed, want]) => {
+      const got = flows.recoveryNameProblem(typed, 'alice');
+      return want === null ? got !== null : !(typeof got === 'string' && want.test(got));
+    });
+    check(wrong.length === 0, `recovery name: ${cases.length - wrong.length}/${cases.length} names judged as expected` +
+          (wrong.length ? ` (wrong: ${wrong.map(([t]) => JSON.stringify(t)).join(', ')})` : '') + ' (F267)');
+    check(flows.recoveryNameProblem('alice', undefined) !== null && flows.recoveryNameProblem('', undefined) === null,
+          'recovery name: with no recovering account named by the site, only an empty name passes (F267)'); }
+
   // V4-187, F266: Session.rotate copied the passphrase into the module and
   // then read the clock outside any try: a refused clock left the copy there.
   { const { store, params } = await fresh();

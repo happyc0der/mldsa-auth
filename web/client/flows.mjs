@@ -240,6 +240,18 @@ export async function rotate(client, store, offered, events = () => {}) {
   return store.exclusive(params.handle, () => rotateHeld(client, store, params, events));
 }
 
+// May a key be enrolled under the account name typed, while this browser's
+// session holds a recovery for `recoveringUser`? (V4-188, F267.) The site
+// enrolls into the recovering account whatever is typed, so a DIFFERENT name
+// is refused before any key is made; no name, or that account's own, is the
+// recovery being finished. Returns null, or the reason to show.
+export function recoveryNameProblem(typed, recoveringUser) {
+  const name = String(typed ?? '').trim();
+  if (name === '' || name === recoveringUser) { return null; }
+  return `this browser is recovering ${recoveringUser}; a new key here would be added to that account. ` +
+         'Leave the account name empty to finish that recovery, or close this browser\'s session first';
+}
+
 async function rotateHeld(client, store, params, events) {
   const envelope = await resolveHeld(client, store, params.handle, params, events);
   const r = await store.get(params.handle);

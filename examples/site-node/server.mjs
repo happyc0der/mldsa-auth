@@ -375,7 +375,11 @@ export async function startSite(opt) {
     'GET /api/session': async (req, res, s) => {
       s.state = randomBytes(16).toString('hex');
       send(res, 200, { state: s.state, serverId: opt.serverId, serverPub: serverPubHex,
-                       user: s.user, signupUser: s.signupUser, recovering: !!s.ticket });
+                       user: s.user, signupUser: s.signupUser, recovering: !!s.ticket,
+                       // Whose recovery this session holds (V4-188, F267): the
+                       // enroll page says so, and refuses another name. It is
+                       // the name this session's own visitor typed.
+                       recoveringUser: s.ticket ? s.ticket.user : undefined });
     },
     'POST /api/login': async (req, res, s) => {
       const { code } = await body(req);

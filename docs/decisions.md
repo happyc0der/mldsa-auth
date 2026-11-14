@@ -16585,3 +16585,32 @@ byte.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 266 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-188: a recovery in progress is not a signup (F267)
+
+**Where the check lives.** In the page, because only the page knows what
+was typed: the site's enroll route never sees a name, it uses the session's
+ticket or its vouched signup. The site's part is one field in its session
+answer, the account its ticket is for, which is the name this session's own
+visitor typed into the recover page.
+
+**The rule is a function.** `flows.recoveryNameProblem(typed, user)`: no
+name or the recovering account's own name passes; anything else is the
+message. The first version was three lines in the page, and hand mutation
+K4 (refuse an empty name as well) passed the browser test, which had been
+changed to type the name. As a function it is checked on ten inputs, and
+the browser's recovery again types none.
+
+**What it does not do.** It does not end the abandoned recovery; the page
+says to finish it or close the session. A way to abandon a recovery from
+the page would be a new route, and the ticket expires by itself in ten
+minutes at the daemon.
+
+**Cleanup step.** By the loop's count this was to be one. The branch whose
+runs it would cite was still in CI; it follows the landing.
+
+**Tests.** `browser_e2e`, `web_flows`. No C touched: hand mutations K1-K3,
+L1-L4, files restored byte for byte.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 267 findings;
+spec v1.59, 101 errata (unchanged).
