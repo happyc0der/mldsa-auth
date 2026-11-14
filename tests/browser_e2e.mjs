@@ -224,6 +224,21 @@ try {
     const left = await b.eval("document.getElementById('passphrase').value");
     check(/^error: the site is unreachable/.test(r.result) && left === '',
           `early failure: a login that could not reach the site reports it and leaves no passphrase in the field (${r.result}; ${left.length} characters left) (F237)`);
+    // V4-190, F268: the site ANSWERS, and not with a session. session() read
+    // the body as JSON whatever the status: a proxy's 502 page gave the
+    // visitor a JSON parse error, and a JSON refusal gave them "Cannot read
+    // properties of undefined", from deep inside the login that followed.
+    { const ANSWER = (status, type, body) => `const f = window.fetch; window.fetch = (u, ...a) => (String(u).includes('/api/session')
+        ? Promise.resolve(new Response(${JSON.stringify(body)}, { status: ${status}, headers: { 'Content-Type': '${type}' } })) : f(u, ...a));`;
+      for (const [what, stub, wants] of [
+        ['a proxy\'s 502 page', ANSWER(502, 'text/html', '<html><body>Bad Gateway</body></html>'), /^error: the site did not answer \(HTTP 502\)/],
+        ['a JSON refusal', ANSWER(403, 'application/json', '{"error":"cross-site request refused"}'), /^error: the site refused: cross-site request refused/],
+        ['a 200 that is not a session', ANSWER(200, 'application/json', '{"hello":1}'), /^error: the site did not answer with a session/] ]) {
+        r = await act(b, 'login.html', { passphrase: PASS }, 'go', stub);
+        const leftNow = await b.eval("document.getElementById('passphrase').value");
+        check(wants.test(r.result) && leftNow === '',
+              `early failure: /api/session answering ${what} is reported as that (${r.result.slice(0, 110)}) (F268)`);
+      } }
     await b.navigate(`${origin}/account.html`);
     await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
     await b.eval(`(() => { delete document.body.dataset.result; ${STUB('/api/logout')} document.getElementById('logout').click(); })()`);

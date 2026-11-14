@@ -30,9 +30,21 @@ export async function boot() {
 }
 
 // A FRESH state for every login: the site binds it into the code (Req 5).
+// What the site answered is CHECKED (V4-190, F268). The body was read as
+// JSON whatever the status, so a proxy's 502 page reached the visitor as a
+// JSON parse error, and a refusal -- valid JSON, no state in it -- as "Cannot
+// read properties of undefined", thrown from inside the login that followed.
 export async function session() {
   const r = await fetch('/api/session', { cache: 'no-store' });
-  return r.json();
+  const j = await r.json().catch(() => null);
+  if (!r.ok) {
+    throw new Error(j && typeof j.error === 'string' ? `the site refused: ${j.error}`
+                                                     : `the site did not answer (HTTP ${r.status}); try again in a moment`);
+  }
+  if (!j || typeof j.state !== 'string' || typeof j.serverId !== 'string' || typeof j.serverPub !== 'string') {
+    throw new Error('the site did not answer with a session; reload the page');
+  }
+  return j;
 }
 
 export function loginParams(sess, handle, passphrase) {

@@ -16632,3 +16632,19 @@ No code.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors; 267 findings; spec v1.59,
 101 errata (all unchanged by this step).
+
+## V4-190: the pages check what the site answered (F268)
+
+`post()` has always checked `r.ok`; `session()`, the one GET every action
+starts with, did not. The three answers it can get that are not a session
+now each have their own sentence: a refusal with the site's reason, no
+answer with the status, and a 200 that lacks the three fields a login
+needs. The last is checked by type, not by presence, because the next line
+of every caller turns `serverPub` from hex and puts `state` into a URL.
+
+**Tests.** `browser_e2e`, three checks beside F237's "site unreachable"
+case, which is the fetch itself failing and was already reported well.
+Hand mutations N1-N3.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 268 findings;
+spec v1.59, 101 errata (unchanged).
