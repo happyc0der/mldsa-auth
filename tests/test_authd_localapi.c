@@ -2253,9 +2253,22 @@ static void test_store_write_failure(void)
             "wfail: EXCHANGE issues no token when the user's role cannot be read (F228)");
       CHECK(starts(resp, "ERR code=internal"),
             "wfail: EXCHANGE whose role lookup fails answers internal (F228)");
+      /* VERIFY (F241), on the same unreadable role, with the token issued at
+       * the top of this test. store_verify_token discarded the status of the
+       * role's conversion and left the role at the zeroed struct's value --
+       * which is OPERATOR. An ordinary user's valid token was answered
+       * `role=operator`: the more privileged guess, to a site that grants
+       * by it. */
+      CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && strstr(resp, "role=operator") == NULL,
+            "wfail: VERIFY does not answer role=operator for a user whose role cannot be read (F241)");
+      CHECK(starts(resp, "ERR code=internal"),
+            "wfail: VERIFY whose role cannot be read answers internal, not a verdict (F241)");
       CHECK(store_exec(DB, "UPDATE users SET role='user';") == 0, "wfail: the role is restored");
       CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
             "wfail: the code that met the failure is spent; the user logs in again");
+      CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "OK user=") &&
+            strstr(resp, " role=user ") != NULL,
+            "wfail: with the role readable again the same token verifies as role=user (the canary)");
       h_client_close(&c2); }
 
     (void)close(fd);

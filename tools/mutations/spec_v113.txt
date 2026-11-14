@@ -1,0 +1,2 @@
+VT1|^test_authd_localapi$|wfail: VERIFY does not answer role=operator for a user whose role cannot be read (F241)
+VT2|^test_authd_localapi$|wfail: VERIFY whose role cannot be read answers internal, not a verdict (F241)

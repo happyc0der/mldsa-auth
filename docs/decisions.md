@@ -15889,3 +15889,37 @@ No code. Written after V4-163 and V4-164, so it sits on top of them.
 
 Counts: 534 mutations, 82 campaigns, 576 anchors; 240 findings; spec v1.57,
 99 errata (all unchanged by this step).
+
+## V4-166: VERIFY does not guess the privileged role (F241)
+
+**The defect.** In `store_verify_token`: `memset(info, 0, …)`, then
+`(void)role_from_text(role_t, &info->role)`. `STORE_ROLE_OPERATOR` is 0. An
+unknown role string leaves the field at zero, so a valid token of an
+ordinary user verified as an operator's. The site reads `role=` to decide
+what a session may do. F228 fixed this status in `EXCHANGE` and its row
+said which other discarded statuses had been read; this one was not among
+them. Reproduced first with F228's fixture.
+
+**Severity.** Medium, not Low: the failure direction is toward privilege.
+It still needs a role value that no write of the store's produces.
+
+**The fix.** The conversion's status and the two id copies set a flag. The
+verdict is computed as before; only a token that would otherwise be OK is
+turned into `STORE_ERR_DAMAGED`, which `h_verify` already answers as
+`internal`. So a revoked device or a disabled user on a damaged row is
+still refused by name, and the site still ends that session; and a role
+that cannot be read never reaches the reply. Where there is no user row at
+all the role is set to `user` explicitly, never left at zero.
+
+**Why not change the enum's zero.** `STORE_ROLE_OPERATOR = 0` is in the
+store's header and in tests; renumbering it is a wider change than this
+finding needs, and the flag closes the path either way.
+
+**Tests.** In `test_store_write_failure`'s unreadable-role block: `VERIFY`
+of the token issued earlier is not `role=operator` and is `internal`; with
+the role restored it is `OK … role=user`. Campaign v113, VT1-VT2.
+
+**Read and left.** `store_list_users` shows an unreadable role as `user`.
+
+Counts: 536 mutations, 83 campaigns, 578 anchors; 241 findings; spec v1.57,
+99 errata (unchanged).

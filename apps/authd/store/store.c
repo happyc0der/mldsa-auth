@@ -1757,7 +1757,7 @@ store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HAS
         return STORE_ERR_DB;
     }
     store_status_t r = STORE_OK;
-    int found = 0;
+    int found = 0, unreadable = 0;
     int64_t expires = 0, idle = 0;
     const char *dev_status = NULL, *usr_status = NULL;
     char dev_buf[16] = {0}, usr_buf[16] = {0};
@@ -1769,8 +1769,10 @@ store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HAS
         if (rc == SQLITE_ROW) {
             found = 1;
             if (info != NULL) {
-                (void)copy_blob_col(st, 0, info->user_id, sizeof info->user_id, &info->user_id_len);
-                (void)copy_blob_col(st, 1, info->handle, sizeof info->handle, &info->handle_len);
+                if (copy_blob_col(st, 0, info->user_id, sizeof info->user_id, &info->user_id_len) != STORE_OK ||
+                    copy_blob_col(st, 1, info->handle, sizeof info->handle, &info->handle_len) != STORE_OK) {
+                    unreadable = 1;
+                }
                 info->issued_at = sqlite3_column_int64(st, 2);
             }
             expires = sqlite3_column_int64(st, 3);
@@ -1778,8 +1780,18 @@ store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HAS
             if (info != NULL) {
                 info->expires_at = expires;
                 info->idle_expires_at = idle;
+                /* F241: the status of this conversion was discarded, and the
+                 * zeroed struct's role is OPERATOR. A role the store does not
+                 * know left it there, and a user's valid token verified as an
+                 * operator's. A row with no user (the LEFT JOIN's NULL) is
+                 * the verdict's business, below; a role that IS there and
+                 * cannot be read is a store that cannot answer. */
                 const unsigned char *role_t = sqlite3_column_text(st, 5);
-                if (role_t != NULL) { (void)role_from_text(role_t, &info->role); }
+                if (role_t != NULL && role_from_text(role_t, &info->role) != STORE_OK) {
+                    unreadable = 1;
+                    info->role = STORE_ROLE_USER;       /* whatever happens next, not the zero */
+                }
+                if (role_t == NULL) { info->role = STORE_ROLE_USER; }   /* never the privileged default */
             }
             const unsigned char *d = sqlite3_column_text(st, 6);
             const unsigned char *u = sqlite3_column_text(st, 7);
@@ -1816,6 +1828,17 @@ store_status_t store_verify_token(store_t *s, const uint8_t token_hash[STORE_HAS
     if (now >= idle) {
         *verdict = STORE_TOKEN_IDLE_EXPIRED;
         return STORE_OK;
+    }
+
+    /* The token would verify. A row that could not be read in full cannot be
+     * answered OK (F241); the refusals above did not need it, and a revoked
+     * device or a disabled user is still told as that. */
+    if (unreadable) {
+        if (info != NULL) {
+            memset(info, 0, sizeof *info);
+            info->role = STORE_ROLE_USER;
+        }
+        return STORE_ERR_DAMAGED;      /* the caller answers `internal` (spec 8, erratum 96) */
     }
 
     /* Slide the idle window, capped by the absolute lifetime. */
