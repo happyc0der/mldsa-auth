@@ -240,7 +240,27 @@ POST = {
          # list-users prints ids in hex
          "U=$(printf browser-user | od -An -tx1 | tr -d ' \\n'); "
          "echo \"browser-user-before=$(grep -c \"user=$U \" /tmp/users.before) after-restore=$(grep -c \"user=$U \" /tmp/users.after)\""],
-    9: ["sleep 1; journalctl -u mldsa-authd --no-pager -n 30 | tee /tmp/j9.txt"],
+    9: ["sleep 1; journalctl -u mldsa-authd --no-pager -n 30 | tee /tmp/j9.txt",
+        # V4-193: a MEASUREMENT, not yet a claim. What does this unit do when
+        # the configuration is refused (exit 3, from ExecStartPre and from the
+        # daemon)? Restart=on-failure with RestartSec=2s and no start limit
+        # reads as "for ever, every two seconds, and never listed as failed";
+        # the eighth reviewer said so from the unit's text. The numbers are
+        # printed here so that the unit is changed on what systemd does. The
+        # configuration is put back and the daemon must be active again, or
+        # every later step fails.
+        "sudo cp -p /etc/mldsa-authd/authd.conf /tmp/authd.conf.good; "
+        "echo 'max_slots = banana' | sudo tee -a /etc/mldsa-authd/authd.conf > /dev/null; "
+        "sudo systemctl restart mldsa-authd > /dev/null 2>&1 || true; sleep 12; "
+        "echo \"MEASURED bad-config after 12 s: active=$(systemctl is-active mldsa-authd || true) "
+        "sub=$(systemctl show -p SubState --value mldsa-authd) "
+        "result=$(systemctl show -p Result --value mldsa-authd) "
+        "restarts=$(systemctl show -p NRestarts --value mldsa-authd) "
+        "listed-failed=$(systemctl --failed --no-legend | grep -c mldsa-authd || true)\"; "
+        "sudo cp -p /tmp/authd.conf.good /etc/mldsa-authd/authd.conf; "
+        "sudo systemctl reset-failed mldsa-authd || true; "
+        "sudo systemctl restart mldsa-authd; "
+        "echo \"after-repair=$(systemctl is-active mldsa-authd)\""],
     14: [
         # The pages are served through Caddy, and the site reaches site.sock:
         # a session is opened, then a bogus code is EXCHANGEd and the DAEMON
@@ -267,7 +287,9 @@ EXPECT = {
     # shredded -- 32 bytes as one base64 line.
     6: [r"(?m)^[A-Za-z0-9+/]{43}=$"],
     9: [r"proxy_protocol=v2", r"event=started", r"event=listening-",
-        r"event=memlock-limit"],
+        r"event=memlock-limit",
+        r"(?m)^MEASURED bad-config after 12 s: active=\S+ sub=\S+ result=\S+ restarts=\d+ listed-failed=\d+$",
+        r"(?m)^after-repair=active$"],
     11: [r"(?m)^[A-Za-z0-9_-]{43}$"],
     # The audit unit's lines come from authd_admin[pid], not from the unit's
     # name; `journalctl -u mldsa-authd-audit` is what scopes them to it.

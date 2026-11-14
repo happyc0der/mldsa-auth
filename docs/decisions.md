@@ -16711,3 +16711,28 @@ Hand mutations P1-P3 on the relay.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 271 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-193: measure what the unit does with a refused configuration
+
+No finding yet, and no change to the unit. The eighth reviewer read
+`Restart=on-failure`, `RestartSec=2s` and no start limit as: a
+configuration the daemon refuses (exit 3) is retried every two seconds for
+ever, the unit sits in `activating (auto-restart)`, and `systemctl
+--failed` never lists it. That is a reading of a unit file, and this
+repository's rule since V4-99 is to measure systemd, not to reason about
+it.
+
+The rehearsal now does, after step 9: appends a bad value to `authd.conf`,
+restarts, waits twelve seconds, and prints the unit's active state,
+sub-state, result, restart count and whether `--failed` lists it; then
+puts the file back and requires the daemon to be active again. The line is
+required to be printed; its values are not yet required to be anything.
+
+What is decided from the numbers: whether `RestartPreventExitStatus=3`
+stops the loop when the refusal comes from `ExecStartPre=` (systemd's
+documentation speaks of the main process only), and whether a start limit
+is wanted at all, which changes how a crashing daemon is treated and is
+the owner's call.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors; 271 findings; spec v1.59,
+101 errata (all unchanged).
