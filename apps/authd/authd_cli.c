@@ -696,21 +696,6 @@ static int cmd_backup(int argc, char **argv, const char *prog)
  * "mldsa-authd/v1/audit-mac")): verifying it without the key would verify
  * nothing. The root key is wiped as soon as the store
  * holds its derived key, exactly as the daemon and `init` do. */
-/* The chain's length, which store_audit_verify has just proven is also the
- * highest seq: it walks every row and fails on a gap or a reorder, so after it
- * returns OK the last row's seq IS the number of entries. Printing it matters
- * because an EMPTY chain verifies trivially, and "the audit chain verifies"
- * with nothing behind it is the most misleading thing this command could say. */
-static int audit_last_seq(void *ctx, int64_t seq, int64_t at, const char *event,
-                          const uint8_t *user_id, size_t user_id_len,
-                          const uint8_t *handle, size_t handle_len, const char *detail)
-{
-    (void)at; (void)event; (void)user_id; (void)user_id_len;
-    (void)handle; (void)handle_len; (void)detail;
-    *(int64_t *)ctx = seq;
-    return 0;
-}
-
 static int cmd_audit_verify(int argc, char **argv, const char *prog)
 {
     const char *db = NULL, *ek = NULL, *pass_path = NULL, *server_id = NULL;
@@ -760,28 +745,38 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
         return failed(prog, "audit-verify", db, store_status_name(so));
     }
 
-    uint8_t head[STORE_AUDIT_MAC_BYTES];
-    const store_status_t hv = store_audit_head_mac(store, head);
-    const store_status_t vv = store_audit_verify(store);
+    /* The verdict, the count and the head all come from ONE walk of the chain
+     * (F230). They used to be three statements: the count was the table's
+     * last seq, so a failure read "FAILED after <the whole chain> entries"
+     * wherever it had stopped; a count that could not be read was printed as
+     * 0, with the note that the store had recorded nothing; and beside a
+     * running daemon the head could belong to an earlier entry than the count
+     * printed with it. */
+    uint8_t head[STORE_AUDIT_MAC_BYTES], stored[STORE_AUDIT_MAC_BYTES];
     int64_t entries = 0;
-    (void)store_audit_tail(store, 1u, audit_last_seq, &entries);
+    const store_status_t vv = store_audit_verify_report(store, &entries, head);
+    const store_status_t hv = (vv != STORE_OK) ? store_audit_head_mac(store, stored) : STORE_OK;
     store_close(store);
 
-    if (hv != STORE_OK) {
-        return failed(prog, "audit-verify", db, store_status_name(hv));
-    }
     char hex[2u * STORE_AUDIT_MAC_BYTES + 1u];
-    sodium_bin2hex(hex, sizeof hex, head, sizeof head);
     if (vv != STORE_OK) {
-        /* The head is printed on FAILURE too: an operator comparing it with
+        /* The STORED head is printed on failure: an operator comparing it with
          * the one they recorded yesterday learns whether the chain was
          * truncated or rewritten, which the verdict alone does not say. */
-        printf("%s audit-verify: head=%s\n", prog, hex);
-        fprintf(stderr, "%s audit-verify: FAILED after %lld entries: %s: %s\n",
-                prog, (long long)entries, db, store_status_name(vv));
+        if (hv == STORE_OK) {
+            sodium_bin2hex(hex, sizeof hex, stored, sizeof stored);
+            printf("%s audit-verify: head=%s\n", prog, hex);
+        }
         sodium_memzero(head, sizeof head);
+        sodium_memzero(stored, sizeof stored);
+        if (vv != STORE_ERR_CORRUPT) {
+            return failed(prog, "audit-verify", db, store_status_name(vv));   /* the store, not the chain */
+        }
+        fprintf(stderr, "%s audit-verify: FAILED at entry %lld: the %lld before it verify: %s: %s\n",
+                prog, (long long)(entries + 1), (long long)entries, db, store_status_name(vv));
         return EX_FAIL;
     }
+    sodium_bin2hex(hex, sizeof hex, head, sizeof head);
     printf("%s audit-verify: head=%s\n", prog, hex);
     printf("%s audit-verify: the audit chain verifies (%lld entries)\n",
            prog, (long long)entries);

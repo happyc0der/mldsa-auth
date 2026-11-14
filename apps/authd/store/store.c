@@ -362,6 +362,14 @@ store_status_t store_audit_head_mac(const store_t *s, uint8_t out[STORE_AUDIT_MA
 
 store_status_t store_audit_verify(const store_t *s)
 {
+    return store_audit_verify_report(s, NULL, NULL);
+}
+
+store_status_t store_audit_verify_report(const store_t *s, int64_t *verified_out,
+                                         uint8_t head_out[STORE_AUDIT_MAC_BYTES])
+{
+    if (verified_out != NULL) { *verified_out = 0; }
+    if (head_out != NULL) { memset(head_out, 0, STORE_AUDIT_MAC_BYTES); }
     if (s == NULL) {
         return STORE_ERR_ARG;
     }
@@ -415,6 +423,10 @@ store_status_t store_audit_verify(const store_t *s)
         r = STORE_ERR_DB;
     }
     sqlite3_finalize(st);
+    /* What was verified, from the one statement that verified it (F230): the
+     * entries before the first that failed, and the MAC of the last of them. */
+    if (verified_out != NULL) { *verified_out = expect_seq - 1; }
+    if (head_out != NULL) { memcpy(head_out, running, STORE_AUDIT_MAC_BYTES); }
     return r;
 }
 

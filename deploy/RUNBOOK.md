@@ -343,7 +343,10 @@ it is refused (`not-owned-by-this-user`), because outside the service that file
 is not a credential delivered to it; and with the daemon stopped the file is
 not there at all (V4-99).
 
-It prints the head MAC and an entry count. **Record the head MAC somewhere off
+It prints the head MAC and an entry count; both describe the same walk of
+the chain, so they belong together even while the daemon is writing (since
+V4-154). A chain that does not verify is reported as `FAILED at entry N: the
+N−1 before it verify`. **Record the head MAC somewhere off
 this host** — the chain detects tampering, but only if you have something to
 compare against; that is the "second trust domain" spec §9.2 asks for.
 

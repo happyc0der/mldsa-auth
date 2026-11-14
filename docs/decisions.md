@@ -15522,3 +15522,53 @@ No code.
 
 Counts: 514 mutations, 77 campaigns, 556 anchors; 229 findings; spec v1.55,
 97 errata (all unchanged by this step).
+
+## V4-154: audit-verify reports what it verified (F230)
+
+**The defect**, three faces of one cause: the verdict, the count and the
+head came from three statements.
+
+- The count was the table's last `seq`. On a failure the command printed
+  `FAILED after N entries` with N the whole chain, wherever the walk had
+  stopped. Reproduced first: the e2e's tampered chain of 18 entries read
+  "FAILED after 18 entries" for an edit AT entry 18, and would have for an
+  edit at entry 1.
+- The status of the read that supplied the count was cast to void. A failed
+  read after a good verify would print "verifies (0 entries)" and the note
+  that the store has recorded nothing. Not driven: it needs a store error
+  between two reads on one handle.
+- Beside a running daemon the head could belong to an earlier entry than the
+  count. Not driven either.
+
+**The fix.** `store_audit_verify_report(s, &verified, head)`: the existing
+walk also returns `expect_seq - 1` and its running MAC. `store_audit_verify`
+is that with two NULLs. The command prints the walk's head and count on
+success. On `audit-chain-corrupt` it prints the stored head (unverified, as
+before, for comparison with a recorded one) and
+`FAILED at entry N: the N-1 before it verify`. Any other status from the
+walk is the store's failure and is reported as one, with no entry named.
+
+**Message text.** "FAILED after N entries" was in no test, runbook or spec
+line. The runbook's step 12 now quotes the new one.
+
+**Tests.** `test_authd_store`: an edited first entry (0 verified, zero head),
+the chain whole (2 verified, head equals the stored head), an edited last
+entry (1 verified, head is entry 1's). `authd_e2e`: the last entry and the
+first, by message. Campaign v108, VR1-VR4.
+
+**Not pinned.** On success, that the printed head is the walk's rather than
+a second read.
+
+**An older campaign re-anchored.** The rewrite removed the two lines v50c's
+O2 (chain never walked) and O3 (count always zero) mutated; the anchor gate
+said so. Both now mutate the one call that replaced them, with the same
+meaning: O2 skips the walk and supplies a plausible count, O3 declines the
+count. v50c rerun here: four of four killed by name.
+
+**How it was found.** A reviewer agent was given the files that had had
+least recent attention and the shapes of the last six findings. Its other
+candidates (pseudonym with a foreign key, keygen-server's orphan key, init's
+removal hints, the site's `--authd-ws` without a port) are the next steps'.
+
+Counts: 518 mutations, 78 campaigns, 560 anchors; 230 findings; spec v1.55,
+97 errata (unchanged).

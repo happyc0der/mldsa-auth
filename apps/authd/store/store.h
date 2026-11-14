@@ -414,6 +414,14 @@ store_status_t store_audit_head_mac(const store_t *s, uint8_t out[STORE_AUDIT_MA
 /* Walks the whole chain, recomputing every MAC from key_audit; returns
  * STORE_ERR_CORRUPT on the first mismatch or a broken prev_mac link, else OK. */
 store_status_t store_audit_verify(const store_t *s);
+/* The same walk, and what it established (F230): `verified_out` is the number
+ * of entries that verified before the walk stopped -- all of them on OK, and
+ * on a failure the entry that failed is number verified + 1 -- and `head_out`
+ * is the MAC of the last entry that verified (all-zero if none did). Both come
+ * from the one statement that did the verifying, so they describe one
+ * snapshot of the chain. Either may be NULL. */
+store_status_t store_audit_verify_report(const store_t *s, int64_t *verified_out,
+                                         uint8_t head_out[STORE_AUDIT_MAC_BYTES]);
 /* Is the chain's LAST entry one this store's key wrote? One row read and one
  * MAC, so the daemon can ask at every start (F229): a store beside the wrong
  * server key answers STORE_ERR_CORRUPT here, before anything is appended to

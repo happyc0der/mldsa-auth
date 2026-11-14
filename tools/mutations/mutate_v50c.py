@@ -49,8 +49,12 @@ M = {
  # O2 -- the chain is never walked at all. Everything downstream still works
  # because an unverified chain and a verified one differ in nothing observable
  # except this call.
- "O2": (CLI, [("    const store_status_t vv = store_audit_verify(store);",
-               "    const store_status_t vv = STORE_OK; /* MUTATION O2: never verified */")]),
+ #
+ # Since V4-154 (F230) the walk also supplies the count and the head, so the
+ # mutant gives them plausible values of its own: a count of zero would be
+ # caught by O3's check and say nothing about this one.
+ "O2": (CLI, [("    const store_status_t vv = store_audit_verify_report(store, &entries, head);",
+               "    const store_status_t vv = (entries = 3, memset(head, 0, sizeof head), STORE_OK); /* MUTATION O2: never verified */")]),
 
  # O3 -- the tail query asks for zero rows, so the count is always zero and
  # "verifies (0 entries)" is printed for a chain with three. Only a check that
@@ -61,8 +65,11 @@ M = {
  # callback, because the latter leaves `seq` unused and dies on
  # -Werror=unused-parameter: KILLED(compile) proves the compiler works and
  # nothing whatever about the check under test.
- "O3": (CLI, [("    (void)store_audit_tail(store, 1u, audit_last_seq, &entries);",
-               "    (void)store_audit_tail(store, 0u, audit_last_seq, &entries); /* MUTATION O3 */")]),
+ #
+ # Since V4-154 (F230) the count comes from the walk itself, not from a tail
+ # query: the mutant declines it, so the count stays at its initial zero.
+ "O3": (CLI, [("    const store_status_t vv = store_audit_verify_report(store, &entries, head);",
+               "    const store_status_t vv = store_audit_verify_report(store, NULL, head); /* MUTATION O3 */")]),
 
  # O4 -- a key that will not open is reported as a corrupt chain: the
  # verification never ran, and the operator is sent looking for an intruder.

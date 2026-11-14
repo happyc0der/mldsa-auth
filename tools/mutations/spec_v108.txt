@@ -1,0 +1,4 @@
+VR1|^test_authd_store$|report: an edited first entry fails with 0 verified and no head (F230)
+VR2|^test_authd_store$|report: a whole chain reports every entry and the stored head (F230)
+VR3|^authd_e2e$|audit-verify did not name the LAST entry as the one that failed (F230)
+VR4|^authd_e2e$|audit-verify did not name the LAST entry as the one that failed (F230)

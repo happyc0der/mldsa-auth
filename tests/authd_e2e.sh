@@ -1434,6 +1434,27 @@ rc=0
 grep -q 'audit-chain-corrupt' "$TMP/audit2.txt" \
     || { cat "$TMP/audit2.txt"; fail "audit-verify did not name the corruption"; }
 echo "PASS: E2E: audit-verify detects a single tampered audit row (spec 9.2)"
+# F230: WHERE it failed. The count printed on failure was the chain's length,
+# whatever entry the walk stopped at: an edit to the first entry of a long
+# chain read "FAILED after <all of them> entries", which says the opposite of
+# what was found. The last entry was edited above; the first is edited here.
+grep -q "FAILED at entry $ENTRIES: the $((ENTRIES - 1)) before it verify" "$TMP/audit2.txt" \
+    || { cat "$TMP/audit2.txt"; fail "audit-verify did not name the LAST entry as the one that failed (F230)"; }
+cp "$TMP/d/store.sqlite3" "$TMP/tampered1.sqlite3"
+python3 - "$TMP/tampered1.sqlite3" <<'PYEOF' || fail "could not tamper with the first audit entry"
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("UPDATE audit SET detail='tampered' WHERE seq=1")
+assert c.total_changes == 1, "no audit row was altered"
+c.commit(); c.close()
+PYEOF
+rc=0
+"$ADMIN" audit-verify --store "$TMP/tampered1.sqlite3" --key "$TMP/d/server.ek" \
+    --passphrase-file "$TMP/d/pass" --server-id authd > "$TMP/audit2b.txt" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "audit-verify exited $rc on a chain whose first entry was edited, expected 1"
+grep -q "FAILED at entry 1: the 0 before it verify" "$TMP/audit2b.txt" \
+    || { cat "$TMP/audit2b.txt"; fail "audit-verify did not name the FIRST entry as the one that failed (F230)"; }
+echo "PASS: E2E: audit-verify names the entry that failed, first or last, and how many before it verify (F230)"
 
 # A wrong passphrase must not be reported as a corrupt chain: the chain is keyed
 # from the envelope KEK, so opening the key is a different failure from failing

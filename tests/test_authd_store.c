@@ -1130,7 +1130,42 @@ int main(void)
                     "tail: an edit that is not at the end passes the tail check and fails the full one (the limit)");
               store_close(o);
           } }
+        /* F230: the walk reports how far it got and the MAC it ended on. Here
+         * entry 1 is edited and entry 2 is not: nothing verifies. */
+        { store_t *o = NULL;
+          int64_t n = -1;
+          uint8_t h[STORE_AUDIT_MAC_BYTES], zero[STORE_AUDIT_MAC_BYTES] = {0};
+          CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "report: reopen");
+          if (o != NULL) {
+              CHECK(store_audit_verify_report(o, &n, h) == STORE_ERR_CORRUPT && n == 0 &&
+                    memcmp(h, zero, sizeof h) == 0,
+                    "report: an edited first entry fails with 0 verified and no head (F230)");
+              CHECK(store_audit_verify_report(o, NULL, NULL) == STORE_ERR_CORRUPT,
+                    "report: both outputs are optional");
+              store_close(o);
+          } }
+        CHECK(raw_sql(dbp, "UPDATE audit SET detail='user' WHERE seq=1;") == 0, "report: the first entry is put back (add_user records the role)");
+        { store_t *o = NULL;
+          int64_t n = -1;
+          uint8_t h[STORE_AUDIT_MAC_BYTES], stored[STORE_AUDIT_MAC_BYTES];
+          CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "report: reopen whole");
+          if (o != NULL) {
+              CHECK(store_audit_verify_report(o, &n, h) == STORE_OK && n == 2 &&
+                    store_audit_head_mac(o, stored) == STORE_OK && memcmp(h, stored, sizeof h) == 0,
+                    "report: a whole chain reports every entry and the stored head (F230)");
+              store_close(o);
+          } }
         CHECK(raw_sql(dbp, "UPDATE audit SET detail='tampered' WHERE seq=2;") == 0, "tail: the last entry is edited");
+        { store_t *o = NULL;
+          int64_t n = -1;
+          uint8_t h[STORE_AUDIT_MAC_BYTES], stored[STORE_AUDIT_MAC_BYTES];
+          CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "report: reopen with the last entry edited");
+          if (o != NULL) {
+              CHECK(store_audit_verify_report(o, &n, h) == STORE_ERR_CORRUPT && n == 1 &&
+                    store_audit_head_mac(o, stored) == STORE_OK && memcmp(h, stored, sizeof h) != 0,
+                    "report: an edited last entry fails with 1 verified, and the head is entry 1's, not the stored one (F230)");
+              store_close(o);
+          } }
         { store_t *o = NULL;
           CHECK(store_open(dbp, KEK, &o) == STORE_OK && o != NULL, "tail: reopen again");
           if (o != NULL) {
