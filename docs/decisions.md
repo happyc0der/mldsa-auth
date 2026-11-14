@@ -16409,3 +16409,34 @@ at the first lost reply); campaign v121, EL1-EL2.
 
 Counts: 554 mutations, 91 campaigns, 596 anchors; 257 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-182: the mutation runner refuses before it deletes (F258, F259)
+
+**F258.** The order was: delete the old snapshot, then check whether the
+tree is fit to snapshot. The check exists for the case where a campaign was
+interrupted and left a mutant in the tree, and that is exactly the case in
+which the old snapshot is worth something. The deletion now comes after
+every refusal. The repo's own rule, never destroy state before proving it
+can be recreated, was not being kept by the tool that enforces restores.
+
+**F259.** Refused at the start, not repaired in the loop. Making the loop
+run a last line without a newline would have worked, but a spec is also
+read by awk (the unnamed-kill check) and by the anchor gate, and one rule
+for the file is simpler than three readers that each tolerate a different
+thing.
+
+**Not done: the children's stdin.** The reviewer also noted that the
+mutate script, cmake and ctest inherit the spec as standard input and could
+eat rows. Ninety-one campaigns of two to twenty rows each run every night
+and print every row, so nothing is reading it today; a fix would be a line
+no test could show red.
+
+**Tests.** `mutation_runner_gate` (CTest), on a toy tree with no build
+directory: the canary reaches "clean tree does not build" with a fresh
+snapshot; a mutated tree is refused with the planted snapshot intact; a
+spec with no final newline, an empty one and a missing one are refused.
+Against the runner as it was, four of its checks fail.
+
+Counts: 554 mutations, 91 campaigns, 596 anchors (unchanged); 259 findings;
+spec v1.59, 101 errata (unchanged); 62 tests with wasm and a browser (57
+native).

@@ -44,12 +44,19 @@ ALLOWED="$(cd "$(dirname "$MUTATE")" && pwd)/compile_kills_allowed.txt"
 # listed survivor is expected, not BAD; on Linux the list changes nothing.
 LINUX_ONLY="$(cd "$(dirname "$MUTATE")" && pwd)/linux_only_kills.txt"
 SNAP="$SCRATCH/snapshot_v2"; LOG="$SCRATCH/mutation_v2-logs"
-rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 cd "$REPO" || exit 2
+# (The old snapshot and logs are removed further down, AFTER the refusals:
+# F258.)
 
 # ---- every kill must be named (F90) --------------------------------------
 unnamed=$(awk -F'|' '$1 != "" && $1 !~ /^#/ && $3 == "" { print $1 }' "$SPEC" | tr '\n' ' ')
 [ -z "$unnamed" ] || { echo "FATAL: spec $SPEC has mutation(s) with no expected check: $unnamed"; exit 3; }
+# ---- every line must be read (V4-182, F259) -------------------------------
+# `read` answers false on a last line that has no newline, so the loop below
+# never ran that mutation and the campaign still ended "residue: none", exit
+# 0, with one row fewer than the spec has lines.
+[ -s "$SPEC" ] || { echo "FATAL: spec $SPEC is empty or missing"; exit 3; }
+[ -z "$(tail -c 1 "$SPEC")" ] || { echo "FATAL: spec $SPEC does not end in a newline -- its last mutation would never be run"; exit 3; }
 
 # ---- discovery (never a hardcoded list) ---------------------------------
 # ---- platform shim (V3-1) ------------------------------------------------
@@ -85,6 +92,11 @@ if grep -rl "MUTATION" $(sources) >/dev/null 2>&1; then
   echo "FATAL: refusing to snapshot -- MUTATION marker already present in: $(grep -rl MUTATION $(sources) | tr '\n' ' ')"
   exit 3
 fi
+# V4-182, F258: only now. This line used to stand before the refusal above,
+# so a campaign restarted on a tree an interrupted one had left mutated
+# deleted the old snapshot -- for an uncommitted fix, the only clean copy of
+# the mutated file -- and THEN refused.
+rm -rf "$SNAP" "$LOG"; mkdir -p "$SNAP" "$LOG"
 while IFS= read -r f; do mkdir -p "$SNAP/$(dirname "$f")"; cp "$f" "$SNAP/$f"; done < <(sources)
 SNAP_COUNT=$(find "$SNAP" -type f | wc -l | tr -d ' ')
 

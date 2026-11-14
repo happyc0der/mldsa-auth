@@ -179,6 +179,12 @@ add_test(NAME spec_constants_gate
 add_test(NAME runbook_gate
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/runbook_gate.sh ${PROJECT_SOURCE_DIR})
 
+# V4-182 (F258, F259): the mutation runner's start-up refusals, on a toy
+# tree with no build directory: nothing is compiled. It needs /bin/bash, as
+# the runner does.
+add_test(NAME mutation_runner_gate
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/mutation_runner_gate.sh ${PROJECT_SOURCE_DIR})
+
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure
