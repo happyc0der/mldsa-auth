@@ -454,6 +454,14 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
     }
 
     serve_buffered(ev, s, now_ms);
+    /* V4-184, F261: the peer's Close ends the connection. Its echo (and any
+     * reply still queued) is flushed and the slot closed, as RFC 6455 7.1.1
+     * asks of the server. The slot used to stay ACTIVE, reading and
+     * discarding, until the peer hung up or a deadline fired -- and held its
+     * address's connection count for as long. */
+    if (s->state == SLOT_ACTIVE && conn_io_ws_ended(&s->io)) {
+        s->state = SLOT_DRAINING;
+    }
     return 0;
 }
 

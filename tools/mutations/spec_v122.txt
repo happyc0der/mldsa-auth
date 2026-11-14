@@ -1,0 +1,4 @@
+WC1|^test_authd_evloop$|wsclose: after a Close the slot is released (F261)
+WC2|^test_authd_ws$|frames: two Pings in one read are answered with two Pongs, in order (F262)
+WC3|^test_authd_ws$|frames: with the buffer that full the Close is still echoed (F262)
+WC4|^test_authd_ws$|frames: a Pong queued behind a half-written one follows its last byte (F262)

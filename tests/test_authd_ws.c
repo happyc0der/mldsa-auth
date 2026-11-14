@@ -235,6 +235,65 @@ static void test_frames(void)
       CHECK(w.stage == WS_STAGE_CLOSED && w.reply[0] == (0x80u | WS_OP_CLOSE),
             "frames: a Close is echoed and closes the stage"); }
 
+    /* V4-184, F262: control replies queue behind one another. A second
+     * control frame that arrived while the first reply was unsent was dropped
+     * whole: of two Pings in one read only the first was answered, and a
+     * Close behind a Ping got no echo at all. */
+    ws_init(&w); w.stage = WS_STAGE_OPEN; g_sunk_len = 0;
+    { uint8_t two[2 * (WS_HDR_MAX + 2u)];
+      size_t l1 = client_frame(two, WS_OP_PING, 1, (const uint8_t *)"A1", 2u, m);
+      size_t l2 = client_frame(two + l1, WS_OP_PING, 1, (const uint8_t *)"B2", 2u, m);
+      (void)ws_consume(&w, two, l1 + l2, sink, NULL);
+      CHECK(w.reply_len == 8u && w.reply_sent == 0u &&
+            w.reply[0] == (0x80u | WS_OP_PONG) && memcmp(w.reply + 2, "A1", 2) == 0 &&
+            w.reply[4] == (0x80u | WS_OP_PONG) && memcmp(w.reply + 6, "B2", 2) == 0,
+            "frames: two Pings in one read are answered with two Pongs, in order (F262)"); }
+    ws_init(&w); w.stage = WS_STAGE_OPEN;
+    { uint8_t two[2 * (WS_HDR_MAX + 2u)]; uint8_t cp[2] = { 0x03u, 0xe8u };
+      size_t l1 = client_frame(two, WS_OP_PING, 1, (const uint8_t *)"A1", 2u, m);
+      size_t l2 = client_frame(two + l1, WS_OP_CLOSE, 1, cp, 2u, m);
+      (void)ws_consume(&w, two, l1 + l2, sink, NULL);
+      CHECK(w.stage == WS_STAGE_CLOSED && w.reply_len == 8u &&
+            w.reply[0] == (0x80u | WS_OP_PONG) &&
+            w.reply[4] == (0x80u | WS_OP_CLOSE) && w.reply[5] == 2u && w.reply[6] == 0x03u && w.reply[7] == 0xe8u,
+            "frames: a Close behind a Ping is echoed after the Pong (F262)"); }
+    /* The buffer is bounded: Pings of the largest size, sent faster than
+     * their Pongs are written, are answered while there is room and then
+     * dropped -- but room for a Close echo is always kept. */
+    ws_init(&w); w.stage = WS_STAGE_OPEN;
+    { uint8_t big[WS_CTRL_MAX]; uint8_t fr[WS_HDR_MAX + WS_CTRL_MAX]; uint8_t cp[2] = { 0x03u, 0xe9u };
+      memset(big, 'P', sizeof big);
+      int ok_all = 1;
+      for (int k = 0; k < 6; k++) {
+          size_t l = client_frame(fr, WS_OP_PING, 1, big, sizeof big, m);
+          ok_all = ok_all && ws_consume(&w, fr, l, sink, NULL) != WS_ERR_PROTOCOL;
+      }
+      /* Two maximum Pongs are 254 bytes of 274. A 14-byte Ping's Pong (16)
+       * leaves exactly the 4 a Close echo needs; a 1-byte Ping's Pong (3)
+       * would then fit the buffer but not leave them, and is dropped. */
+      size_t l = client_frame(fr, WS_OP_PING, 1, big, 14u, m);
+      ok_all = ok_all && ws_consume(&w, fr, l, sink, NULL) != WS_ERR_PROTOCOL;
+      l = client_frame(fr, WS_OP_PING, 1, big, 1u, m);
+      ok_all = ok_all && ws_consume(&w, fr, l, sink, NULL) != WS_ERR_PROTOCOL;
+      const size_t before = w.reply_len;
+      l = client_frame(fr, WS_OP_CLOSE, 1, cp, 2u, m);
+      (void)ws_consume(&w, fr, l, sink, NULL);
+      CHECK(ok_all && before == 2u * (2u + WS_CTRL_MAX) + 16u && before == sizeof w.reply - WS_CLOSE_ECHO_MAX,
+            "frames: unsent Pongs fill the buffer up to the room a Close echo needs, and no further (F262)");
+      CHECK(w.stage == WS_STAGE_CLOSED && w.reply_len == before + 4u &&
+            w.reply[before] == (0x80u | WS_OP_CLOSE) && w.reply[before + 3u] == 0xe9u,
+            "frames: with the buffer that full the Close is still echoed (F262)"); }
+    /* A reply partly written keeps its unsent tail in front of the next one. */
+    ws_init(&w); w.stage = WS_STAGE_OPEN;
+    fl = client_frame(f, WS_OP_PING, 1, (const uint8_t *)"hi", 2u, m);
+    (void)ws_consume(&w, f, fl, sink, NULL);
+    w.reply_sent = 3u;                       /* one byte of the Pong left */
+    fl = client_frame(f, WS_OP_PING, 1, (const uint8_t *)"yo", 2u, m);
+    (void)ws_consume(&w, f, fl, sink, NULL);
+    CHECK(w.reply_len - w.reply_sent == 5u && w.reply[w.reply_sent] == 'i' &&
+          w.reply[w.reply_sent + 1u] == (0x80u | WS_OP_PONG) && memcmp(w.reply + w.reply_sent + 3u, "yo", 2) == 0,
+          "frames: a Pong queued behind a half-written one follows its last byte (F262)");
+
     /* The sink's bound is the caller's, and refusing it is terminal. */
     ws_init(&w); w.stage = WS_STAGE_OPEN; g_sunk_len = sizeof g_sunk - 2u;
     fl = client_frame(f, WS_OP_BINARY, 1, (const uint8_t *)"payload!", 8u, m);

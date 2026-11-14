@@ -1572,6 +1572,89 @@ static void test_accept_failure(void)
     (void)close(lfd);
 }
 
+/* V4-184, F261: a WebSocket Close ends the connection. The daemon echoed
+ * the Close and then kept the slot, and the per-address connection count
+ * with it, until the peer hung up or a deadline fired: RFC 6455 7.1.1 has
+ * the SERVER close the TCP connection first, so a client that follows it
+ * waited, and so did the slot. */
+#define WSC_SLOTS 4
+static void test_ws_close(void)
+{
+    static authd_slot_t slots[WSC_SLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    static const char UPGRADE[] =
+        "GET /authd/v1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK && port != 0, "wsclose: listener binds");
+    CHECK(evloop_init(&ev, slots, WSC_SLOTS, 600000u, 600000u, on_frame, on_close, &h) == 0, "wsclose: init");
+    CHECK(evloop_add_ws_listener(&ev, lfd, NULL, 0, 0) == 0, "wsclose: WebSocket listener registered");
+
+    for (int variant = 0; variant < 2; variant++) {
+        int c = dial(port);
+        CHECK(c >= 0, "wsclose: client connects");
+        (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+        CHECK(write(c, UPGRADE, sizeof UPGRADE - 1u) == (ssize_t)(sizeof UPGRADE - 1u), "wsclose: client sends the upgrade");
+        uint8_t back[512];
+        size_t got = 0;
+        for (int i = 0; i < 400 && (got < 4u || memcmp(back + got - 4u, "\r\n\r\n", 4) != 0); i++) {
+            (void)evloop_run_once(&ev, 10, 1000);
+            struct pollfd pf = { c, POLLIN, 0 };
+            if (poll(&pf, 1, 0) == 1) {
+                ssize_t r = read(c, back + got, sizeof back - got);
+                if (r > 0) { got += (size_t)r; }
+            }
+        }
+        CHECK(got > 12u && memcmp(back, "HTTP/1.1 101", 12) == 0 && evloop_active(&ev) == 1u,
+              "wsclose: the upgrade is answered 101 and the slot is held (the canary)");
+        /* variant 0: a Close. variant 1: a Ping and a Close in one write. */
+        static const uint8_t PING[]  = { 0x89u, 0x81u, 0, 0, 0, 0, 'A' };
+        static const uint8_t CLOSE[] = { 0x88u, 0x82u, 0, 0, 0, 0, 0x03u, 0xe8u };
+        uint8_t msg[sizeof PING + sizeof CLOSE];
+        size_t ml = 0;
+        if (variant == 1) { memcpy(msg, PING, sizeof PING); ml = sizeof PING; }
+        memcpy(msg + ml, CLOSE, sizeof CLOSE); ml += sizeof CLOSE;
+        CHECK(write(c, msg, ml) == (ssize_t)ml, "wsclose: client sends its Close");
+        /* 300 turns of 10 ms: far inside the ten-minute deadlines above, so
+         * only the Close can have released the slot. */
+        int released = 0;
+        for (int i = 0; i < 300 && !released; i++) {
+            (void)evloop_run_once(&ev, 10, 1000);
+            released = evloop_active(&ev) == 0u;
+        }
+        CHECK(released, variant == 0 ? "wsclose: after a Close the slot is released (F261)"
+                                     : "wsclose: after a Ping and a Close in one write the slot is released (F261)");
+        uint8_t tail[64];
+        size_t tn = 0;
+        int eof = 0;
+        for (int i = 0; i < 50 && !eof; i++) {
+            struct pollfd pf = { c, POLLIN, 0 };
+            if (poll(&pf, 1, 20) == 1) {
+                ssize_t r = read(c, tail + tn, sizeof tail - tn);
+                if (r == 0) { eof = 1; } else if (r > 0) { tn += (size_t)r; } else { break; }
+            }
+        }
+        static const uint8_t ECHO[] = { 0x88u, 0x02u, 0x03u, 0xe8u };
+        static const uint8_t PONG[] = { 0x8au, 0x01u, 'A' };
+        if (variant == 0) {
+            CHECK(eof && tn == sizeof ECHO && memcmp(tail, ECHO, sizeof ECHO) == 0,
+                  "wsclose: the client reads the Close echo and then the end of the connection (F261)");
+        } else {
+            CHECK(eof && tn == sizeof PONG + sizeof ECHO && memcmp(tail, PONG, sizeof PONG) == 0 &&
+                      memcmp(tail + sizeof PONG, ECHO, sizeof ECHO) == 0,
+                  "wsclose: the client reads the Pong, the Close echo and then the end of the connection (F261, F262)");
+        }
+        (void)close(c);
+        if (!released) { evloop_stop(&ev); break; }
+    }
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1593,6 +1676,7 @@ int main(void)
     test_conn_io();
     test_evloop();
     test_pipelined();
+    test_ws_close();
     test_backpressure();
     test_log_hygiene();
     test_poll_fairness();

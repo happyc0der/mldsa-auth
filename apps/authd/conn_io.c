@@ -61,6 +61,11 @@ conn_io_status_t conn_io_ws_refuse(conn_io_t *c, unsigned code)
     return (ws_refuse(&c->ws, code) == WS_OK) ? CONN_IO_OK : CONN_IO_ERR_PROTOCOL;
 }
 
+int conn_io_ws_ended(const conn_io_t *c)
+{
+    return c != NULL && c->mode == CONN_IO_MODE_WS && c->ws.stage == WS_STAGE_CLOSED;
+}
+
 void conn_io_ws_silence(conn_io_t *c)
 {
     if (c == NULL || c->mode != CONN_IO_MODE_WS) {

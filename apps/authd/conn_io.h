@@ -123,6 +123,12 @@ void conn_io_set_proxy(conn_io_t *c, int on);
  * so a caller can use it as "the client address is now decided, ask me". */
 int conn_io_proxy_settled(const conn_io_t *c);
 
+/* 1 once a WebSocket connection has reached its end: the peer sent a Close
+ * (its echo is queued), or the upgrade was refused or silenced. Nothing more
+ * will be read from it; the loop flushes what is queued and closes (V4-184,
+ * F261). Always 0 on a framed or local connection. */
+int conn_io_ws_ended(const conn_io_t *c);
+
 /* The client address the preamble established, or an address whose `family` is
  * 0 when it established none. Never NULL. The pointer is into the connection's
  * own state and is wiped by conn_io_reset, so there is exactly ONE copy of this

@@ -257,15 +257,33 @@ static void queue_ctrl(ws_t *w, uint8_t opcode, const uint8_t *p, size_t n)
 {
     /* Control replies have their own buffer precisely so that queueing one
      * cannot collide with a data reply already waiting to go out -- the event
-     * loop is half-duplex and would answer CONN_IO_ERR_BUSY. */
-    if (w->reply_len != w->reply_sent) {
-        return;                              /* one control reply in flight is enough */
+     * loop is half-duplex and would answer CONN_IO_ERR_BUSY.
+     *
+     * V4-184, F262: a reply is APPENDED behind whatever is still unsent (the
+     * 101, or an earlier Pong). It used to be dropped whole while anything
+     * was unsent: the second of two Pings in one read went unanswered, and a
+     * Close behind a Ping was never echoed. The buffer is bounded, so a Pong
+     * that does not fit is still dropped -- RFC 6455 5.5.3 lets a server
+     * answer fewer Pings than it was sent -- but never the room a Close echo
+     * needs, and a Close echo is never dropped. */
+    if (w->reply_sent == w->reply_len) {
+        w->reply_len = 0u;
+        w->reply_sent = 0u;
+    } else if (w->reply_sent > 0u) {
+        memmove(w->reply, w->reply + w->reply_sent, w->reply_len - w->reply_sent);
+        w->reply_len -= w->reply_sent;
+        w->reply_sent = 0u;
     }
     if (n > WS_CTRL_MAX) { n = WS_CTRL_MAX; }
-    const size_t hl = ws_server_header(w->reply, n, opcode);
-    memcpy(w->reply + hl, p, n);
-    w->reply_len = hl + n;
-    w->reply_sent = 0u;
+    uint8_t hdr[WS_SRV_HDR_MAX];
+    const size_t hl = ws_server_header(hdr, n, opcode);
+    const size_t keep = (opcode == WS_OP_CLOSE) ? 0u : WS_CLOSE_ECHO_MAX;
+    if (hl + n + keep > sizeof w->reply - w->reply_len) {
+        return;
+    }
+    memcpy(w->reply + w->reply_len, hdr, hl);
+    memcpy(w->reply + w->reply_len + hl, p, n);
+    w->reply_len += hl + n;
 }
 
 ws_status_t ws_consume(ws_t *w, const uint8_t *p, size_t n, ws_sink_fn sink, void *ctx)

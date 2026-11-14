@@ -46,6 +46,10 @@
 #define WS_CTRL_MAX        125u   /* RFC 6455 §5.5: control payloads are <= 125 */
 #define WS_HDR_MAX         14u    /* 2 + 8 length + 4 mask */
 #define WS_SRV_HDR_MAX     10u    /* server frames are unmasked: 2 + 8 length */
+/* The control-reply buffer (V4-184, F262): two control frames of the largest
+ * size, and a Close echo (2-byte header, 2-byte code) that always has room. */
+#define WS_CLOSE_ECHO_MAX  4u
+#define WS_REPLY_MAX       (2u * (WS_SRV_HDR_MAX + WS_CTRL_MAX) + WS_CLOSE_ECHO_MAX)
 
 /* Opcodes this implementation knows. Anything else fails the connection. */
 #define WS_OP_CONT   0x0u
@@ -95,7 +99,7 @@ typedef struct {
     size_t   ctrl_len;
 
     /* Set when a Pong or Close must be emitted; drained by the caller. */
-    uint8_t  reply[WS_SRV_HDR_MAX + WS_CTRL_MAX];
+    uint8_t  reply[WS_REPLY_MAX];
     size_t   reply_len;
     size_t   reply_sent;
 } ws_t;

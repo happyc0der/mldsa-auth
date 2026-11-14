@@ -16460,3 +16460,44 @@ the tree: 29 constant-time and 39 secure-memory sites, unchanged.
 Counts: 554 mutations, 91 campaigns, 596 anchors (unchanged); 260 findings;
 spec v1.59, 101 errata (unchanged); 63 tests with wasm and a browser (58
 native).
+
+## V4-184: a WebSocket Close ends the connection, and control replies queue (F261, F262)
+
+A sixth reviewer agent read the daemon's token, rate-limit, WebSocket,
+secret, admin and session code for the shapes of recent findings. Tokens,
+codes, recovery, the limiter, PROXY v2 and the session layer held. The
+WebSocket layer had two defects, both reproduced on a running daemon before
+anything was changed.
+
+**F261.** The framing layer knew the peer had closed and the loop did not.
+The loop now asks after each read (`conn_io_ws_ended`) and drains the slot:
+flush, then close. The other two ways into the closed stage, a refused and
+a silenced upgrade, already return "close" to the loop, so for them the new
+line changes nothing.
+
+**Cleanup step, deferred.** By the loop's count this step was to be a
+cleanup. The branch whose runs it would cite was still in CI, so the fix
+came first and the cleanup follows the landing.
+
+**F262.** One buffer, appended to. Its size is two maximum control frames
+and a Close echo. The rule for a full buffer: a Pong is dropped, which the
+RFC permits; a Close echo is not, because its four bytes are kept back from
+every Pong.
+
+**What a browser saw before.** Usually nothing: browsers close the TCP
+connection themselves soon after the echo. A client library that waits for
+the server, as the RFC describes, held a slot for up to the idle timeout.
+
+**Not changed, from the same review.** `audit-tail --n 00005` passes the
+CLI's check and is refused by the daemon as malformed; a repeated CLI flag
+or WebSocket header takes the last value; `authd_secret_read` treats an
+interrupted read as a short one; a credentials path written with `//` gets
+the wrong custody error. Each is small and separate; they are the next
+candidates.
+
+**Tests.** `test_authd_ws` (five checks), `test_authd_evloop` (`wsclose:`,
+two variants over a real connection). All failed before the fix except the
+canaries. Campaign v122, WC1-WC4.
+
+Counts: 558 mutations, 92 campaigns, 600 anchors; 262 findings; spec v1.59,
+101 errata (unchanged).
