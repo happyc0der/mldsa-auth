@@ -50,7 +50,10 @@ M = {
  "GA3": (CN, [("                             hsid, sizeof hsid,\n                             state_hash,",
                "                             m.code, sizeof hsid, /* MUTATION GA3 */\n                             state_hash,")]),
  "GA4": (TK, [("                                             hsid, hsid_len,",
-               "                                             hsid != NULL ? hsid : token_out, hsid != NULL ? hsid_len : TOKEN_BYTES / 2u, /* MUTATION GA4 */")]),
+               # Unconditional since V4-170 (F244): EXCHANGE now passes a real
+               # handshake id, so the "hsid is NULL" arm was never taken and
+               # the mutant did nothing (nightly 43602718336).
+               "                                             token_out + (0 * hsid_len) + (hsid == NULL ? 0 : 0), TOKEN_BYTES / 2u, /* MUTATION GA4 */")]),
  "GA5": (CN, [("    if (mldsa_verify(digest, sizeof digest, m.sig_old, m.sig_old_len, pk_old) != 0) {",
                "    if (mldsa_verify(digest, sizeof digest, m.sig_old, m.sig_old_len, pk_old) != 0 && m.sig_old_len == 0u) { /* MUTATION GA5 */")]),
  "GA6": (ST, [("            \"   AND d.status='active' AND u.status='active' LIMIT 1;\",",

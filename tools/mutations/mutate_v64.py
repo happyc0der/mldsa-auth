@@ -48,7 +48,10 @@ M = {
                "    (void)sodium_bin2base64(tg4, sizeof tg4, token_out, TOKEN_BYTES, sodium_base64_VARIANT_ORIGINAL);\n"
                "    const store_status_t r = store_add_token(s, token_hash,"),
               ("                                             hsid, hsid_len,",
-               "                                             hsid != NULL ? hsid : (const uint8_t *)tg4, hsid != NULL ? hsid_len : strlen(tg4),")]),
+               # Unconditional since V4-170 (F244): EXCHANGE now passes a real
+               # handshake id, so "only when hsid is NULL" never happened and
+               # the mutant did nothing (nightly 43602718336).
+               "                                             (const uint8_t *)tg4 + (0 * hsid_len) + (hsid == NULL ? 0 : 0), strlen(tg4),")]),
  "TG5": (SE, [("    const size_t pad_len = body - SESSION_CONTENT_LEN_BYTES - content_len;",
                "    const size_t pad_len = (body - SESSION_CONTENT_LEN_BYTES - content_len) > 64u ? 64u : (body - SESSION_CONTENT_LEN_BYTES - content_len); /* MUTATION TG5 */")]),
 }

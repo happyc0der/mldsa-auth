@@ -16122,3 +16122,26 @@ and a browser); the README's sentence and table follow.
 
 Counts: 546 mutations, 87 campaigns, 588 anchors (unchanged, no C);
 247 findings; spec v1.59, 101 errata (unchanged).
+
+## V4-170, afterwards: two older mutants it made equivalent
+
+The nightly on the branch that carried V4-170 (run 43602718336) was 99 of
+101: v58 GA4 and v64 TG4 `SURVIVED`. Nothing was wrong with the daemon.
+
+Both mutants put the plaintext token into the token row's `handshake_id`
+column, to be caught by "the plaintext token is NOT in the store (Req 4)".
+Both were written `hsid != NULL ? hsid : <the token>`: they leaked only
+when `EXCHANGE` passed no handshake id, which before F244 was always. V4-170
+made `EXCHANGE` pass one, so the leaking arm was never taken and each
+mutant changed nothing.
+
+The anchor gate could not see this: both anchors still matched. It is the
+second shape recorded after V4-144 (a fix that makes an older mutant
+equivalent), and again only the full nightly showed it.
+
+Both now leak unconditionally. Applied by hand to the plain tree, each
+fails its named checks (and the two F244 checks beside them); the tree was
+restored and the suite passes.
+
+V4-171's branch was not landed: its nightly was red. V4-169 to V4-173 and
+this correction go to CI and the nightly as one branch.
