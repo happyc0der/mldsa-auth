@@ -78,8 +78,8 @@ M = {
  "K2": (CLI, [("#define KDF_OPS_SERVER    4u",
                "#define KDF_OPS_SERVER    3u /* MUTATION K2: server sealed at the operator cost */")]),
  # init seals under its in-memory bytes instead of the bytes it wrote
- "P1": (CLI, [("    uint8_t *pass = NULL;\n    size_t pass_len = 0;\n    int rc = read_pass(prog, \"init\", pass_path, &pass, &pass_len);\n    if (rc != EX_OK) {\n        return rc;\n    }\n\n    rc = seal_new_identity(prog, \"init\", ek, pub, id, id_len, (const char *)pass, pass_len,",
-               "    uint8_t *pass = NULL;\n    size_t pass_len = 0;\n    int rc = read_pass(prog, \"init\", pass_path, &pass, &pass_len);\n    if (rc != EX_OK) {\n        return rc;\n    }\n    if (pass_len > 1u) { pass[pass_len - 1u] ^= 0x01u; } /* MUTATION P1: not the bytes on disk */\n\n    rc = seal_new_identity(prog, \"init\", ek, pub, id, id_len, (const char *)pass, pass_len,")]),
+ "P1": (CLI, [("    uint8_t *pass = NULL;\n    size_t pass_len = 0;\n    int rc = read_pass(prog, \"init\", pass_path, &pass, &pass_len);\n    if (rc != EX_OK) {\n        init_leftovers(prog, pass_path, ek, pub, db);\n        return rc;\n    }\n\n    rc = seal_new_identity(prog, \"init\", ek, pub, id, id_len, (const char *)pass, pass_len,",
+               "    uint8_t *pass = NULL;\n    size_t pass_len = 0;\n    int rc = read_pass(prog, \"init\", pass_path, &pass, &pass_len);\n    if (rc != EX_OK) {\n        init_leftovers(prog, pass_path, ek, pub, db);\n        return rc;\n    }\n    if (pass_len > 1u) { pass[pass_len - 1u] ^= 0x01u; } /* MUTATION P1: not the bytes on disk */\n\n    rc = seal_new_identity(prog, \"init\", ek, pub, id, id_len, (const char *)pass, pass_len,")]),
  # init writes the passphrase file world-readable
  "P2": (CLI, [("    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);",
                "    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644); /* MUTATION P2 */")]),

@@ -142,6 +142,30 @@ static int write_secret_file(const char *path, const uint8_t *p, size_t len)
     return 0;
 }
 
+/* F233: what a failed init left behind, by name. init is not resumable and
+ * refuses to run over any of these, so a message that names some of them
+ * sends the operator into a second refusal. */
+static void init_leftovers(const char *prog, const char *pass_path, const char *ek,
+                           const char *pub, const char *db)
+{
+    const char *paths[4] = { pass_path, ek, pub, db };
+    int n = 0;
+    for (size_t i = 0; i < 4u; i++) {
+        if (!path_exists(paths[i])) {
+            continue;
+        }
+        if (n == 0) {
+            fprintf(stderr, "%s init: left behind: %s", prog, paths[i]);
+        } else {
+            fprintf(stderr, ", %s", paths[i]);
+        }
+        n++;
+    }
+    if (n > 0) {
+        fprintf(stderr, " -- remove %s before retrying (init is not resumable)\n", n == 1 ? "it" : "them");
+    }
+}
+
 static int cmd_init(int argc, char **argv, const char *prog)
 {
     const char *dir = NULL, *id_s = NULL, *pass_path = NULL;
@@ -216,6 +240,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
     size_t pass_len = 0;
     int rc = read_pass(prog, "init", pass_path, &pass, &pass_len);
     if (rc != EX_OK) {
+        init_leftovers(prog, pass_path, ek, pub, db);
         return rc;
     }
 
@@ -223,8 +248,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
                            KDF_OPS_SERVER, KDF_MEM_256MIB, NULL);
     if (rc != EX_OK) {
         authd_secret_free(pass, pass_len);
-        fprintf(stderr, "%s init: remove %s, and %s and %s if they exist, before retrying\n",
-                prog, pass_path, ek, pub);
+        init_leftovers(prog, pass_path, ek, pub, db);
         return rc;
     }
 
@@ -235,13 +259,17 @@ static int cmd_init(int argc, char **argv, const char *prog)
     uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
     if (kek == NULL) {
         authd_secret_free(pass, pass_len);
-        return failed(prog, "init", ek, "allocation-failed");
+        (void)failed(prog, "init", ek, "allocation-failed");
+        init_leftovers(prog, pass_path, ek, pub, db);
+        return EX_FAIL;
     }
     const keyfile_status_t ks = keyfile_open(ek, id, id_len, (const char *)pass, pass_len, &kp, kek);
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         secure_mem_free(kek, STORE_KEK_BYTES);
-        return failed(prog, "init", ek, keyfile_status_name(ks));
+        (void)failed(prog, "init", ek, keyfile_status_name(ks));
+        init_leftovers(prog, pass_path, ek, pub, db);
+        return EX_FAIL;
     }
     mldsa_keypair_free(&kp);   /* init needs the root key, not the identity key */
 
@@ -250,8 +278,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (ss != STORE_OK) {
         fprintf(stderr, "%s init: failed: %s: %s\n", prog, db, store_status_name(ss));
-        fprintf(stderr, "%s init: %s and %s exist and must be removed before retrying\n",
-                prog, ek, pass_path);
+        init_leftovers(prog, pass_path, ek, pub, db);
         return EX_FAIL;
     }
     store_close(store);
@@ -304,6 +331,18 @@ static int cmd_keygen_server(int argc, char **argv, const char *prog)
         demo_parse_id(id_s, &id, &id_len) != 0) {
         return need(prog, "keygen-server", "--key PATH --pub PATH --server-id ID --passphrase-file PATH");
     }
+    /* F232: both targets are looked at BEFORE a key is made. The key was
+     * sealed first and the public half written second, so a --pub that already
+     * existed left a secret key with no public key beside it, and a retry was
+     * refused on the key the first run had orphaned. */
+    {
+        const char *clash = path_exists(key) ? key : path_exists(pub) ? pub : NULL;
+        if (clash != NULL) {
+            fprintf(stderr, "%s keygen-server: refusing: %s already exists; nothing was written\n",
+                    prog, clash);
+            return EX_FAIL;
+        }
+    }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
     int rc = read_pass(prog, "keygen-server", pass_path, &pass, &pass_len);
@@ -315,6 +354,11 @@ static int cmd_keygen_server(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (rc == EX_OK) {
         printf("%s keygen-server: wrote %s (MLDSAEK1, mode 0600) and %s\n", prog, key, pub);
+    } else if (path_exists(key) && !path_exists(pub)) {
+        /* The public half could not be written after all (a directory that
+         * cannot be written to): say what is left, as init does. */
+        fprintf(stderr, "%s keygen-server: %s was written and its public half was not; "
+                        "remove it before retrying\n", prog, key);
     }
     return rc;
 }

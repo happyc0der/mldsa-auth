@@ -1,0 +1,4 @@
+KS1|^test_authd_cli$|keygen-server: a --pub that already exists is refused up front, by name (F232)
+KS2|^test_authd_cli$|keygen-server: a --pub that already exists is refused up front, by name (F232)
+IL1|^test_authd_cli$|init: a failure after writing names every file it left, server.pub among them (F233)
+IL2|^test_authd_cli$|init: a failure after writing names every file it left, server.pub among them (F233)

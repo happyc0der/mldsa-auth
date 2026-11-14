@@ -15602,3 +15602,45 @@ PS1-PS2.
 
 Counts: 520 mutations, 79 campaigns, 562 anchors; 231 findings; spec v1.55,
 97 errata (unchanged).
+
+## V4-157: keygen-server looks first, and init says what it left (F232, F233)
+
+Numbered 157 because 156 is the cleanup that follows the V4-154/155 landing.
+Two findings in one step: both are `authd_admin` leaving files behind and
+saying the wrong thing or nothing about them, and both are one function's
+worth of change.
+
+**F232.** `keygen-server` sealed `--key`, then wrote `--pub`, and the public
+writer refuses an existing file. So an existing `--pub` produced exit 1, a
+message about the public file, and a new secret key on disk that nothing
+mentioned. Now both paths are looked at before a key is generated, as `init`
+has done since F195, and the refusal says nothing was written. If the public
+half fails anyway, the command says which file is left.
+
+**F233.** `init` told the operator to remove `server.ek` and the passphrase
+file when the store could not be made; `server.pub` and usually
+`store.sqlite3` were there too, and `init` refuses to run over either. Three
+earlier failure points named nothing. `init_leftovers` lists what exists of
+the four and is called at all five failure points after the first write.
+Seen as an operator would: `left behind: …/pass, …/server.ek, …/server.pub,
+…/store.sqlite3 -- remove them before retrying (init is not resumable)`.
+
+**Not deleted for them.** Neither command removes what it left. A failed
+`init`'s passphrase file and key are secrets the operator may want to look
+at before they go, and "remove the whole directory" is already what the
+up-front refusal tells them.
+
+**An older campaign re-anchored.** v49b P1 (init seals under bytes that are
+not the file's) anchored on the lines after `read_pass`, which now call
+`init_leftovers`. Re-anchored with the same mutation; applied by hand to the
+plain tree it still fails its named check, and the tree was restored.
+
+**Tests.** `test_authd_cli`: the existing-`--pub` refusal and no key sealed;
+an init whose store cannot be made (a directory at `store.sqlite3-wal`)
+names all it left. Campaign v110, KS1-KS2 and IL1-IL2.
+
+**Not pinned.** keygen-server's second message, and init's three other call
+sites: the suite cannot make those fail.
+
+Counts: 524 mutations, 80 campaigns, 566 anchors; 233 findings; spec v1.55,
+97 errata (unchanged).

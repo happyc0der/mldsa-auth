@@ -348,6 +348,30 @@ static void test_init(void)
               "init: and that refusal wrote nothing: no passphrase, key or store (F195)");
     }
 
+    /* V4-157, F233: an init that fails AFTER it has written something says
+     * exactly what it left. The store is made to fail by a directory where
+     * SQLite wants its write-ahead log. The message used to name the key and
+     * the passphrase file and not server.pub, so an operator who removed the
+     * two it named was refused on the retry. */
+    {
+        char dirw[256], pubw[256], ekw[256], dbw[256], walw[256], passw[256], err[2048];
+        (void)snprintf(dirw, sizeof dirw, "%s/iw", g_dir);
+        (void)snprintf(pubw, sizeof pubw, "%s/iw/server.pub", g_dir);
+        (void)snprintf(ekw, sizeof ekw, "%s/iw/server.ek", g_dir);
+        (void)snprintf(dbw, sizeof dbw, "%s/iw/store.sqlite3", g_dir);
+        (void)snprintf(walw, sizeof walw, "%s/iw/store.sqlite3-wal", g_dir);
+        (void)snprintf(passw, sizeof passw, "%s/iw/pass", g_dir);
+        CHECK(mkdir(dirw, 0700) == 0 && mkdir(walw, 0700) == 0, "init: a directory where the store's log must go");
+        const int rcw = run_admin_capture((char *[]){ "authd_admin", "init", "--dir", dirw, "--server-id", "authd",
+                                                      "--passphrase-file", passw, NULL }, err, sizeof err);
+        CHECK(rcw == 1 && access(ekw, F_OK) == 0 && access(pubw, F_OK) == 0 && access(passw, F_OK) == 0,
+              "init: a store that cannot be made fails (1) after the key, its public half and the passphrase were written");
+        CHECK(strstr(err, "left behind:") != NULL && strstr(err, "/iw/server.ek") != NULL &&
+              strstr(err, "/iw/pass") != NULL && strstr(err, "/iw/server.pub") != NULL &&
+              (access(dbw, F_OK) != 0 || strstr(err, "/iw/store.sqlite3 --") != NULL),
+              "init: a failure after writing names every file it left, server.pub among them (F233)");
+    }
+
     /* V4-109, F195: a directory that was already there keeps its mode, and
      * init says what that mode is instead of "created ... (mode 0700)". */
     {
@@ -479,6 +503,20 @@ static void test_keys(void)
     CHECK(RUN_ADMIN("keygen-server", "--key", ek, "--pub", pub, "--server-id", "srv",
                     "--passphrase-file", pass) == 0, "keygen-server: writes a sealed key");
     CHECK(mode_of(ek) == 0600, "keygen-server: the sealed key is 0600");
+    /* V4-157, F232: a --pub that cannot be written is found BEFORE a key is
+     * made. keygen-server sealed the key first and then failed on the public
+     * half, leaving a secret key with no public key beside it, and a retry
+     * was refused on the key it had just orphaned. */
+    {
+        char ek5[512], err[1024];
+        (void)snprintf(ek5, sizeof ek5, "%s/orphan.ek", dir);
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "keygen-server", "--key", ek5, "--pub", pub,
+                                            "--server-id", "srv", "--passphrase-file", pass, NULL },
+                                err, sizeof err) == 1 &&
+              strstr(err, "refusing") != NULL && strstr(err, "already exists") != NULL,
+              "keygen-server: a --pub that already exists is refused up front, by name (F232)");
+        CHECK(file_size(ek5) < 0, "keygen-server: and that refusal sealed no key (F232)");
+    }
 
     /* Req 10: no plaintext secret key is written to disk by any daemon or CLI
      * command. demo_keys_generate_files() writes one, which is exactly why the
