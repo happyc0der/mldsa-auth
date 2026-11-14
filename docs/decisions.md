@@ -15680,3 +15680,35 @@ number is its place in the cadence.
 
 Counts: 524 mutations, 80 campaigns, 566 anchors; 234 findings; spec v1.55,
 97 errata (all unchanged by this step).
+
+## V4-159: a rotation that never got a session leaves nothing pending (F235)
+
+**The defect.** `rotateHeld` stages the new key, then logs in with the
+current one, and only that login tests the passphrase. With no pending key
+before it, `resolveHeld` returns the envelope unopened. So a typo that
+passes the policy, or an unreachable daemon, threw from the login with the
+new key already staged. Nothing was lost; every later login ran the
+interrupted-rotation probe and said so, for a rotation that had never left
+the browser. Reproduced first, six checks.
+
+**The fix.** The login is wrapped: on failure the staged key is discarded
+and the error rethrown. The proof is the same kind the flow already relies
+on: no session means no ROTATE was sent, so the daemon cannot have the key.
+The order (stage, then log in) is unchanged, so the two-tab tests of V4-136,
+which hook the staging, see what they saw.
+
+**The alternative not taken:** log in first and stage afterwards. It would
+hold a session open across the Argon2id that seals the new key (seconds on
+Safari, F119), and it would move the point the V4-136 tests hold a tab at.
+
+**A surviving mutant, and what it showed.** Hand mutations: do not discard
+(5 checks fail); swallow the error (2); and discard after a session too.
+The third passed every test. The rule it breaks is the one that protects
+the key: after a session, no ACK proves nothing, and the pending key may be
+the only copy of what the daemon accepts. The existing "lost ACK" test set
+that state up by hand and never went through `flows.rotate`'s own catch. A
+new test does (the session's `rotate` runs for real, then throws), and the
+mutant now fails two checks.
+
+Counts: 524 mutations, 80 campaigns, 566 anchors (unchanged, no C);
+235 findings; spec v1.55, 97 errata (unchanged).

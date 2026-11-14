@@ -250,7 +250,21 @@ async function rotateHeld(client, store, params, events) {
   }
   const next = client.newIdentity(params.passphrase, params.handle);
   await store.stagePending(params.handle, next.envelope);   // durable BEFORE ROTATE leaves
-  const s = await client.login({ ...params, envelope, keepForRotate: true });
+  // The login that will carry ROTATE is also the first time the passphrase
+  // meets the current key. If it fails there is no session, so ROTATE cannot
+  // have left and the daemon cannot hold the new key: the staged key is
+  // discarded on that proof (V4-159, F235). It used to stay, and every later
+  // login resolved an "interrupted rotation" that had never been sent -- after
+  // nothing worse than a mistyped passphrase. Once there IS a session the rule
+  // below applies instead: no ACK proves nothing, and the key stays.
+  let s;
+  try {
+    s = await client.login({ ...params, envelope, keepForRotate: true });
+  } catch (e) {
+    try { await store.discardPending(params.handle); } catch { /* it stays pending; the next login resolves it */ }
+    events('no session was opened, so the new key was never sent; it is not kept');
+    throw e;
+  }
   try {
     await s.rotate(next.envelope, params.passphrase);
   } catch (e) {

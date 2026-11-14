@@ -21,6 +21,8 @@
 // And, since V4-147 (F226), that a recovery whose probes never reached the
 // daemon's verdict (a wrong passphrase, an unreachable daemon, a pending key
 // that will not open) is reported as unresolved, not as two refused keys.
+// And, since V4-159 (F235), that a rotation which never got a session leaves
+// nothing pending, while one whose ACK was lost keeps its key.
 // The IndexedDB store itself (its transactions) is tested in a real browser.
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
@@ -219,6 +221,53 @@ try {
     loginDone();
     const ra = await a;
     check(ra === 'ok' && logged, `a login during a rotation waits for it: the rotation reports success and the login uses its key (rotation: ${ra})`); }
+
+  // V4-159 (F235): a rotation that never got a session leaves nothing pending.
+  // The new key is staged before the login that carries ROTATE, and that login
+  // is the first time the passphrase meets the current key. A mistyped
+  // passphrase (one the policy accepts), or a daemon that could not be
+  // reached, failed that login and left the new key staged: every later login
+  // then ran the interrupted-rotation probe, for a rotation that never left.
+  for (const [label, alter] of [['wrong passphrase', { passphrase: 'not the passphrase at all, sorry' }],
+                                ['daemon unreachable', { url: 'ws://127.0.0.1:9/authd/v1' }]]) {
+    const { store, params } = await fresh();
+    const before = await store.get(params.handle);
+    let threw = false;
+    try { await flows.rotate(client, store, { ...params, ...alter }); } catch { threw = true; }
+    const after = await store.get(params.handle);
+    check(threw && after.pending === null,
+          `rotate, ${label}: the rotation fails and no key is left pending (F235)`);
+    check(isDeepStrictEqual(after, before), `rotate, ${label}: the store is exactly as it was (F235)`);
+    const said = [];
+    const s = await flows.login(client, store, params, (e) => said.push(e));
+    check(s.code.length === 32 && said.length === 0,
+          `rotate, ${label}: the next login is an ordinary one, with no interrupted rotation to resolve (F235)`);
+    await s.close();
+  }
+
+  // ... and the other side of that rule, which nothing drove through
+  // flows.rotate until V4-159: once there IS a session, a rotation that is not
+  // acknowledged KEEPS its key. Here the daemon commits and the ACK is lost
+  // (the session's rotate runs for real and then throws). Discarding the
+  // staged key at that point would discard the only copy of the key the
+  // daemon now accepts.
+  { const { store, params } = await fresh();
+    const lossy = new Proxy(client, { get: (t, k) => (k === 'login'
+      ? async (...a) => { const s = await t.login(...a); const real = s.rotate.bind(s);
+                          s.rotate = async (...b) => { await real(...b); throw new Error('the ACK was lost'); };
+                          return s; }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    let msg = '';
+    try { await flows.rotate(lossy, store, params); } catch (e) { msg = e.message; }
+    const mid = await store.get(params.handle);
+    check(msg === 'the ACK was lost' && mid.pending !== null,
+          'rotate, ACK lost after the daemon committed: the new key is KEPT pending');
+    const said = [];
+    let logged = false;
+    try { const s = await flows.login(client, store, params, (e) => said.push(e)); logged = s.code.length === 32; await s.close(); }
+    catch { logged = false; }
+    check(logged && said.includes('completed the interrupted rotation'),
+          'rotate, ACK lost after the daemon committed: the next login completes the rotation with the kept key'); }
 
   // Where the lock cannot span tabs (no Web Locks), rotate refuses and stages nothing.
   { const { store, params } = await fresh();
