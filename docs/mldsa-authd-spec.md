@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.55, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151)
+# mldsa-authd — deployment specification (v1.56, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1384,7 +1384,8 @@ is past it, and `max_slots` goes to 4096.
 At startup the daemon compares that number to its own `RLIMIT_NOFILE` and
 logs it (`fd-limit`, field `need`). When the soft limit is short and the hard
 limit is not, **the daemon raises its own soft limit** to exactly the
-requirement and logs at INFO; systemd's default hard limit is far above 4136,
+requirement and logs at INFO; systemd's default hard limit is far above 4192
+(the most a configuration can ask for: 4096 + 64 + 32; erratum 98),
 so the shipped unit needs no `LimitNOFILE`. When the hard limit is short too
 the daemon cannot fix it: it logs `fd-limit` at WARN, says so on standard
 error with the numbers, and starts — the `memlock-limit` precedent, a
@@ -1956,3 +1957,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 97 | 9.2 | At every start the daemon recomputes the last audit entry's MAC under its own `key_audit`; on a mismatch it names the store and `audit-chain-corrupt`, exits 1 and serves nothing | a store opened under any key: a backup restored beside a newly made server key, or a `key_path` naming another server's key, started normally, refused every client (they pin the other key) and appended entries under the wrong key to a chain that no key verified afterwards, with nothing said at the moment of damage (F229). `init` has refused to re-key an existing store for the same reason since V4-9 |
+
+### Revision v1.56 (V4-161)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 98 | 16 | The most open files a configuration can require is 4192 (`max_slots` 4096 + `max_local_slots` 64 + 32), not 4136 | 4136 is the figure at the default `max_local_slots = 8`; the bound on that setting is 64 (`AUTHD_LOCAL_SLOTS_MAX`). The unit's comment said the same. The conclusion, that the shipped unit needs no `LimitNOFILE`, is unchanged (F238) |

@@ -29,9 +29,10 @@ server_id = authd
 key_passphrase_file = /run/credentials/mldsa-authd.service/passphrase
 
 # --- listeners -------------------------------------------------------------
-# The proxy-facing socket. systemd creates /run/mldsa-authd/ as 0750 owned by
-# this service with the proxy's group (RuntimeDirectory=), and the socket
-# itself is 0660.
+# The proxy-facing socket. systemd creates /run/mldsa-authd/ as 0750, owner
+# and group mldsa-authd (RuntimeDirectory=), and the socket itself is 0660.
+# The proxy reaches it by being a member of that group (runbook step 4), and
+# is then checked by uid (proxy_uids).
 listen_unix = /run/mldsa-authd/p.sock
 
 # The operator's tunnel: loopback only, reached over SSH. Leave it at 0 to

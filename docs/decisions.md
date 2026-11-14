@@ -15786,3 +15786,20 @@ message that does not depend on `report()`'s element; next.
 
 Counts: 530 mutations, 81 campaigns, 572 anchors (unchanged, no C);
 237 findings; spec v1.55, 97 errata (unchanged).
+
+## V4-161: cleanup after V4-156 to V4-158 landed (F238)
+
+No code. Written after V4-159, V4-160 and V4-162, so it sits on top of them.
+
+- `docs/review/REPRODUCE.md` cites the runs on `f960752`, now main: CI
+  43576099297 (16/16), nightly 43576103297 (95/95, 80 campaigns).
+- **F238, two documents against the code.** The unit and spec §16 said a
+  configuration can require at most 4136 open files; the bounds give
+  4096 + 64 + 32 = 4192 (4136 is the default's figure). Spec erratum 98,
+  v1.56. And the example configuration said the runtime directory has "the
+  proxy's group"; it has the daemon's, and the proxy joins it. Recorded as a
+  finding because both were wrong statements an operator reads, though
+  neither changes a step.
+
+Counts: 530 mutations, 81 campaigns, 572 anchors; 238 findings; spec v1.56,
+98 errata.
