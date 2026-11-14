@@ -15877,3 +15877,15 @@ nothing. Hand mutation: the report removed, three checks fail.
 
 Counts: 534 mutations, 82 campaigns, 576 anchors (unchanged, no C);
 240 findings; spec v1.57, 99 errata (unchanged).
+
+## V4-165: cleanup after V4-159 to V4-162 landed
+
+No code. Written after V4-163 and V4-164, so it sits on top of them.
+
+- `docs/review/REPRODUCE.md` cites the runs on `7f41751`, now main: push CI
+  43585933675 (16/16), nightly 43582080476 (96/96, 81 campaigns).
+- Read for staleness and left alone: the runbook's start-failure table
+  (updated in V4-160), the pages' comments (written with their fixes).
+
+Counts: 534 mutations, 82 campaigns, 576 anchors; 240 findings; spec v1.57,
+99 errata (all unchanged by this step).
