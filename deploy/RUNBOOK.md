@@ -147,6 +147,23 @@ re-derive the audit key and silently break the chain.
 
 ## 6. Move the passphrase into a credential, and delete the plaintext
 
+**First, the offline copy.** There is no escrow and no recovery path: without
+the passphrase `server.ek` and the store cannot be opened, here or on any
+other host (step 24), and the last command of this step destroys the only
+plaintext of it. It is 32 random bytes, not something to type, so print it in
+a form that can be written down or stored:
+
+```bash
+sudo base64 /var/lib/mldsa-authd/pass
+```
+
+One line of 44 characters ending in `=`. Keep it somewhere that is not this
+host and not beside the copies of step 12, and clear it from the terminal's
+scrollback; the command holds no secret, its output does. `base64 -d` turns
+the line back into the file (step 24).
+
+Then the credential, and only then the deletion:
+
 ```bash
 sudo systemd-creds encrypt --name=passphrase \
      /var/lib/mldsa-authd/pass /etc/mldsa-authd/passphrase.cred
@@ -154,9 +171,9 @@ sudo chmod 0600 /etc/mldsa-authd/passphrase.cred
 sudo shred -u /var/lib/mldsa-authd/pass
 ```
 
-Where the host has a TPM, `systemd-creds` binds the credential to it. **Keep an
-offline copy of the passphrase somewhere safe first:** there is no escrow and
-no recovery path — losing it makes `server.ek` and the store unopenable.
+Where the host has a TPM, `systemd-creds` binds the credential to it, and in
+every case to this host: `passphrase.cred` opens nowhere else, which is why
+the line you printed above is the copy that matters.
 
 ## 7. Configure
 
@@ -850,10 +867,15 @@ When the host is gone and what you have is the directory from step 12
 On the new host, do steps 1–4 as written. **Do not run step 5**: `init`
 would make a new server identity, and the point is to keep the old one. Copy
 the directory back to `/root/mldsa-authd-offhost`. Write the passphrase you
-kept into `/var/lib/mldsa-authd/pass` (mode 0600, owned by `mldsa-authd`) and
-run step 6, which encrypts it for *this* host and shreds the file. Install
-your `authd.conf` from the directory instead of the example in step 7, and do
-step 8. Then put the key and the store in place and start:
+kept into `/var/lib/mldsa-authd/pass` (mode 0600, owned by `mldsa-authd`):
+from the line step 6 printed, `base64 -d` gives back the 32 bytes. Then run
+step 6's last block, which encrypts it for *this* host and shreds the file.
+Install your `authd.conf` from the directory instead of the example in step
+7, and **check its `site_uids` and `proxy_uids` against this host**
+(`id -u www-data`, `id -u caddy`): the file carries the old host's numbers,
+and a package's user need not get the same one here. Do step 8. Then put the
+key and the store in place, and enable the service as step 9 did, so that it
+also starts at the next boot:
 
 ```bash
 OFFHOST=/root/mldsa-authd-offhost                 # the copies, back on this host
@@ -861,13 +883,18 @@ BACKUP=$OFFHOST/YYYY-MM-DD.sqlite3                # the store backup to restore
 sudo install -o mldsa-authd -g mldsa-authd -m 0600 $OFFHOST/server.ek /var/lib/mldsa-authd/server.ek
 sudo install -o mldsa-authd -g mldsa-authd -m 0644 $OFFHOST/server.pub /var/lib/mldsa-authd/server.pub
 sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
-sudo systemctl start mldsa-authd
+sudo systemctl enable --now mldsa-authd
 systemctl is-active mldsa-authd
+systemctl is-enabled mldsa-authd
 ```
 
-`active`. Run `audit-verify` (step 12) and compare the head MAC with the one
-you recorded off the host for that backup; then steps 10 and, for the site,
-13–14. Clients need nothing: the server key is the one they pinned.
+`active`, and `enabled`: a restored daemon that is only started is down again
+after the first reboot. Run `audit-verify` (step 12) and compare the head MAC
+with the one you recorded off the host for that backup. Then **step 12's audit
+timer** (its block that copies the two `mldsa-authd-audit` units and enables
+the timer): the hourly check is this host's to install again, as are the
+backups. Then steps 10 and, for the site, 13–14.
+Clients need nothing: the server key is the one they pinned.
 
 What comes back is the store **as of that backup**:
 

@@ -16648,3 +16648,37 @@ Hand mutations N1-N3.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 268 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-191: the runbook keeps the passphrase before it shreds it, and a restore survives a reboot (F269, F270)
+
+An eighth reviewer agent read the device CLI, the units, the proxy
+configuration and the runbook as an operator would run it. Every flag in
+the runbook matched the CLIs' option tables; the client's rotation and
+recovery paths, the CLI's socket I/O and the daemon's start-up order held.
+The runbook had two holes, both at the point where a host is lost.
+
+**F269.** The copy has to come first and has to be a command, because the
+passphrase is bytes. `base64` is on every host the runbook supports and
+its output can be written on paper. Printing a secret to a terminal is not
+free, and the step says so; the alternative, a file on removable media,
+needs a device the runbook cannot name. The block is rehearsed like every
+other: on the rehearsal's throwaway host the line goes to the job log.
+
+**F270.** `enable --now` in place of `start`, and `is-enabled` printed so
+that the step shows what it did. The rehearsal used to restore onto a host
+where the unit was already enabled, which is why the old text passed; it
+now disables the unit first and reports that it was disabled.
+
+**What cannot be shown here.** Both are text an operator follows and the
+rehearsal that follows it; neither runs without systemd. `--check-
+substitutions` and `runbook_gate` pass locally. The proof is the runbook
+job in CI, on two Ubuntu releases.
+
+**From the same review, next.** The unit restarts every two seconds for
+ever on a configuration error (exit 3), with no start limit; and the
+example Caddyfile forwards the browser's cookies to the daemon, whose
+upgrade request is capped at 4,096 bytes. Each needs measuring before it
+is changed.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 270 findings;
+spec v1.59, 101 errata (unchanged).

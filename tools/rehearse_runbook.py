@@ -140,6 +140,10 @@ PRE = {
     24: ["sudo authd_admin backup --socket /run/mldsa-authd/admin.sock "
          "--path /var/lib/mldsa-authd/backups/before-loss.sqlite3",
          "@runbook:12:mldsa-authd-offhost/",
+         # V4-191 (F270): a new host has the unit installed (step 8) and NOT
+         # enabled; this one enabled it in step 9. Disabled here, so that the
+         # step's own `is-enabled` shows what the step did.
+         "sudo systemctl disable mldsa-authd; echo \"enabled-before-restore=$(systemctl is-enabled mldsa-authd || true)\"",
          "sudo systemctl stop mldsa-authd; "
          "sudo sh -c 'rm -f /var/lib/mldsa-authd/server.ek /var/lib/mldsa-authd/server.pub "
          "/var/lib/mldsa-authd/store.sqlite3*'; "
@@ -259,6 +263,9 @@ POST = {
 EXPECT = {
     2: [r"OK: every discovered executable carries the full hardening set \[Linux\]"],
     5: [r"server\.pub"],
+    # V4-191 (F269): the offline copy is printed before the plaintext is
+    # shredded -- 32 bytes as one base64 line.
+    6: [r"(?m)^[A-Za-z0-9+/]{43}=$"],
     9: [r"proxy_protocol=v2", r"event=started", r"event=listening-",
         r"event=memlock-limit"],
     11: [r"(?m)^[A-Za-z0-9_-]{43}$"],
@@ -285,6 +292,7 @@ EXPECT = {
          r"(?s)the audit chain verifies \(\d+ entries\).*the audit chain verifies \(\d+ entries\)",
          r"(?m)^pseudonym-same=1$", r"(?m)^listed=2$", r"(?m)^leftovers=0$"],
     24: [r"(?m)^left-after-loss=0$", r"(?m)^active$", r"(?m)^[A-Za-z0-9_-]{43}$",
+         r"(?m)^enabled-before-restore=disabled$", r"(?m)^enabled$",
          r"the audit chain verifies \(\d+ entries\)"],
     16: [r"(?m)^plain-ids=0$", r"(?m)^full-src=0$", r"(?m)^prefix-src=[1-9]",
          r"PASS: BROWSER: a person enrolled and logged in through the deployed stack",
