@@ -1249,6 +1249,14 @@ echo "PASS: E2E: list-users, list-devices and audit-tail all return complete lis
 rc=0
 "$ADMIN" audit-tail --socket "$TMP/a.sock" --n 50 > /dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "audit-tail --n 50 exited $rc, expected a usage error naming the bound"
+# V4-186, F263: a count the CLI accepts is one the daemon accepts. `00005` is
+# 5 to the CLI's check and five characters to the daemon, which allows four:
+# it came back `refused: malformed`, the unexplained answer the CLI's check
+# exists to prevent. The CLI now sends the number it parsed.
+rc=0
+"$ADMIN" audit-tail --socket "$TMP/a.sock" --n 00005 > "$TMP/audit0.txt" 2> "$TMP/audit0.err" || rc=$?
+[ "$rc" -eq 0 ] && grep -q '^END$' "$TMP/audit0.txt" && [ "$(grep -c '^AUDIT ' "$TMP/audit0.txt")" -eq 5 ] \
+    || fail "audit-tail --n 00005 exited $rc and did not list five entries (F263): $(cat "$TMP/audit0.err") $(head -3 "$TMP/audit0.txt")"
 rc=0
 "$ADMIN" backup --socket "$TMP/a.sock" --path relative.db > /dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "backup with a relative path exited $rc, expected a usage error"

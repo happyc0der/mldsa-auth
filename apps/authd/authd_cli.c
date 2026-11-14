@@ -1047,6 +1047,11 @@ int authd_cli_admin(int argc, char **argv)
          * daemon caps it at AUTHD_LIST_MAX. Refusing a larger value here names
          * the bound; sending it would come back as an unexplained
          * `malformed`. */
+        /* V4-186, F263: what is SENT is the number that was parsed, not the
+         * argument's text. `00005` passed the check below as 5 and was then
+         * sent as five characters, one more than the daemon reads: the
+         * unexplained `malformed` after all. */
+        char n_canon[24];
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--n") == 0 && i + 1 < argc) {
                 uint64_t v = 0;
@@ -1055,6 +1060,8 @@ int authd_cli_admin(int argc, char **argv)
                             (unsigned)AUTHD_LIST_MAX);
                     return EX_USAGE;
                 }
+                (void)snprintf(n_canon, sizeof n_canon, "%llu", (unsigned long long)v);
+                argv[i + 1] = n_canon;
             }
         }
         opt_t o[] = { { "--n", "n", 0, 1, NULL } };

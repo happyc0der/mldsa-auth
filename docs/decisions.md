@@ -16515,3 +16515,31 @@ No code.
 
 Counts: 558 mutations, 92 campaigns, 600 anchors; 262 findings; spec v1.59,
 101 errata (all unchanged by this step).
+
+## V4-186: audit-tail sends the count it parsed (F263)
+
+One line: the CLI checked a number and sent a string. The daemon's rule,
+at most four digits, is unchanged; a CLI is the place to be lenient about
+how a person types five.
+
+**Looked at and left, from the same review.**
+
+- *The credential directory's custody rule is textual.* A passphrase path
+  written `$CREDENTIALS_DIRECTORY//pass` is not "directly inside" the
+  directory by that rule and is then judged as an ordinary file: not owned
+  by this user. The message is about the wrong thing, and the refusal is
+  right: the rule is strict on purpose (its comment lists what it must not
+  admit), and loosening a custody check to improve a message for a path
+  nobody's unit file contains is the wrong trade.
+- *An interrupted read of the passphrase file is a short read.* It needs
+  `read()` on a regular file to return EINTR, which local filesystems do
+  not do; no test could show it.
+- *A repeated flag or header takes the last value.* `disable-user --user a
+  --user b` acts on b. Common CLI behaviour; refusing a repeat is a
+  behaviour change for the owner to want, not a defect.
+
+**Tests.** `authd_e2e`, one check, failing before the fix. Campaign v123,
+AT1.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors; 263 findings; spec v1.59,
+101 errata (unchanged).
