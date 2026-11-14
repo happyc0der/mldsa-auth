@@ -16778,3 +16778,19 @@ does not catch it.
 
 Counts: 560 mutations, 94 campaigns, 602 anchors; 273 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-196: the dependency fetch can be run again (F274)
+
+Two lines in a script an operator runs once, on the one machine that has a
+network, usually over a link that can drop. The partial clone's name is the
+script's own, so removing it before cloning is safe; the finished
+`liboqs.git` is never touched and is still verified against its pinned
+commit on every run. The timeouts are generous (ten minutes for a file of
+a few megabytes) because their job is to end a stall, not to judge a slow
+link.
+
+Verified by running it: over a planted leftover, and again on the complete
+cache. Not automated, for the reason the audit row gives.
+
+Counts: 560 mutations, 94 campaigns, 602 anchors (unchanged); 274 findings;
+spec v1.59, 101 errata (unchanged).

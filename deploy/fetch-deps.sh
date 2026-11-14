@@ -43,6 +43,11 @@ echo "cache: $DEST"
 # --- population-time PATCH_COMMAND still runs against the result.
 if [ ! -d "$DEST/liboqs.git" ]; then
     echo "--- cloning liboqs $OQS_TAG"
+    # A clone that was interrupted leaves this directory, and git refuses to
+    # clone into one that is not empty: every later run then failed here
+    # until someone found it and removed it by hand (V4-196, F274). It is
+    # this script's own temporary name; nothing else writes it.
+    rm -rf "$DEST/liboqs.git.part"
     git clone --bare --depth 1 --branch "$OQS_TAG" \
         https://github.com/open-quantum-safe/liboqs.git "$DEST/liboqs.git.part"
     mv "$DEST/liboqs.git.part" "$DEST/liboqs.git"
@@ -66,7 +71,10 @@ fetch_verified() { # urls (space-separated, tried in order), destination, expect
         echo "--- downloading $(basename "$out")"
         got_it=0
         for url in $urls; do
-            if curl -fsSL -o "$out.part" "$url"; then got_it=1; break; fi
+            # Bounded (F274): with no limit a source that accepts the
+            # connection and sends nothing held the script for ever, and the
+            # next source in the list was never tried.
+            if curl -fsSL --connect-timeout 20 --max-time 600 -o "$out.part" "$url"; then got_it=1; break; fi
             echo "    $url failed; trying the next source"
         done
         [ "$got_it" -eq 1 ] || { rm -f "$out.part"; echo "FAIL: no source served $(basename "$out")"; exit 1; }
