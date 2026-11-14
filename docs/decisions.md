@@ -16501,3 +16501,17 @@ canaries. Campaign v122, WC1-WC4.
 
 Counts: 558 mutations, 92 campaigns, 600 anchors; 262 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-185: cleanup after V4-178 to V4-181 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `840fe64`, now main: CI
+  43630843503 (16/16), nightly 43630845767 (106/106, 91 campaigns).
+- That CI run is the first with V4-181's F219 leg on the macOS runners,
+  where the old one had failed: both macOS jobs passed.
+- V4-182 to V4-184 were written while that branch was in CI and sit under
+  this entry; they go to CI and the nightly with it as one branch.
+
+Counts: 558 mutations, 92 campaigns, 600 anchors; 262 findings; spec v1.59,
+101 errata (all unchanged by this step).
