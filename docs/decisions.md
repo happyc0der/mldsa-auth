@@ -16736,3 +16736,17 @@ the owner's call.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors; 271 findings; spec v1.59,
 101 errata (all unchanged).
+
+## V4-194: a login code that could not be written is a failure (F272)
+
+The CLI's one output that matters was the one write it did not check. Exit
+1, "operation failed", and a sentence that says the login itself worked:
+the daemon has a code outstanding for sixty seconds that nobody holds, and
+the remedy is to log in again, not to look for what went wrong with the
+key.
+
+**Tests.** `authd_e2e`: the raw-listener login again with standard output
+closed. Campaign v124, CW1.
+
+Counts: 560 mutations, 94 campaigns, 602 anchors; 272 findings; spec v1.59,
+101 errata (unchanged).

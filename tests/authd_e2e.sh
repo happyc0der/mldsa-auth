@@ -913,6 +913,18 @@ CODEP=$("$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
 [ "${#CODEP}" -eq 43 ] || fail "the raw-listener login code is ${#CODEP} characters, expected 43 base64url"
 echo "PASS: E2E: the same login works over the raw loopback listener (the operator tunnel)"
 
+# V4-194, F272: a login whose code could not be written is not a success. The
+# code is single-use and the daemon has already issued it; the CLI printed it
+# with an unchecked printf and exited 0, so a caller whose stdout was closed
+# or full got status 0 and no code.
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --port "$PORT" 2> "$TMP/login-closed.err" >&- || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'the login code could not be written' "$TMP/login-closed.err" \
+    || fail "a login with its standard output closed exited $rc, expected 1 and a reason (F272): $(cat "$TMP/login-closed.err")"
+echo "PASS: E2E: a login whose code cannot be written to standard output exits 1 and says so (F272)"
+
 # Req 12, by execution: with proxy_protocol = v2 the daemon must refuse a
 # connection that does not state a client address. Without this check every
 # other --proxy-v2 leg above would still pass if the preamble were optional.

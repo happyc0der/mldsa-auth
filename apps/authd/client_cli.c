@@ -792,8 +792,17 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
                                        sodium_base64_VARIANT_URLSAFE_NO_PADDING)];
     (void)sodium_bin2base64(b64, sizeof b64, cs.code.code, sizeof cs.code.code,
                             sodium_base64_VARIANT_URLSAFE_NO_PADDING);
-    printf("%s\n", b64);
+    /* V4-194, F272: the code is the whole result, it is single-use, and the
+     * daemon has issued it. A write that failed (stdout closed, a full disk,
+     * a reader that went away) used to be followed by exit 0. */
+    const int wrote = printf("%s\n", b64) > 0 && fflush(stdout) == 0;
     sodium_memzero(b64, sizeof b64);
+    if (!wrote) {
+        client_say_bye(&cs);
+        fprintf(stderr, "%s login: the login succeeded but the login code could not be written to "
+                        "standard output; it is lost -- log in again\n", prog);
+        return EX_FAIL;
+    }
     if ((cs.code.flags & AUTHMSG_FLAG_ROTATION_DUE) != 0u) {
         fprintf(stderr, "%s login: this key is due for rotation -- run `%s rotate`\n", prog, prog);
     }

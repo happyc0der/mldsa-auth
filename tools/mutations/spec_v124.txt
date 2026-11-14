@@ -1,0 +1,1 @@
+CW1|^authd_e2e$|a login with its standard output closed exited 0, expected 1 and a reason (F272)
