@@ -173,6 +173,12 @@ add_test(NAME fuzz_log_gate
 add_test(NAME spec_constants_gate
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/spec_constants_gate.sh ${PROJECT_SOURCE_DIR})
 
+# V4-177 (F251): the runbook gate, run against copies of the runbook in which
+# one command block is fenced as anything but ```bash. The script fails, not
+# skips, without python3: the gate it tests needs it too.
+add_test(NAME runbook_gate
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/runbook_gate.sh ${PROJECT_SOURCE_DIR})
+
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure

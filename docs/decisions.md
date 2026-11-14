@@ -16241,3 +16241,41 @@ UC1-UC2.
 
 Counts: 548 mutations, 88 campaigns, 590 anchors; 250 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-177: the runbook gate refuses a block it would not rehearse (F251)
+
+Cleanup first, by the loop's count: V4-174 already cites the runs on
+`c813de2`, and nothing has landed since, so there was nothing to cite. The
+step is a gate repair instead.
+
+**What was wrong.** `steps()` reads a block as commands only when it opens
+with exactly ` ```bash `. Any other fence was not an error: the block was
+skipped and the step still counted. Re-fencing one block at a time, the
+check mode stayed green for 20 of 35 blocks; the other 15 were caught only
+because a substitution or a `@runbook:` reference pointed into them.
+
+**The rule.** Inside a numbered step every fenced block is commands, opened
+` ```bash `, unless `NOT_COMMANDS` names it by step and by a line it holds.
+One block is named: step 15's two lines of configuration. A name that no
+longer matches a block is itself a failure, so the list cannot go stale
+quietly.
+
+**Not a defect: `A && B`.** The reviewer also noted that the rehearsal's
+ERR trap does not fire when `A` fails in `A && B`. The runbook has one such
+line, step 23's `diff -u ... && echo "the unit is unchanged"`, and there a
+differing unit is a result the operator reads, not a failure. Left as it
+is.
+
+**Not tested: the full rehearsal's refusal.** The full run now refuses
+before its first step when the check finds a stray block. A test of that
+would, if the refusal were ever broken, run the runbook's `sudo` commands
+on the machine running the suite. It is two lines, read rather than run.
+
+**Tests.** `runbook_gate` (CTest): the canary, then 35 blocks x six
+spellings, a second plain block, the named block changed, an unclosed
+block. Against the tool before the fix ten checks fail; against a version
+that compares the fence loosely (G1) two fail.
+
+Counts: 548 mutations, 88 campaigns, 590 anchors (unchanged); 251 findings;
+spec v1.59, 101 errata (unchanged); 61 tests with wasm and a browser (56
+native).

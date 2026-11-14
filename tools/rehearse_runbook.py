@@ -330,6 +330,53 @@ FORBID_CLEAN = {
 ALLOW_NONZERO = {16: ["grep"], 23: ["grep"], 24: ["grep"]}
 
 
+# A fenced block inside a numbered step that is NOT commands: (step, a line
+# it holds) -> why. Every other block in a step must open with exactly
+# ```bash (V4-177, F251).
+NOT_COMMANDS = {
+    (15, "log_identities = hashed"): "two configuration lines, quoted from authd.conf.example",
+}
+
+
+def stray_fences(md):
+    """Problems: every fenced block in a numbered step that steps() does not
+    read as commands and NOT_COMMANDS does not name. steps() takes a block
+    only when its opening line is exactly ```bash, so a block opened ```sh,
+    ```shell, ``` bash or ~~~bash was dropped from the rehearsal without a
+    word, and its step still counted as rehearsed (F251)."""
+    out, cur, seen = [], None, set()
+    lines = md.split("\n")
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^## (\d+)\. ", lines[i])
+        f = re.match(r"^\s*(`{3,}|~{3,})(.*)$", lines[i])
+        if m:
+            cur = int(m.group(1))
+        elif re.match(r"^## |^# ", lines[i]):
+            cur = None
+        elif f:
+            mark, info = f.group(1), f.group(2).strip()
+            j = i + 1
+            while j < len(lines) and not re.match(r"^\s*%s\s*$" % re.escape(mark), lines[j]):
+                j += 1
+            if j == len(lines):
+                out.append("line %d: a fenced block is opened and never closed" % (i + 1))
+                break
+            if cur is not None and lines[i].strip() != "```bash":
+                body = [l.strip() for l in lines[i + 1:j]]
+                named = [k for k in NOT_COMMANDS if k[0] == cur and k[1] in body]
+                if named:
+                    seen.update(named)
+                else:
+                    out.append("step %d, line %d: a block opened %r is not rehearsed; open it "
+                               "```bash, or name it in NOT_COMMANDS" % (cur, i + 1, lines[i].strip()))
+            i = j
+        i += 1
+    for k in sorted(set(NOT_COMMANDS) - seen):
+        out.append("NOT_COMMANDS names a block of step %d holding %r; the runbook has none" % k)
+    return out
+
+
 def steps(md):
     """{n: (title, [bash block text, ...])} for '## n. title' headings."""
     out, cur = {}, None
@@ -375,8 +422,8 @@ def post_line(st, c):
     return "echo 'HARNESS: %s'\n%s\n" % (c.replace("'", "")[:90], c)
 
 
-def check_substitutions(st):
-    bad = []
+def check_substitutions(st, md):
+    bad = stray_fences(md)
     for n, subs in sorted(SUBST.items()):
         if n not in st:
             bad.append("step %d has substitutions but no longer exists" % n)
@@ -414,12 +461,16 @@ def check_substitutions(st):
 
 def main():
     if "--check-substitutions" in sys.argv:
-        return check_substitutions(steps(open(sys.argv[1]).read()))
+        md = open(sys.argv[1]).read()
+        return check_substitutions(steps(md), md)
     if os.environ.get("REHEARSAL_HOST_IS_DISPOSABLE") != "1":
         sys.exit("refusing: this creates users and services; set "
                  "REHEARSAL_HOST_IS_DISPOSABLE=1 on a throwaway host only")
     keep = "--keep-going" in sys.argv
     md = open(sys.argv[1]).read()
+    stray = stray_fences(md)
+    if stray:
+        sys.exit("refusing: " + "; ".join(stray))
     st = steps(md)
     open(STATE, "w").close()
     results, ok_all = [], True
