@@ -149,6 +149,37 @@ static void test_config(void)
           "cfg: a site socket without site_uids is refused (Req 11)");
     CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK,
           "cfg: ...and accepted once site_uids names who may use it");
+    /* V4-160, F236: a refusal about the file as a whole says what it is about. */
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING &&
+          strcmp(authd_config_error_detail(), "site_uids (site_socket is set)") == 0,
+          "cfg: a site socket without site_uids names site_uids (F236)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK &&
+          authd_config_error_detail()[0] == '\0',
+          "cfg: the detail of one parse is not left for the next (F236)");
+    CHECK(parse_str("key_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 9\n", &cfg, &line)
+              == AUTHD_CFG_ERR_MISSING && strcmp(authd_config_error_detail(), "store_path") == 0 &&
+          parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nlisten_port = 9\n", &cfg, &line)
+              == AUTHD_CFG_ERR_MISSING && strcmp(authd_config_error_detail(), "server_id") == 0,
+          "cfg: a missing required key is named, the first and the last of the four (F236)");
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n", &cfg, &line)
+              == AUTHD_CFG_ERR_MISSING && strstr(authd_config_error_detail(), "listen_unix or listen_port") != NULL,
+          "cfg: no listener at all is named as that (F236)");
+    CHECK(parse_str(BASE "site_socket = /run/x.sock\nsite_uids = 33\nadmin_socket = /run/x.sock\n", &cfg, &line)
+              == AUTHD_CFG_ERR_PATH_CLASH &&
+          strcmp(authd_config_error_detail(), "site_socket and admin_socket") == 0,
+          "cfg: one path for the site and admin sockets is refused, naming both (F236)");
+    CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+                    "listen_unix = /run/x.sock\nsite_socket = /run/x.sock\nsite_uids = 33\n", &cfg, &line)
+              == AUTHD_CFG_ERR_PATH_CLASH &&
+          strcmp(authd_config_error_detail(), "listen_unix and site_socket") == 0 &&
+          parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+                    "listen_unix = /run/x.sock\nadmin_socket = /run/x.sock\n", &cfg, &line)
+              == AUTHD_CFG_ERR_PATH_CLASH &&
+          strcmp(authd_config_error_detail(), "listen_unix and admin_socket") == 0,
+          "cfg: the proxy-facing socket on the path of either local socket is refused, naming both (F236)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33\nadmin_socket = /run/a.sock\n", &cfg, &line)
+              == AUTHD_CFG_OK,
+          "cfg: three sockets on three paths are accepted (the canary)");
     CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
                     "listen_unix = /run/p.sock\nproxy_protocol = v2\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
           "cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)");

@@ -1,0 +1,6 @@
+CD1|^test_authd_evloop$|cfg: a site socket without site_uids names site_uids (F236)
+CD2|^test_authd_evloop$|cfg: the detail of one parse is not left for the next (F236)
+CD3|^test_authd_evloop$|cfg: one path for the site and admin sockets is refused, naming both (F236)
+CD4|^authd_e2e$|was refused by mldsa-authd without naming it (F236)
+CD5|^authd_e2e$|was refused by authd_admin without naming it (F236)
+CD6|^test_authd_evloop$|cfg: the proxy-facing socket on the path of either local socket is refused, naming both (F236)

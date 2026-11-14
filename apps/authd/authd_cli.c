@@ -950,6 +950,9 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
         if (cs == AUTHD_CFG_ERR_IO) {
             fprintf(stderr, " (%s)", authd_config_io_cause(cfg_errno));
         }
+        if (authd_config_error_detail()[0] != '\0') {
+            fprintf(stderr, ": %s", authd_config_error_detail());   /* F236 */
+        }
         if (err_line > 0u) {
             fprintf(stderr, " at line %zu", err_line);
         }

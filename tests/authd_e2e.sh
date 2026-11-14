@@ -120,6 +120,46 @@ rc=0
 [ "$rc" -eq 3 ] || fail "daemon --check-config on a bad config exited $rc, expected exactly 3"
 echo "PASS: E2E: both binaries report a configuration error as exit 3 (spec 13)"
 
+# F236: a configuration that is refused for what it LACKS says what that is.
+# Eight different omissions all printed "missing-required-key" and nothing
+# else -- no key, no line -- among them the two settings the runbook's step 7
+# tells the operator to edit. And two sockets given one path passed
+# --check-config and then failed at start as "in-use", which the runbook
+# explains as another daemon running.
+cfg_says() {   # cfg_says <what the config lacks> <text the refusal must contain> <config body...>
+    printf '%s\n' "$3" > "$TMP/lack.conf"
+    for bin in "$ADMIN" "$DAEMON"; do
+        rc=0
+        if [ "$bin" = "$ADMIN" ]; then "$bin" --check-config --config "$TMP/lack.conf" > "$TMP/lack.out" 2>&1 || rc=$?
+        else "$bin" --config "$TMP/lack.conf" --check-config > "$TMP/lack.out" 2>&1 || rc=$?; fi
+        [ "$rc" -eq 3 ] || fail "a config with $1 exited $rc from $(basename "$bin"), expected 3 (F236)"
+        grep -qF "$2" "$TMP/lack.out" \
+            || { cat "$TMP/lack.out"; fail "a config with $1 was refused by $(basename "$bin") without naming it (F236)"; }
+    done
+}
+LACK_BASE="store_path = $TMP/d/store.sqlite3
+key_path = $TMP/d/server.ek
+key_passphrase_file = $TMP/d/pass
+server_id = authd"
+cfg_says "no site_uids for its site socket" "missing-required-key: site_uids" "$LACK_BASE
+listen_unix = $TMP/lk-p.sock
+site_socket = $TMP/lk-s.sock"
+cfg_says "proxy_protocol = v2 and no proxy_uids" "missing-required-key: proxy_uids" "$LACK_BASE
+listen_unix = $TMP/lk-p.sock
+proxy_protocol = v2"
+cfg_says "no listener" "missing-required-key: listen_unix or listen_port" "$LACK_BASE"
+cfg_says "no server_id" "missing-required-key: server_id" "store_path = $TMP/d/store.sqlite3
+key_path = $TMP/d/server.ek
+key_passphrase_file = $TMP/d/pass
+listen_port = 20001"
+cfg_says "one path for two sockets" "socket-paths-collide: site_socket and admin_socket" "$LACK_BASE
+listen_unix = $TMP/lk-p.sock
+site_socket = $TMP/lk-s.sock
+site_uids = $(id -u)
+admin_socket = $TMP/lk-s.sock
+admin_uids = $(id -u)"
+echo "PASS: E2E: a configuration refused for what it lacks names the setting, from both binaries; two sockets on one path are refused as a configuration error (F236)"
+
 # ------------------------------------------- the config an operator copies
 #
 # deploy/authd.conf.example is what a deployment starts from, so its KEYS and

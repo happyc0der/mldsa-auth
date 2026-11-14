@@ -897,7 +897,7 @@ The daemon's exit code says which half is wrong (spec §13):
 
 | Exit | Meaning | Look at |
 |---|---|---|
-| 3 | configuration | the message names the setting and line, or the file the configuration names that cannot be used: the server key or its passphrase file, missing, with unsafe modes, malformed, or not opened by the passphrase (since V4-61, F126) — check the credential and the file modes; `--check-config` reports configuration lines without starting |
+| 3 | configuration | the message names the setting and its line — or, for a setting that is missing or two sockets given one path, the setting itself (`missing-required-key: site_uids (site_socket is set)`, `socket-paths-collide: site_socket and admin_socket`; since V4-160) — or the file the configuration names that cannot be used: the server key or its passphrase file, missing, with unsafe modes, malformed, or not opened by the passphrase (since V4-61, F126) — check the credential and the file modes; `--check-config` reports configuration lines without starting |
 | 1 | operation failed | the store would not open, or an internal failure |
 | 2 | usage | the unit's `ExecStart` |
 

@@ -60,6 +60,7 @@ const char *authd_config_status_name(authd_config_status_t st)
     case AUTHD_CFG_ERR_RANGE:        return "value-out-of-range";
     case AUTHD_CFG_ERR_VALUE:        return "malformed-value";
     case AUTHD_CFG_ERR_MISSING:      return "missing-required-key";
+    case AUTHD_CFG_ERR_PATH_CLASH:   return "socket-paths-collide";
     default:                         return "unknown";
     }
 }
@@ -179,9 +180,25 @@ static int key_is(const uint8_t *k, size_t kn, const char *name)
     return kn == n && memcmp(k, name, n) == 0;
 }
 
+/* F236: what a whole-file refusal is about. A pointer to a literal, set by
+ * the parse that fails and cleared by the next one. */
+static const char *g_detail = "";
+
+const char *authd_config_error_detail(void)
+{
+    return g_detail;
+}
+
+static authd_config_status_t whole_file(authd_config_status_t st, const char *what)
+{
+    g_detail = what;
+    return st;
+}
+
 authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
                                          authd_config_t *out, size_t *err_line)
 {
+    g_detail = "";
     if (err_line != NULL) {
         *err_line = 0;
     }
@@ -398,20 +415,22 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
 
     /* required keys */
     const int required[] = { B_STORE, B_KEY, B_PASS, B_SERVER_ID };
+    static const char *const required_name[] = { K_STORE, K_KEY, K_PASS, K_SERVER_ID };
     for (size_t j = 0; j < sizeof required / sizeof required[0]; j++) {
         if ((seen & (1u << required[j])) == 0u) {
-            return AUTHD_CFG_ERR_MISSING;
+            return whole_file(AUTHD_CFG_ERR_MISSING, required_name[j]);
         }
     }
     /* at least one listener must be configured, or the daemon can serve nobody */
     if (cfg.listen_port == 0u && cfg.listen_unix[0] == '\0') {
-        return AUTHD_CFG_ERR_MISSING;
+        return whole_file(AUTHD_CFG_ERR_MISSING, "listen_unix or listen_port (no listener is configured)");
     }
     /* Both of these configure the proxy-facing listener, so naming either
      * without it is a mistake the operator wants to hear about now rather than
      * discover as an absent rate limit. */
     if ((cfg.proxy_protocol_v2 || cfg.n_proxy_uids > 0u) && cfg.listen_unix[0] == '\0') {
-        return AUTHD_CFG_ERR_MISSING;
+        return whole_file(AUTHD_CFG_ERR_MISSING,
+                          "listen_unix (proxy_protocol and proxy_uids configure that listener)");
     }
     /* Req 11 has no "unless unconfigured" (audit finding F92). An EMPTY
      * allowlist means "check no peer credentials at all" to the listener, and
@@ -423,10 +442,22 @@ authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
      * defaults to root, and an explicitly empty list is already refused.) A
      * development setup that wants no proxy names its own uid. */
     if (cfg.site_socket[0] != '\0' && cfg.n_site_uids == 0u) {
-        return AUTHD_CFG_ERR_MISSING;
+        return whole_file(AUTHD_CFG_ERR_MISSING, "site_uids (site_socket is set)");
     }
     if (cfg.proxy_protocol_v2 && cfg.n_proxy_uids == 0u) {
-        return AUTHD_CFG_ERR_MISSING;
+        return whole_file(AUTHD_CFG_ERR_MISSING, "proxy_uids (proxy_protocol = v2)");
+    }
+    /* F236: three sockets, three paths. Two on one path passed this check,
+     * the first bound, and the second found "a daemon" already listening --
+     * its own -- and failed as in-use with exit 1, at start and not here. */
+    if (cfg.listen_unix[0] != '\0' && strcmp(cfg.listen_unix, cfg.site_socket) == 0) {
+        return whole_file(AUTHD_CFG_ERR_PATH_CLASH, "listen_unix and site_socket");
+    }
+    if (cfg.listen_unix[0] != '\0' && strcmp(cfg.listen_unix, cfg.admin_socket) == 0) {
+        return whole_file(AUTHD_CFG_ERR_PATH_CLASH, "listen_unix and admin_socket");
+    }
+    if (cfg.site_socket[0] != '\0' && strcmp(cfg.site_socket, cfg.admin_socket) == 0) {
+        return whole_file(AUTHD_CFG_ERR_PATH_CLASH, "site_socket and admin_socket");
     }
     (void)B_COUNT;
     *out = cfg;                 /* the single commit point */

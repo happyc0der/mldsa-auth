@@ -15712,3 +15712,39 @@ mutant now fails two checks.
 
 Counts: 524 mutations, 80 campaigns, 566 anchors (unchanged, no C);
 235 findings; spec v1.55, 97 errata (unchanged).
+
+## V4-160: a refused configuration says what it lacks (F236)
+
+**The defect, two parts.** (a) `missing-required-key` was the whole message
+for eight different omissions: no key name, no line. (b) Nothing compared
+the three socket paths, so two on one path passed `--check-config` and
+failed at start as `in-use`, exit 1, with the runbook pointing at a second
+daemon that did not exist. Reproduced (a) first with both binaries.
+
+**The fix.** The parser keeps a pointer to a literal saying what a
+whole-file refusal is about, cleared at the start of every parse and read
+through `authd_config_error_detail()`. Both places that print a config
+error add it after the status name. One path for two sockets is a new
+status, `socket-paths-collide`, with the pair named; it is a configuration
+error, so exit 3, and it is found by `--check-config`, where the operator
+is looking.
+
+**Why a static and not a parameter.** `authd_config_parse` is called from
+the fuzz target and about ninety checks; an added out-parameter would touch
+all of them for a string two callers print. The daemon and the CLI parse
+one file, once, on one thread. `authd_config_io_cause` is the precedent.
+
+**Not a spec change.** Config status names are not in §8 or §15's gated
+vocabularies; the vocabulary gate agrees.
+
+**Compared as text.** `/run/x.sock` and `/run//x.sock` are different
+strings and pass; the listener's own `in-use` still catches those at start.
+
+**Tests.** `test_authd_evloop`: site_uids named; the detail cleared by the
+next parse; the first and last required key; no listener; the three pairs;
+three distinct paths accepted. `authd_e2e`: five configurations, each
+through `authd_admin --check-config` and `mldsa-authd --check-config`.
+Campaign v111, CD1-CD6.
+
+Counts: 530 mutations, 81 campaigns, 572 anchors; 236 findings; spec v1.55,
+97 errata (unchanged).

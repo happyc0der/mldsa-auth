@@ -52,7 +52,8 @@ typedef enum {
     AUTHD_CFG_ERR_DUPLICATE_KEY,
     AUTHD_CFG_ERR_RANGE,        /* value outside the documented bounds */
     AUTHD_CFG_ERR_VALUE,        /* value malformed for its type */
-    AUTHD_CFG_ERR_MISSING       /* a required key was absent */
+    AUTHD_CFG_ERR_MISSING,      /* a required key was absent */
+    AUTHD_CFG_ERR_PATH_CLASH    /* two sockets were given one path (F236) */
 } authd_config_status_t;
 
 typedef struct {
@@ -133,6 +134,12 @@ void authd_config_defaults(authd_config_t *out);
  * never reads outside [buf, buf+len), and requires no NUL terminator. */
 authd_config_status_t authd_config_parse(const uint8_t *buf, size_t len,
                                          authd_config_t *out, size_t *err_line);
+
+/* WHAT the last parse on this thread refused, for the two failures that are
+ * about the file as a whole and so have no line (F236): the setting that is
+ * missing, or the two that collide. "" for every other outcome. Eight
+ * different omissions used to print the same two words and nothing else. */
+const char *authd_config_error_detail(void);
 
 /* Reads a file (refusing one over AUTHD_CONFIG_MAX_BYTES) and parses it.
  * On AUTHD_CFG_ERR_IO, errno holds the cause of the failed open, fstat or
