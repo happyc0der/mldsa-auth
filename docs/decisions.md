@@ -16145,3 +16145,22 @@ restored and the suite passes.
 
 V4-171's branch was not landed: its nightly was red. V4-169 to V4-173 and
 this correction go to CI and the nightly as one branch.
+
+## V4-174: cleanup after V4-169 to V4-173 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `c813de2`, now main: CI
+  43607635344 (16/16), nightly 43607637697 (102/102, 87 campaigns).
+- That run was the first with V4-172's fuzz gate in the workflows. It ran
+  and had something to read: CI's smoke step printed twelve summary lines
+  (the fewest executed inputs was `fuzz_client`, 4,223) and `PASS:
+  FUZZ-LOG: 12 target(s)`; each nightly fuzz job printed its one line and
+  `PASS: FUZZ-LOG: 1 target(s)`.
+- The nightly before it, on V4-171's branch, was 99/101: v58 GA4 and v64
+  TG4 survived. V4-170 had made both equivalent without touching their
+  anchors, so no local gate could say so. The lesson is recorded under
+  "V4-170, afterwards"; only running every campaign shows it.
+
+Counts: 546 mutations, 87 campaigns, 588 anchors; 247 findings; spec v1.59,
+101 errata (all unchanged by this step).
