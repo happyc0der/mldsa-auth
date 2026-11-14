@@ -222,6 +222,35 @@ inc "grep -c 'event=closed-protocol' /tmp/authd.log > /dev/null" \
     || fail "the daemon logged no protocol refusal for the preamble-less connection"
 echo "PASS: CADDY: and it says so in the log"
 
+# ------------------------------------------- cookies stop at the proxy (F271)
+#
+# The daemon reads at most 4,096 bytes of upgrade request and closes on more.
+# A browser sends every cookie it holds for the domain with the upgrade, so
+# the example configuration removes them (`header_up -Cookie`). An upgrade
+# carrying 6,000 bytes of cookies must be answered 101 through the first
+# Caddy -- and, the control, must NOT be through a third whose configuration
+# has that one line taken out, or this check could not fail.
+inc "sed -e '/header_up -Cookie/d' -e 's/^:8080 {/:8082 {/' /etc/Caddyfile > /etc/Caddyfile.cookie"
+inc "grep -q '^:8082 {' /etc/Caddyfile.cookie && ! grep -q header_up /etc/Caddyfile.cookie && grep -q 'header_up -Cookie' /etc/Caddyfile" \
+    || fail "the cookie-forwarding Caddyfile was not derived as intended, or the example no longer strips cookies"
+inc "caddy start --config /etc/Caddyfile.cookie --adapter caddyfile > /tmp/caddy3.log 2>&1" \
+    || { inc "cat /tmp/caddy3.log"; fail "the third caddy would not start"; }
+inc "for i in \$(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:8082/ && exit 0; sleep 0.1; done; exit 0"
+upgrade_status() {   # upgrade_status <port> <cookie bytes>: the status line's code, or 000
+    inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 \
+           -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+           -H \"Cookie: consent=\$(head -c $2 /dev/zero | tr '\\0' x)\" \
+           'http://127.0.0.1:$1/authd/v1?state=s9' || true"
+}
+SMALL=$(upgrade_status 8082 20)
+BIG=$(upgrade_status 8080 6000)
+CTRL=$(upgrade_status 8082 6000)
+[ "$SMALL" = 101 ] || fail "an upgrade with a small cookie through the control Caddy answered $SMALL, not 101 -- the canary"
+[ "$BIG" = 101 ] || { inc "tail -5 /tmp/authd.log"; fail "an upgrade carrying 6,000 bytes of cookies answered $BIG through the example configuration, not 101 (F271)"; }
+[ "$CTRL" != 101 ] || fail "the same upgrade was answered 101 with header_up -Cookie removed: this check cannot fail"
+echo "PASS: CADDY: an upgrade carrying 6,000 bytes of cookies is answered 101 through the example configuration, and $CTRL without its header_up -Cookie line (F271)"
+
 # ---------------------------------------- the public journal (V4-13d, F14)
 #
 # deploy/RUNBOOK.md's public settings, behind the real Caddy: the same store,

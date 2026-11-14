@@ -44,6 +44,11 @@ authd.example.com {
 		Strict-Transport-Security "max-age=31536000"
 	}
 	reverse_proxy /authd/v1* unix//run/mldsa-authd/p.sock {
+		# The daemon reads at most 4,096 bytes of upgrade request and
+		# closes on more. A browser sends every cookie it holds for this
+		# domain with the upgrade; the daemon uses none of them, so they
+		# stop here (V4-192, F271).
+		header_up -Cookie
 		transport http {
 			proxy_protocol v2
 		}

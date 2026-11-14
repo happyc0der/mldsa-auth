@@ -16682,3 +16682,32 @@ is changed.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 270 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-192: cookies stop at the proxy (F271)
+
+**Measured first.** Against a running daemon, the same upgrade request with
+a growing Cookie header: 148, 1,160 and 3,960 bytes are answered 101; 4,260
+and 8,160 bytes are closed with nothing sent. The limit is `WS_UPGRADE_MAX`
+and is deliberate: the daemon will not buffer an unbounded request from an
+unauthenticated peer.
+
+**Fixed at the two places that fed it.** The daemon has no use for any
+header a browser adds, so the proxy is where they stop. In Caddy one
+directive removes the Cookie header on the way upstream; other large
+headers a browser might send are rare enough to leave. The reference site
+relays only the opening handshake's own headers and Origin, by a list, so a
+header nobody thought of is dropped too.
+
+**The daemon is not changed.** Raising the limit moves the cliff; answering
+431 before closing would help whoever reads a proxy's log, and is a
+candidate for a later step, with its own event in the specification.
+
+**Docker runs here.** `sh tests/caddy_proxy.sh` was run on this machine for
+the first time in this loop: all its checks pass, the new one with its
+control (101 with the line, 502 without).
+
+**Tests.** `caddy_proxy.sh` (CI's `caddy proxy` job), `site_sessions.mjs`.
+Hand mutations P1-P3 on the relay.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 271 findings;
+spec v1.59, 101 errata (unchanged).

@@ -67,6 +67,11 @@ import { Authd, AuthdError, exchange, enroll, verify, logout, recoveryIssue, rec
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const REPO = resolve(HERE, '..', '..');
 
+// The request headers the WebSocket relay forwards to the daemon (F271): the
+// ones RFC 6455's opening handshake is made of, and Origin, which the daemon
+// may log. Not cookies, not anything else the browser adds.
+const WS_FORWARD = new Set(['host', 'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version', 'origin']);
+
 export const CSP = [
   "default-src 'none'",
   "script-src 'self' 'wasm-unsafe-eval'",
@@ -566,8 +571,15 @@ export async function startSite(opt) {
     }
     const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix) : net.connect(AUTHD_WS.port, AUTHD_WS.host);
     up.on('connect', () => {
+      // Only what the upgrade needs goes to the daemon (V4-192, F271). Every
+      // header used to be forwarded: the daemon reads at most 4,096 bytes of
+      // upgrade request and closes on more, so a browser carrying large
+      // cookies for this domain could not log in at all -- and this site's
+      // own session cookie was sent to a peer with no use for it.
       let h = `${req.method} ${req.url} HTTP/1.1\r\n`;
-      for (let i = 0; i < req.rawHeaders.length; i += 2) { h += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`; }
+      for (let i = 0; i < req.rawHeaders.length; i += 2) {
+        if (WS_FORWARD.has(req.rawHeaders[i].toLowerCase())) { h += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`; }
+      }
       up.write(h + '\r\n');
       if (head && head.length) { up.write(head); }
       up.pipe(sock); sock.pipe(up);

@@ -200,6 +200,26 @@ try {
     const local = await upgradeStatus(`http://localhost:${port}`, `localhost:${port}`);
     check(rebound === 403 && local === 101,
           `ws: a rebound Host is refused, localhost is upgraded (${rebound}, ${local}) (F177)`);
+    // V4-192, F271: the relay forwarded every header the browser sent,
+    // cookies included, to a daemon that reads at most 4,096 bytes of upgrade
+    // request and closes on more without a word. A visitor whose browser
+    // carries large cookies for the site's domain could not log in, and the
+    // site's own session cookie was sent to the daemon for no reason.
+    const withHeaders = (extra) => new Promise((resolve) => {
+      const c = createConnection(port, '127.0.0.1');
+      let buf = '';
+      c.on('data', (d) => { buf += d; const nl = buf.indexOf('\r\n'); if (nl >= 0) { c.destroy(); resolve(Number(buf.split(' ')[1])); } });
+      c.on('error', () => resolve(-1));
+      c.on('close', () => resolve(Number(buf.split(' ')[1]) || -1));
+      c.write(`GET /authd/v1?state=00 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+              `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1:${port}\r\n` + extra + '\r\n');
+    });
+    const small = await withHeaders('Cookie: sid=' + 'a'.repeat(64) + '\r\n');
+    const big = await withHeaders('Cookie: consent=' + 'x'.repeat(6000) + '; sid=' + 'a'.repeat(64) + '\r\n');
+    const many = await withHeaders(Array.from({ length: 40 }, (_, i) => `X-Padding-${i}: ${'y'.repeat(150)}\r\n`).join(''));
+    check(small === 101, `ws: an upgrade carrying the site's own cookie is relayed (${small}) (the canary)`);
+    check(big === 101, `ws: an upgrade carrying 6,000 bytes of cookies is relayed all the same (${big}) (F271)`);
+    check(many === 101, `ws: so is one carrying 6,000 bytes of other headers the daemon has no use for (${many}) (F271)`);
   }
 
   // V4-130, F214: a login code that is not 32 bytes is a refused login. The
