@@ -15506,3 +15506,19 @@ lines in `tools/rehearse_runbook.py` may now name a runbook block, as `POST`
 lines could.
 
 No code, no counts changed.
+
+## V4-152: cleanup after V4-150, V4-151 and V4-153 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs behind main `932bc22`: CI
+  43561267857 on that commit (16/16), and nightly 43561037271 on `9878ada`
+  (92/92, 77 campaigns). The nightly ran on V4-151, the last commit to
+  change code; V4-153 changed the runbook and `tools/rehearse_runbook.py`,
+  which the nightly does not run and CI does.
+- Read for staleness after the three steps and left alone: the README's
+  workflow table (77 campaigns, already updated by the count gate), the
+  runbook preamble (corrected in V4-153).
+
+Counts: 514 mutations, 77 campaigns, 556 anchors; 229 findings; spec v1.55,
+97 errata (all unchanged by this step).
