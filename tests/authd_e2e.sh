@@ -1979,6 +1979,49 @@ PYEOF
 # passed without searching anything. -F because a code is a string, not a
 # pattern.
 if grep -qF -- "$CODE" "$TMP/authd.log"; then fail "the login code appears in the daemon log"; fi
+# V4-200, F279: the line above looks for the code as the CLIENT prints it,
+# base64url, and the daemon never writes base64: if it leaked a code it would
+# be as hex (a fingerprint-shaped field) or as raw or escaped bytes. That one
+# grep was this script's whole check of the real daemon's journal for a code,
+# and it could not find one. Both codes this script holds are now decoded and
+# looked for in every daemon log, raw, as hex in both cases and as base64 in
+# both alphabets, whole and as their first and last 16 bytes -- after the scan
+# has found a planted copy in each form.
+python3 - "$TMP" "$CODE" "$CODEP" <<'PYEOF' || fail "the login-code scan of the daemon logs failed (F279)"
+import base64, glob, os, sys
+tmp, codes = sys.argv[1], sys.argv[2:]
+secrets = []
+for c in codes:
+    b = base64.urlsafe_b64decode(c + "=" * (-len(c) % 4))
+    if len(b) != 32:
+        print("FAIL: a login code decodes to %d bytes, not 32" % len(b)); sys.exit(1)
+    secrets.append(b)
+def forms(b):
+    out = []
+    for part in (b, b[:16], b[-16:]):
+        out += [part, part.hex().encode(), part.hex().upper().encode()]
+    out += [base64.b64encode(b).rstrip(b"="), base64.urlsafe_b64encode(b).rstrip(b"=")]
+    return out
+def hits(path):
+    data = open(path, "rb").read()
+    return [i for sec in secrets for i, f in enumerate(forms(sec)) if f in data]
+for i, f in enumerate(forms(secrets[0])):
+    plant = os.path.join(tmp, "planted-code.scan")
+    open(plant, "wb").write(b"info event=login-code fp=" + f + b"\n")
+    found = i in hits(plant)
+    os.unlink(plant)
+    if not found:
+        print("FAIL: the scan does not find a planted login code in form %d" % i); sys.exit(1)
+logs = sorted(glob.glob(os.path.join(tmp, "*.log")))
+if len(logs) < 5 or not any(b"event=login-code-issued" in open(l, "rb").read() or b"event=started" in open(l, "rb").read() for l in logs):
+    print("FAIL: %d daemon logs found: the work directory is not what this expects" % len(logs)); sys.exit(1)
+bad = [l for l in logs if hits(l)]
+for l in bad:
+    print("FAIL: a login code appears in %s" % l)
+if bad:
+    sys.exit(1)
+print("PASS: E2E: neither login code appears in any of %d logs, in any of %d forms (F279)" % (len(logs), len(forms(secrets[0]))))
+PYEOF
 echo "PASS: E2E: no passphrase and no login code appears in any log"
 
 # ------------------------------------------ Req 10, after every key operation

@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 563 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 564 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove, with controls that must make it fail |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -238,7 +238,7 @@ the most important thing on this page.
 - fuzz `authd_conn` — after any close the connection record is free, its handle and user id zero and its session empty
 - check `secure_mem_sites` "PASS: every secure_mem_alloc call in src/ and apps/ is on the list"
 - mutation `v69 SM1` — the store's audit-MAC key is allocated with calloc and released with free
-**Not established:** since V4-24b a gate lists every HEAP secret buffer and needs each to come from `secure_mem` (`secure_mem_sites`); which buffers are secret rests on reading, and a secret in a fixed-size array or on the stack is not an allocation, so it is not on the list. Several daemon secrets (the login code in a local struct, tokens, state hashes) live on the stack and are wiped with `sodium_memzero`, which no check observes; "every path" is tested on chosen failure paths, not exhaustively. Until V4-24b five local-API error returns left a decoded secret on the stack -- among them a valid login code, on a malformed `state` (audit F115, fixed, by reading: no check can read a dead stack frame).
+**Not established:** since V4-24b a gate lists every HEAP secret buffer and needs each to come from `secure_mem` (`secure_mem_sites`); which buffers are secret rests on reading, and a secret in a fixed-size array or on the stack is not an allocation, so it is not on the list. Several daemon secrets (the login code in a local struct, tokens, state hashes) live on the stack and are wiped with `sodium_memzero`, which no check observes; "every path" is tested on chosen failure paths, not exhaustively. Until V4-24b five local-API error returns left a decoded secret on the stack -- among them a valid login code, on a malformed `state` (audit F115, fixed, by reading: no check can read a dead stack frame). The `authd_e2e` epilogue check sees the listener's sockets unlinked, not the key wiped: an epilogue that unlinked them and skipped the wipe would pass it, and `v49b R1` skips the whole epilogue (V4-200).
 
 ### D3 — Constant-time comparison
 - check `test_authd_conn` "conn: the pin lookup refuses a PREFIX of its handle"
@@ -302,6 +302,9 @@ the most important thing on this page.
 - check `test_authd_conn` "decoy: known-wrong-key and unknown-handle reach the SAME client-side outcome"
 - check `test_authd_conn` "decoy: the unknown handle still got a VERIFIABLE ServerHello (canary)"
 - check `test_authd_conn` "revoked: a revoked device is served the decoy, exactly like an unknown one"
+- check `test_authd_localapi` "unproven: revoking the device does not close a connection that only claimed its handle (F275)"
+- check `test_authd_localapi` "unproven: disabling the user does not close a connection that only claimed its handle (F275)"
+- mutation `v125 RS1` — a revocation closes every connection that names the handle, proven or not, so a keyless peer holding one learns the handle was enrolled
 - check `authd_e2e` "E2E: the superseded key gets no login code (no overlap window, spec 10.2)"
 - mutation `v48b C1` — no decoy: an unknown identity is closed outright
 - mutation `v52 P5` — the pin lookup refuses decoy connections, so an unknown identity fails earlier and differently
@@ -348,6 +351,10 @@ the most important thing on this page.
 - check `test_authd_conn` "rotate: a ROTATE whose sig_new is by the OLD key is REJECTED"
 - check `test_authd_conn` "rotate: a ROTATE captured from one session is REJECTED on a second"
 - check `test_authd_conn` "rotate: the digest matches the hand-built spec 6.3 vector for both labels"
+- check `test_authd_conn` "rotate: the rotate-new digest matches its own hand-built spec 6.3 vector (F278)"
+- mutation `v127 LB1` — the rotate-new label is another string, which every check but its literal vector accepts
+- check `test_authd_conn` "rotate: ...for its signature: the journal says rotate-sig-new (erratum 102)"
+- mutation `v126 RO1` — sig_new is not verified before the store is asked about pk_new
 - proverif "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true" — proven in `base` and under a leaked record key; the controls `ctl_rot_hsid` (handshake_id out of the signed tuple) and `ctl_rot_sigold` (sig_old unchecked) each make it unprovable. Nightly job `formal`.
 - mutation `v49c W3` — sig_new verified against pk_old: no proof of possession of the incoming key
 - mutation `v49c W5` — handshake_id dropped from the rotate digest: a captured ROTATE replays on another session
@@ -367,6 +374,7 @@ the most important thing on this page.
 - check `test_authd_conn` "revoked: after revocation the SAME key gets no login code"
 - check `test_authd_store` "revoking a device deletes its tokens"
 - check `test_authd_store` "a revoked device cannot rotate its key"
+- check `test_authd_store` "a device whose own row says revoked cannot rotate, even with an active key row (F277)"
 - mutation `v49a V1` — REVOKE-DEVICE closes no live session
 - mutation `v47 S5` — a revoked device's tokens survive (`DELETE ... AND 0`)
 - mutation `v49c W7` — revoked or disabled devices can still rotate
@@ -509,6 +517,8 @@ the most important thing on this page.
 - check `test_authd_localapi` "log: the issued token never appears in the log"
 - check `test_authd_localapi` "recovery: the recovery CODE never appears in the log (§15)"
 - check `authd_e2e` "PASS: E2E: no passphrase and no login code appears in any log"
+- check `authd_e2e` "PASS: E2E: neither login code appears in any of"
+- check `authd_e2e` "PASS: E2E: the server key's passphrase appears in none of"
 - mutation `v49c W12` — the login code is logged through the `authd_log_fp` sink, by an explicit cast to `authd_fp_t` since V4-21
 - mutation `v49d G12` — the recovery ticket is logged through `authd_log_fp`, by an explicit cast since V4-21
 - tool `tools/audit/check_spec_vocabularies.py` — the field names the logger can emit equal §15's list, both ways, so a new field such as `sig=` fails
@@ -535,7 +545,7 @@ the most important thing on this page.
 - mutation `v71 EI3` — ROTATE logs `sig_new` where the handle was
 - mutation `v71 EI4` — EXCHANGE logs the issued token as an `id=`, before wiping it
 - mutation `v71 EI5` — RECOVERY-USE logs the enrollment ticket where the user was
-**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing) -- the ROTATE's `sig_old` and `sig_new` only since V4-24a, though this paragraph had said "each signature" before (audit F113). Since V4-24a it also covers every byte the connection put on the wire -- the three handshake messages and the four records -- and every payload a record carried, decrypted, in both directions; windows wholly inside the ROTATE_ACK's `fp_new`, which the journal records on purpose, are not looked for, and BYE's one-byte payload is below any window. `authd_log_slot_id` prints bytes as escaped printable text: since V4-29 every journal scan also looks there, matching each 16-character window of an `id=` field against the secret's own escaped image, and campaign v71 shows each of five secrets passed where an identifier belongs caught by name after passing V4-28's scans. An escaped window with fewer than two printable characters is not counted, and with `log_ids = hashed` the field is a keyed pseudonym, which no scan can relate to a secret. The local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase). "No option to enable any of them" rests on the logger's API shape. Since V4-21 that shape refuses a bare 32-byte buffer at compile time (`log_fp_type`), but a secret deliberately cast to `authd_fp_t` compiles, and only the journal scans catch it, as they catch W12, G12 and GC4. Until V4-22a this sentence still said the sink accepts any 32-byte secret (audit F109).
+**Not established:** the scan covers one connection's login, ROTATE and BYE, in hex and base64, for the secret keys' wholly secret windows and each signature's `c~ || z` (the hint after it is mostly zero padding, a match on which would be evidence of nothing) -- the ROTATE's `sig_old` and `sig_new` only since V4-24a, though this paragraph had said "each signature" before (audit F113). Since V4-24a it also covers every byte the connection put on the wire -- the three handshake messages and the four records -- and every payload a record carried, decrypted, in both directions; windows wholly inside the ROTATE_ACK's `fp_new`, which the journal records on purpose, are not looked for, and BYE's one-byte payload is below any window. `authd_log_slot_id` prints bytes as escaped printable text: since V4-29 every journal scan also looks there, matching each 16-character window of an `id=` field against the secret's own escaped image, and campaign v71 shows each of five secrets passed where an identifier belongs caught by name after passing V4-28's scans. An escaped window with fewer than two printable characters is not counted, and with `log_ids = hashed` the field is a keyed pseudonym, which no scan can relate to a secret. The local API's and recovery's paths are scanned for their own secrets only (codes, tokens, tickets, passphrase). "No option to enable any of them" rests on the logger's API shape. Since V4-21 that shape refuses a bare 32-byte buffer at compile time (`log_fp_type`), but a secret deliberately cast to `authd_fp_t` compiles, and only the journal scans catch it, as they catch W12, G12 and GC4. Until V4-22a this sentence still said the sink accepts any 32-byte secret (audit F109). The recovery code's log check looks for its canonical 16-character form only; no mutation logs a recovery code, so another form of it in the journal is not ruled out by a test (V4-200).
 
 ### D14 — Every store mutation is a single transaction
 - check `test_authd_store` "a half-rotation is impossible: after reopen the old key is still active"

@@ -16871,3 +16871,39 @@ No code.
 
 Counts: 563 mutations, 96 campaigns, 605 anchors; 276 findings; spec v1.60,
 102 errata (all unchanged by this step).
+
+## V4-200: evidence the claim map cited and did not have (F277, F278, F279)
+
+A tenth reviewer agent was given `docs/review/CLAIMS.md` and one question
+per cited check: if the property were false, would this check fail? The
+claim-map gate already proves every cited check and mutation exists; it
+cannot prove a check supports the sentence it is cited under. Fifteen
+claims were read. D5, D3/P3, D6, D12 and the in-process journal scans held.
+Three cited checks did not carry their sentence.
+
+**F277.** Revoking through the API changes two rows, and the test could
+not tell which one refused the rotation. The new check changes one.
+
+**F278.** "Differs from the other label" is true of every wrong label.
+
+**F279.** The most useful of the three: the only search of the REAL
+daemon's journal for a login code looked for a spelling the daemon cannot
+produce. It now uses the forms the in-process scans use, and W12, a mutant
+that has existed since V4-49c, fails the end-to-end test for the first
+time.
+
+**Said in the claim map now, not fixed.** D2: the epilogue check sees
+sockets unlinked, not the key wiped. D13: the recovery code is looked for
+in the journal in its canonical form only. Both are added to their
+claims' "Not established". The reviewer also listed four mutations that
+are killed by a check their claim does not cite; the claims still hold by
+their other evidence and the citations are left.
+
+**Also cited where they belong.** F275's two checks and v125 RS1 under D6
+(uniform responder flow); erratum 102's order check and v126 RO1 under D8.
+
+**Tests.** `test_authd_store`, `test_authd_conn`, `authd_e2e`. v49c W7 and
+W12 by hand against the new checks; campaign v127, LB1.
+
+Counts: 564 mutations, 97 campaigns, 606 anchors; 279 findings; spec v1.60,
+102 errata (unchanged).

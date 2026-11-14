@@ -1,0 +1,1 @@
+LB1|^test_authd_conn$|rotate: the rotate-new digest matches its own hand-built spec 6.3 vector (F278)

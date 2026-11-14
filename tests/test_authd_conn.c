@@ -1022,6 +1022,24 @@ static void test_rotate(void)
                                     old_kp.public_key, new_kp.public_key) == AUTHMSG_OK &&
               memcmp(other_d, want, 32) != 0,
               "rotate: the two labels produce different digests");
+        /* V4-200, F278: the NEW label has its own literal vector. The check
+         * above is named "for both labels" and built one; the other label was
+         * only required to differ, which any string but rotate-old's does. */
+        static const char ln[] = { 'm','l','d','s','a','-','a','u','t','h','d','/','v','1','/',
+                                   'r','o','t','a','t','e','-','n','e','w' };
+        uint8_t want_n[32];
+        crypto_hash_sha256_init(&st);
+        crypto_hash_sha256_update(&st, (const unsigned char *)ln, sizeof ln);
+        crypto_hash_sha256_update(&st, &sep, 1);
+        crypto_hash_sha256_update(&st, c.hsid, sizeof c.hsid);
+        crypto_hash_sha256_update(&st, &flags, 1);
+        crypto_hash_sha256_update(&st, &hl, 1);
+        crypto_hash_sha256_update(&st, HANDLE1, sizeof HANDLE1);
+        crypto_hash_sha256_update(&st, old_kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+        crypto_hash_sha256_update(&st, new_kp.public_key, MLDSA_PUBLIC_KEY_BYTES);
+        crypto_hash_sha256_final(&st, want_n);
+        CHECK(memcmp(other_d, want_n, 32) == 0,
+              "rotate: the rotate-new digest matches its own hand-built spec 6.3 vector (F278)");
     }
     client_close(&c);
 

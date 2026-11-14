@@ -591,8 +591,8 @@ int main(void)
     }
 
     char dbp[512];
-    uint8_t pkA[STORE_PK_BYTES], pkB[STORE_PK_BYTES], pkC[STORE_PK_BYTES], pkD[STORE_PK_BYTES];
-    make_pk(pkA, 1); make_pk(pkB, 2); make_pk(pkC, 3); make_pk(pkD, 4);
+    uint8_t pkA[STORE_PK_BYTES], pkB[STORE_PK_BYTES], pkC[STORE_PK_BYTES], pkD[STORE_PK_BYTES], pkE[STORE_PK_BYTES];
+    make_pk(pkA, 1); make_pk(pkB, 2); make_pk(pkC, 3); make_pk(pkD, 4); make_pk(pkE, 5);
 
     /* ---- open, meta, audit on a virgin store ---------------------------- */
     {
@@ -773,15 +773,31 @@ int main(void)
         CHECK(store_rotate_key(s, H1, sizeof H1, pkC, NULL, hsid, sizeof hsid, 0, 2000, NULL, NULL) == STORE_OK,
               "rev-rot: an active device rotates (canary)");
 
+        /* V4-200, F277: the DEVICE's status, by itself. store_revoke_device
+         * also revokes the key row, and a rotation with no active key is
+         * NOT_FOUND whatever the device row says -- so the check below this
+         * block passed with the device-status clause removed (v49c W7 was
+         * killed only by the disabled-USER check). Here the device row alone
+         * says revoked and its key row is left active: the clause is the
+         * only thing that can refuse. */
+        CHECK(raw_sql(dbp, "UPDATE devices SET status='revoked' WHERE handle=x'64316262';") == 0,
+              "rev-rot: one device's row is marked revoked, its key row left active");
+        CHECK(store_rotate_key(s, H2, sizeof H2, pkD, NULL, hsid, sizeof hsid, 0, 2100, NULL, NULL)
+                  == STORE_ERR_NOT_FOUND,
+              "a device whose own row says revoked cannot rotate, even with an active key row (F277)");
+        CHECK(raw_sql(dbp, "UPDATE devices SET status='active' WHERE handle=x'64316262';") == 0 &&
+              store_rotate_key(s, H2, sizeof H2, pkD, NULL, hsid, sizeof hsid, 0, 2150, NULL, NULL) == STORE_OK,
+              "rev-rot: with the row active again the same rotation is accepted (the canary)");
+
         CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK,
               "rev-rot: revoke the device");
-        CHECK(store_rotate_key(s, H1, sizeof H1, pkD, NULL, hsid, sizeof hsid, 0, 2200, NULL, NULL)
+        CHECK(store_rotate_key(s, H1, sizeof H1, pkE, NULL, hsid, sizeof hsid, 0, 2200, NULL, NULL)
                   == STORE_ERR_NOT_FOUND,
               "a revoked device cannot rotate its key");
 
         CHECK(store_disable_user(s, U1, sizeof U1, "admin", NULL, 0) == STORE_OK,
               "rev-rot: disable the user");
-        CHECK(store_rotate_key(s, H2, sizeof H2, pkD, NULL, hsid, sizeof hsid, 0, 2400, NULL, NULL)
+        CHECK(store_rotate_key(s, H2, sizeof H2, pkE, NULL, hsid, sizeof hsid, 0, 2400, NULL, NULL)
                   == STORE_ERR_NOT_FOUND,
               "a disabled user's device cannot rotate its key");
         store_close(s);
