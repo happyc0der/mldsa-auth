@@ -428,6 +428,64 @@ try {
       try { await flows.forgetUnconfirmed(store, unsure.handle); } catch (e) { threw = e; }
       check(threw === null && (await store.list()).length === 0,
             `forget: a key the site never confirmed is removed (${threw && threw.message}) (V4-140)`); } }
+
+  // V4-187, F264: a socket that connects and never answers the upgrade. The
+  // client's timeout bounded each wait for a FRAME; nothing bounded the wait
+  // for the connection to open, so a login stayed pending for as long as the
+  // browser's own connect limit (minutes), holding the identity's lock.
+  { const { createServer } = await import('node:net');
+    const held = [];
+    const mute = createServer((c) => { held.push(c); c.on('error', () => {}); });
+    await new Promise((r) => mute.listen(0, '127.0.0.1', r));
+    const muteUrl = `ws://127.0.0.1:${mute.address().port}/authd/v1`;
+    const outcome = (pr) => Promise.race([
+      pr.then(() => 'resolved', (e) => `rejected: ${e.message}`),
+      new Promise((r) => setTimeout(() => r('still pending after 4 s'), 4000)) ]);
+    { const { store, params } = await fresh();
+      const t0 = Date.now();
+      const got = await outcome(flows.login(client, store, { ...params, url: muteUrl, timeoutMs: 600 }));
+      const ms = Date.now() - t0;
+      check(/^rejected: timed out waiting for the daemon/.test(got) && ms >= 500 && ms < 3000,
+            `open: a login to a socket that never answers the upgrade is given up on at its timeout (${got}, ${ms} ms) (F264)`);
+      const s = await flows.login(client, store, params);
+      check(s.code.length === 32, 'open: the same identity then logs in to the real daemon (the canary)');
+      await s.close(); }
+    { // The recovery probes take the same path, and hold the lock while they do.
+      const { store, params } = await fresh();
+      const stale = client.newIdentity(PASS, params.handle);
+      await store.stagePending(params.handle, stale.envelope);
+      const t0 = Date.now();
+      const got = await outcome(flows.login(client, store, { ...params, url: muteUrl, probeTimeoutMs: 600 }));
+      const ms = Date.now() - t0;
+      check(/^rejected: .*could not ask the daemon/.test(got) && ms < 3500,
+            `open: with a rotation unresolved, both probes of a silent socket end at their timeout (${got.slice(0, 90)}, ${ms} ms) (F264)`); }
+    { // The timer is for the OPEN only: a session that opened in time is not
+      // closed when that much time has passed.
+      const { store, params } = await fresh();
+      const s = await client.login({ ...params, envelope: (await store.get(params.handle)).envelope, timeoutMs: 600 });
+      await new Promise((r) => setTimeout(r, 1000));
+      check(s.ws.readyState === 1, `open: a session that opened inside its timeout is still open after it (readyState ${s.ws.readyState}) (F264)`);
+      await s.close(); }
+    for (const c of held) { c.destroy(); }
+    await new Promise((r) => mute.close(r)); }
+
+  // V4-187, F266: Session.rotate copied the passphrase into the module and
+  // then read the clock outside any try: a refused clock left the copy there.
+  { const { store, params } = await fresh();
+    const M = client.M;
+    const marker = 'ZQ-rotate-passphrase-marker-7f3a91c2';
+    const s = await client.login({ ...params, envelope: (await store.get(params.handle)).envelope, keepForRotate: true });
+    const next = client.newIdentity(PASS, params.handle);
+    const find = () => { const hay = Buffer.from(M.HEAPU8.buffer, M.HEAPU8.byteOffset, M.HEAPU8.length); return hay.indexOf(marker); };
+    const before = find();
+    s.tick = () => { throw new Error('clock refused'); };
+    let threw = null;
+    try { await s.rotate(next.envelope, marker); } catch (e) { threw = e; }
+    const after = find();
+    check(before === -1 && threw !== null && /clock refused/.test(threw.message),
+          'rotate: a refused clock is reported, and the passphrase was not in the module beforehand (the control)');
+    check(after === -1, `rotate: no copy of the passphrase is left in the module's memory after a refused clock (found at ${after}) (F266)`);
+    s.destroy(); }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

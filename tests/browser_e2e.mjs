@@ -410,6 +410,31 @@ try {
   const codes = (await b.eval("document.getElementById('codelist').textContent")).split('\n').filter(Boolean);
   check(r.result === 'ok' && codes.length === 5, 'recovery: five codes are shown once');
 
+  // V4-187, F265: logging out clears what the page was showing. The codes
+  // just minted, and "Logged in as ...", stayed on screen and in the DOM
+  // after "Logged out": the account's recovery codes left on a screen whose
+  // user believes they have logged out. (Same page, no reload: a reload
+  // would hide it.)
+  { await b.eval(`(() => { delete document.body.dataset.result; document.getElementById('passphrase').value = 'typed and not yet used'; document.getElementById('logout').click(); })()`);
+    await b.waitFor('!!document.body.dataset.result', 'a result after logging out', 6000);
+    const after = await b.eval(`JSON.stringify({ result: document.body.dataset.result, who: document.getElementById('who').textContent,
+                                                 codes: document.getElementById('codelist').textContent,
+                                                 left: document.getElementById('passphrase').value.length })`).then(JSON.parse);
+    const gone = (await fetch(`${origin}/api/me`, { headers: { Cookie: await b.eval('document.cookie') } })).status;
+    check(after.result === 'ok', `logout: the page reports the logout (${after.result}) (the canary)`);
+    check(after.codes === '', `logout: the recovery codes are no longer on the page (${after.codes.split('\n').filter(Boolean).length} still shown) (F265)`);
+    check(after.left === 0, `logout: a passphrase typed and not used is not left in its field (${after.left} characters) (F265)`);
+    check(!/Logged in as/.test(after.who) && /Not logged in/.test(after.who),
+          `logout: the page no longer says who is logged in ("${after.who}") (F265)`);
+    await b.eval(`(() => { delete document.body.dataset.result; document.getElementById('passphrase').value = 'anything'; document.getElementById('codes').click(); })()`);
+    await b.waitFor('!!document.body.dataset.result', 'a result after asking for codes while logged out', 6000);
+    const again = await b.eval(`JSON.stringify({ result: document.body.dataset.result, msg: document.getElementById('status')?.textContent ?? '' })`).then(JSON.parse);
+    check(again.result !== 'ok' && /log in first/.test(again.msg),
+          `logout: the page's other buttons then say to log in first (${again.result}: ${again.msg}) (F265)`);
+    void gone;
+    r = await act(b, 'login.html', { passphrase: PASS });
+    check(r.result === 'ok', 'logout: and the device logs in again (the rest of this test needs the session)'); }
+
   // ---- phishing: a device whose pin is wrong ----
   await inPage(b, `
     const r = await store.get(${JSON.stringify(handle)});

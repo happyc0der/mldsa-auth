@@ -177,12 +177,20 @@ export class Session {
     this.closed = false;
   }
 
+  // Bounded by the same timeout as each frame (V4-187, F264). A socket that
+  // connects and never answers the upgrade fires neither onopen nor onerror
+  // until the browser's own limit, minutes later: the login stayed pending
+  // with no message, holding the identity's lock against every other tab.
   open(url) {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
-      ws.onopen = () => resolve();
-      ws.onerror = () => { reject(new Error(`WebSocket error on ${url}`)); this.wake(null); };
+      const t = setTimeout(() => {
+        reject(new Error('timed out waiting for the daemon'));
+        try { ws.close(); } catch { /* never opened */ }
+      }, this.timeoutMs);
+      ws.onopen = () => { clearTimeout(t); resolve(); };
+      ws.onerror = () => { clearTimeout(t); reject(new Error(`WebSocket error on ${url}`)); this.wake(null); };
       ws.onclose = () => this.wake(null);
       ws.onmessage = (ev) => this.wake(new Uint8Array(ev.data));
       this.ws = ws;
@@ -224,9 +232,15 @@ export class Session {
     const c = this.client, M = c.M;
     const pass = te.encode(passphrase);
     const pe = c.put(newEnvelope), pp = c.put(pass);
-    this.tick();
-    let st = M._ccw_rotate_build(this.h, pe, newEnvelope.length, pp, pass.length, this.frame, this.cap, this.outLen);
-    c.drop(pe, newEnvelope.length); c.drop(pp, pass.length); pass.fill(0);
+    let st;
+    // The copies are wiped whatever tick() does (V4-187, F266): it throws on
+    // a refused clock, and it used to run between the copy and the wipe.
+    try {
+      this.tick();
+      st = M._ccw_rotate_build(this.h, pe, newEnvelope.length, pp, pass.length, this.frame, this.cap, this.outLen);
+    } finally {
+      c.drop(pe, newEnvelope.length); c.drop(pp, pass.length); pass.fill(0);
+    }
     if (st !== 0) { throw c.fail(this.h, st, this.sent); }
     this.send();
     const ec = c.u32Slot();

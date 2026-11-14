@@ -16543,3 +16543,45 @@ AT1.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors; 263 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-187: three repairs to the browser client (F264, F265, F266)
+
+A seventh reviewer agent read the browser client, the pages and the
+reference site. Static serving, cookies, session rotation, the Origin and
+Host checks, the invite comparison, the recovery limiter and the wiping of
+WebAssembly buffers on the login paths held. Three things were reproduced
+and fixed.
+
+**F264.** The timeout a caller passes now covers the open as well as each
+frame. The timer is cleared when the socket opens: left running, it would
+close a healthy session once the timeout had passed, which the fourth
+`open:` check exists to catch (hand mutation J2 does exactly that).
+
+**F265.** The page clears itself after the site has answered the logout,
+not before: F237's rule that a failed logout must not look like a
+successful one still holds, and its two checks still pass.
+
+**F266.** One `try`/`finally`, as the other paths already had.
+
+**Left from the same review, for later steps.**
+
+- A refused rotation keeps its staged key, so later logins run the
+  interrupted-rotation probe until the next rotation (`flows.mjs`,
+  `rotateHeld`). It needs the daemon's refusal told apart from a lost
+  reply, which is the F235 question one step later.
+- One login `state` per site session: two actions on the account page at
+  once, or two login tabs, replace each other's state, and a correct
+  passphrase is answered `login-failed`. A design question (state per
+  login attempt) more than a line to change.
+- Enrolling during an abandoned recovery ignores the name typed and uses
+  the recovering account. Thirty minutes, same browser.
+- A browser that sends no `Sec-Fetch-Site` still follows a cross-site link
+  to `/api/session` (the tested behaviour; the comment beside it overstates
+  what that browser has to lose).
+
+**Tests.** `tests/web_flows.mjs` and `tests/browser_e2e.mjs`. No C touched,
+so no campaign: hand mutations J1-J8 with both files restored byte for
+byte.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 266 findings;
+spec v1.59, 101 errata (unchanged).

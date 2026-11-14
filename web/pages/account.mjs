@@ -4,7 +4,7 @@ import * as flows from '/client/flows.mjs';
 const { client, store } = await boot();
 // A site that cannot be reached is not "Not logged in" either (F240): status 0.
 const meRes = await fetch('/api/me').catch(() => ({ ok: false, status: 0 }));
-const me = meRes.ok ? await meRes.json().catch(() => null) : null;
+let me = meRes.ok ? await meRes.json().catch(() => null) : null;
 // 503: the site could not ask the daemon (V4-127, F210). The session is kept,
 // so this is not "Not logged in" and logging in again is not the remedy.
 document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me.handle})`
@@ -40,6 +40,15 @@ action('codes', async () => {
   document.getElementById('codelist').textContent = codes.join('\n');
   report(true, 'Write these down now: they are shown once and cannot be retrieved');
 });
+// V4-187, F265: a logout clears what this page was showing. "Logged in as
+// ..." and the recovery codes just minted stayed on screen, and in the DOM,
+// under "Logged out", and the other buttons still acted for the old user.
+// Only after the site has answered: a logout that failed changes nothing.
 action('logout', async () => {
-  await post('/api/logout'); report(true, 'Logged out');
+  await post('/api/logout');
+  me = null;
+  document.getElementById('codelist').textContent = '';
+  document.getElementById('passphrase').value = '';
+  document.getElementById('who').textContent = 'Not logged in';
+  report(true, 'Logged out');
 });
