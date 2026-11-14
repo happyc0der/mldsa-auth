@@ -16031,3 +16031,15 @@ from a second connection. Campaign v116, HS1-HS3.
 
 Counts: 545 mutations, 86 campaigns, 587 anchors; 244 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-171: cleanup after V4-166 to V4-168 landed
+
+No code. Written after V4-169 and V4-170, so it sits on top of them.
+
+- `docs/review/REPRODUCE.md` cites the runs on `2a17a07`, now main: CI
+  43596154938 (16/16), nightly 43596156589 (99/99, 84 campaigns).
+- V4-168's entry left the token's handshake id as an open question; V4-170
+  answered it on the code's side. Nothing else to correct.
+
+Counts: 545 mutations, 86 campaigns, 587 anchors; 244 findings; spec v1.59,
+101 errata (all unchanged by this step).
