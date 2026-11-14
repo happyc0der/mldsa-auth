@@ -752,7 +752,17 @@ static size_t close_matching(authd_app_t *app, const uint8_t *id, size_t id_len,
     size_t closed = 0u;
     for (size_t i = 0; i < app->n_conns && i < app->ev->n_slots; i++) {
         authd_conn_t *c = &app->conns[i];
-        if (c->stage == CONN_STAGE_FREE) {
+        /* Only a SESSION is closed: a connection whose peer has proved it
+         * holds the key (V4-197, F275). `handle` and `user_id` are filled at
+         * the ClientHello, which anyone can send, so matching every stage
+         * closed a connection that had merely NAMED an enrolled handle the
+         * instant that handle was revoked -- while one naming an unknown
+         * handle sat until its deadline. That told a peer with no key which
+         * handles exist, when each was revoked and which share a user (Req
+         * 6). A connection still waiting for its ClientAuth needs no help:
+         * the store is asked again there, and a revoked or disabled identity
+         * is refused like any other failure (F158). */
+        if (c->stage != CONN_STAGE_SERVING) {
             continue;
         }
         const uint8_t *have = by_user ? c->user_id : c->handle;

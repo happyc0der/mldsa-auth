@@ -2175,6 +2175,75 @@ static void test_local_close_spares_proto(void)
     h_stop(&d);
 }
 
+/* V4-197, F275: revoking a device, or disabling its user, closes that
+ * device's SESSIONS. It also closed every connection that had so far only
+ * CLAIMED the handle: a ClientHello naming it, answered, and no proof of the
+ * key yet. Anyone can send that. Such a connection for an unknown handle sat
+ * until its deadline; for an enrolled one it was closed the instant an
+ * operator revoked it. Holding a few of them open told a peer with no key
+ * which handles are enrolled, when each is revoked, and (disable closes by
+ * user) which handles belong to one person. */
+static void test_revoke_spares_unproven(void)
+{
+    for (int by_user = 0; by_user < 2; by_user++) {
+        h_daemon_t d;
+        mldsa_keypair_t kp;
+        CHECK(h_start(&d, g_dir, by_user ? "unproven-u.sqlite3" : "unproven-h.sqlite3", 1) == 0, "unproven: daemon starts");
+        enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+        h_client_t c;
+        memset(&c, 0, sizeof c);
+        keystore_init(&c.pins);
+        CHECK(keystore_add(&c.pins, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key) == KEYSTORE_OK,
+              "unproven: client pins the server");
+        c.fd = h_dial(d.port);
+        CHECK(c.fd >= 0 && H_PUMP_UNTIL(&d, evloop_active(&d.ev) >= 1u), "unproven: a protocol connection");
+        CHECK(handshake_initiator_init(&c.hs, HANDLE1, sizeof HANDLE1, &kp, &c.pins,
+                                       H_SERVER_ID, sizeof H_SERVER_ID) == HANDSHAKE_OK, "unproven: initiator");
+        uint8_t buf[AUTHD_FRAME_MAX];
+        size_t n = 0, sh = 0;
+        CHECK(handshake_initiator_create_client_hello(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+              h_send_frame(c.fd, buf, n) == 0 && h_recv_frame(&d, c.fd, buf, sizeof buf, &sh) == 0 &&
+              handshake_initiator_verify_server_hello(&c.hs, buf, sh) == HANDSHAKE_OK,
+              "unproven: ClientHello answered with a ServerHello");
+        size_t p = d.nslots;
+        for (size_t i = 0; i < d.nslots; i++) {
+            if (d.slots[i].state == SLOT_ACTIVE) { p = i; }
+        }
+        CHECK(p < d.nslots && d.conns[p].stage == CONN_STAGE_AWAIT_CA,
+              "unproven: the connection has claimed the handle and proved nothing (canary)");
+
+        int fd = h_dial_unix(d.admin_path);
+        char req[512], resp[1024], hh[160];
+        if (by_user) {
+            hx(hh, sizeof hh, U1, sizeof U1);
+            snprintf(req, sizeof req, "DISABLE-USER user=%s", hh);
+        } else {
+            hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+            snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", hh);
+        }
+        CHECK(fd >= 0 && h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+              by_user ? "unproven: DISABLE-USER succeeds" : "unproven: REVOKE-DEVICE succeeds");
+        for (int i = 0; i < 20; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
+        CHECK(p < d.nslots && d.slots[p].state == SLOT_ACTIVE && d.conns[p].stage == CONN_STAGE_AWAIT_CA,
+              by_user ? "unproven: disabling the user does not close a connection that only claimed its handle (F275)"
+                      : "unproven: revoking the device does not close a connection that only claimed its handle (F275)");
+
+        /* ...and it gains nothing by having stayed: its ClientAuth, valid
+         * for the key it pinned, is refused, and no login code is issued. */
+        const uint64_t issued = d.app.logins_issued;
+        CHECK(handshake_initiator_create_client_auth(&c.hs, buf, sizeof buf, &n) == HANDSHAKE_OK &&
+              h_send_frame(c.fd, buf, n) == 0, "unproven: ClientAuth sent after the revocation");
+        CHECK(H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u) && d.app.logins_issued == issued,
+              "unproven: the ClientAuth is refused and no login code is issued (the canary for Req 9)");
+
+        (void)close(fd);
+        h_client_close(&c);
+        mldsa_keypair_free(&kp);
+        h_stop(&d);
+    }
+}
+
 /* Run one statement on the store from a second connection, as a writer beside
  * the daemon would. Used only to plant and remove the triggers below. */
 static int store_exec(const char *db, const char *sql)
@@ -2495,6 +2564,7 @@ int main(void)
     test_recovery_uniform_cost();
     test_recovery_budget();
     test_key_changed_mid_handshake();
+    test_revoke_spares_unproven();
     test_issued_before_outlives();
     test_codes_outlive();
     test_revoke_ends_codes();

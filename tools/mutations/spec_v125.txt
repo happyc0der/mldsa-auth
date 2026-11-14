@@ -1,0 +1,2 @@
+RS1|^test_authd_localapi$|unproven: revoking the device does not close a connection that only claimed its handle (F275)
+RS2|^test_authd_localapi$|revoke: the live session was CLOSED, not just the row updated (Req 9)

@@ -16794,3 +16794,37 @@ cache. Not automated, for the reason the audit row gives.
 
 Counts: 560 mutations, 94 campaigns, 602 anchors (unchanged); 274 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-197: a revocation closes sessions, not claims (F275)
+
+A ninth reviewer agent read the protocol core a second time, for binding
+gaps, state-machine holes, the record layer, key wiping and rotation. It
+found none of those: both signatures and the KDF are over the exact wire
+bytes under distinct labels, every failure wipes and closes, records are
+sequenced per direction with the header in the associated data, and both
+rotation signatures bind the handshake id, the handle and both keys. What
+it found is at the edge between the protocol and the operator's commands.
+
+**F275.** A connection's `handle` is what its peer SAID, until the
+ClientAuth verifies. Revocation exists to end sessions, and a claim is not
+a session. Closing only the serving stage is also all Req 9 needs: a
+handshake in flight when its device is revoked reaches the ClientAuth
+re-read (F158) and is refused there, with the same close every other
+failed ClientAuth gets. The new test checks exactly that after the
+revocation.
+
+**What a peer could learn before.** Whether a handle is enrolled (its held
+connection closes on revocation and an unknown one's does not), when, and
+with DISABLE-USER which handles share a user. It needed the handle to be
+revoked while being watched, so it was a slow oracle; it was still one, in
+the flow Req 6 exists for.
+
+**Also from that read, for the next step.** The comment above ROTATE's
+checks, and spec 6.3, state an order of checks that the code no longer
+follows; the code's order is the stronger one. A specification erratum.
+
+**Tests.** `test_authd_localapi`: `unproven:` for both commands. Campaign
+v125, RS1-RS2.
+
+Counts: 562 mutations, 95 campaigns, 604 anchors; 275 findings; spec v1.59,
+101 errata (unchanged).
