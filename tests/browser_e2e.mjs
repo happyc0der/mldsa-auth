@@ -191,6 +191,50 @@ try {
   requests.length = 0;
   r = await act(b, 'login.html', { passphrase: PASS });
   check(r.result === 'ok' && /Logged in as alice/.test(r.status), `login: ${r.status}`);
+
+  // V4-162 (F237): a double click. Nothing stopped a handler from running
+  // twice at once. The second run asked the site for a new state, which
+  // replaced the one the first run's login code was bound to, and read a
+  // passphrase field the first had already emptied: the first failed at the
+  // site, the second at the key, and a correct login was reported as refused.
+  // Each button now runs one action at a time.
+  { await b.navigate(`${origin}/login.html`);
+    await b.waitFor("document.body.dataset.ready === '1'", 'login.html ready');
+    await b.eval(`(() => { delete document.body.dataset.result; window.__results = [];
+      new MutationObserver(() => { if (document.body.dataset.result) { window.__results.push(document.body.dataset.result); } })
+        .observe(document.body, { attributes: true, attributeFilter: ['data-result'] });
+      document.getElementById('passphrase').value = ${JSON.stringify(PASS)};
+      const go = document.getElementById('go'); go.click(); go.click(); })()`);
+    await b.waitFor('!!document.body.dataset.result', 'a result after a double click', 60000);
+    await new Promise((res) => setTimeout(res, 3000));     // room for a second run to report, if there is one
+    const results = await b.eval('JSON.stringify(window.__results)');
+    const status = await b.eval("document.getElementById('status').textContent");
+    const me = await b.eval("fetch('/api/me').then((x) => x.status)");
+    check(results === '["ok"]' && /Logged in as alice/.test(status) && me === 200,
+          `double click: "Log in" pressed twice runs one login, and it succeeds (${results}; ${status}; /api/me ${me}) (F237)`);
+    check(await b.eval("document.getElementById('go').disabled") === false,
+          'double click: the button is usable again afterwards (F237)'); }
+  // ... the passphrase is emptied even when the action fails before it is
+  // used (here the site cannot be reached for a state), and an action that
+  // throws is REPORTED: "Log out" had no catch, so a logout that failed left
+  // the page silent, which reads as having logged out.
+  { const STUB = (path) => `const f = window.fetch; window.fetch = (u, ...a) => (String(u).includes('${path}')
+      ? Promise.reject(new Error('the site is unreachable')) : f(u, ...a));`;
+    r = await act(b, 'login.html', { passphrase: PASS }, 'go', STUB('/api/session'));
+    const left = await b.eval("document.getElementById('passphrase').value");
+    check(/^error: the site is unreachable/.test(r.result) && left === '',
+          `early failure: a login that could not reach the site reports it and leaves no passphrase in the field (${r.result}; ${left.length} characters left) (F237)`);
+    await b.navigate(`${origin}/account.html`);
+    await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
+    await b.eval(`(() => { delete document.body.dataset.result; ${STUB('/api/logout')} document.getElementById('logout').click(); })()`);
+    const said = await Promise.race([
+      b.waitFor('!!document.body.dataset.result', 'a result after a failed logout', 6000).then(() => true, () => false),
+      new Promise((res) => setTimeout(() => res(false), 7000))]);
+    const result = said ? await b.eval('document.body.dataset.result') : '(nothing)';
+    check(said && /^error: the site is unreachable/.test(result),
+          `failed logout: the page says the logout failed (${result}) (F237)`);
+    const still = await b.eval("fetch('/api/me').then((x) => x.status)");
+    check(still === 200, `failed logout: and the session is in fact still there (/api/me ${still}) (the control)`); }
   // V4-76, F144: the passphrase does not stay in the page after it is used, where
   // any script on the origin could read it beside the sealed key.
   { const left = await b.eval("document.getElementById('passphrase').value");

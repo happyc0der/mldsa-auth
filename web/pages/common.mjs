@@ -43,6 +43,27 @@ export function report(ok, text) {
   document.body.dataset.result = ok ? 'ok' : `error: ${text}`;
 }
 export const val = (id) => document.getElementById(id).value;
+
+// A button's action, ONE run at a time (V4-162, F237). The pages attached
+// plain async listeners, so a second click started a second run beside the
+// first: on the login page it replaced the state the first run's code was
+// bound to and read a passphrase field the first had emptied, and a correct
+// login was reported as refused. While a run is in progress the button is
+// disabled and further clicks do nothing. Whatever the action throws is
+// reported -- a listener that rejected used to leave the page silent, which
+// for "Log out" reads as having logged out.
+export function action(id, run) {
+  const button = document.getElementById(id);
+  let busy = false;
+  button.addEventListener('click', async () => {
+    if (busy) { return; }
+    busy = true;
+    button.disabled = true;
+    try { await run(); }
+    catch (e) { report(false, e?.message ?? String(e)); }
+    finally { busy = false; button.disabled = false; }
+  });
+}
 // A secret field -- the passphrase, a recovery code -- read ONCE and emptied in
 // the same step (V4-76, F144). Left in the field, the passphrase sat in the DOM
 // after the login for any script on the origin to read next to the sealed key

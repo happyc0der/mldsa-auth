@@ -1,4 +1,4 @@
-import { boot, session, loginParams, post, report, secret, b64url } from './common.mjs';
+import { boot, session, loginParams, post, report, secret, b64url, action } from './common.mjs';
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
@@ -43,11 +43,14 @@ forget.addEventListener('click', async () => {
 });
 document.body.dataset.ready = '1';
 
-document.getElementById('go').addEventListener('click', async () => {
+action('go', async () => {
   const events = [];
+  // Read, and emptied, before anything can fail (F237): a failure to reach
+  // the site used to leave the passphrase sitting in the field.
+  const passphrase = secret('passphrase');
   try {
     const sess = await session();
-    const s = await flows.login(client, store, loginParams(sess, list.value, secret('passphrase')), (e) => events.push(e));
+    const s = await flows.login(client, store, loginParams(sess, list.value, passphrase), (e) => events.push(e));
     const code = b64url(s.code);
     await s.close();
     // THE HAND-OFF: the code travels in a same-origin POST body, never a URL.

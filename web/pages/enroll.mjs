@@ -1,4 +1,4 @@
-import { boot, session, post, report, val, bytesToHex, hexToBytes, secret } from './common.mjs';
+import { boot, session, post, report, val, bytesToHex, hexToBytes, secret, action } from './common.mjs';
 import { IdentityStore } from '/client/store.mjs';
 import * as flows from '/client/flows.mjs';
 
@@ -15,7 +15,8 @@ document.getElementById('passphrase').addEventListener('input', () => {
 });
 document.body.dataset.ready = '1';
 
-document.getElementById('go').addEventListener('click', async () => {
+action('go', async () => {
+  const passphrase = secret('passphrase');     // emptied whatever happens next (F237)
   try {
     const sess = await session();
     if (!sess.recovering) { await post('/api/signup', { user: val('user'), invite: val('invite') }); }
@@ -23,7 +24,7 @@ document.getElementById('go').addEventListener('click', async () => {
     // removes it. Anything else -- no answer, a 5xx -- says nothing about
     // whether it was, and the key is kept, marked unconfirmed (F220).
     const { handle, answer: r } = await flows.enroll(client, store,
-      { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase: secret('passphrase') },
+      { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
         try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
         catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }

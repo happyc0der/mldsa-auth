@@ -1,4 +1,4 @@
-import { boot, session, loginParams, post, report, val, b64url, secret } from './common.mjs';
+import { boot, session, loginParams, post, report, b64url, secret, action } from './common.mjs';
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
@@ -10,28 +10,31 @@ document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me
   : meRes.status === 503 ? 'The login service is not answering; reload in a moment' : 'Not logged in';
 document.body.dataset.ready = '1';
 
-document.getElementById('rotate').addEventListener('click', async () => {
-  try {
-    if (!me) { throw new Error('log in first'); }
-    const sess = await session();
-    await flows.rotate(client, store, loginParams(sess, me.handle, secret('passphrase')));
-    report(true, 'Rotated: this device has a new key, and the old one no longer authenticates');
-  } catch (e) { report(false, e.message); }
+// Why there is no session to act on (F237): "log in first" was said for a 503
+// too, one line under the message that the service is not answering.
+const needMe = () => {
+  if (!me) { throw new Error(meRes.status === 503 ? 'the login service is not answering; try again in a moment' : 'log in first'); }
+};
+action('rotate', async () => {
+  const passphrase = secret('passphrase');     // emptied whatever happens next (F237)
+  needMe();
+  const sess = await session();
+  await flows.rotate(client, store, loginParams(sess, me.handle, passphrase));
+  report(true, 'Rotated: this device has a new key, and the old one no longer authenticates');
 });
-document.getElementById('codes').addEventListener('click', async () => {
-  try {
-    if (!me) { throw new Error('log in first'); }
-    // V4-62: minting codes needs a login, not only this session -- log in
-    // again with this device's key and the passphrase, and send that code.
-    const sess = await session();
-    const s = await flows.login(client, store, loginParams(sess, me.handle, secret('passphrase')));
-    const code = b64url(s.code);
-    await s.close();
-    const { codes } = await post('/api/recovery-codes', { code });
-    document.getElementById('codelist').textContent = codes.join('\n');
-    report(true, 'Write these down now: they are shown once and cannot be retrieved');
-  } catch (e) { report(false, e.message); }
+action('codes', async () => {
+  const passphrase = secret('passphrase');
+  needMe();
+  // V4-62: minting codes needs a login, not only this session -- log in
+  // again with this device's key and the passphrase, and send that code.
+  const sess = await session();
+  const s = await flows.login(client, store, loginParams(sess, me.handle, passphrase));
+  const code = b64url(s.code);
+  await s.close();
+  const { codes } = await post('/api/recovery-codes', { code });
+  document.getElementById('codelist').textContent = codes.join('\n');
+  report(true, 'Write these down now: they are shown once and cannot be retrieved');
 });
-document.getElementById('logout').addEventListener('click', async () => {
+action('logout', async () => {
   await post('/api/logout'); report(true, 'Logged out');
 });

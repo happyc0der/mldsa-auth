@@ -15748,3 +15748,41 @@ Campaign v111, CD1-CD6.
 
 Counts: 530 mutations, 81 campaigns, 572 anchors; 236 findings; spec v1.55,
 97 errata (unchanged).
+
+## V4-162: one run at a time for every page button (F237)
+
+Numbered 162 because 161 is the cleanup that follows the F232-F234 landing.
+
+**The defect.** Every page button was `addEventListener('click', async …)`
+with nothing to stop a second run. Reproduced in headless Chromium on the
+login page with two clicks and the right passphrase: the results were
+`decryption-failed` and then `login-failed`. The second run's
+`GET /api/session` replaced the state the first run's code was bound to
+(one state per session, the site's rule), and the first run had emptied the
+passphrase field.
+
+**The fix.** One function, `action(id, run)`: a busy flag, the button
+disabled for the length of the run, the run's rejection reported. All six
+buttons use it, which also gives "Log out" the catch it never had. Each
+action takes its secret out of the field as its first statement, so a
+failure before the secret is used no longer leaves it in the DOM. The
+account page's "log in first" now distinguishes the 503 it has just
+described.
+
+**A cost on the enroll page.** The passphrase is now emptied before the
+signup is attempted, so a refused invite means typing the passphrase again.
+That is F144's rule applied where it was skipped.
+
+**Tests** (`tests/browser_e2e.mjs`): two clicks give one result, a login,
+and an enabled button; a login that cannot reach the site reports it and
+leaves an empty field; a logout that fails is reported and `/api/me` is
+still 200. Hand mutations, restored byte-exact: no guard; a rejection not
+reported; the button left disabled; the passphrase read late. Each fails a
+named check.
+
+**Not fixed here.** A page whose top-level `await boot()` rejects shows
+nothing and attaches no listeners. It needs each page's start wrapped and a
+message that does not depend on `report()`'s element; next.
+
+Counts: 530 mutations, 81 campaigns, 572 anchors (unchanged, no C);
+237 findings; spec v1.55, 97 errata (unchanged).
