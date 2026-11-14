@@ -14,9 +14,10 @@
 import { test, skip } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { Authd, AuthdError, exchange, verify, logout, ping, listDevices } from './authd.mjs';
 
@@ -172,6 +173,62 @@ if (!FIXTURE || !existsSync(FIXTURE)) {
       assert.match(all[1][0], /^ERR code=not-permitted/);
       for (const r of all.slice(2)) assert.match(r[0], /^OK version=/);
     });
+  });
+
+  // V4-175, F249. Each wait is raced against two seconds: before the fix
+  // these promises never settled, and a test that only awaited them would
+  // hang instead of failing.
+  const settled = (pr) => Promise.race([
+    pr.then(() => 'resolved', (e) => (e instanceof AuthdError ? e.code : `threw ${e.message}`)),
+    new Promise((r) => setTimeout(() => r('never settled'), 2000)),
+  ]);
+
+  test('a request on a connection that is closed, or never opened, is refused (F249)', async () => {
+    assert.equal(await settled(new Authd('/nonexistent').request('PING')), 'connection-closed',
+                 'before connect()');
+    await withDaemon(async (authd, info) => {
+      assert.equal(await settled(authd.request('PING')), 'resolved', 'an open connection answers (the canary)');
+      authd.close();
+      assert.equal(await settled(authd.request('PING')), 'connection-closed', 'after close()');
+      const b = await new Authd(info.sock).connect();
+      b.destroy();
+      assert.equal(await settled(b.request('PING')), 'connection-closed', 'after destroy()');
+      // close() fails what was still waiting its turn and keeps the request
+      // already written: its reply arrives. Against a peer that answers late
+      // and never closes its own side, so that nothing but close() itself can
+      // have failed the second request.
+      const path = join(dirname(info.sock), 'late.sock');
+      const held = [];
+      const late = createServer({ allowHalfOpen: true }, (conn) => {
+        held.push(conn);
+        conn.on('error', () => {});
+        conn.once('data', () => setTimeout(() => conn.write('OK late=1\n'), 300));
+      });
+      await new Promise((r) => late.listen(path, r));
+      try {
+        const c = await new Authd(path).connect();
+        const first = c.request('PING'), second = c.request('PING');
+        c.close();
+        assert.equal(await settled(second), 'connection-closed', 'queued behind another at close()');
+        assert.equal(await settled(first), 'resolved', 'already written at close()');
+      } finally {
+        for (const conn of held) { conn.destroy(); }
+        await new Promise((r) => late.close(r));
+        rmSync(path, { force: true });
+      }
+    });
+  });
+
+  test('a request after the daemon went away is refused, not left waiting (F249)', async () => {
+    const { proc, info } = await startDaemon();
+    const authd = await new Authd(info.sock).connect();
+    assert.equal(await settled(authd.request('PING')), 'resolved', 'the daemon answers (the canary)');
+    const exited = once(proc, 'exit');
+    proc.kill('SIGTERM');
+    await exited;
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(await settled(authd.request('PING')), 'connection-closed');
+    assert.equal(await settled(authd.request('PING')), 'connection-closed', 'and the one after it');
   });
 
   test('a malformed login code is rejected client-side, before any socket write', async () => {

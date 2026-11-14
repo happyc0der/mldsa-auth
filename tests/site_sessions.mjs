@@ -390,6 +390,40 @@ try {
           `invite: the site compares it in constant time, never with === or !== (${direct.length} direct comparison(s)) (F212)`);
   }
 
+  // V4-175, F248: a body is decoded once, whole. The site decoded each chunk
+  // by itself, so a character split between two chunks became two U+FFFD and
+  // a correct invite was refused.
+  {
+    const st = await start({ invite: 'p\u00e4ssw\u00f6rd-\u00e9' });
+    const raw = (bytes, cut) => new Promise((resolve) => {
+      const head = `POST /api/signup HTTP/1.1\r\nHost: 127.0.0.1:${st.port}\r\nOrigin: http://127.0.0.1:${st.port}\r\n` +
+                   `Content-Type: application/json\r\nContent-Length: ${bytes.length}\r\nConnection: close\r\n\r\n`;
+      const c = createConnection(st.port, '127.0.0.1');
+      let out = '';
+      c.on('data', (d) => { out += d; });
+      c.on('error', () => resolve(0));
+      c.on('close', () => resolve(Number(out.slice(9, 12))));
+      c.write(head);
+      if (cut === undefined) { c.write(bytes); return; }
+      setTimeout(() => { c.write(bytes.subarray(0, cut)); setTimeout(() => c.write(bytes.subarray(cut)), 150); }, 50);
+    });
+    const good = Buffer.from(JSON.stringify({ user: 'guest', invite: 'p\u00e4ssw\u00f6rd-\u00e9' }), 'utf8');
+    const inside = good.indexOf(0xc3) + 1;
+    check(good[inside - 1] === 0xc3 && (good[inside] & 0xc0) === 0x80, 'body: the cut falls between the two bytes of a character (the control)');
+    const whole = await raw(good);
+    check(whole === 200, `body: a non-ASCII invite sent in one piece is accepted (${whole}) (the canary)`);
+    const split = await raw(good, inside);
+    check(split === 200, `body: the same bytes split inside a character are accepted as well (${split}) (F248)`);
+    const between = await raw(good, inside + 1);
+    check(between === 200, `body: and split between two characters (${between})`);
+    const wrong = Buffer.from(JSON.stringify({ user: 'guest', invite: 'p\u00e4ssw\u00f6rd-e' }), 'utf8');
+    const refused = await raw(wrong, wrong.indexOf(0xc3) + 1);
+    check(refused === 403, `body: a wrong invite split the same way is still refused (${refused})`);
+    const lone = Buffer.concat([Buffer.from('{"user":"guest","invite":"p'), Buffer.from([0xc3]), Buffer.from('"}')]);
+    const notUtf8 = await raw(lone);
+    check(notUtf8 === 400, `body: bytes that are not UTF-8 are 400, not replaced and compared (${notUtf8}) (F248)`);
+  }
+
   // V4-76, F145: a signup naming an EXISTING user cannot add a device to it.
   {
     const su = await post('/api/signup', { user, invite: 'the-invite' });

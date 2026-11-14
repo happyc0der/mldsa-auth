@@ -16164,3 +16164,43 @@ No code.
 
 Counts: 546 mutations, 87 campaigns, 588 anchors; 247 findings; spec v1.59,
 101 errata (all unchanged by this step).
+
+## V4-175: the reference site reads a body whole, and its handler refuses a closed connection (F248, F249)
+
+Two leftovers from the reviewer runs, each reproduced before it was touched.
+
+**F248.** `body()` appended each chunk to a string, which decodes each
+chunk by itself. A character split between two chunks became two U+FFFD.
+The invite is compared by digest, so the visible result was a correct
+invite refused: `pässwörd-é` sent whole answered 200, and the same bytes in
+two writes with the cut inside `ä` answered 403. The chunks are now kept as
+bytes and decoded once, strictly. Strict because the alternative is to
+compare a value the client never sent: bytes that are not UTF-8 are 400.
+
+**F249.** `Authd.request()` queued and wrote whatever the socket's state.
+On a closed connection the promise never settled. The reference site opens
+a connection per request, so it never did this; a site that copies the
+handler and keeps one connection, as the handler's own tests do, would have
+hung on every request after a daemon restart. The handler now records
+whether its connection is open and refuses `connection-closed` otherwise.
+
+**close() and the queue.** `close()` fails the requests that were still
+waiting their turn, because nothing would write them, and keeps the one
+already written, because its reply is still coming. The test for this uses
+a stand-in peer that answers late and never closes its own side: against
+the real daemon the socket's `close` fails the queue a moment later anyway,
+and the test could not have told the two apart.
+
+**A line removed.** The first version cleared the open flag in `destroy()`
+too. Hand mutation M6 removed that line and every test passed: the `close`
+that `destroy()` causes already fails the request. The line is gone.
+
+**Not done.** A request aborted mid-body leaves `body()`'s promise
+unsettled. Nothing waits on it but its own handler; left as it is.
+
+**Tests.** `tests/site_sessions.mjs`, six `body:` checks;
+`examples/site-node/authd.test.mjs`, two tests. No C touched, so no
+campaign: hand mutations M1-M7 with the two files restored byte for byte.
+
+Counts: 546 mutations, 87 campaigns, 588 anchors (unchanged); 249 findings;
+spec v1.59, 101 errata (unchanged).

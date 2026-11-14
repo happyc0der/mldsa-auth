@@ -325,18 +325,24 @@ export async function startSite(opt) {
   // with (V4-66, audit F136): a body that is not a JSON object is 400, and one
   // over 16 KiB is 413 once it has been read to its end (an answer sent before
   // then can be lost to a reset); past 1 MiB the connection is dropped.
+  // The bytes are decoded ONCE, at the end (V4-175, F248). Each chunk used to
+  // be decoded by itself, so a character whose bytes arrived in two chunks
+  // became two U+FFFD: a correct invite or recovery field holding a non-ASCII
+  // character was refused whenever the network split it there. Bytes that
+  // are not UTF-8 at all are 400, not replaced.
   const body = (req) => new Promise((resolve, reject) => {
-    let b = '';
+    const chunks = [];
     let n = 0;
     const refuse = (status, why) => reject(Object.assign(new Error(why), { status }));
     req.on('data', (d) => {
       n += d.length;
       if (n > 1048576) { req.destroy(); refuse(0, 'dropped'); return; }
-      if (n <= 16384) { b += d; }
+      if (n <= 16384) { chunks.push(d); }
     });
     req.on('end', () => {
       if (n > 16384) { return refuse(413, 'too large'); }
-      let v;
+      let b, v;
+      try { b = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)); } catch { return refuse(400, 'not UTF-8'); }
       try { v = b ? JSON.parse(b) : {}; } catch { return refuse(400, 'malformed JSON'); }
       if (v === null || typeof v !== 'object' || Array.isArray(v)) { return refuse(400, 'not a JSON object'); }
       resolve(v);

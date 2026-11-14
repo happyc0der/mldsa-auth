@@ -56,6 +56,9 @@ export class Authd {
   #sock;
   #buf = '';
   #queue = [];
+  // Whether a request can still be answered (V4-175, F249). False before
+  // connect() and from the moment the connection is closed from either end.
+  #open = false;
 
   constructor(socketPath) {
     this.socketPath = socketPath;
@@ -65,26 +68,43 @@ export class Authd {
     await new Promise((resolve, reject) => {
       this.#sock = net.createConnection(this.socketPath);
       this.#sock.setEncoding('utf8');
-      this.#sock.once('connect', resolve);
-      this.#sock.once('error', reject);
+      this.#sock.once('connect', () => { this.#open = true; resolve(); });
+      // Listened to for the socket's whole life: 'close' follows every error
+      // and is what fails the queue, and an 'error' with no listener ends
+      // the process.
+      this.#sock.on('error', reject);
       this.#sock.on('data', (chunk) => this.#onData(chunk));
       this.#sock.on('close', () => {
         // Fail everything still waiting rather than leaving a promise pending
         // forever if the daemon restarts mid-request.
-        for (const { reject: rj } of this.#queue.splice(0)) {
-          rj(new AuthdError('connection-closed'));
-        }
+        this.#open = false;
+        this.#failQueue();
       });
     });
     return this;
   }
 
+  #failQueue() {
+    for (const { reject: rj } of this.#queue.splice(0)) {
+      rj(new AuthdError('connection-closed'));
+    }
+  }
+
+  // A request made after close() is refused, and one still waiting its turn
+  // is failed here: nothing would ever write it. The one already written
+  // keeps its place until its reply or the socket's 'close'.
   close() {
+    this.#open = false;
+    const head = this.#queue[0];
+    const inFlight = head && head.sent ? this.#queue.shift() : null;
+    this.#failQueue();
+    if (inFlight) { this.#queue.push(inFlight); }
     this.#sock?.end();
   }
 
   // For a daemon that has stopped answering (V4-127, F210): end() waits for
   // the peer, and a peer that is hung never lets the descriptor go.
+  // (A request made after destroy() is failed by the 'close' it causes.)
   destroy() {
     this.#sock?.destroy();
   }
@@ -156,6 +176,13 @@ export class Authd {
     const line = parts.join(' ');
     if (line.length + 1 > MAX_LINE) {
       return Promise.reject(new AuthdError('request-too-long'));
+    }
+    // V4-175, F249: a connection that is closed, or was never opened, cannot
+    // answer. The request used to be queued all the same and written to a
+    // socket nobody read: its promise never settled, so a site that keeps one
+    // connection waited for ever on every request after a daemon restart.
+    if (!this.#open) {
+      return Promise.reject(new AuthdError('connection-closed'));
     }
     return new Promise((resolve, reject) => {
       this.#queue.push({ resolve, reject, wantList: LIST_COMMANDS.has(cmd), line, sent: false });
