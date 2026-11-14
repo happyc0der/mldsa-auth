@@ -16614,3 +16614,21 @@ L1-L4, files restored byte for byte.
 
 Counts: 559 mutations, 93 campaigns, 601 anchors (unchanged); 267 findings;
 spec v1.59, 101 errata (unchanged).
+
+## V4-189: cleanup after V4-182 to V4-185 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `b35f0b0`, now main: CI
+  43635772622 (16/16), nightly 43635775790 (107/107, 92 campaigns).
+- Main's push CI on the landing before it, 43635713575 on `840fe64`, was
+  16/16 at its first attempt: the F219 leg that had failed on the macOS
+  ASan job (F254) passed there twice, on the branch and on main.
+- That nightly was the first with `mutation_runner_gate`,
+  `site_gates_gate` and campaign v122 on Linux, under dash and GNU tools:
+  all passed.
+- V4-186 to V4-188 were written while that branch was in CI and sit under
+  this entry; they go to CI and the nightly with it as one branch.
+
+Counts: 559 mutations, 93 campaigns, 601 anchors; 267 findings; spec v1.59,
+101 errata (all unchanged by this step).
