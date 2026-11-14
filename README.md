@@ -210,7 +210,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-54 tests in a native tree (52 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 57 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 59 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+55 tests in a native tree (53 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 58 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 60 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -221,6 +221,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `test_session_alloc` | Zero allocation in the steady-state send/receive path, proved with a counting allocator |
 | `session_no_alloc_scan` | Structural proof that `session.c` cannot allocate — a portable second gate on the same property |
 | `secure_mem_sites` | Every secret on the heap — keys, shared secrets, passphrases, plaintext key images — is allocated in libsodium's guarded memory: the 39 `secure_mem_alloc` sites checked both ways against a list, and no raw libsodium allocator outside the wrapper (V4-24b) |
+| `spec_constants_gate` | `tools/audit/check_spec_constants.sh` run against copies of the tree in which a number changed or can no longer be derived (a `#define` rewritten as an expression; a handshake id of 32 bytes; an identity limit of 32; a rate-limit default, a token lifetime and a recovery-code size it cannot read), each of which it must refuse, and the tree as it is, which it must pass (V4-173, F247) |
 | `fuzz_log_gate` | The gate CI's two fuzz steps end with (`tests/fuzz/check_fuzz_log.sh`), fed a clean log and eight that must be refused: a run that never started, a fuzzer that died before reporting, a missing target, a SKIP, zero inputs, a crash, an artifact, no log. Also that the nightly's hand-written fuzz matrix is exactly `FUZZ_TARGETS`, and that both workflows run the fuzzers under `pipefail` and end with the gate (V4-172, F245) |
 | `constant_time_sites` | Every `sodium_memcmp`/`sodium_is_zero` call site checked both ways against a list, so a constant-time comparison swapped for `memcmp` fails by name (V4-15b) |
 | `no_hand_rolled_primitives` | No primitive's defining constants outside the one sanctioned SHA-1, and only the WebSocket upgrade calls it (V4-15c) |

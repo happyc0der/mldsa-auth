@@ -24,10 +24,25 @@ OVH=$(hdr SESSION_OVERHEAD_BYTES src/protocol/session.h)
 MAGIC=8; DIGEST=32; HANDLE=34
 
 fail=0
+# F247: a value that could not be DERIVED is a failure, said by name. hdr()
+# and its siblings match one spelling of a #define ("NAME <digits>", "(Nu *
+# 3600u)"); a define rewritten any other way derived the empty string, and
+# every check below then looked for "", " h" or "default ", which every
+# document contains. Each derived variable is passed through this before use.
+req() { # variable names
+  for v in "$@"; do
+    eval "x=\${$v-}"
+    case "$x" in
+      ''|*[!0-9.]*) printf '  FAIL  %-34s could not be derived from the tree (got "%s")\n' "$v" "$x"; fail=1 ;;
+    esac
+  done
+}
 check() { # name, derived value, regex-quoted context that must contain it
-  if grep -qF "$2" "$SPEC"; then printf '  ok    %-34s %s\n' "$1" "$2"
+  if [ -z "$2" ]; then printf '  FAIL  %-34s nothing was derived to look for\n' "$1"; fail=1
+  elif grep -qF -- "$2" "$SPEC"; then printf '  ok    %-34s %s\n' "$1" "$2"
   else printf '  FAIL  %-34s derived %s, not found in the spec\n' "$1" "$2"; fail=1; fi
 }
+req PK SK SIG IDMAX HSID OVH
 
 echo "check_spec_constants: $SPEC"
 echo "  (from the tree: pk=$PK sk=$SK sig=$SIG id_max=$IDMAX hsid=$HSID overhead=$OVH)"
@@ -40,17 +55,23 @@ ROT_BODY=$((1+1+1+HANDLE + PK + 2+SIG + 2+SIG))
 ROT_CONTENT=$((ROT_BODY+1))
 check "ROTATE body"            "$ROT_BODY"
 check "ROTATE content"         "$ROT_CONTENT"
-check "AUTHD_MAX_RECORD"       "$(rec 9216 4096)"
-check "LOGIN_CODE record @256" "$(rec 43 256)"
-check "handle length"          "$HANDLE"
-check "WIRE_ID_MAX_LEN"        "$IDMAX"
+REC_MAX=$(rec 9216 4096); REC_CODE=$(rec 43 256)
+req REC_MAX REC_CODE
+check "AUTHD_MAX_RECORD"       "$REC_MAX"
+check "LOGIN_CODE record @256" "$REC_CODE"
+# F247: these two, the envelope header and the handshake id below were looked
+# for as bare numbers anywhere in the document, where "34", "64", "67" and
+# "16" each occur many times over: any of the four could change in the tree
+# and still be "found". Each is now looked for in the phrase that states it.
+check "handle length"          "($HANDLE bytes)"
+check "WIRE_ID_MAX_LEN"        "\`WIRE_ID_MAX_LEN\` ($IDMAX)"
 
 # --- MLDSASK2 image and the MLDSAEK1 envelope ----------------------------
 SK2=$((MAGIC + 1 + PK + SK + DIGEST))          # + id_len
 EK_HDR=$((8+1+1+4+8+16+1+24+4))                 # magic..ct_len == the AAD
 EK_FILE=$((EK_HDR + SK2 + 16))                  # + id_len, +ABYTES tag
 check "MLDSASK2 image (+id_len)" "$SK2"
-check "MLDSAEK1 header/AAD"      "$EK_HDR"
+check "MLDSAEK1 header/AAD"      "Bytes [0, $EK_HDR) are the AEAD's associated data"
 check "MLDSAEK1 file (+id_len)"  "$EK_FILE"
 check "MLDSAEK1 for a handle"    "$((EK_FILE + HANDLE))"
 check "MLDSAEK1 version 2 (+id_len)" "$((EK_FILE + 32))"   # + the store root key (erratum 79)
@@ -58,7 +79,7 @@ check "MLDSAEK1 version 2 (+id_len)" "$((EK_FILE + 32))"   # + the store root ke
 # --- signature and key sizes quoted in the byte tables -------------------
 check "pk_new field"             "$PK"
 check "signature bound"          "$SIG"
-check "handshake_id in digest"   "$HSID"
+check "handshake_id in digest"   "handshake_id ($HSID)"
 
 # --- §17's limits table (V4-10c, findings F36/F68) -----------------------
 #
@@ -74,21 +95,29 @@ in17() { case "$SEC17" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
 TOK=apps/authd/tokens.h
 hrs() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 3600u\)" $TOK | grep -oE '\(([0-9]+)u' | tr -d '(u'; }
 mins() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 60u\)" $TOK | grep -oE '\(([0-9]+)u' | tr -d '(u'; }
-in17 "token lifetime, user"       "$(hrs TOKEN_TTL_USER_S) h"
-in17 "token lifetime, operator"   "$(hrs TOKEN_TTL_OPERATOR_S) h"
-in17 "token idle, user"           "$(hrs TOKEN_IDLE_TTL_USER_S) h"
-in17 "token idle, operator"       "$(mins TOKEN_IDLE_TTL_OPERATOR_S) min"
+T_USER=$(hrs TOKEN_TTL_USER_S); T_OPER=$(hrs TOKEN_TTL_OPERATOR_S)
+T_IDLE_USER=$(hrs TOKEN_IDLE_TTL_USER_S); T_IDLE_OPER=$(mins TOKEN_IDLE_TTL_OPERATOR_S)
+req T_USER T_OPER T_IDLE_USER T_IDLE_OPER
+in17 "token lifetime, user"       "$T_USER h"
+in17 "token lifetime, operator"   "$T_OPER h"
+in17 "token idle, user"           "$T_IDLE_USER h"
+in17 "token idle, operator"       "$T_IDLE_OPER min"
 
 RL=apps/authd/ratelimit.h
-in17 "rate_per_min default"       "\`rate_per_min\` $(hdr RATELIMIT_PER_MIN_DEFAULT $RL)"
-in17 "rate_burst default"         "\`rate_burst\` $(hdr RATELIMIT_BURST_DEFAULT $RL)"
-in17 "rate_global_per_sec default" "default $(hdr RATELIMIT_GLOBAL_PER_SEC_DEF $RL)"
-in17 "max_conns_per_addr default" "default $(hdr RATELIMIT_MAX_CONNS_DEFAULT $RL)"
+RL_MIN=$(hdr RATELIMIT_PER_MIN_DEFAULT $RL); RL_BURST=$(hdr RATELIMIT_BURST_DEFAULT $RL)
+RL_GLOBAL=$(hdr RATELIMIT_GLOBAL_PER_SEC_DEF $RL); RL_CONNS=$(hdr RATELIMIT_MAX_CONNS_DEFAULT $RL)
+req RL_MIN RL_BURST RL_GLOBAL RL_CONNS
+in17 "rate_per_min default"       "\`rate_per_min\` $RL_MIN"
+in17 "rate_burst default"         "\`rate_burst\` $RL_BURST"
+in17 "rate_global_per_sec default" "default $RL_GLOBAL"
+in17 "max_conns_per_addr default" "default $RL_CONNS"
 
 ROT_DAYS=$(grep -oE '#define AUTHD_ROTATION_AGE_DEFAULT[[:space:]]+\(([0-9]+)u' apps/authd/authd_config.h | grep -oE '\(([0-9]+)u' | tr -d '(u')
+LINE_MAX=$(hdr AUTHD_LINE_MAX apps/authd/conn_io.h); MAX_CONTENT=$(hdr AUTHD_MAX_CONTENT apps/authd/conn_io.h)
+req ROT_DAYS LINE_MAX MAX_CONTENT
 in17 "rotation cadence default"   "default $ROT_DAYS days"
-in17 "local-socket line limit"    "$(hdr AUTHD_LINE_MAX apps/authd/conn_io.h) B"
-in17 "AUTHD_MAX_CONTENT"          "$(hdr AUTHD_MAX_CONTENT apps/authd/conn_io.h) B"
+in17 "local-socket line limit"    "$LINE_MAX B"
+in17 "AUTHD_MAX_CONTENT"          "$MAX_CONTENT B"
 
 # --- recovery codes and tickets (V4-9d, spec §10.3) ----------------------
 #
@@ -113,6 +142,7 @@ R_TTL=$(hdr RECOVERY_TICKET_TTL_S $REC)
 R_BYTES=$(hdr BASE32_CODE_BYTES apps/authd/base32.h)
 R_CHARS=$(hdr BASE32_CODE_CHARS apps/authd/base32.h)
 R_MEM_MIB=$(grep -oE 'RECOVERY_MEM_SPEC[[:space:]]+\(([0-9]+)u \* 1024u \* 1024u\)' $REC | grep -oE '\(([0-9]+)u' | tr -d '(u')
+req R_OPS R_CODES R_THRESH R_LOCK R_TTL R_BYTES R_CHARS R_MEM_MIB
 
 # The §10.3 recovery paragraph only.
 SEC=$(awk '/^### 10.3 /{f=1} f{print} /presents to .ENROLL/{if(f) exit}' "$SPEC")
@@ -162,6 +192,7 @@ O_OPS=$(hdr KDF_OPS_OPERATOR apps/authd/cli_common.h)
 CLI_MEM=$(mib KDF_MEM_256MIB apps/authd/cli_common.h)
 B_OPS=$(hdr CC_KDF_OPS_BROWSER apps/authd/client_core.h)
 B_MEM=$(mib CC_KDF_MEM_BROWSER apps/authd/client_core.h)
+req S_OPS O_OPS CLI_MEM B_OPS B_MEM
 ROLES=$(grep -A3 -F '**Parameters by role:**' "$SPEC" | tr '\n' ' ' | tr -s ' ')
 in_roles() { case "$ROLES" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
                               *) printf '  FAIL  %-34s derived %s, not in §12 by role\n' "$1" "$2"; fail=1;; esac; }
@@ -173,6 +204,7 @@ in_roles "KDF by role: browser"  "browser \`ops=$B_OPS, mem=$B_MEM MiB\`"
 # The Emscripten version is pinned in CMakeLists.txt and stated in §14; the
 # wasm KAT golden is only a contract for that compiler, so the two must agree.
 EMV=$(grep -oE 'set\(MLDSA_EMSCRIPTEN_VERSION "[0-9.]+"\)' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+req EMV
 S14=$(awk '/^## 14\. /{f=1} /^## 15\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
 case "$S14" in *"Emscripten $EMV"*) printf '  ok    %-34s %s\n' "browser module: Emscripten pin" "$EMV";;
                *) printf '  FAIL  %-34s CMakeLists pins %s, §14 does not say so\n' "browser module: Emscripten pin" "${EMV:-<none>}"; fail=1;; esac
@@ -182,6 +214,7 @@ PPH=apps/authd/passphrase.h
 PP_CP=$(hdr PP_MIN_CODE_POINTS $PPH)
 PP_BITS=$(hdr PP_MIN_BITS $PPH)
 PP_N=$(grep -oE 'pp_common_count = [0-9]+u' apps/authd/passphrase_common.c | grep -oE '[0-9]+')
+req PP_CP PP_BITS PP_N
 PP_N_FMT=$(printf "%'d" "$PP_N" 2>/dev/null | tr -d ' '); case "$PP_N_FMT" in *,*) ;; *) PP_N_FMT=$(echo "$PP_N" | sed -E 's/([0-9])([0-9]{3})$/\1,\2/');; esac
 in_s14() { case "$S14" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
                         *) printf '  FAIL  %-34s derived %s, not in §14\n' "$1" "$2"; fail=1;; esac; }
@@ -192,6 +225,8 @@ in_s14 "passphrase: common list size" "$PP_N_FMT entries"
 # The value comes from authd_conn.h; the spec states it in µs, bold in §7.3's
 # paragraph and in §17's limits table.
 FLOOR_NS=$(hdr AUTHD_PIN_FLOOR_NS apps/authd/authd_conn.h)
+req FLOOR_NS
+[ -n "$FLOOR_NS" ] || FLOOR_NS=0      # already reported; keeps the arithmetic below from aborting the script
 FLOOR_US=$((FLOOR_NS / 1000))
 S73=$(awk '/^### 7\.3 /{f=1} /^## 8\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
 case "$S73" in *"**$FLOOR_US µs**"*) printf '  ok    %-34s %s\n' "pin floor: §7.3" "$FLOOR_US µs";;

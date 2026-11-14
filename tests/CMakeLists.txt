@@ -167,6 +167,12 @@ add_test(NAME store_fault_hook
 add_test(NAME fuzz_log_gate
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/fuzz_log_gate.sh ${PROJECT_SOURCE_DIR})
 
+# V4-173 (F247): the spec-constants gate, run against copies of the tree in
+# which a number changed or can no longer be derived. It needs /bin/bash, as
+# the gate itself does.
+add_test(NAME spec_constants_gate
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/spec_constants_gate.sh ${PROJECT_SOURCE_DIR})
+
 add_test(NAME constant_time_sites
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/constant_time_sites.sh ${PROJECT_SOURCE_DIR})
 # V4-24b (CLAIMS P2/D2): every secret on the heap is allocated in secure

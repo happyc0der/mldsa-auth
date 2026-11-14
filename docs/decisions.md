@@ -16089,3 +16089,36 @@ and table said so.
 
 Counts: 546 mutations, 87 campaigns, 588 anchors; 246 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-173: the spec-constants gate fails when it has derived nothing (F247)
+
+**The defect.** Two vacuous passes in one gate. A derived value that came
+back empty was grepped for as the empty string, which every file contains.
+And four values were bare numbers looked for anywhere in a document of two
+thousand lines. Shown first: on six copies of the tree with a number
+changed or made underivable, the gate printed
+`OK: every derived size appears in the specification` six times.
+
+**The fix.** `req VAR…` after each group of derivations: empty or
+non-numeric is a FAIL that names the variable. `check` refuses an empty
+pattern on its own account. The inline `$(hdr …)` calls in the §17 rows
+became variables so they can be required. The four bare numbers are sought
+in their sentences. Where an empty value fed shell arithmetic, the failure
+is already recorded before the arithmetic runs.
+
+**The gate's test.** `spec_constants_gate` copies what the gate reads into
+a temporary directory, edits one line, and expects a refusal: a define as
+an expression; the handshake id at 32; the identity limit at 32; a
+rate-limit default, a token lifetime and a recovery-code size written in a
+form the reader does not know. Each edit is checked to have changed the
+file. The unedited copy must pass.
+
+**Hand mutations of the gate:** `req` and the empty-pattern refusal
+disabled (four fixtures pass, test red); the handshake id bare again (one);
+the identity limit bare again (one).
+
+**The suite is one test larger again** (55 native, 60 with the wasm tree
+and a browser); the README's sentence and table follow.
+
+Counts: 546 mutations, 87 campaigns, 588 anchors (unchanged, no C);
+247 findings; spec v1.59, 101 errata (unchanged).
