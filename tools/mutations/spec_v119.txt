@@ -1,0 +1,2 @@
+TC1|^test_authd_evloop$|cfg: a uid list ending in a comma is refused (F252)
+TC2|^test_authd_evloop$|cfg: ...after two uids as after one (F252)

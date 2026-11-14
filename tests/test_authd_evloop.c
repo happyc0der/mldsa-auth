@@ -149,6 +149,21 @@ static void test_config(void)
           "cfg: a site socket without site_uids is refused (Req 11)");
     CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK,
           "cfg: ...and accepted once site_uids names who may use it");
+    /* V4-178, F252: a uid list is uids with commas BETWEEN them. A list that
+     * ended in a comma was accepted while one that began with a comma, or
+     * held two together, was refused: `site_uids = 33,` with the second uid
+     * never typed started a daemon serving one fewer peer than was meant. */
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33,1001\n", &cfg, &line) == AUTHD_CFG_OK &&
+              cfg.n_site_uids == 2u && cfg.site_uids[0] == (uid_t)33 && cfg.site_uids[1] == (uid_t)1001,
+          "cfg: a list of two uids is two uids (the canary)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33,\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE,
+          "cfg: a uid list ending in a comma is refused (F252)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33,1001,\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE,
+          "cfg: ...after two uids as after one (F252)");
+    CHECK(parse_str(BASE "site_socket = /run/s.sock\nsite_uids = ,33\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+              parse_str(BASE "site_socket = /run/s.sock\nsite_uids = 33,,1001\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE &&
+              parse_str(BASE "site_socket = /run/s.sock\nsite_uids = ,\n", &cfg, &line) == AUTHD_CFG_ERR_VALUE,
+          "cfg: a leading comma, two together and a comma alone are refused as before");
     /* V4-160, F236: a refusal about the file as a whole says what it is about. */
     CHECK(parse_str(BASE "site_socket = /run/s.sock\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING &&
           strcmp(authd_config_error_detail(), "site_uids (site_socket is set)") == 0,

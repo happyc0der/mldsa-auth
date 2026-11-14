@@ -154,7 +154,14 @@ static authd_config_status_t parse_uids(const uint8_t *v, size_t n, uid_t *out, 
         }
         out[*n_out] = (uid_t)u;
         (*n_out)++;
-        if (i < n) { i++; }         /* step over the comma */
+        if (i < n) {
+            i++;                    /* step over the comma */
+            /* V4-178, F252: a comma is BETWEEN two uids. One that ends the
+             * list was accepted, while one that began it was not. */
+            if (i == n) {
+                return AUTHD_CFG_ERR_VALUE;
+            }
+        }
     }
     return AUTHD_CFG_OK;
 }

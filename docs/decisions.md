@@ -16279,3 +16279,28 @@ that compares the fence loosely (G1) two fail.
 Counts: 548 mutations, 88 campaigns, 590 anchors (unchanged); 251 findings;
 spec v1.59, 101 errata (unchanged); 61 tests with wasm and a browser (56
 native).
+
+## V4-178: a uid list ending in a comma is refused (F252)
+
+`parse_uids` already refused an empty element, so `,33` and `33,,1001`
+were errors. `33,` was not: after the comma the loop's condition was false
+and the function returned what it had. The three forms are the same
+mistake, a comma with a uid missing on one side, and now get the same
+answer.
+
+**Why refuse and not ignore.** The daemon would start either way, and with
+fewer uids, not more. But the file is the operator's statement of who may
+connect, and `33,` most likely means a second uid was intended. A daemon
+that starts and then refuses that peer `not-permitted` is harder to trace
+to the file than one that names the line at start.
+
+**Compatibility.** A configuration that has a trailing comma today stops
+the daemon at its next start, with the line number. None of the repo's
+configurations, tests or runbook lines has one.
+
+**Tests.** `test_authd_evloop`, four checks; two failed before the fix.
+Campaign v119: TC1 removes the refusal; TC2 keeps it only after a single
+uid, which is what a check on `33,` alone would have let through.
+
+Counts: 550 mutations, 89 campaigns, 592 anchors; 252 findings; spec v1.59,
+101 errata (unchanged).
