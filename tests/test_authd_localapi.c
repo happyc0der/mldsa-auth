@@ -2235,6 +2235,29 @@ static void test_store_write_failure(void)
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
           "wfail: the same wrong code is invalid once it can be counted");
 
+    /* EXCHANGE (F228): the role decides the token's two lifetimes, and it is
+     * read after the code is consumed. The status of that read was dropped and
+     * the role left at its default, so a user whose record could not be read
+     * -- an operator among them -- was issued a token with a user's 12 h and
+     * 1 h instead of being answered `internal`. The read is failed by a role
+     * the store does not know, written from the second connection. */
+    { h_client_t c2;
+      uint8_t code2[32];
+      CHECK(h_login(&d, &c2, HANDLE1, sizeof HANDLE1, &kp) == 0, "wfail: a second login");
+      CHECK(h_get_login_code(&d, &c2, code2) == 0, "wfail: a second login code");
+      hx(hexcode, sizeof hexcode, code2, sizeof code2);
+      snprintf(req, sizeof req, "EXCHANGE code=%s state=", hexcode);
+      CHECK(store_exec(DB, "PRAGMA ignore_check_constraints=ON; UPDATE users SET role='root';") == 0,
+            "wfail: the user's role is made unreadable");
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && !starts(resp, "OK token="),
+            "wfail: EXCHANGE issues no token when the user's role cannot be read (F228)");
+      CHECK(starts(resp, "ERR code=internal"),
+            "wfail: EXCHANGE whose role lookup fails answers internal (F228)");
+      CHECK(store_exec(DB, "UPDATE users SET role='user';") == 0, "wfail: the role is restored");
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=used"),
+            "wfail: the code that met the failure is spent; the user logs in again");
+      h_client_close(&c2); }
+
     (void)close(fd);
     h_client_close(&c);
     mldsa_keypair_free(&kp);

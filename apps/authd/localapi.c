@@ -565,8 +565,15 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
     default:                        return send_err(slot, "unknown");
     }
 
+    /* The role sets the token's two lifetimes, so a role that could not be
+     * read is not a role to guess (F228): the status was dropped here, and a
+     * user whose record would not read -- an operator among them -- was issued
+     * a token with a user's 12 h and 1 h. The code is already spent; the
+     * answer is `internal` (spec 8, erratum 96) and the user logs in again. */
     store_role_t role = STORE_ROLE_USER;
-    (void)store_get_user(app->store, user, user_len, &role, NULL, 0u);
+    if (store_get_user(app->store, user, user_len, &role, NULL, 0u) != STORE_OK) {
+        return send_err(slot, "internal");
+    }
 
     uint8_t token[TOKEN_BYTES];
     int64_t issued = 0, expires = 0;

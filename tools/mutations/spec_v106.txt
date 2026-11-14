@@ -1,0 +1,2 @@
+EX1|^test_authd_localapi$|wfail: EXCHANGE issues no token when the user's role cannot be read (F228)
+EX2|^test_authd_localapi$|wfail: EXCHANGE whose role lookup fails answers internal (F228)

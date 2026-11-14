@@ -15371,3 +15371,36 @@ top of them; its number is its place in the every-third-step cadence.
 
 Counts: 508 mutations, 75 campaigns, 550 anchors; 227 findings; spec v1.54,
 96 errata (all unchanged by this step).
+
+## V4-150: EXCHANGE does not guess a role (F228)
+
+**The defect.** `h_exchange` consumed the login code, then called
+`store_get_user` for the role with its status cast to void and the role
+preset to `user`. The role sets the token's lifetimes (operator 8 h / 30 min
+idle, user 12 h / 1 h). A failed read issued a `role=user` token with the
+longer lifetimes. Spec §8 since erratum 96: a request whose store operation
+failed answers `internal` and no other code. This was the third dropped
+status of that kind, after F222 and F223, and the reason for looking.
+Reproduced first: two new checks in `test_authd_localapi` failed.
+
+**The fix.** A status other than OK answers `ERR code=internal`; no token.
+The code is spent before the role is read, so the user logs in again. Moving
+the read before the consume would save that login and was not done: the user
+id comes out of the consume, and a second ordering to reason about in the
+one path that mints tokens is worth more than one repeated login after a
+store fault.
+
+**No erratum.** §8 already says it; the table's `EXCHANGE` row does not list
+`internal` because the sentence above the table covers every request.
+
+**Tests.** `test_store_write_failure` gains a third half: a role the store
+does not know, written from a second connection with check constraints off;
+no token, `internal`; the role restored, and the same code is `used`.
+Campaign v106, EX1-EX2, both killed by name.
+
+**Not pinned.** A read that fails inside SQLite. **Read and left:** the two
+other discarded store statuses, `store_touch_last_seen` (a best-effort
+timestamp) and `store_audit_tail` in `audit-verify` (the entry count it prints).
+
+Counts: 510 mutations, 76 campaigns, 552 anchors; 228 findings; spec v1.54,
+96 errata (unchanged).
