@@ -503,7 +503,9 @@ V4-67 fixed **F135** with the owner's choice of remedy, a time floor. The
 pin's lookup does not return until 50 µs after it began, whichever key it
 pinned, and at 100,000 round trips a class the difference no longer shows.
 It only waits, so nothing pinned or sent changes. A lookup slower than the
-floor is not hidden; about 1 in 10,000 here.
+floor is not hidden; about 1 in 10,000 here. V4-85 lowered the floor to
+10 µs, the owner's choice (erratum 68): more lookups overrun it, in a large
+store and on a slow host (F151). The figures above were taken at 50 µs.
 
 V4-68 fixed **F137** (Med), found answering the owner's question whether the
 system is secure end to end. The threat model said an attacker inside TLS
@@ -606,8 +608,9 @@ into the journal.
    signed ServerHello and fails at ClientAuth. Is the uniformity real, and is
    what the tests compare (outcomes, not bytes or timing) enough? A
    benchmark first measured the timing in V4-65: an enrolled handle was about
-   half a microsecond slower (F135). Since V4-67 a 50 µs floor on the lookup
-   hides it end to end. Is a floor the right remedy?
+   half a microsecond slower (F135). Since V4-67 a floor on the lookup (50 µs
+   then, 10 µs since V4-85) hides it end to end where the lookup finishes
+   inside the floor (F151 is what it does not hide). Is a floor the right remedy?
 5. **The key envelope** (§12): Argon2id and XChaCha20-Poly1305 with the header
    as associated data. Are the parameters and the construction sound?
 6. **The browser trust chain** (§14): the module is compiled from the C core

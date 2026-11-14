@@ -20,9 +20,12 @@ key_path = /var/lib/mldsa-authd/server.ek
 server_id = authd
 
 # The passphrase that opens the sealed key. Under systemd this is the decrypted
-# credential, a 0400 file owned by the service user -- exactly what the daemon
-# requires. Never an environment variable and never argv, both of which other
-# processes on this host can read.
+# credential: root:root, mode 0440, read by the service user through an ACL,
+# on a private read-only tmpfs (measured, V4-99). The daemon accepts that shape
+# only inside $CREDENTIALS_DIRECTORY; anywhere else the file must be a regular
+# file, 0600 or tighter, owned by the service user (spec 12, erratum 74).
+# Never an environment variable and never argv, both of which other processes
+# on this host can read.
 key_passphrase_file = /run/credentials/mldsa-authd.service/passphrase
 
 # --- listeners -------------------------------------------------------------

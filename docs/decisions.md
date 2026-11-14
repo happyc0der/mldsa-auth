@@ -15345,3 +15345,29 @@ rebuilt from a touched source, and the campaign was run again from the top.
 
 Counts: 508 mutations, 75 campaigns, 550 anchors; 227 findings; spec v1.54,
 96 errata (unchanged).
+
+## V4-145: cleanup after V4-142 to V4-144 landed
+
+No code. Done after V4-146, V4-147 and V4-149 were written, so it sits on
+top of them; its number is its place in the every-third-step cadence.
+
+- `docs/review/REPRODUCE.md` cites the runs on `6521a10`, now main: push CI
+  43499679955 (16/16), nightly 43491070826 (88/88, 73 campaigns).
+- **The credential's shape, two stale descriptions.** `deploy/authd.conf.example`
+  and the runbook's failure table still said systemd's credential is "a 0400
+  file owned by the service user". It is root:root 0440 read through an ACL,
+  accepted only directly inside `$CREDENTIALS_DIRECTORY`; any other
+  passphrase file must be 0600 or tighter and owned by the service user
+  (F183, erratum 74). Checked against `authd_secret_custody`, which is the
+  rule: `mode & 027` in the credentials directory, `mode & 077` and the
+  owner elsewhere.
+- **The pin's floor, five present-tense "50 µs".** The code and spec §7.3
+  have said 10 µs since V4-85 (erratum 68; `AUTHD_PIN_FLOOR_NS 10000u`).
+  The threat model, the README's test table, CLAIMS and two places in the
+  review guide still said 50. Each now says 10, or says which value the
+  quoted measurement was taken at. The audit rows for F17 and F135 record
+  what V4-67 did and are left as history. Noticed while checking an outside
+  document against the tree.
+
+Counts: 508 mutations, 75 campaigns, 550 anchors; 227 findings; spec v1.54,
+96 errata (all unchanged by this step).

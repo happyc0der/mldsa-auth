@@ -823,9 +823,12 @@ The daemon's exit code says which half is wrong (spec §13):
 Common ones, and what they actually are:
 
 - **`passphrase file …: unsafe-permissions`** (before V4-61:
-  `permissions (mode must be 0600)`) — the credential must be a regular file,
-  mode 0600 or tighter, owned by the service user. A `LoadCredentialEncrypted`
-  credential is 0400 and owned correctly; a file you copied by hand may not be.
+  `permissions (mode must be 0600)`) — a passphrase file must be a regular
+  file, mode 0600 or tighter, owned by the service user. The one exception is
+  systemd's own credential: a `LoadCredentialEncrypted` credential arrives
+  root:root, mode 0440, read through an ACL, and the daemon accepts that shape
+  only directly inside `$CREDENTIALS_DIRECTORY` (spec §12, erratum 74). A file
+  you copied by hand is held to the first rule and may not meet it.
 - **`unix listener …: path`** — a socket path longer than `sun_path` (104–108
   bytes). The unit's `ExecStartPre=` check catches this before the daemon
   tries to bind it.
