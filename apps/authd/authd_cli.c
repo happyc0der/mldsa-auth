@@ -848,6 +848,24 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
     if (so != STORE_OK) {
         return failed(prog, "pseudonym", db, store_status_name(so));
     }
+    /* F231: the pseudonym is keyed from this key AND this store. Under a key
+     * the store was not written with, what would be printed is a well-formed
+     * idh= that is on no line of any journal, and "no lines" reads as "no
+     * activity". The audit chain's last entry says whether the two belong
+     * together (F229's check). An empty chain cannot say, and passes. */
+    {
+        const store_status_t ts = store_audit_tail_check(store);
+        if (ts != STORE_OK) {
+            store_close(store);
+            if (ts == STORE_ERR_CORRUPT) {
+                fprintf(stderr, "%s pseudonym: failed: %s: %s: the last audit entry was not written "
+                                "under this server key, so a pseudonym made with it is in no journal\n",
+                        prog, db, store_status_name(ts));
+                return EX_FAIL;
+            }
+            return failed(prog, "pseudonym", db, store_status_name(ts));
+        }
+    }
     uint8_t p[STORE_PSEUDONYM_BYTES];
     const store_status_t ps = store_log_pseudonym(store, (const uint8_t *)who, strlen(who), p);
     store_close(store);

@@ -1,0 +1,2 @@
+PS1|^authd_e2e$|under a server key the store was not written with, expected 1 (F231)
+PS2|^authd_e2e$|authd_admin pseudonym did not say the key and the store do not belong together (F231)

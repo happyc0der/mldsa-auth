@@ -1521,6 +1521,19 @@ grep -q 'event=client-hello' "$TMP/priv.log" && grep -q 'event=login-code-issued
 N=$(grep -c -- "$IDH" "$TMP/priv.log" || true)
 [ "$N" -ge 3 ] || { cat "$TMP/priv.log"; fail "carol's pseudonym is on $N lines, expected enroll, client-hello and login-code-issued"; }
 echo "PASS: E2E: log_identities = hashed -- authd_admin pseudonym finds carol's $N lines"
+# F231: the pseudonym is keyed from the server key AND the store. Under a
+# server key this store was not written with, the command used to print a
+# well-formed idh= that is on no line of any journal, with exit 0: an operator
+# looking for a user's activity finds none and concludes there was none. The
+# second server key is the one the F229 leg made.
+rc=0
+"$ADMIN" pseudonym --store "$TMP/d/store.sqlite3" --key "$TMP/fk/server.ek" \
+    --passphrase-file "$TMP/fk/pass" --server-id authd --id carol > "$TMP/fkidh.txt" 2> "$TMP/fkidh.err" || rc=$?
+[ "$rc" -eq 1 ] || { cat "$TMP/fkidh.txt" "$TMP/fkidh.err"; fail "authd_admin pseudonym exited $rc under a server key the store was not written with, expected 1 (F231)"; }
+grep -q 'idh=' "$TMP/fkidh.txt" && fail "authd_admin pseudonym printed a pseudonym under a server key the store was not written with (F231)"
+grep -q "audit-chain-corrupt" "$TMP/fkidh.err" && grep -q "not written under this server key" "$TMP/fkidh.err" \
+    || { cat "$TMP/fkidh.err"; fail "authd_admin pseudonym did not say the key and the store do not belong together (F231)"; }
+echo "PASS: E2E: authd_admin pseudonym refuses a server key the store was not written with (F231)"
 grep -q -- "$CAROL" "$TMP/priv.log" && fail "carol's handle appears in the hashed journal"
 grep -q ' id=' "$TMP/priv.log" && fail "a line in the hashed journal carries id="
 echo "PASS: E2E: carol's handle appears nowhere in the hashed journal"

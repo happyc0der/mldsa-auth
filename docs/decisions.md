@@ -15572,3 +15572,33 @@ removal hints, the site's `--authd-ws` without a port) are the next steps'.
 
 Counts: 518 mutations, 78 campaigns, 560 anchors; 230 findings; spec v1.55,
 97 errata (unchanged).
+
+## V4-155: pseudonym refuses a key that is not the store's (F231)
+
+**The defect.** `authd_admin pseudonym` derives `idh=` from the key file it
+is given and the store's id, and nothing checked that the two belong
+together. Another server's `server.ek` with its own passphrase printed a
+well-formed pseudonym with exit 0. It matches no journal line, and for this
+command "no lines" is an answer an operator acts on. Reproduced first with
+the second key the F229 leg makes.
+
+**The fix.** `store_audit_tail_check` before the derivation, as the daemon
+does at start. On `audit-chain-corrupt`: nothing on stdout, a message that
+names the status and says a pseudonym made with this key is in no journal,
+exit 1. Exit 1 and not 3: the key file opened; it is the pairing that is
+wrong, and the daemon's own refusal of the same pairing is 1.
+
+**The limit.** An empty audit chain passes the check, so on a store that has
+enrolled nobody the command cannot tell. Such a store's daemon may still
+have logged pseudonyms (a client-hello for an unknown handle is logged). A
+key check value in the store would close it; that is a schema change and is
+not made here.
+
+**audit-verify** needs no such check: a foreign key fails its walk at entry
+1, and since V4-154 it says so.
+
+**Tests.** `authd_e2e`, after the existing pseudonym leg. Campaign v109,
+PS1-PS2.
+
+Counts: 520 mutations, 79 campaigns, 562 anchors; 231 findings; spec v1.55,
+97 errata (unchanged).
