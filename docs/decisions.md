@@ -16367,3 +16367,45 @@ No code.
 
 Counts: 552 mutations, 90 campaigns, 594 anchors; 253 findings; spec v1.59,
 101 errata (all unchanged by this step).
+
+## V4-181: four repairs to the end-to-end test (F254 to F257)
+
+One flake seen on main and three findings from a reviewer agent's read of
+`tests/authd_e2e.sh`. All four are in the test; the daemon is unchanged.
+
+**F254, the 20 ms.** Measured here, one recovery computation (Argon2id, 2
+passes, 64 MiB) takes 40 to 49 ms. The leg slept 20 ms before its signal,
+a factor of two, and a runner that deschedules the client for 30 ms voids
+the attempt. The gap now steps down: 20, 10, 5, 2, 1, 0.5 ms and round
+again, twelve attempts. A gap too short only makes the signal beat the
+request, which is the "unserved" case and is repeated.
+
+**F255, which attempts may be repeated.** Void (the reply came before the
+signal) and unserved (the daemon never took the request) prove nothing and
+are repeated. A reply computed and not delivered is the defect. The leg
+could not tell the last two apart and repeated both. The daemon's log can:
+`local-request cmd=RECOVERY-USE` is written when the request is taken. The
+first idea was the handler's `warn event=recovery-use` line; applying DR3
+showed that an unknown user is refused without one.
+
+**F256.** The status of the main daemon is now required to be 0, and all
+three socket files are looked for. EL1 and EL2 as first written left a
+socket behind; both were killed by the start-up leg's "left su-s.sock
+behind" before reaching this check, so they are not in the campaign.
+
+**F257.** The server passphrase is 32 random bytes in a file, so the scan
+is for bytes and their encodings, not for a line of text. It checks itself
+first: a planted copy in each of eleven forms must be found.
+
+**Left from the same review.** The key-custody canary dials a socket whose
+daemon has stopped (it asserts only that one error is absent); the status
+of five other daemons is discarded at their stops; `cleanup` does not kill
+the watchdog helper. And in `tools/run_mutations_v2.sh`: the old snapshot
+is deleted before the runner refuses a tree that holds a mutation, and a
+spec whose last line has no newline loses that line. Those two are next.
+
+**Tests.** `authd_e2e` itself, three clean runs; v101 DR3 by hand (fails
+at the first lost reply); campaign v121, EL1-EL2.
+
+Counts: 554 mutations, 91 campaigns, 596 anchors; 257 findings; spec v1.59,
+101 errata (unchanged).

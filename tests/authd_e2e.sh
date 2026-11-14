@@ -634,15 +634,28 @@ echo "PASS: E2E: SIGHUP does not stop the daemon; each one is logged as 'warn ev
 # protocol connections alone, so a SIGTERM that landed during a handler ended
 # the loop with the reply unsent. RECOVERY-USE for a user nobody enrolled
 # costs one Argon2id computation (F143), which is the window: the request is
-# sent, the signal follows 20 ms later, and the reply must still arrive.
+# sent, the signal follows a few milliseconds later, and the reply must still
+# arrive.
 #
 # An attempt whose reply was already there before the signal proves nothing
 # and is repeated ("void"); so is one whose signal beat the daemon to the
-# request, which the daemon never served ("unserved": no Argon2id, so it
-# answers EOF well inside the computation's time).
+# request ("unserved").
+#
+# V4-181, F254: the gap was a fixed 20 ms, against a computation of about 40
+# ms on a fast machine. On a loaded macOS runner the client's sleep overran
+# it eight times out of eight and the leg failed with every attempt void. The
+# gap now shrinks after each void attempt.
+#
+# V4-181, F255: "lost" (EOF, no reply) was repeated whatever had happened in
+# the daemon, so a daemon that dropped the reply on seven stops out of eight
+# passed. The daemon's own log now decides: if it logged the request
+# (event=local-request cmd=RECOVERY-USE, written before the handler runs, and
+# the handler runs to its reply without returning to the loop), it computed
+# the reply and then lost it, and that is the failure this leg exists for.
+# Only a request the daemon never logged is "unserved" and repeated.
 f219_got=""
 f219_seen=""
-for f219_try in 1 2 3 4 5 6 7 8; do
+for f219_gap in 0.020 0.010 0.005 0.002 0.001 0.0005 0.005 0.002 0.001 0.0005 0.002 0.001; do
     "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-dr.log" 2>&1 &
     SUPID=$!
     i=0
@@ -651,7 +664,7 @@ for f219_try in 1 2 3 4 5 6 7 8; do
         [ "$i" -gt 400 ] && fail "the daemon for the drain leg never logged event=started: $(cat "$TMP/su-dr.log")"
         sleep 0.05
     done
-    python3 - "$TMP/su-a.sock" "$SUPID" > "$TMP/su-dr.txt" <<'PYEOF' || fail "the drain leg's client failed: $(cat "$TMP/su-dr.txt")"
+    python3 - "$TMP/su-a.sock" "$SUPID" "$f219_gap" > "$TMP/su-dr.txt" <<'PYEOF' || fail "the drain leg's client failed: $(cat "$TMP/su-dr.txt")"
 import os, signal, socket, sys, time
 c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 c.connect(sys.argv[1])
@@ -664,7 +677,7 @@ while not buf.endswith(b"\n"):
         print("noping"); sys.exit(0)
     buf += d
 c.sendall(b"RECOVERY-USE user=6e6f626f6479 code=0000000000000000\n")
-time.sleep(0.02)
+time.sleep(float(sys.argv[3]))
 c.setblocking(False)
 try:
     early = c.recv(256)
@@ -694,15 +707,19 @@ PYEOF
     wait "$SUPID" || rc=$?
     [ "$rc" -eq 0 ] || fail "a daemon stopped while it was answering the site exited $rc, not 0 (F219): $(cat "$TMP/su-dr.log")"
     f219_got="$(cat "$TMP/su-dr.txt")"
-    f219_seen="$f219_seen [$f219_got]"
+    f219_seen="$f219_seen [$f219_got @$f219_gap]"
     case "$f219_got" in
         reply) break ;;
-        void|lost*) ;;
+        void) ;;
+        lost*)
+            if grep -q '^info event=local-request cmd=RECOVERY-USE ' "$TMP/su-dr.log"; then
+                fail "a daemon stopped while it was answering the site never delivered the reply it had computed (F219): its log has the request and the client read EOF, on the first such attempt (F255); attempts:$f219_seen; its log: $(cat "$TMP/su-dr.log")"
+            fi ;;
         *) fail "the drain leg's request was answered '$f219_got', not 'ERR code=invalid' (F219)" ;;
     esac
 done
 [ "$f219_got" = reply ] \
-    || fail "a daemon stopped while it was answering the site never delivered the reply it had computed (F219); attempts:$f219_seen"
+    || fail "a daemon stopped while it was answering the site never delivered the reply it had computed (F219); attempts:$f219_seen; the last daemon's log: $(cat "$TMP/su-dr.log")"
 grep -q '^info event=draining$' "$TMP/su-dr.log" && grep -q '^info event=stopped accepted=' "$TMP/su-dr.log" \
     || fail "the daemon of the drain leg did not log draining and stopped (F219): $(cat "$TMP/su-dr.log")"
 echo "PASS: E2E: a daemon sent SIGTERM while it is answering the site writes the reply before it stops (F219)"
@@ -1392,10 +1409,20 @@ while kill -0 "$DPID" 2>/dev/null; do
     fi
     sleep 0.05
 done
-if wait "$DPID"; then DPID=""; else DPID=""; fi
-echo "PASS: E2E: the daemon drained and exited on SIGTERM"
-[ -e "$TMP/a.sock" ] && fail "the admin socket was left behind after shutdown"
-echo "PASS: E2E: every socket file was removed on shutdown"
+# V4-181, F256: the exit status of the daemon that served every leg above
+# was thrown away, and of its three sockets only a.sock was looked for. A
+# daemon that crashed in its drain (outside a sanitizer tree, where nothing
+# scans for a report), or left p.sock or s.sock behind, printed both PASS
+# lines.
+rc=0
+wait "$DPID" || rc=$?
+DPID=""
+[ "$rc" -eq 0 ] || fail "the daemon that served every leg exited $rc on SIGTERM, not 0 (F256): $(tail -5 "$TMP/authd.log")"
+echo "PASS: E2E: the daemon drained and exited 0 on SIGTERM"
+for sk in p.sock s.sock a.sock; do
+    [ -e "$TMP/$sk" ] && fail "$sk was left behind after shutdown (F256)"
+done
+echo "PASS: E2E: every socket file was removed on shutdown (p.sock, s.sock, a.sock)"
 
 if [ -n "$RESTPID" ]; then
     # The daemon is down: the site's request fails with no answer from it.
@@ -1866,6 +1893,60 @@ for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
     [ -f "$f" ] || continue
     if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
 done
+# V4-181, F257: the scan above looks for the DEVICE passphrase, which no
+# daemon ever receives. The SERVER key's passphrase -- what every daemon here
+# and `authd_admin init`, `audit-verify` and `pseudonym` read from a file --
+# was never looked for. It is 32 raw bytes, so it is looked for raw, as hex
+# and as base64, whole and as its first and last 16 bytes, in every regular
+# file under the work directory except the passphrase files themselves. The
+# scan first has to find a planted copy, in each form.
+python3 - "$TMP" <<'PYEOF' || fail "the server key's passphrase scan failed (F257)"
+import base64, os, sys
+tmp = sys.argv[1]
+names = [os.path.join(tmp, d, "pass") for d in ("d", "su", "fk")]
+secrets = []
+for n in names:
+    b = open(n, "rb").read()
+    if len(b) < 16:
+        print("FAIL: %s is %d bytes: nothing to look for" % (n, len(b))); sys.exit(1)
+    if b not in secrets:
+        secrets.append(b)
+def forms(b):
+    out = []
+    for part in (b, b[:16], b[-16:]):
+        out += [part, part.hex().encode(), part.hex().upper().encode()]
+    # base64 of the whole value only: a part's encoding depends on alignment
+    out += [base64.b64encode(b).rstrip(b"="), base64.urlsafe_b64encode(b).rstrip(b"=")]
+    return out
+def hits(path):
+    data = open(path, "rb").read()
+    return [i for sec in secrets for i, f in enumerate(forms(sec)) if f in data]
+for sec in secrets[:1]:
+    for i, f in enumerate(forms(sec)):
+        plant = os.path.join(tmp, "planted.scan")
+        open(plant, "wb").write(b"mldsa-authd: read " + f + b" from the file\n")
+        found = i in hits(plant)
+        os.unlink(plant)
+        if not found:
+            print("FAIL: the scan does not find a planted passphrase in form %d" % i); sys.exit(1)
+scanned, bad = 0, []
+for root, _dirs, files in os.walk(tmp):
+    for fn in files:
+        path = os.path.join(root, fn)
+        if path in names or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        scanned += 1
+        if hits(path):
+            bad.append(path)
+if scanned < 20:
+    print("FAIL: only %d files scanned: the work directory is not what this expects" % scanned); sys.exit(1)
+for b in bad:
+    print("FAIL: the server key's passphrase appears in %s" % b)
+if bad:
+    sys.exit(1)
+print("PASS: E2E: the server key's passphrase appears in none of %d files (%d passphrases; raw, hex, base64) (F257)"
+      % (scanned, len(secrets)))
+PYEOF
 
 # No secret-key BYTES are scanned for here: every key this flow writes is
 # sealed, and this script holds no plaintext key to look for. The header scan

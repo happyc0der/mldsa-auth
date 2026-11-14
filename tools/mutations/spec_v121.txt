@@ -1,0 +1,2 @@
+EL1|^authd_e2e$|the daemon that served every leg exited 1 on SIGTERM, not 0 (F256)
+EL2|^authd_e2e$|the server key's passphrase appears in
