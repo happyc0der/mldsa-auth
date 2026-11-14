@@ -560,12 +560,12 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
     crypto_hash_sha256(state_hash, state, state_len);
     sodium_memzero(code, sizeof code);
 
-    uint8_t user[STORE_ID_MAX], handle[STORE_ID_MAX];
-    size_t user_len = 0, handle_len = 0;
+    uint8_t user[STORE_ID_MAX], handle[STORE_ID_MAX], hsid[STORE_HSID_BYTES];
+    size_t user_len = 0, handle_len = 0, hsid_len = 0;
     store_code_verdict_t v = STORE_CODE_UNKNOWN;
-    if (store_consume_login_code_ex(app->store, code_hash, state_hash, app->now_unix, &v,
+    if (store_consume_login_code_hs(app->store, code_hash, state_hash, app->now_unix, &v,
                                     user, sizeof user, &user_len,
-                                    handle, sizeof handle, &handle_len) != STORE_OK) {
+                                    handle, sizeof handle, &handle_len, hsid, &hsid_len) != STORE_OK) {
         sodium_memzero(code_hash, sizeof code_hash);
         sodium_memzero(state_hash, sizeof state_hash);   /* F115 */
         return send_err(slot, "internal");
@@ -595,7 +595,10 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
 
     uint8_t token[TOKEN_BYTES];
     int64_t issued = 0, expires = 0;
-    if (tokens_issue(app->store, role, user, user_len, handle, handle_len, NULL, 0,
+    /* F244: the token carries the handshake id of the code it was minted
+     * from (spec 11). NULL was passed here, so the column was always empty. */
+    if (tokens_issue(app->store, role, user, user_len, handle, handle_len,
+                     (hsid_len > 0u) ? hsid : NULL, hsid_len,
                      app->now_unix, token, &issued, &expires) != STORE_OK) {
         return send_err(slot, "internal");
     }

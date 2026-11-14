@@ -2189,6 +2189,25 @@ static int store_exec(const char *db, const char *sql)
     return ok ? 0 : -1;
 }
 
+/* One integer from the store, read by a second connection. -1 if it cannot
+ * be read. */
+static long long store_int(const char *db, const char *sql)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", g_dir, db);
+    sqlite3 *h = NULL;
+    sqlite3_stmt *st = NULL;
+    long long v = -1;
+    if (sqlite3_open_v2(path, &h, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
+        sqlite3_busy_timeout(h, 2000) == SQLITE_OK &&
+        sqlite3_prepare_v2(h, sql, -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW) {
+        v = sqlite3_column_int64(st, 0);
+    }
+    (void)sqlite3_finalize(st);
+    (void)sqlite3_close(h);
+    return v;
+}
+
 /* F222, F223 (V4-143): a store write that fails is `internal`, never a verdict.
  *
  * VERIFY reads the token twice: once to learn the role, once to slide the idle
@@ -2226,6 +2245,17 @@ static void test_store_write_failure(void)
     { const char *p = strstr(resp, "token=");
       if (p != NULL) { sscanf(p + 6, "%79[0-9a-f]", token_hex); } }
     CHECK(strlen(token_hex) == 64u, "wfail: the token is 32 bytes of hex");
+    /* F244 (V4-170): spec 11 says a token is bound to {user, handle,
+     * handshake_id, ...}. The tokens table has the column and EXCHANGE never
+     * filled it: every token's handshake_id was NULL, so a token could not be
+     * traced to the handshake that produced it. One code and one token exist
+     * in this store at this point. */
+    CHECK(store_int(DB, "SELECT count(*) FROM tokens;") == 1 && store_int(DB, "SELECT count(*) FROM login_codes;") == 1,
+          "wfail: one login code and one token in the store (the control)");
+    CHECK(store_int(DB, "SELECT length(handshake_id) FROM tokens;") == 16,
+          "exchange: the token row carries a 16-byte handshake id (F244)");
+    CHECK(store_int(DB, "SELECT (SELECT handshake_id FROM tokens) = (SELECT handshake_id FROM login_codes);") == 1,
+          "exchange: and it is the handshake id of the login code that was exchanged for it (F244)");
     snprintf(vreq, sizeof vreq, "VERIFY token=%s", token_hex);
 
     d.app.now_unix += 10;   /* so that sliding the window changes its value */

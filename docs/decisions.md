@@ -16002,3 +16002,32 @@ idempotent case) is caught by the enrollment that follows.
 
 Counts: 542 mutations, 85 campaigns, 584 anchors; 243 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-170: a token carries its handshake id (F244)
+
+**The question V4-168 left.** Spec §11 says a token is bound to a handshake
+id; the column existed and was always NULL. Either the sentence or the code
+had to move.
+
+**The code moves.** The sentence asks for something worth having: a row
+that says which handshake a session came from. Dropping it would have made
+the spec match an omission. And the plumbing was all there: the login code
+is stored with its handshake id (F96), `tokens_issue` has the parameter,
+`store_add_token` binds it. Only the hand-over was missing: the consume did
+not read the id back, and `EXCHANGE` passed NULL.
+
+**The change.** `store_consume_login_code_hs` selects `handshake_id` with
+the rest of the row and returns it on `STORE_CODE_OK`;
+`store_consume_login_code_ex` is that with two NULLs, so its other callers
+are untouched. A code with no handshake id (the column allows NULL) yields
+a token with none.
+
+**Not a secret.** The handshake id is a public value from the handshake's
+first messages. It adds nothing to what a stolen store gives.
+
+**Tests.** `test_store_write_failure`, where one code and one token exist:
+`length(handshake_id) = 16` on the token, and equal to the code's, read
+from a second connection. Campaign v116, HS1-HS3.
+
+Counts: 545 mutations, 86 campaigns, 587 anchors; 244 findings; spec v1.59,
+101 errata (unchanged).

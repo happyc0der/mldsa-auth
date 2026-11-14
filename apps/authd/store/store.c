@@ -1977,6 +1977,18 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
                                            uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
                                            uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out)
 {
+    return store_consume_login_code_hs(s, code_hash, state_hash, now, verdict, user_id_out, user_id_cap,
+                                       user_id_len_out, handle_out, handle_cap, handle_len_out, NULL, NULL);
+}
+
+store_status_t store_consume_login_code_hs(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
+                                           const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
+                                           store_code_verdict_t *verdict,
+                                           uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
+                                           uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out,
+                                           uint8_t hsid_out[STORE_HSID_BYTES], size_t *hsid_len_out)
+{
+    if (hsid_len_out != NULL) { *hsid_len_out = 0; }
     if (s == NULL || code_hash == NULL || state_hash == NULL || verdict == NULL) {
         return STORE_ERR_ARG;
     }
@@ -1989,7 +2001,7 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
      * be told apart instead of collapsing into "not found". */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "SELECT user_id, handle, state_hash, expires_at, used_at FROM login_codes"
+            "SELECT user_id, handle, state_hash, expires_at, used_at, handshake_id FROM login_codes"
             " WHERE code_hash=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
@@ -1999,8 +2011,8 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
     uint8_t stored_state[STORE_HASH_BYTES];
     size_t n_state = 0;
     /* Read whatever the caller asked for; the status check below needs both. */
-    uint8_t uid[STORE_ID_MAX], hnd[STORE_ID_MAX];
-    size_t uid_len = 0, hnd_len = 0;
+    uint8_t uid[STORE_ID_MAX], hnd[STORE_ID_MAX], hsid[STORE_HSID_BYTES];
+    size_t uid_len = 0, hnd_len = 0, hsid_len = 0;
 
     if (sqlite3_bind_blob(st, 1, code_hash, (int)STORE_HASH_BYTES, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
@@ -2013,6 +2025,11 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
             if (r == STORE_OK) { r = copy_blob_col(st, 2, stored_state, sizeof stored_state, &n_state); }
             expires = sqlite3_column_int64(st, 3);
             used = (sqlite3_column_type(st, 4) != SQLITE_NULL);
+            /* The handshake the code came from (F244). A code issued without
+             * one (the column allows NULL) simply has none to hand on. */
+            if (r == STORE_OK && sqlite3_column_type(st, 5) != SQLITE_NULL) {
+                r = copy_blob_col(st, 5, hsid, sizeof hsid, &hsid_len);
+            }
         } else if (rc != SQLITE_DONE) {
             r = STORE_ERR_DB;
         }
@@ -2092,6 +2109,10 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
             if (hnd_len > handle_cap) { return STORE_ERR_ARG; }
             memcpy(handle_out, hnd, hnd_len);
             if (handle_len_out != NULL) { *handle_len_out = hnd_len; }
+        }
+        if (hsid_out != NULL && hsid_len_out != NULL) {
+            memcpy(hsid_out, hsid, hsid_len);
+            *hsid_len_out = hsid_len;
         }
     }
     return STORE_OK;

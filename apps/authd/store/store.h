@@ -310,6 +310,15 @@ store_status_t store_consume_login_code_ex(store_t *s, const uint8_t code_hash[S
                                            store_code_verdict_t *verdict,
                                            uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
                                            uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out);
+/* The same, and the handshake id the code was issued under (F244), so the
+ * token minted from it can carry it (spec 11). `*hsid_len_out` is 0 when the
+ * code has none. Both may be NULL. */
+store_status_t store_consume_login_code_hs(store_t *s, const uint8_t code_hash[STORE_HASH_BYTES],
+                                           const uint8_t state_hash[STORE_HASH_BYTES], int64_t now,
+                                           store_code_verdict_t *verdict,
+                                           uint8_t *user_id_out, size_t user_id_cap, size_t *user_id_len_out,
+                                           uint8_t *handle_out, size_t handle_cap, size_t *handle_len_out,
+                                           uint8_t hsid_out[STORE_HSID_BYTES], size_t *hsid_len_out);
 
 /* Single-use consume: the code must exist, be unused and unexpired at `now`,
  * and its stored state_hash must equal `state_hash` (login-CSRF binding). On OK
