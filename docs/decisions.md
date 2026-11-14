@@ -16750,3 +16750,31 @@ closed. Campaign v124, CW1.
 
 Counts: 560 mutations, 94 campaigns, 602 anchors; 272 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-195: what a refused configuration looks like, written down (F273, open)
+
+**The measurement.** CI run 43642585917 on the branch carrying V4-193,
+both runbook jobs: `MEASURED bad-config after 12 s: active=activating
+sub=auto-restart result=exit-code restarts=5 listed-failed=0`, and
+`after-repair=active`. The reading of the unit was right.
+
+**The same run proved V4-191.** Step 6 printed its base64 line; step 24
+reported `enabled-before-restore=disabled` and then `enabled`; `PASS:
+REHEARSAL: every step ran as written` on both releases.
+
+**Why the unit is not changed here.** There are two candidate units and
+each fails somewhere. Stop after one refused start: visible, cheap, and
+down until a person acts even if the cause was a mount that arrived two
+seconds late. Retry for ever: self-healing for that, invisible for a typo.
+`RestartPreventExitStatus=` looks only at the main process, so the first
+needs the pre-start check made non-fatal (`ExecStartPre=-...`) for the
+daemon's own exit 3 to be the one systemd sees. Which failure is
+acceptable on the owner's hosts is the owner's to say; F273 stays open
+with a recommendation for the first, with `RequiresMountsFor=` beside it.
+
+**What is done.** The runbook's step 9 describes the state an operator
+will actually see, where the reason is, and that a failed-units monitor
+does not catch it.
+
+Counts: 560 mutations, 94 campaigns, 602 anchors; 273 findings; spec v1.59,
+101 errata (unchanged).

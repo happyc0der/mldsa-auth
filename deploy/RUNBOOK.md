@@ -261,6 +261,17 @@ that and restart. Until then the daemon holds fewer connections than
 `max_slots` (the same line on standard error says how many) and refuses the
 rest with `accept-refused-no-slot`; `authd_admin` keeps working.
 
+**If it does not start because the configuration, the key or the passphrase
+is refused** (exit 3), the unit does not show as failed. `Restart=on-failure`
+starts it again every two seconds, so `systemctl is-active` says `activating`,
+`systemctl status` says `activating (auto-restart)`, and `systemctl --failed`
+does **not** list it (measured: five restarts in twelve seconds, on both
+Ubuntu releases the rehearsal runs on). The reason is in the journal each
+time, from `--check-config` or from the daemon:
+`journalctl -u mldsa-authd -n 20`. Fix the file and `systemctl restart`;
+nothing else stops the loop. A monitor that watches for failed units will
+not see this one: watch `is-active`, or `NRestarts`.
+
 **`event=store-created` must not be there.** Step 5's `init` made the store,
 so a daemon that says it created one — the journal also has
 `created a new, empty store (no store was there)` with the path — found
