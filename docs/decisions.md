@@ -15644,3 +15644,25 @@ sites: the suite cannot make those fail.
 
 Counts: 524 mutations, 80 campaigns, 566 anchors; 233 findings; spec v1.55,
 97 errata (unchanged).
+
+## V4-158: the site parses its daemon address at start (F234)
+
+**The defect.** `--authd-ws` was split with `split(':')` at every upgrade.
+No port gave `net.connect(NaN, host)`, which throws synchronously in the
+`'upgrade'` listener, where nothing catches: the site started normally and
+its process ended at the first upgrade request. `[::1]:8443` split into host
+`[` and port 0. The option matters only without a proxy in front.
+
+**The fix.** `hostPort()` in `startSite`: one parse, at start; `host:port` or
+`[v6]:port`; the port in digits, 1 to 65535. A value it refuses throws
+before `listen`, like F212's missing invite, so the mistake is seen by the
+person who made it and not by the first visitor.
+
+**Tests.** `tests/site_sessions.mjs`: no port, a non-numeric port, 0, 70000,
+no host, each refused at start; `[::1]:8443` accepted. Hand mutations,
+restored byte-exact: not parsed at start (4 checks fail), the range not
+checked (2), brackets not accepted (1). The crash itself is not driven in
+the suite; the throwing expression was run alone.
+
+Counts: 524 mutations, 80 campaigns, 566 anchors (unchanged, no C);
+234 findings; spec v1.55, 97 errata (unchanged).

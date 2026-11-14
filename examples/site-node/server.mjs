@@ -93,6 +93,17 @@ function args(argv) {
   return a;
 }
 
+// "host:port" or "[v6]:port" -> { host, port }, or it throws (F234). The port
+// is the text after the LAST colon and must be 1..65535 in plain digits.
+export function hostPort(s) {
+  const m = typeof s === 'string' ? /^(?:\[([^\]]+)\]|([^:\[\]]+)):([0-9]{1,5})$/.exec(s) : null;
+  const port = m ? Number(m[3]) : 0;
+  if (!m || port < 1 || port > 65535) {
+    throw new Error(`startSite: authdWs must be host:port (or [v6]:port), not ${JSON.stringify(s)}`);
+  }
+  return { host: m[1] ?? m[2], port };
+}
+
 // The rate limiter's key for a client address (V4-78, F155): an IPv4 address
 // as itself (an IPv4-mapped IPv6 one too), an IPv6 address as its /64, which
 // is what one subscriber is commonly given -- keyed by the full address, one
@@ -187,6 +198,11 @@ export async function startSite(opt) {
     throw new Error('startSite: an invite is required');
   }
   const INVITE_DIGEST = createHash('sha256').update(opt.invite).digest();
+  // The daemon's WebSocket address is parsed HERE, at start (V4-158, F234).
+  // It was split at the first upgrade instead: with no port, net.connect(NaN)
+  // threw inside the 'upgrade' listener, outside every catch, and the site --
+  // which had started normally -- ended at the first visitor's WebSocket.
+  const AUTHD_WS = opt.authdWs === undefined || opt.authdWs === null ? null : hostPort(opt.authdWs);
 
   // One request to the daemon, given up on after AUTHD_TIMEOUT_MS (V4-127,
   // F210): a daemon that accepts and never answers held the browser's request
@@ -538,8 +554,7 @@ export async function startSite(opt) {
       setTimeout(() => sock.destroy(), REFUSED_UPGRADE_LINGER_MS).unref();
       return;
     }
-    const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix)
-                               : net.connect(Number(opt.authdWs.split(':')[1]), opt.authdWs.split(':')[0]);
+    const up = opt.authdWsUnix ? net.connect(opt.authdWsUnix) : net.connect(AUTHD_WS.port, AUTHD_WS.host);
     up.on('connect', () => {
       let h = `${req.method} ${req.url} HTTP/1.1\r\n`;
       for (let i = 0; i < req.rawHeaders.length; i += 2) { h += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`; }

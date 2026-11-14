@@ -367,6 +367,23 @@ try {
       } catch (e) { if (!/invite is required/.test(String(e.message))) { outcome = `threw ${e.message}`; } }
       check(outcome === 'refused to start', `invite: a site given ${what} ${outcome} (F212)`);
     }
+    // V4-158, F234: --authd-ws is host:port, and the site used it unparsed at
+    // the first upgrade: with no port, net.connect(NaN) threw inside the
+    // 'upgrade' listener, outside every catch, and ended the process -- a site
+    // that started normally and died at the first visitor's WebSocket. An
+    // address the site cannot use must stop it at start, as a missing invite
+    // does.
+    for (const [what, ws] of [['no port', '127.0.0.1'], ['a port that is not a number', '127.0.0.1:http'],
+                              ['port 0', '127.0.0.1:0'], ['a port over 65535', '127.0.0.1:70000'],
+                              ['no host', ':8443']]) {
+      let outcome = 'refused to start';
+      try { await start({ authdWs: ws }); outcome = 'started'; }
+      catch (e) { if (!/authdWs must be host:port/.test(String(e.message))) { outcome = `threw ${e.message}`; } }
+      check(outcome === 'refused to start', `authd-ws: a site given ${what} (${JSON.stringify(ws)}) ${outcome} (F234)`);
+    }
+    { let outcome = 'started';
+      try { await start({ authdWs: '[::1]:8443' }); } catch (e) { outcome = `threw ${e.message}`; }
+      check(outcome === 'started', `authd-ws: a bracketed IPv6 address with a port is accepted (${outcome}) (F234)`); }
     const src = readFileSync(join(repo, 'examples/site-node/server.mjs'), 'utf8');
     const direct = src.split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l) && /\b(invite|offered)\b\s*[!=]==\s*(?!''|'string')['\w.]|[!=]==\s*(opt\.)?(invite|offered)\b/.test(l));
     check(direct.length === 0 && /timingSafeEqual/.test(src),
