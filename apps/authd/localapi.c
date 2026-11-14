@@ -442,7 +442,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
     /* Distinguish a byte-identical re-enrollment (idempotent) from the Req 7
      * case (a known handle presenting a DIFFERENT key) before touching the
      * store, because store_enroll_device reports both as a conflict. */
-    int idempotent = 0;
+    int idempotent = 0, added_to_existing = 0;
     uint8_t cur[STORE_PK_BYTES], owner[STORE_ID_MAX];
     size_t owner_len = 0;
     if (store_lookup_active(app->store, handle, handle_len, cur, owner, sizeof owner, &owner_len,
@@ -489,6 +489,7 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             return send_err(slot, "internal");
         }
         idempotent = store_idem;
+        added_to_existing = (!created && !store_idem);
     }
 
     authd_fp_t fp;
@@ -496,6 +497,14 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
     authd_log_slot_id(AUTHD_LOG_INFO, idempotent ? "enroll-idempotent" : "enroll", slot->index,
                       handle, handle_len);
     authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", &fp);
+    /* F242: a new device for a user who ALREADY EXISTS, on the site's word
+     * alone -- no key of that user signed anything, no recovery code was
+     * spent. Spec 10.3 has always said this is logged at WARN under its own
+     * name; it was logged `enroll` at INFO, like a first signup. (A signup
+     * cannot reach here with an existing user: it is refused above.) */
+    if (added_to_existing) {
+        authd_log_slot_id(AUTHD_LOG_WARN, "enroll-without-continuity", slot->index, handle, handle_len);
+    }
 
     resp_t r;
     resp_init(&r);

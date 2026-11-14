@@ -1,0 +1,2 @@
+EC1|^test_authd_localapi$|nocont: a device added to an existing user on the site's word is logged at WARN as enroll-without-continuity (F242)
+EC2|^test_authd_localapi$|nocont: a new user's first device, and its idempotent repeat, are not warned about (F242)

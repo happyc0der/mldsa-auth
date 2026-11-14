@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.57, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163)
+# mldsa-authd — deployment specification (v1.58, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -830,7 +830,12 @@ round.
 **Device loss with no codes** is site-mediated re-enrollment: the site
 authenticates the person by its own means and calls `ENROLL via=site`. This is
 logged at WARN as `enroll-without-continuity`, because it is the one path with
-no cryptographic continuity at all.
+no cryptographic continuity at all. The event is written, after `enroll` and
+`enroll-fp`, for every `via=site` enrollment that adds a device to a user who
+already exists (erratum 100): the first device of a new user has no continuity
+to break, and an idempotent repeat enrolls nothing. An administrator's
+`enroll-operator` for an existing operator is such an enrollment and is
+logged the same way.
 
 ## 11. Tokens
 
@@ -1236,7 +1241,7 @@ The local API and the lifecycle (§8, §10):
 
 ```
 local-request exchange
-enroll enroll-idempotent enroll-fp
+enroll enroll-idempotent enroll-fp enroll-without-continuity
 enroll-key-mismatch enroll-key-mismatch-old enroll-key-mismatch-new
 enroll-recovery enroll-recovery-fp
 recovery-issue recovery-use
@@ -1977,3 +1982,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 99 | 7.3, 15 | A store read that fails during a handshake is logged `store-read-failed` at ERROR with the store's status; at `ClientHello` the decoy is still pinned, at `ClientAuth` the connection closes | every outcome of the lookup but "found" pinned the decoy without a word, a failed read included: an enrolled device was refused as `client-auth-failed`, like a wrong key, and a store that could not be read left nothing in the journal; at `ClientAuth` the same failure was logged as `client-auth-key-changed`, a cause that had not happened (F239) |
+
+### Revision v1.58 (V4-167)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 100 | 10.3, 15 | `enroll-without-continuity` is in §15's vocabulary and is logged at WARN for every `via=site` enrollment that adds a device to an existing user; not for a new user's first device, nor for an idempotent repeat | §10.3 named the event from the start and the daemon never wrote it: a device added to an existing account on the site's word alone was logged `enroll` at INFO, like a first signup, and §15's list omitted the name, so the vocabulary gate could not see the gap (F242) |

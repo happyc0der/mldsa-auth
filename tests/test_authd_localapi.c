@@ -2284,6 +2284,59 @@ static size_t count_of(const char *hay, const char *needle)
     return n;
 }
 
+/* F242 (V4-167): the journal marks a device added on the site's word alone.
+ *
+ * Spec 10.3 has said since V4-3 that `ENROLL via=site` for a person who has
+ * lost their device "is logged at WARN as enroll-without-continuity, because
+ * it is the one path with no cryptographic continuity at all". No such event
+ * existed: a second device added to an existing account by the site was
+ * logged `enroll` at INFO, exactly like a first signup. The first device of a
+ * new user has no continuity to break and is not warned about; neither is an
+ * idempotent repeat, which enrolls nothing. */
+static void test_enroll_without_continuity(void)
+{
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    if (f == NULL) { printf("SKIP: open_memstream unavailable\n"); return; }
+
+    h_daemon_t d;
+    mldsa_keypair_t kp, kp2;
+    CHECK(h_start(&d, g_dir, "nocont.sqlite3", 1) == 0, "nocont: daemon starts");
+    CHECK(mldsa_keypair_generate(&kp) == 0 && mldsa_keypair_generate(&kp2) == 0, "nocont: keys");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "nocont: connect");
+    static const uint8_t H2[] = { 'd','1','n','c' };
+    char req[9000], resp[16384], uh[160], hh[160], h2h[160], pkh[4000], pk2h[4000];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+    hx(h2h, sizeof h2h, H2, sizeof H2);
+    hx(pkh, sizeof pkh, kp.public_key, sizeof kp.public_key);
+    hx(pk2h, sizeof pk2h, kp2.public_key, sizeof kp2.public_key);
+
+    authd_log_init(f, AUTHD_LOG_INFO);
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", uh, hh, pkh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="), "nocont: a new user's first device enrolls");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && strstr(resp, "idempotent=1") != NULL,
+          "nocont: and its repeat is idempotent");
+    fflush(f);
+    CHECK(strstr(buf, "enroll-without-continuity") == NULL,
+          "nocont: a new user's first device, and its idempotent repeat, are not warned about (F242)");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", uh, h2h, pk2h);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
+          "nocont: the site adds a second device to the existing user");
+    fflush(f);
+    CHECK(strstr(buf, "warn event=enroll-without-continuity") != NULL,
+          "nocont: a device added to an existing user on the site's word is logged at WARN as enroll-without-continuity (F242)");
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    (void)fclose(f);
+    free(buf);
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    mldsa_keypair_free(&kp2);
+    h_stop(&d);
+}
+
 /* F239 (V4-163): a store READ that fails during a handshake is said.
  *
  * At ClientHello the daemon looks the handle up; anything but "found" pinned
@@ -2393,6 +2446,7 @@ int main(void)
     test_revoke_ends_codes();
     test_store_write_failure();
     test_store_read_failure();
+    test_enroll_without_continuity();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

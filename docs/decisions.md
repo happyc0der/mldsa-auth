@@ -15923,3 +15923,34 @@ the role restored it is `OK … role=user`. Campaign v113, VT1-VT2.
 
 Counts: 536 mutations, 83 campaigns, 578 anchors; 241 findings; spec v1.57,
 99 errata (unchanged).
+
+## V4-167: enroll-without-continuity exists (F242)
+
+**The defect.** A sentence in spec §10.3, there since V4-3, names a WARN
+event for the one enrollment path with no cryptographic continuity. The
+string was in no source file. §15's list did not have it either, which is
+why the vocabulary gate (the daemon's events against §15, both ways) never
+complained: both sides agreed it did not exist.
+
+**Code or spec.** The choice was to write the event or delete the sentence.
+The sentence is right: a device that appears on an existing account with no
+key of that account signing and no recovery code spent is exactly what an
+operator wants to be able to find. So the daemon writes it.
+
+**When.** `via=site`, not idempotent, and the user existed before this
+request (`store_enroll_device_ex`'s `created` is 0). Not a new user's first
+device: there is nothing to be continuous with. Not `via=signup`: that is
+refused for an existing user (F145). Not `via=recovery`: it has its own
+WARN. `enroll` and `enroll-fp` are still written first, at INFO, so
+anything that reads those is unaffected.
+
+**Spec.** §15's list gains the name and §10.3 says when; erratum 100,
+v1.58. `enroll-operator` for an existing operator is covered by the rule
+and is said to be.
+
+**Tests.** `test_enroll_without_continuity`: first device (no line), its
+repeat (no line), a second device for the same user (the line, at WARN).
+Campaign v114, EC1-EC2.
+
+Counts: 538 mutations, 84 campaigns, 580 anchors; 242 findings; spec v1.58,
+100 errata.
