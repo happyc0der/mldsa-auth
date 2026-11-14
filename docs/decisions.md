@@ -16304,3 +16304,47 @@ uid, which is what a check on `33,` alone would have let through.
 
 Counts: 550 mutations, 89 campaigns, 592 anchors; 252 findings; spec v1.59,
 101 errata (unchanged).
+
+## V4-179: a leftover temporary file does not stop a key write (F253)
+
+**What was wrong.** Both key-file writers publish through
+`<target>.tmp.<pid>`, created `O_EXCL`. If a process dies after creating it
+and before unlinking it, the file stays. The next process with that id
+cannot create it. The sealed-key writer then said `EXISTS`, which the CLIs
+print as the key file already being there; the `.pub` writer said I/O
+error. Neither removed the leftover.
+
+**Why removing it is safe.** The name ends in the writer's own process id.
+A live process with that id is this one, and this one has not created the
+file yet, so whatever is there belongs to a process that no longer exists.
+`unlink` removes the directory entry it is given, a symlink included, never
+its target; the new file is created `O_EXCL | O_NOFOLLOW` as before.
+
+**What EXISTS means now.** Only that the target is there (`link()` said
+so, or the `.pub` writer's `lstat`). Trouble with the temporary file is an
+I/O error in both writers.
+
+**Considered and left: LIST-USERS and an unreadable role.**
+`store_list_users` shows a role it cannot read as `user`. Unlike VERIFY
+(F241) nothing is decided from that listing, the default is the
+unprivileged role, and failing the whole listing would take the operator's
+view of every other user away at the moment something is wrong with one.
+Left as it is.
+
+**The shape of the fix in keyfile.c.** The retry is a two-pass loop around
+ONE `open`, not a second `open` after the unlink: campaign v46's E4 and E6
+anchor on that call, and a second copy made both anchors match twice. The
+gate named them; v46 was rerun whole on the loop (6/6 killed).
+
+**The test names a pid.** `tests/scratch_dirs.sh` refuses `getpid()`
+formatted into a name, for scratch directories (F114). This test has to
+plant the writer's own temporary name, so it reads the id on a line of its
+own, inside its mkdtemp directory, and says why.
+
+**Tests.** `test_authd_keyfile`: for each writer, the control (leftover
+there, target not), the write succeeding with the right bytes and the
+leftover gone, and the canary that a target which is there still answers
+EXISTS. Campaign v120, ST1-ST2.
+
+Counts: 552 mutations, 90 campaigns, 594 anchors; 253 findings; spec v1.59,
+101 errata (unchanged).

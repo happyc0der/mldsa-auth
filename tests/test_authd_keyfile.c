@@ -307,6 +307,50 @@ int main(void) {
         if (f) fclose(f);
         CHECK(rn == want && memcmp(on, sb, want) == 0, "write_sealed: the existing file is byte-for-byte untouched");
         free(on); free(s2); }
+      /* V4-179, F253: a temporary file left by an earlier run that had THIS
+       * process id (a crash between creating it and unlinking it; in a
+       * container the id is the same on every run). The write stopped at it
+       * and answered EXISTS, "the key file is already there", with no key
+       * file there. No live process but this one can own that name. */
+      /* The id is read on its own line: tests/scratch_dirs.sh refuses a pid
+       * formatted into a name, which is right for a scratch directory (F114).
+       * This is not one. It is the WRITER's temporary name, inside this
+       * test's mkdtemp directory, and the writer's name is what must be
+       * planted. */
+      const long writer_pid = (long)getpid();
+      { char sk[256], st[300];
+        path(sk, sizeof(sk), "stale.ek");
+        snprintf(st, sizeof(st), "%s.tmp.%ld", sk, writer_pid);
+        FILE *f = fopen(st, "wb");
+        const int planted = f != NULL && fwrite("left behind", 1, 11, f) == 11;
+        if (f) fclose(f);
+        CHECK(planted && fsize(st) == 11 && fsize(sk) == -1,
+              "stale temp: one is there and the key file is not (the control)");
+        const keyfile_status_t wr = keyfile_write_sealed(sk, sb, want);
+        CHECK(wr == KEYFILE_OK, "stale temp: the write succeeds past a temporary file of this process id (F253)");
+        uint8_t *on = malloc(want); f = fopen(sk, "rb"); size_t rn = f ? fread(on, 1, want, f) : 0;
+        if (f) fclose(f);
+        CHECK(rn == want && fsize(sk) == (long)want && memcmp(on, sb, want) == 0,
+              "stale temp: the key file holds the envelope, not what was left behind (F253)");
+        CHECK(fsize(st) == -1, "stale temp: and the temporary file is gone");
+        CHECK(keyfile_write_sealed(sk, sb, want) == KEYFILE_ERR_EXISTS && fsize(st) == -1,
+              "stale temp: a key file that IS there still answers EXISTS (the canary)");
+        free(on); }
+      /* The same for the .pub, whose writer has the same shape: it answered
+       * an I/O error for as long as the leftover stayed. */
+      { char pp[256], pt[300];
+        path(pp, sizeof(pp), "stale.pub");
+        snprintf(pt, sizeof(pt), "%s.tmp.%ld", pp, writer_pid);
+        FILE *f = fopen(pt, "wb");
+        const int planted = f != NULL && fwrite("left behind", 1, 11, f) == 11;
+        if (f) fclose(f);
+        CHECK(planted && fsize(pt) == 11 && fsize(pp) == -1,
+              "stale temp: one is there for a .pub and the .pub is not (the control)");
+        const demo_keys_status_t pw = demo_keys_write_public(pp, ID_A, IDLEN, kp.public_key);
+        CHECK(pw == DEMO_KEYS_OK && fsize(pp) == (long)demo_keys_public_image_len(IDLEN) && fsize(pt) == -1,
+              "stale temp: the .pub is written past a temporary file of this process id (F253)");
+        CHECK(demo_keys_write_public(pp, ID_A, IDLEN, kp.public_key) == DEMO_KEYS_ERR_EXISTS,
+              "stale temp: a .pub that IS there still answers EXISTS (the canary)"); }
       free(sb); }
 
     /* ---- V4-108 (audit F190, spec erratum 79): version 2 -------------------

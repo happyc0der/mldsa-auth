@@ -89,9 +89,21 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp)) {
         return KEYFILE_ERR_ARG;
     }
-    const int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    /* V4-179, F253: the name carries THIS process id, so whatever already
+     * holds it was left by an earlier process that had the same id and died
+     * before its unlink below. That answered EXISTS, which every caller
+     * reports as the KEY file being there. It is removed and the name created
+     * once more, still O_EXCL: unlink removes a symlink itself, never what it
+     * points at. */
+    int fd = -1;
+    for (int attempt = 0; attempt < 2 && fd < 0; attempt++) {
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd < 0 && (errno != EEXIST || unlink(tmp) != 0)) {
+            break;
+        }
+    }
     if (fd < 0) {
-        return (errno == EEXIST) ? KEYFILE_ERR_EXISTS : KEYFILE_ERR_IO;
+        return KEYFILE_ERR_IO;      /* the temporary file, not the key file */
     }
     keyfile_status_t r = KEYFILE_OK;
     size_t off = 0;

@@ -154,8 +154,17 @@ static void integrity_digest(uint8_t out[DEMO_KEY_DIGEST_BYTES], uint8_t id_len,
 
 /* Creates `path` with O_EXCL and `mode`, writes all bytes, fsyncs, closes.
  * Sets *created as soon as the file exists (so the caller can unlink it). */
+/* `path` is always a TEMPORARY name ending in this process's id (every
+ * caller builds "<target>.tmp.<pid>"). Something already holding that name
+ * was left by an earlier process with the same id that died before its
+ * unlink, and no live process but this one can own it: it is removed and the
+ * file created again, still O_EXCL (V4-179, F253). It used to fail the write
+ * for as long as the leftover stayed -- every run, where the id repeats. */
 static int write_new_file(const char *path, const uint8_t *p, size_t n, mode_t mode, int *created) {
-    const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
+    if (fd < 0 && errno == EEXIST && unlink(path) == 0) {
+        fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
+    }
     if (fd < 0) {
         return -1;
     }
