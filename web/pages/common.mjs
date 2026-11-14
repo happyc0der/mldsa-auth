@@ -10,10 +10,23 @@ export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2,
 // base64url, unpadded -- the login code's encoding for the site (spec 13).
 export const b64url = (b) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
+// A page that cannot start SAYS so (V4-164, F240). This is every page's first
+// statement, and it rejected at the top of the module when the browser
+// blocked the page's storage or the module did not load: no listener was ever
+// attached, the status line stayed empty and every button did nothing. The
+// failure is written where the page reports everything else, and thrown on,
+// so the page still stops -- with a reason on it.
 export async function boot() {
-  const client = await AuthdClient.load(createMldsaClient);
-  const store = await IdentityStore.open();
-  return { client, store };
+  try {
+    const client = await AuthdClient.load(createMldsaClient);
+    const store = await IdentityStore.open();
+    return { client, store };
+  } catch (e) {
+    report(false, `This page could not start: ${e?.message ?? String(e)}. Nothing on it will work. ` +
+                  'Reload it; if this stays, the browser is blocking the storage or the code the page needs ' +
+                  '(a private window, or a setting that blocks site data).');
+    throw e;
+  }
 }
 
 // A FRESH state for every login: the site binds it into the code (Req 5).

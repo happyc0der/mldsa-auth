@@ -15853,3 +15853,27 @@ as impossible to pin.
 
 Counts: 534 mutations, 82 campaigns, 576 anchors; 239 findings; spec v1.57,
 99 errata.
+
+## V4-164: a page that cannot start says so (F240)
+
+**The defect.** `const { client, store } = await boot();` is the first
+statement of three pages. A rejection there (IndexedDB blocked, the module
+not loading) ended the module before a single listener existed. The person
+saw a normal-looking page whose buttons did nothing and whose status line
+was empty. V4-162 recorded this as not fixed.
+
+**The fix.** `boot()` catches, writes the reason through `report()`, the
+same place every action reports, and rethrows. The page still stops:
+continuing without a store or a client would only fail later with a worse
+message. The account page's `/api/me` fetch at the top gets a catch and its
+own wording for a site that could not be reached.
+
+**Tests.** `tests/browser_e2e.mjs`: a script installed with
+`Page.addScriptToEvaluateOnNewDocument` makes `indexedDB.open` throw before
+the page's code runs; each of the three pages must report an error that
+says it could not start and carries the reason; the script is removed and
+the login page then logs in. Against the unfixed pages all three said
+nothing. Hand mutation: the report removed, three checks fail.
+
+Counts: 534 mutations, 82 campaigns, 576 anchors (unchanged, no C);
+240 findings; spec v1.57, 99 errata (unchanged).

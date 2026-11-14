@@ -2,18 +2,23 @@ import { boot, session, loginParams, post, report, b64url, secret, action } from
 import * as flows from '/client/flows.mjs';
 
 const { client, store } = await boot();
-const meRes = await fetch('/api/me');
-const me = meRes.ok ? await meRes.json() : null;
+// A site that cannot be reached is not "Not logged in" either (F240): status 0.
+const meRes = await fetch('/api/me').catch(() => ({ ok: false, status: 0 }));
+const me = meRes.ok ? await meRes.json().catch(() => null) : null;
 // 503: the site could not ask the daemon (V4-127, F210). The session is kept,
 // so this is not "Not logged in" and logging in again is not the remedy.
 document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me.handle})`
-  : meRes.status === 503 ? 'The login service is not answering; reload in a moment' : 'Not logged in';
+  : meRes.status === 503 ? 'The login service is not answering; reload in a moment'
+  : meRes.status === 0 ? 'The site could not be reached; reload in a moment' : 'Not logged in';
 document.body.dataset.ready = '1';
 
 // Why there is no session to act on (F237): "log in first" was said for a 503
 // too, one line under the message that the service is not answering.
 const needMe = () => {
-  if (!me) { throw new Error(meRes.status === 503 ? 'the login service is not answering; try again in a moment' : 'log in first'); }
+  if (!me) {
+    throw new Error(meRes.status === 503 ? 'the login service is not answering; try again in a moment'
+      : meRes.status === 0 ? 'the site could not be reached; reload and try again' : 'log in first');
+  }
 };
 action('rotate', async () => {
   const passphrase = secret('passphrase');     // emptied whatever happens next (F237)

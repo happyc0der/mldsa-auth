@@ -235,6 +235,28 @@ try {
           `failed logout: the page says the logout failed (${result}) (F237)`);
     const still = await b.eval("fetch('/api/me').then((x) => x.status)");
     check(still === 200, `failed logout: and the session is in fact still there (/api/me ${still}) (the control)`); }
+
+  // V4-164 (F240): a page that cannot START says so. Each page's first
+  // statement is `await boot()`; if the browser blocks its storage (or the
+  // module does not load) that rejected at the top of the module, before any
+  // listener was attached: an empty status line, and buttons that do nothing
+  // when pressed. Storage is blocked here by a script that runs before the
+  // page's own.
+  { const { identifier } = await b.send('Page.addScriptToEvaluateOnNewDocument', { source:
+      `Object.defineProperty(window, 'indexedDB', { get() { return { open() { throw new DOMException('storage is blocked', 'SecurityError'); } }; } });` });
+    for (const page of ['login.html', 'enroll.html', 'account.html']) {
+      await b.navigate(`${origin}/${page}`);
+      const said = await Promise.race([
+        b.waitFor('!!document.body.dataset.result', `${page} to say it could not start`, 8000).then(() => true, () => false),
+        new Promise((res) => setTimeout(() => res(false), 9000))]);
+      const result = said ? await b.eval('document.body.dataset.result') : '(nothing)';
+      const status = await b.eval("document.getElementById('status').textContent");
+      check(said && /^error: /.test(result) && /could not start/.test(status) && /storage is blocked/.test(status),
+            `start-up failure: ${page} with its storage blocked says it could not start, and why (${result}) (F240)`);
+    }
+    await b.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    r = await act(b, 'login.html', { passphrase: PASS });
+    check(r.result === 'ok', `start-up failure: with storage back, the login page works (${r.status}) (the control)`); }
   // V4-76, F144: the passphrase does not stay in the page after it is used, where
   // any script on the origin could read it beside the sealed key.
   { const left = await b.eval("document.getElementById('passphrase').value");
