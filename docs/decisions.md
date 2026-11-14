@@ -15954,3 +15954,24 @@ Campaign v114, EC1-EC2.
 
 Counts: 538 mutations, 84 campaigns, 580 anchors; 242 findings; spec v1.58,
 100 errata.
+
+## V4-168: cleanup after V4-163 to V4-165 landed
+
+No code beyond a comment. Written after V4-166 and V4-167, so it sits on
+top of them.
+
+- `docs/review/REPRODUCE.md` cites the runs on `4c9fee3`, now main: CI
+  43590359623 (16/16), nightly 43590361822 (97/97, 82 campaigns).
+- **Req 4's wording.** It still said recovery codes are stored as
+  `crypto_pwhash_str`; since erratum 57 they are `$mrc1$` strings with one
+  salt per issue, as §10.3 says. Erratum 101, v1.59. `store.h`'s header
+  comment said the same and is corrected.
+- **Noted, not changed.** Spec §11 says a token is "bound to `{user_id,
+  handle, handshake_id, …}`". The tokens table has the column and
+  `EXCHANGE` never fills it. Nothing reads it, so no behaviour is wrong, but
+  the sentence and the store disagree. Which should move is not a cleanup:
+  filling it is a small change to the code consume path; dropping it from
+  the sentence weakens what the spec promises. Left for a step of its own.
+
+Counts: 538 mutations, 84 campaigns, 580 anchors; 242 findings; spec v1.59,
+101 errata.

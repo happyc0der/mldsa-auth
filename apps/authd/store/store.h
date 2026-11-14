@@ -20,7 +20,8 @@
  * All identifiers (handles, user ids) are opaque byte strings, 1..STORE_ID_MAX.
  * Public keys are exactly MLDSA_PUBLIC_KEY_BYTES. Token/code/ticket/state
  * values are never stored in the clear: the caller passes their 32-byte
- * SHA-256 (Req 4 / §5); recovery codes are passed as an Argon2id pwhash_str.
+ * SHA-256 (Req 4 / §5); recovery codes are passed already hashed, as the
+ * "$mrc1$..." Argon2id string recovery.c builds (spec 10.3).
  */
 
 #define STORE_ID_MAX            64u                       /* handle / user_id max bytes (WIRE_ID_MAX_LEN) */

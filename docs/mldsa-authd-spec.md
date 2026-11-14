@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.58, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167)
+# mldsa-authd — deployment specification (v1.59, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -151,7 +151,9 @@ none, and the step that implements a requirement ships its pin.
    digests, identities) uses `sodium_memcmp`.
 4. **Tokens, login codes, recovery codes and enrollment tickets are never
    stored in the clear.** Tokens, codes and tickets are stored as SHA-256 of
-   the value; recovery codes as `crypto_pwhash_str` (Argon2id). A stolen
+   the value; recovery codes as Argon2id hashes in the form §10.3 gives
+   (erratum 101; `crypto_pwhash_str` strings only for codes issued before
+   erratum 57). A stolen
    database yields no usable bearer secret.
 5. **A login code is single-use, expires in ≤ 60 s, and is bound** to
    `{user, handle, SHA-256(state)}`. `EXCHANGE` MUST present the same `state`
@@ -1988,3 +1990,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 100 | 10.3, 15 | `enroll-without-continuity` is in §15's vocabulary and is logged at WARN for every `via=site` enrollment that adds a device to an existing user; not for a new user's first device, nor for an idempotent repeat | §10.3 named the event from the start and the daemon never wrote it: a device added to an existing account on the site's word alone was logged `enroll` at INFO, like a first signup, and §15's list omitted the name, so the vocabulary gate could not see the gap (F242) |
+
+### Revision v1.59 (V4-168)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 101 | 5 | Req 4 says recovery codes are stored as Argon2id hashes in §10.3's form, not as `crypto_pwhash_str` | erratum 57 (V4-76) changed the stored form to `$mrc1$<ops>$<mem>$<salt>$<hash>` with one salt per issue, and §10.3 says so; Req 4's wording was left behind. The requirement itself, never in the clear, is unchanged |
