@@ -824,6 +824,7 @@ grep -q '^OK fp=' "$TMP/enroll.txt" || fail "enroll-operator did not return a fi
 echo "PASS: E2E: the operator device is enrolled"
 # Keep a copy of the pre-rotation key: after the rotation it must NOT work.
 cp "$TMP/dev/$HANDLE.ek" "$TMP/save-old.ek"
+cp "$TMP/dev/$HANDLE.pub" "$TMP/save-old.pub"   # the public half of that key, for the F227 leg
 
 # An administrative command must be unreachable from the site socket, and must
 # say the same thing a nonsense command would -- so the site socket is not an
@@ -1128,6 +1129,10 @@ echo "PASS: E2E: recovery with an unreadable .ek.next -- the refused key and the
 
 # 3. PROMOTE_NEXT: the server committed and the rename was interrupted --
 #    .ek is stale, .ek.next is live. Login must finish the rename.
+#    The device's .pub is as the interrupted rotation left it too: it names
+#    the OLD key, because rotate publishes the new one only after the ACK it
+#    never read (F227).
+cp "$TMP/save-old.pub" "$TMP/dev/$HANDLE.pub"
 cp "$TMP/current.ek" "$NEXT"; chmod 600 "$NEXT"
 "$CLIENT" login --handle "$HANDLE" --key "$EK" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
@@ -1138,6 +1143,16 @@ grep -q "completed the interrupted rotation" "$TMP/rec3.err" || fail "recovery P
 [ ! -e "$NEXT" ] || fail "recovery PROMOTE: .ek.next survived its own promotion"
 [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery PROMOTE: .ek does not hold the live key after promotion"
 echo "PASS: E2E: recovery PROMOTE -- an interrupted rotation is completed by the next login"
+# F227: completing the rotation completes ALL of it. The .pub is what an
+# administrator enrols from; left naming the old key, the next enrolment of
+# this device installs a key it no longer holds.
+PUBFP=$(dd if="$TMP/dev/$HANDLE.pub" bs=1 skip=$((9 + ${#HANDLE})) count=1952 2>/dev/null \
+        | shasum -a 256 | cut -d' ' -f1)
+[ "$PUBFP" = "$FP_AFTER" ] \
+    || fail "recovery PROMOTE: the device .pub still names the OLD key after the rotation was completed (F227)"
+[ -z "$(ls "$TMP/dev" | grep newpub || true)" ] \
+    || fail "recovery PROMOTE: a temporary .pub was left beside the key (F227)"
+echo "PASS: E2E: recovery PROMOTE -- the device's .pub names the promoted key (F227)"
 
 # The rotation is audited, and attributed to a user.
 "$ADMIN" audit-tail --socket "$TMP/a.sock" --n 10 > "$TMP/audit2.txt" || fail "audit-tail after rotation failed"

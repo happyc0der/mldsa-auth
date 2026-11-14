@@ -15308,3 +15308,40 @@ messages; no erratum.
 
 Counts: 504 mutations, 74 campaigns, 546 anchors (unchanged, no C);
 226 findings; spec v1.54, 96 errata (unchanged).
+
+## V4-149: completing a rotation republishes the .pub (F227)
+
+**The defect.** `authd_client rotate` writes the new `.pub` to a temporary
+file and renames it into place only after the ACK; every other exit unlinks
+the temporary file. After a lost ACK the next run's recovery promotes
+`.ek.next` (the daemon says it is live) and left the `.pub` alone, so it went
+on naming the superseded key. An administrator enrolling the device from its
+own `.pub` would install a key the device no longer holds. Reproduced first:
+the PROMOTE leg of `authd_e2e`, started from the old `.pub`, failed.
+
+**The fix.** `client_republish_pub` in the PROMOTE branch: the public image
+is built from the promoted key, written beside the key, and renamed over the
+`.pub`. A failure is reported and the login goes on, because the key is
+already promoted and refusing the login would not undo that. The `.pub` path
+(`<key minus .ek>.pub`) is now one function, `client_pub_path`, used by
+rotate too; rotate reports `path-too-long` where it returned a bare failure.
+
+**What was reproduced and what was read.** The test sets up the state (old
+`.pub`, committed `.ek.next`). That a lost ACK produces that state is read
+from `cmd_client_rotate`'s `out:` label, not driven: nothing in the suite
+drops one ACK.
+
+**Tests.** `authd_e2e` PROMOTE leg: the `.pub`'s key hash equals the
+fingerprint the daemon lists, and no `.newpub.` file is left. Campaign v105,
+PB1-PB4, four of four killed by name; PB4 (the shared path keeps `.ek`) is
+caught by the older acknowledged-rotation check, which is what the spec
+names for it.
+
+**Not pinned.** The leftover-temporary check and the failure message.
+
+**An interrupted run.** The first v105 run was killed by a session restart.
+The tree was checked equal to the index with no residue, the ASan tree was
+rebuilt from a touched source, and the campaign was run again from the top.
+
+Counts: 508 mutations, 75 campaigns, 550 anchors; 227 findings; spec v1.54,
+96 errata (unchanged).

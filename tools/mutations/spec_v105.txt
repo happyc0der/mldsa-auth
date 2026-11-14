@@ -1,0 +1,4 @@
+PB1|^authd_e2e$|recovery PROMOTE: the device .pub still names the OLD key after the rotation was completed (F227)
+PB2|^authd_e2e$|recovery PROMOTE: the device .pub still names the OLD key after the rotation was completed (F227)
+PB3|^authd_e2e$|recovery PROMOTE: the device .pub still names the OLD key after the rotation was completed (F227)
+PB4|^authd_e2e$|the device .pub still names the OLD key after rotation

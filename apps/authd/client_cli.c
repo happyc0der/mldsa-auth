@@ -589,6 +589,41 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
  *
  * Only .ek authenticating lets the caller discard .ek.next. See
  * client_key_plan for why the spec's own wording cannot be used. */
+/* THIS DEVICE's public file, beside its own key: "<key minus .ek>.pub". */
+static int client_pub_path(const char *key_path, char *out, size_t cap)
+{
+    const size_t kl = strlen(key_path);
+    const int has_ek = (kl > 3u && strcmp(key_path + kl - 3u, ".ek") == 0);
+    const int n = snprintf(out, cap, "%.*s.pub", (int)(has_ek ? kl - 3u : kl), key_path);
+    return (n < 0 || (size_t)n >= cap) ? -1 : 0;
+}
+
+/* A recovery that promotes .ek.next republishes the .pub as well (F227).
+ * rotate publishes it only after the ACK, so an interrupted rotation leaves
+ * the .pub naming the OLD key, and the promotion used to leave it so: the
+ * next administrator to enrol from it would install a key this device no
+ * longer holds. Written beside the key and renamed, as rotate does. The key
+ * is already promoted, so a failure here is reported and is not the login's. */
+static void client_republish_pub(const char *prog, const char *sub, const client_args_t *a,
+                                 const char *next_path, const uint8_t *pk)
+{
+    char pub_path[PATH_MAX], pub_tmp[PATH_MAX];
+    const int pn = snprintf(pub_tmp, sizeof pub_tmp, "%s.newpub.%ld", next_path, (long)getpid());
+    if (client_pub_path(a->key_path, pub_path, sizeof pub_path) != 0 ||
+        pn < 0 || (size_t)pn >= sizeof pub_tmp) {
+        fprintf(stderr, "%s %s: the rotation is complete but the device's .pub could not be "
+                        "updated (path-too-long); it still names the OLD key\n", prog, sub);
+        return;
+    }
+    (void)unlink(pub_tmp);
+    if (demo_keys_write_public(pub_tmp, a->hid, a->hid_len, pk) != DEMO_KEYS_OK ||
+        rename(pub_tmp, pub_path) != 0) {
+        (void)unlink(pub_tmp);
+        fprintf(stderr, "%s %s: the rotation is complete but %s could not be updated; "
+                        "it still names the OLD key\n", prog, sub, pub_path);
+    }
+}
+
 static int client_resolve_key(const char *prog, const char *sub, const client_args_t *a,
                               const char *pass, size_t pass_len, const uint8_t *server_pk,
                               char *next_path, size_t next_cap, mldsa_keypair_t *kp_out)
@@ -670,6 +705,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
             (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
             break;
         }
+        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);
         fprintf(stderr, "%s %s: completed the interrupted rotation; %s now holds the live key\n",
                 prog, sub, a->key_path);
         memcpy(kp_out, &next_kp, sizeof next_kp);
@@ -811,15 +847,10 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
      * directory. It is published only after the daemon accepts, so a failed
      * rotation never leaves a .pub claiming to be current. */
     char pub_path[PATH_MAX], pub_tmp[PATH_MAX];
-    {
-        const size_t kl = strlen(a.key_path);
-        const int has_ek = (kl > 3u && strcmp(a.key_path + kl - 3u, ".ek") == 0);
-        if (snprintf(pub_path, sizeof pub_path, "%.*s.pub",
-                     (int)(has_ek ? kl - 3u : kl), a.key_path) < 0) {
-            authd_secret_free(pass, pass_len);
-            mldsa_keypair_free(&old_kp);
-            return EX_FAIL;
-        }
+    if (client_pub_path(a.key_path, pub_path, sizeof pub_path) != 0) {
+        authd_secret_free(pass, pass_len);
+        mldsa_keypair_free(&old_kp);
+        return failed(prog, "rotate", a.key_path, "path-too-long");
     }
     /* snprintf's return is CHECKED, not discarded: gcc refuses the discard at
      * both optimisation levels (-Werror=format-truncation), and it is right to
