@@ -408,6 +408,16 @@ store_status_t store_enroll_via_ticket(store_t *s,
                                        const uint8_t pk[STORE_PK_BYTES],
                                        const uint8_t *label, size_t label_len,
                                        int64_t now);
+/* The same, and whether anything was enrolled (F243): `*idempotent_out` is 1
+ * when the handle already held exactly this key for this user, in which case
+ * nothing was written and the ticket was NOT spent. May be NULL. */
+store_status_t store_enroll_via_ticket_ex(store_t *s,
+                                          const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                          const uint8_t *expect_user, size_t expect_user_len,
+                                          const uint8_t *handle, size_t handle_len,
+                                          const uint8_t pk[STORE_PK_BYTES],
+                                          const uint8_t *label, size_t label_len,
+                                          int64_t now, int *idempotent_out);
 
 /* --- audit chain ------------------------------------------------------- */
 /* Copies the current head MAC (all-zero if the log is empty). */

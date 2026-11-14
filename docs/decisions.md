@@ -15975,3 +15975,30 @@ top of them.
 
 Counts: 538 mutations, 84 campaigns, 580 anchors; 242 findings; spec v1.59,
 101 errata.
+
+## V4-169: an idempotent ticket enrollment is told as one (F243)
+
+**The defect.** `store_enroll_via_ticket` has an idempotent branch: the
+handle already holds exactly this key, so it rolls back (the ticket is not
+spent, "because nothing was recovered") and returns OK. Its caller had no
+way to know. The reply lacked `idempotent=1` and the journal gained an
+`enroll-recovery` WARN for an enrollment that did not take place.
+Reproduced first.
+
+**The fix.** `store_enroll_via_ticket_ex` with an `idempotent_out`; the old
+name is that with NULL, so the eight test call sites are untouched. The
+handler answers and logs the idempotent case exactly as the `via=site` path
+does.
+
+**The ticket stays unspent.** That was the store's decision and it is the
+right one: a ticket is the user's one way back in, and presenting it with a
+device they still have has recovered nothing. The test goes on to use the
+same ticket for a new device, so this is pinned from both sides.
+
+**Tests.** In `test_recovery`, before the real enrollment: the reply has
+`idempotent=1`; the captured journal has `enroll-idempotent` and no
+`enroll-recovery`. Campaign v115, RI1-RI4; RI4 (the ticket spent on the
+idempotent case) is caught by the enrollment that follows.
+
+Counts: 542 mutations, 85 campaigns, 584 anchors; 243 findings; spec v1.59,
+101 errata (unchanged).

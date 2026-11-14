@@ -2508,14 +2508,15 @@ store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, s
     return tx_commit(s);
 }
 
-store_status_t store_enroll_via_ticket(store_t *s,
+store_status_t store_enroll_via_ticket_ex(store_t *s,
                                        const uint8_t ticket_hash[STORE_HASH_BYTES],
                                        const uint8_t *expect_user, size_t expect_user_len,
                                        const uint8_t *handle, size_t handle_len,
                                        const uint8_t pk[STORE_PK_BYTES],
                                        const uint8_t *label, size_t label_len,
-                                       int64_t now)
+                                       int64_t now, int *idempotent_out)
 {
+    if (idempotent_out != NULL) { *idempotent_out = 0; }
     if (s == NULL || ticket_hash == NULL || !id_ok(handle, handle_len) || pk == NULL ||
         !id_ok(expect_user, expect_user_len)) {
         return STORE_ERR_ARG;
@@ -2611,11 +2612,25 @@ store_status_t store_enroll_via_ticket(store_t *s,
     if (r != STORE_OK) { tx_rollback(s); return r; }
     if (idempotent) {
         /* The handle already holds exactly this key. Nothing to do -- and the
-         * ticket is NOT spent, because nothing was recovered. */
+         * ticket is NOT spent, because nothing was recovered. The caller is
+         * TOLD (F243): it used to hear a plain OK and report a recovery. */
         tx_rollback(s);
+        if (idempotent_out != NULL) { *idempotent_out = 1; }
         return STORE_OK;
     }
     return tx_commit(s);
+}
+
+store_status_t store_enroll_via_ticket(store_t *s,
+                                       const uint8_t ticket_hash[STORE_HASH_BYTES],
+                                       const uint8_t *expect_user, size_t expect_user_len,
+                                       const uint8_t *handle, size_t handle_len,
+                                       const uint8_t pk[STORE_PK_BYTES],
+                                       const uint8_t *label, size_t label_len,
+                                       int64_t now)
+{
+    return store_enroll_via_ticket_ex(s, ticket_hash, expect_user, expect_user_len, handle, handle_len,
+                                      pk, label, label_len, now, NULL);
 }
 
 /* --- sweep and enumeration ------------------------------------------------ */

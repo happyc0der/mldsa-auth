@@ -1184,6 +1184,30 @@ static void test_recovery(void)
       CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=ticket-invalid"),
             "enroll: an unknown ticket is ticket-invalid"); }
 
+    /* F243 (V4-169): the ticket presented with the device the user ALREADY
+     * has. The store enrolls nothing and keeps the ticket, which is right;
+     * the daemon answered a plain `OK fp=` and logged `enroll-recovery` at
+     * WARN, as if a device had been recovered. Spec 8: a byte-identical
+     * re-enrollment by the handle's own user is `OK fp= idempotent=1`. */
+    { char h1h[160], pk1h[4000];
+      char *lb = NULL; size_t ln = 0;
+      FILE *lf = open_memstream(&lb, &ln);
+      hx(h1h, sizeof h1h, HANDLE1, sizeof HANDLE1);
+      hx(pk1h, sizeof pk1h, kp.public_key, sizeof kp.public_key);
+      if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+      snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h1h, pk1h, ticket_hex);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp=") &&
+            strstr(resp, "idempotent=1") != NULL,
+            "enroll: via=recovery naming the device the user already has answers idempotent=1 (F243)");
+      if (lf != NULL) {
+          fflush(lf);
+          CHECK(strstr(lb, "enroll-recovery") == NULL && strstr(lb, "event=enroll-idempotent") != NULL,
+                "enroll: and it is logged as an idempotent enrollment, not as a recovery (F243)");
+          authd_log_init(stderr, AUTHD_LOG_ERROR);
+          (void)fclose(lf); free(lb);
+      } }
+    /* ...and the ticket was not spent on it: the enrollment below uses it. */
+
     snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", uh, h2h, pk2h, ticket_hex);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK fp="),
           "enroll: via=recovery with a valid ticket enrolls the new device");

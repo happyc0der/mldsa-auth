@@ -375,10 +375,11 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             return send_err(slot, "user-disabled");
         }
 
-        const store_status_t es = store_enroll_via_ticket(app->store, thash, user, user_len,
-                                                          handle, handle_len, pk,
-                                                          (label_len > 0u) ? label : NULL, label_len,
-                                                          app->now_unix);
+        int ticket_idem = 0;
+        const store_status_t es = store_enroll_via_ticket_ex(app->store, thash, user, user_len,
+                                                             handle, handle_len, pk,
+                                                             (label_len > 0u) ? label : NULL, label_len,
+                                                             app->now_unix, &ticket_idem);
         sodium_memzero(thash, sizeof thash);
         if (es == STORE_ERR_NOT_FOUND) { return send_err(slot, "ticket-invalid"); }
         if (es == STORE_ERR_STATE)     { return send_err(slot, "user-disabled"); }
@@ -392,14 +393,22 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
 
         authd_fp_t rfp;
         authd_fp_of_pk(&rfp, pk);
-        authd_log_slot_id(AUTHD_LOG_WARN, "enroll-recovery", slot->index, handle, handle_len);
-        authd_log_fp(AUTHD_LOG_WARN, "enroll-recovery-fp", &rfp);
+        if (ticket_idem) {
+            /* F243: the user already has this device. Nothing was enrolled and
+             * the ticket is unspent; this was reported as a recovery, at WARN,
+             * with a reply that did not say idempotent=1 (spec 8). */
+            authd_log_slot_id(AUTHD_LOG_INFO, "enroll-idempotent", slot->index, handle, handle_len);
+            authd_log_fp(AUTHD_LOG_INFO, "enroll-fp", &rfp);
+        } else {
+            authd_log_slot_id(AUTHD_LOG_WARN, "enroll-recovery", slot->index, handle, handle_len);
+            authd_log_fp(AUTHD_LOG_WARN, "enroll-recovery-fp", &rfp);
+        }
 
         resp_t rr;
         resp_init(&rr);
         resp_add(&rr, "OK fp=");
         resp_hex(&rr, rfp.b, sizeof rfp.b);
-        resp_add(&rr, "\n");
+        resp_add(&rr, ticket_idem ? " idempotent=1\n" : "\n");
         sodium_memzero(pk, sizeof pk);
         return send_resp(slot, &rr);
     }

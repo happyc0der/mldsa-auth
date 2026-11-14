@@ -1,0 +1,4 @@
+RI1|^test_authd_localapi$|enroll: via=recovery naming the device the user already has answers idempotent=1 (F243)
+RI2|^test_authd_localapi$|enroll: and it is logged as an idempotent enrollment, not as a recovery (F243)
+RI3|^test_authd_localapi$|enroll: via=recovery naming the device the user already has answers idempotent=1 (F243)
+RI4|^test_authd_localapi$|enroll: via=recovery with a valid ticket enrolls the new device
