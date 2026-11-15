@@ -17384,3 +17384,24 @@ No code.
 
 Counts: 571 mutations, 100 campaigns, 615 anchors; 291 findings (F273 and
 F288 open); spec v1.61, 103 errata (all unchanged by this step).
+
+## V4-215: a new device's user is checked inside the transaction (F292)
+
+The store has had this rule for rotation since V4-9c and for ticket
+enrollment since V4-62, with a comment explaining it. Site enrollment was
+the one mutation of a user's devices that trusted its caller for it.
+
+**What the handler does with the new status.** Nothing new. Its own
+checks run first and answer `user-disabled` or `role-mismatch`; the
+store's refusal can only be reached if something changed the user between
+the two, which nothing can today, and it would be answered `internal`. A
+branch mapping it to a nicer code was written and taken out again: no
+test could reach it.
+
+**Tests.** `test_authd_store`: a disabled user, a wrong role, and the
+canaries (a new user's first device; an active user's second). Campaign
+v131, EU1-EU2. v49d, the older campaign with mutants in this function,
+rerun whole.
+
+Counts: 573 mutations, 101 campaigns, 617 anchors; 292 findings (F273 and
+F288 open); spec v1.61, 103 errata (unchanged).

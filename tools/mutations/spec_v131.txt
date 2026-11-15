@@ -1,0 +1,2 @@
+EU1|^test_authd_store$|enroll-ex: a device for a DISABLED user is refused inside the transaction (F292)
+EU2|^test_authd_store$|enroll-ex: a device under a role the existing user does not have is refused (F292)

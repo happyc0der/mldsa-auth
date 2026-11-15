@@ -816,6 +816,40 @@ int main(void)
         CHECK(store_rotate_key(s, H2, sizeof H2, pkE, NULL, hsid, sizeof hsid, 0, 2400, NULL, NULL)
                   == STORE_ERR_NOT_FOUND,
               "a disabled user's device cannot rotate its key");
+
+        /* V4-215, F292: the same rule for a NEW device. store_rotate_key and
+         * the ticket enrollment re-read the user inside their transaction;
+         * store_enroll_device_ex did not, and relied on its one caller having
+         * looked a moment before. Asked directly, it enrolled an active
+         * device for a disabled user -- live the moment the user is enabled
+         * -- and added a device under a role the user does not have. */
+        static const uint8_t H3[] = { 'd','1','c','c' };
+        int created = 1, idem = 1;
+        long long devs = -1;
+        char unused[8];
+        CHECK(store_enroll_device_ex(s, H3, sizeof H3, U1, sizeof U1, STORE_ROLE_USER, pkE, "site", "admin",
+                                     NULL, 0, &created, &idem) == STORE_ERR_STATE && created == 0 && idem == 0,
+              "enroll-ex: a device for a DISABLED user is refused inside the transaction (F292)");
+        CHECK(raw_row(dbp, "SELECT COUNT(*), '' FROM devices WHERE handle=x'64316363';", &devs, unused, sizeof unused) == 0 &&
+              devs == 0, "enroll-ex: and no device row is left (F292)");
+        CHECK(store_audit_verify(s) == STORE_OK, "enroll-ex: the audit chain still verifies");
+        store_close(s);
+    }
+    {
+        char dbp[512];
+        store_t *s = fresh_store("d2.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open d2\n"); return 1; }
+        static const uint8_t H4[] = { 'd','1','d','d' }, H5[] = { 'd','1','e','e' };
+        int created = 0, idem = 0;
+        CHECK(store_enroll_device_ex(s, H4, sizeof H4, U1, sizeof U1, STORE_ROLE_USER, pkA, "site", "admin",
+                                     NULL, 0, &created, &idem) == STORE_OK && created == 1,
+              "enroll-ex: a new user and its first device (the canary)");
+        CHECK(store_enroll_device_ex(s, H5, sizeof H5, U1, sizeof U1, STORE_ROLE_OPERATOR, pkB, "site", "admin",
+                                     NULL, 0, &created, &idem) == STORE_ERR_STATE,
+              "enroll-ex: a device under a role the existing user does not have is refused (F292)");
+        CHECK(store_enroll_device_ex(s, H5, sizeof H5, U1, sizeof U1, STORE_ROLE_USER, pkB, "site", "admin",
+                                     NULL, 0, &created, &idem) == STORE_OK && created == 0 && idem == 0,
+              "enroll-ex: under the user's own role, an active user's second device is enrolled (the canary)");
         store_close(s);
     }
 

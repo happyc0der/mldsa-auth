@@ -883,9 +883,16 @@ store_status_t store_enroll_device_ex(store_t *s,
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
 
+    /* V4-215, F292: an EXISTING user is read here, inside the transaction,
+     * and must be active and of the role asked for. This used to select only
+     * that the user existed and leave both checks to the caller, a moment
+     * earlier and outside the transaction -- the arrangement store_rotate_key
+     * and the ticket enrollment were written to avoid (the daemon and
+     * authd_admin are two processes on one file). STORE_ERR_STATE: the user
+     * is there, and not in a state a device may be added to. */
     int exists = 0;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(s->db, "SELECT 1 FROM users WHERE user_id=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(s->db, "SELECT role, status FROM users WHERE user_id=?1 LIMIT 1;", -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
         return STORE_ERR_DB;
     }
@@ -893,8 +900,18 @@ store_status_t store_enroll_device_ex(store_t *s,
         r = STORE_ERR_DB;
     } else {
         const int rc = sqlite3_step(st);
-        if (rc == SQLITE_ROW)       { exists = 1; }
-        else if (rc != SQLITE_DONE) { r = STORE_ERR_DB; }
+        if (rc == SQLITE_ROW) {
+            exists = 1;
+            store_role_t have = STORE_ROLE_USER;
+            const unsigned char *status = sqlite3_column_text(st, 1);
+            if (role_from_text(sqlite3_column_text(st, 0), &have) != STORE_OK || status == NULL) {
+                r = STORE_ERR_DB;
+            } else if (have != role || strcmp((const char *)status, "active") != 0) {
+                r = STORE_ERR_STATE;
+            }
+        } else if (rc != SQLITE_DONE) {
+            r = STORE_ERR_DB;
+        }
     }
     sqlite3_finalize(st);
     if (r != STORE_OK) { tx_rollback(s); return r; }
