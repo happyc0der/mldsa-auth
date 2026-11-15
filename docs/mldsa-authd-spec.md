@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.60, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198)
+# mldsa-authd — deployment specification (v1.61, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1220,7 +1220,7 @@ started draining stopped loop-failed memlock-limit fd-limit store-created
 sighup-ignored
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
-accept-refused-no-slot local-accept-refused-no-slot accept-failed
+accept-refused-no-slot accept-failed
 closed-deadline closed-protocol
 ```
 
@@ -1422,6 +1422,18 @@ and names that number on standard error. Beyond it a connection is refused
 exactly as at a full table, with `accept-refused-no-slot`. The local slots
 keep their descriptors, so the admin socket answers while the daemon is at
 its cap: with a limit of 64 and the defaults that is 24 connections.
+
+**A local peer that finds every local slot taken waits; it is not refused**
+(erratum 103). The site's and the operator's connections share
+`max_local_slots`. One that arrives while they are all in use is left in its
+socket's listen queue and accepted when a slot is released, which is
+normally within the time one request takes. The site socket's queue holds
+128 connections (fewer if `net.core.somaxconn` is lower); beyond that the
+peer's `connect()` fails, and that is the site's signal that the daemon is
+not keeping up. A site that opens a connection for each request should
+therefore set `max_local_slots` to the number of requests it expects to
+have in flight while the daemon is busy for a tenth of a second (one
+recovery computation), not leave it at 8.
 
 If the process runs out of descriptors all the same, `accept()` fails on
 **every** listener, the admin socket included, since the limit is the
@@ -2010,3 +2022,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 102 | 6.3 | The acceptance order of `ROTATE` is: both signatures first, then every store check inside the one transaction. §6.3 had the two `pk_new` checks (differs from `pk_old`; unused) before the signatures | the daemon has checked in this order since the store's rotation became one transaction that re-reads everything it relies on; the section, and the comment above the code, still stated the old order, and audit finding F37 recorded as an accepted residual a timing difference that order implied and this one does not have. No behaviour changes with this erratum: the text now says what is done, and `test_authd_conn` pins it |
+
+### Revision v1.61 (V4-205)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 103 | 15, 16 | A local connection that arrives while every local slot is in use waits in the listen queue; it is no longer accepted and closed, and the event `local-accept-refused-no-slot` is gone. The site socket's queue is 128 | the daemon is single-threaded and one recovery computation holds it for about 0.1 s. Measured on Linux (V4-205): site connections beyond the pool that arrived in that time were closed at once, 388 of them in one burst test, and the 18th connection of a burst failed at `connect()`; the reference site answers each with 503. A stranger on the protocol listener is still refused at capacity, with `accept-refused-no-slot` (audit F282) |

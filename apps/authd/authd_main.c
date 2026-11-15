@@ -58,6 +58,13 @@ static void on_signal(int sig)
     }
 }
 
+/* The site socket's listen queue (V4-205, F282). A site request that arrives
+ * while every local slot is taken waits here, so this is how large a burst
+ * the daemon rides out while it is busy for a moment (one recovery KDF is
+ * about 0.1 s). It was 16: measured on Linux, the 18th connection of a burst
+ * failed at connect() with EAGAIN. The kernel caps it at net.core.somaxconn. */
+#define AUTHD_SITE_BACKLOG 128
+
 static uint64_t now_ms(void)
 {
     struct timespec ts;
@@ -450,7 +457,7 @@ int main(int argc, char **argv)
      * is 0600 (spec 8), and each has its own uid allowlist; the admin table is
      * simply not reachable from the site socket. */
     if (site_path != NULL) {
-        const listener_status_t ls = listener_open_unix(site_path, 16, LISTENER_MODE_GROUP, &site_fd);
+        const listener_status_t ls = listener_open_unix(site_path, AUTHD_SITE_BACKLOG, LISTENER_MODE_GROUP, &site_fd);
         if (ls != LISTENER_OK) {
             fprintf(stderr, "mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
             goto listener_failed;

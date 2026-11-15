@@ -17059,3 +17059,67 @@ machine's; the `formal` nightly job is the one of record.
 
 Counts: 567 mutations, 98 campaigns, 609 anchors (unchanged); 281 findings;
 spec v1.60, 102 errata (unchanged).
+
+## V4-205: a local peer waits at a full pool (F282, erratum 103)
+
+**Measured, then found.** The question was a reviewer's: on Linux a
+non-blocking connect to a Unix socket with a full listen queue fails at
+once. A container, a Release build of `main`, and a burst of non-blocking
+connects to `site.sock` while the daemon was inside one recovery KDF:
+
+| burst | idle daemon | daemon in a KDF (three runs each) |
+|---|---|---|
+| 12, 16, 17 | all connected | all connected |
+| 24 | all connected | 17 connected, 7 `EAGAIN` |
+| 64 | 62 connected, 2 `EAGAIN` | 17 connected, 47 `EAGAIN` |
+
+One KDF held the daemon for 87 to 100 ms. The listen queue (16, so 17
+connections) was the smaller of two limits. The larger was in the
+journal: `local-accept-refused-no-slot`, 388 times. The local pool is 8
+slots by default, and every local connection past it was accepted and
+closed.
+
+**The change.** For a stranger, closing at a full table is right: it costs
+the daemon nothing and the stranger learns nothing. The site is not a
+stranger, and what it does with a closed connection is tell a person the
+login service is unavailable. A local connection now waits in the kernel's
+queue until a slot is free, which for a daemon that answers in
+microseconds means until the request in front of it is done. Two places
+enforce it: the accept loop stops when no local slot is free (several
+peers can arrive in one turn), and the poll set leaves a full pool's
+listener out (it would stay readable, and the loop would spin). The queue
+for the site socket is 128.
+
+**What is not changed.** `max_local_slots` stays 8 by default; the
+example configuration and section 16 now say what it has to cover for a
+site that opens a connection per request. The pool is still shared: a
+site that holds all of it idle makes the operator's CLI wait until the
+idle timeout, where it used to be refused. Either way the operator does
+not get in.
+
+**The specification.** The event is removed from section 15 and the
+behaviour stated in section 16, as erratum 103. Whether a local peer is
+refused or queued was not stated anywhere before; it is now.
+
+**Two older mutants re-anchored.** v96's AF6 and AF7 edit the poll-set
+line this step added a condition to. Same mutants, new text; both tried by
+hand and rerun as a campaign.
+
+**Tests.** `test_authd_localapi`, `localwait:`. LW1 as first written
+passed: the poll set alone kept a late peer waiting, and the accept loop's
+own check only matters when two peers arrive in one turn, which the test
+did not do. It does now. Campaign v129, LW1-LW2.
+
+**Measured again after the fix,** the same container run on the changed
+tree, each peer that connected then sending a PING:
+
+| burst | daemon in a KDF (three runs each) |
+|---|---|
+| 16, 17, 24 | all connected, all answered |
+| 64 | 64 connected, 64 answered, none closed |
+
+The KDF still holds the daemon for 92 to 96 ms; the peers now spend that
+time in the queue.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors; 282 findings; spec v1.61,
+103 errata.

@@ -59,10 +59,12 @@ M = {
                  "                authd_log_event(AUTHD_LOG_INFO, \"accept-failed\"); /* MUTATION AF4 */\n")],
     "AF5": [(EV, "            ev->accept_failed++;\n",
                  "            (void)0; /* MUTATION AF5 */\n")],
-    "AF6": [(EV, "                all[npfd].events = (now_ms < ev->accept_retry_ms[i]) ? 0 : POLLIN;\n",
-                 "                all[npfd].events = POLLIN; /* MUTATION AF6 */\n")],
-    "AF7": [(EV, "                all[npfd].events = (now_ms < ev->accept_retry_ms[i]) ? 0 : POLLIN;\n",
-                 "                all[npfd].events = (now_ms <= ev->accept_retry_ms[i]) ? 0 : POLLIN; /* MUTATION AF7 */\n")],
+    # (Re-anchored in V4-205: F282 added `|| local_full` to this line. The
+    # mutants are the same: the retry time ignored, and compared with <=.)
+    "AF6": [(EV, "                all[npfd].events = (now_ms < ev->accept_retry_ms[i] || local_full) ? 0 : POLLIN;\n",
+                 "                all[npfd].events = (local_full) ? 0 : POLLIN; /* MUTATION AF6 */\n")],
+    "AF7": [(EV, "                all[npfd].events = (now_ms < ev->accept_retry_ms[i] || local_full) ? 0 : POLLIN;\n",
+                 "                all[npfd].events = (now_ms <= ev->accept_retry_ms[i] || local_full) ? 0 : POLLIN; /* MUTATION AF7 */\n")],
 }
 
 def main():

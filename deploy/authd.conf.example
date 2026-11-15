@@ -105,6 +105,10 @@ log_client_ip = prefix
 # the HARD limit is lower than that (systemd's default is not), and then
 # holds fewer connections than max_slots so the admin socket keeps working.
 max_slots = 256
+# max_local_slots is shared by the site and the operator. A local peer that
+# finds them all in use waits (it is not refused); a site that opens one
+# connection per request wants this at least as large as the number of
+# requests it has in flight during a tenth of a second.
 max_local_slots = 8
 
 handshake_timeout_ms = 10000

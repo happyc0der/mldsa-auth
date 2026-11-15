@@ -278,6 +278,16 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
             return;
         }
         const slot_kind_t kind = ev->listen_kind[li];
+        /* V4-205, F282: a LOCAL peer is not accepted while the local pool is
+         * full; it stays in the listener's queue and is taken when a slot is
+         * released. It used to be accepted and closed at once, which is right
+         * for a stranger on the protocol listener and wrong for the site: the
+         * daemon is single-threaded, a recovery KDF holds it for 0.1 s, and
+         * every site request that arrived beyond the pool in that time was
+         * answered with a closed connection -- a 503 to somebody's browser. */
+        if (kind == SLOT_KIND_LOCAL && take_slot(ev, kind) == NULL) {
+            return;
+        }
         int cfd = -1;
         listener_peer_t peer;
         const listener_status_t st = listener_accept_ex(ev->listen_fd[li],
@@ -307,16 +317,13 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
         ev->accept_failing[li] = 0;
         authd_slot_t *s = take_slot(ev, kind);
         if (s == NULL) {
-            /* Refusing is the correct behaviour at capacity: closing at once
-             * is cheaper for us than for the peer, and nothing is allocated. */
+            /* The PROTOCOL pool is full (a local peer was not accepted at
+             * all: F282, above). Refusing is the correct behaviour for a
+             * stranger at capacity: closing at once is cheaper for us than
+             * for the peer, and nothing is allocated. */
             (void)close(cfd);
-            if (kind == SLOT_KIND_LOCAL) {
-                ev->local_refused_no_slot++;
-                authd_log_event(AUTHD_LOG_WARN, "local-accept-refused-no-slot");
-            } else {
-                ev->refused_no_slot++;
-                authd_log_event(AUTHD_LOG_WARN, "accept-refused-no-slot");
-            }
+            ev->refused_no_slot++;
+            authd_log_event(AUTHD_LOG_WARN, "accept-refused-no-slot");
             continue;
         }
         conn_io_reset(&s->io);
@@ -510,7 +517,11 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
                 /* A listener whose accept() just failed keeps its place in
                  * the set (the indices below are listener indices) and asks
                  * for nothing until its retry time. */
-                all[npfd].events = (now_ms < ev->accept_retry_ms[i]) ? 0 : POLLIN;
+                /* Nor does a local listener while the local pool is full
+                 * (F282): it stays readable, and polling it would spin. */
+                const int local_full = ev->listen_kind[i] == SLOT_KIND_LOCAL &&
+                                       take_slot(ev, SLOT_KIND_LOCAL) == NULL;
+                all[npfd].events = (now_ms < ev->accept_retry_ms[i] || local_full) ? 0 : POLLIN;
                 all[npfd].revents = 0;
                 npfd++;
                 listener_count++;

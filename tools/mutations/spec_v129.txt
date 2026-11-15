@@ -1,0 +1,2 @@
+LW1|^test_authd_localapi$|localwait: of two peers arriving in one turn with one slot free, one is answered and the other waits; neither is closed (F282)
+LW2|^test_authd_localapi$|localwait: while the peer waits the loop sleeps in poll, it does not spin (F282)

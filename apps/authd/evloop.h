@@ -181,7 +181,6 @@ typedef struct {
     uint64_t closed_protocol;
     uint64_t closed_peer;
     uint64_t local_accepted;
-    uint64_t local_refused_no_slot;
     uint64_t closed_refused_addr;    /* refused by on_addr (Req 12 / the limiter) */
     uint64_t accept_failed;          /* accept() failed outright (F205) */
 

@@ -9,6 +9,8 @@
  * The habits that earned their place in V4-8: pump-until-condition, never a
  * fixed count; and a present canary before every absence check.
  */
+#include <poll.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2244,6 +2246,106 @@ static void test_revoke_spares_unproven(void)
     }
 }
 
+/* V4-205, F282: a local peer that arrives while every local slot is taken
+ * WAITS; it is not accepted and closed. The daemon is single-threaded and a
+ * recovery KDF holds it for about 0.1 s; measured on Linux, any site
+ * connections beyond the pool that arrived in that time were closed at
+ * once (388 refusals in one burst test), and a site that opens a connection
+ * per request answered each of them 503. The peer is the site or the
+ * operator, not a stranger: its connection now stays in the listener's queue
+ * until a slot is free. */
+static void test_local_pool_full_waits(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "localwait.sqlite3", 1) == 0, "localwait: daemon starts");
+    int held[H_MAX_LOCAL];
+    int all = 1;
+    for (size_t i = 0; i < H_MAX_LOCAL; i++) {
+        held[i] = h_dial_unix(d.site_path);
+        all = all && held[i] >= 0;
+    }
+    CHECK(all && H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == H_MAX_LOCAL),
+          "localwait: every local slot is held by an idle connection (the canary)");
+
+    int late = h_dial_unix(d.site_path);
+    CHECK(late >= 0 && write(late, "PING\n", 5) == 5, "localwait: one more peer connects and asks");
+    struct timespec w0, w1;
+    (void)clock_gettime(CLOCK_MONOTONIC, &w0);
+    for (int i = 0; i < 40; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
+    (void)clock_gettime(CLOCK_MONOTONIC, &w1);
+    const long waited_ms = (long)(w1.tv_sec - w0.tv_sec) * 1000L + (w1.tv_nsec - w0.tv_nsec) / 1000000L;
+    /* 40 turns of a 5 ms poll with nothing to do are about 200 ms. A listener
+     * left in the poll set while it cannot be accepted from stays readable,
+     * and the 40 turns return at once: the loop would spin a core for as long
+     * as the pool stayed full. */
+    CHECK(waited_ms >= 100, "localwait: while the peer waits the loop sleeps in poll, it does not spin (F282)");
+    char b[256];
+    struct pollfd pf = { late, POLLIN, 0 };
+    const int ready = poll(&pf, 1, 0);
+    CHECK(ready == 0,
+          "localwait: with the pool full the late peer is neither answered nor closed: it waits (F282)");
+    CHECK(evloop_local_active(&d.ev) == H_MAX_LOCAL, "localwait: and the pool still holds exactly its own connections (F282)");
+
+    (void)close(held[0]);
+    held[0] = -1;
+    ssize_t n = 0;
+    for (int i = 0; i < 400 && n <= 0; i++) {
+        (void)evloop_run_once(&d.ev, 5, d.app.now_ms);
+        pf.revents = 0;
+        if (poll(&pf, 1, 0) == 1) { n = read(late, b, sizeof b - 1u); }
+    }
+    b[(n > 0) ? n : 0] = '\0';
+    CHECK(n > 0 && starts(b, "OK version="),
+          "localwait: when a slot is released the late peer is accepted and its PING answered (F282)");
+
+    (void)close(late);
+    for (size_t i = 0; i < H_MAX_LOCAL; i++) { if (held[i] >= 0) { (void)close(held[i]); held[i] = -1; } }
+    CHECK(H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == 0u), "localwait: the pool empties");
+
+    /* Two peers in ONE turn of the loop, with one slot left: the accept loop
+     * takes the first and must stop there. The poll set cannot help -- the
+     * pool was not full when the turn began. */
+    for (size_t i = 0; i + 1u < H_MAX_LOCAL; i++) { held[i] = h_dial_unix(d.site_path); }
+    CHECK(H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == H_MAX_LOCAL - 1u),
+          "localwait: all local slots but one are held (the canary)");
+    int two[2];
+    two[0] = h_dial_unix(d.site_path);
+    two[1] = h_dial_unix(d.site_path);
+    CHECK(two[0] >= 0 && two[1] >= 0 && write(two[0], "PING\n", 5) == 5 && write(two[1], "PING\n", 5) == 5,
+          "localwait: two peers connect and ask before the loop turns");
+    for (int i = 0; i < 40; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
+    int answered = 0, closed = 0, waiting = 0, first = -1;
+    for (int k = 0; k < 2; k++) {
+        struct pollfd q = { two[k], POLLIN, 0 };
+        if (poll(&q, 1, 0) == 1) {
+            const ssize_t r = read(two[k], b, sizeof b - 1u);
+            if (r > 0) { answered++; first = k; } else { closed++; }
+        } else {
+            waiting++;
+        }
+    }
+    CHECK(answered == 1 && waiting == 1 && closed == 0,
+          "localwait: of two peers arriving in one turn with one slot free, one is answered and the other waits; neither is closed (F282)");
+    if (first >= 0) {
+        (void)close(two[first]);
+        const int other = 1 - first;
+        struct pollfd q = { two[other], POLLIN, 0 };
+        n = 0;
+        for (int i = 0; i < 400 && n <= 0; i++) {
+            (void)evloop_run_once(&d.ev, 5, d.app.now_ms);
+            q.revents = 0;
+            if (poll(&q, 1, 0) == 1) { n = read(two[other], b, sizeof b - 1u); }
+        }
+        b[(n > 0) ? n : 0] = '\0';
+        CHECK(n > 0 && starts(b, "OK version="), "localwait: and the one that waited is answered once the first has gone (F282)");
+        (void)close(two[other]);
+    } else {
+        (void)close(two[0]); (void)close(two[1]);
+    }
+    for (size_t i = 0; i < H_MAX_LOCAL; i++) { if (held[i] >= 0) { (void)close(held[i]); } }
+    h_stop(&d);
+}
+
 /* Run one statement on the store from a second connection, as a writer beside
  * the daemon would. Used only to plant and remove the triggers below. */
 static int store_exec(const char *db, const char *sql)
@@ -2565,6 +2667,7 @@ int main(void)
     test_recovery_budget();
     test_key_changed_mid_handshake();
     test_revoke_spares_unproven();
+    test_local_pool_full_waits();
     test_issued_before_outlives();
     test_codes_outlive();
     test_revoke_ends_codes();
