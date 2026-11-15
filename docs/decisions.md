@@ -17123,3 +17123,26 @@ time in the queue.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors; 282 findings; spec v1.61,
 103 errata.
+
+## V4-206: cleanup after V4-203 to V4-205 landed
+
+- `docs/review/REPRODUCE.md` cites the runs on `ce7c200`, now main: CI
+  43686397686 (16/16), nightly 43686399351 (114/114, 99 campaigns).
+- V4-204's entry ends "not proved until the nightly runs it". It did:
+  nightly 43673543681 on `f4235c4`, job `ProVerif model + controls`: `ok
+  base`, `ok reachable`, three resilience runs, and all ten controls no
+  longer provable, the same lines as the container run. REPRODUCE says so.
+- Main's push CI: 43672920131 on `9cf038b` and 43677708746 on `f4235c4`,
+  both 16/16.
+- One line of code, a message. `authd_admin`, told nothing by a daemon
+  that closed its connection, said the daemon "does that to a uid that is
+  not in the socket's allowlist". A daemon that is stopping does it too,
+  and a command run during `systemctl stop` was sent to check its user
+  (eighth reviewer run). The hint now names both, the likelier first. Since
+  V4-205 a full local pool is no longer a third cause. The existing check
+  of the hint (F186) passes unchanged.
+- Open for the owner, unchanged: F273, and the reference site's one login
+  state per session.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors; 282 findings; spec v1.61,
+103 errata (all unchanged by this step).

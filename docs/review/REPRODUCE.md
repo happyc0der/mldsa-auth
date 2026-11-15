@@ -132,7 +132,8 @@ formal/run.sh path/to/proverif
 It runs in the nightly job `ProVerif model + controls`. Since V4-204 it has
 also been run on the machine that wrote this page, in a container holding
 the same pinned ProVerif 2.05 tarball the nightly builds (2026-11-14). Its
-output: `ok base`, `ok reachable`, `ok leak_kem`, `ok leak_dh`, `ok
+output, and the nightly job's in run 43673543681 on `f4235c4`, line for line
+the same: `ok base`, `ok reachable`, `ok leak_kem`, `ok leak_dh`, `ok
 leak_c2s`, and `no longer provable` for each of ten controls: `ctl_sigb`,
 `ctl_peerid`, `ctl_kdf_nodh`, `ctl_kdf_nokem`, `ctl_siga`, `ctl_conf`,
 `ctl_codeplain`, `ctl_state`, `ctl_rot_hsid` and `ctl_rot_sigold`. (Before
@@ -183,8 +184,8 @@ is not compiled). ADVISORIES.md accounts for every one.
   headless-browser job, `caddy proxy (Linux, Docker)`, and the runbook
   rehearsed top to bottom under systemd (V4-99; on two Ubuntus since
   V4-103). 16 jobs; run
-  43668622281 on `9cf038b` (V4-202, now main): 16/16.
+  43686397686 on `ce7c200` (V4-205, now main): 16/16.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
-  ProVerif model and its controls. Run 43668624866 on `9cf038b`: 113/113, all
-  98 campaigns among them.
+  ProVerif model and its controls. Run 43686399351 on `ce7c200`: 114/114, all
+  99 campaigns among them.

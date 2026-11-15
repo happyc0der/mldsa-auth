@@ -541,9 +541,14 @@ static int local_call(const char *prog, const char *sub, const char *sock,
          * one thing a closed, silent connection most often means is "wrong
          * user", and the bare status said nothing of it. */
         if ((st == LOCALCLI_ERR_IO || st == LOCALCLI_ERR_RESPONSE) && len == 0u) {
+            /* V4-206: "it does that to a uid ..." named ONE cause as the
+             * cause. A daemon that is stopping closes what it has not served
+             * as well, and a command run during `systemctl stop` was told to
+             * check its user. Both are said, the likelier first. */
             fprintf(stderr, "%s %s: the daemon closed the connection without answering; it does that "
                             "to a uid that is not in the socket's allowlist (admin_uids for "
-                            "admin.sock, site_uids for site.sock) -- check who this runs as\n",
+                            "admin.sock, site_uids for site.sock) -- check who this runs as -- "
+                            "and when it is stopping: check `systemctl is-active mldsa-authd`\n",
                     prog, sub);
         }
         return EX_FAIL;
