@@ -457,9 +457,11 @@ target_compile_options(envelope_key_scan PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDS
 target_compile_definitions(envelope_key_scan PRIVATE ${MLDSA_HARDENING_DEFS})
 target_link_options(envelope_key_scan PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 if(MLDSA_NODE)
-  # Spec 14's "no cryptography in JavaScript", as a check on web/client/.
+  # Spec 14's "no cryptography in JavaScript", as a check on web/client/ and,
+  # since V4-207 (F283), web/pages/: the pages are JavaScript the browser runs
+  # with the same origin and the same module, and were never looked at.
   add_test(NAME web_no_crypto COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_no_crypto.mjs
-                                      ${PROJECT_SOURCE_DIR}/web/client)
+                                      ${PROJECT_SOURCE_DIR}/web/client ${PROJECT_SOURCE_DIR}/web/pages)
 endif()
 set(MLDSA_WASM_DIR "" CACHE PATH "An Emscripten build tree (web/mldsa_client.mjs) for the wasm interop test")
 if(MLDSA_WASM_DIR)

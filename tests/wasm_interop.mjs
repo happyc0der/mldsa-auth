@@ -74,7 +74,13 @@ const pkOf = (img) => img.slice(9 + img[8]);
 // and look tidy, so it must be gone within 3 s (V4-31).
 let fxQuick = false;
 const done = async () => {
-  const exited = new Promise((r) => fx.once('exit', () => r(true)));
+  // A fixture that has ALREADY exited (it crashed, or reached its own
+  // deadline) emits no second 'exit': waiting for one never ended, and the
+  // test stopped here with no summary (V4-207, F286). browser_e2e has had
+  // this guard since F134.
+  const exited = new Promise((r) => {
+    if (fx.exitCode !== null || fx.signalCode !== null) { r(true); } else { fx.once('exit', () => r(true)); }
+  });
   fx.kill();
   fxQuick = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000))]);
   if (!fxQuick) { fx.kill('SIGKILL'); await exited; }

@@ -17146,3 +17146,37 @@ Counts: 569 mutations, 99 campaigns, 611 anchors; 282 findings; spec v1.61,
 
 Counts: 569 mutations, 99 campaigns, 611 anchors; 282 findings; spec v1.61,
 103 errata (all unchanged by this step).
+
+## V4-207: four repairs to the browser-side tests (F283 to F286)
+
+A twelfth reviewer agent read what had not been read: the browser
+end-to-end test itself and its helper, the wasm interop test, the timing
+tool, the benches and the wasm export gate. The export gate, the fixture,
+`e2e_site` and the timing tool's own test held. Four things in the tests
+did not; a fifth, in the benches, is the next step.
+
+**F283, the gate.** Widened to `web/pages`, and made to refuse the global
+by name. Refusing the word `crypto` in code is blunt and that is the
+point: nothing under `web/` has a reason to write it, and the gate's own
+comment calls it a tripwire for the honest mistake. It now carries its own
+controls, eight lines it must flag and five it must not, because a gate
+that greps is a gate that can stop matching.
+
+**F284, my own.** The check written in V4-187 asked the wrong party with
+no cookie and threw the answer away. Asked from the page, with a control
+before the logout.
+
+**F285, F286.** Two ways a failing test left something behind or never
+finished. Neither changes what a passing run does.
+
+**Noted from the same review, not changed.** `/api/timing`, which exists
+only when the timing tool starts the site, takes a row from anyone who can
+reach it; the tool's header says sign-up needs the invite and says nothing
+of this route. `web/exports.txt` exports two functions only the C test
+calls. The CSP header is checked on one page of three.
+
+**Tests.** `web_no_crypto` (self-test, nine files), `browser_e2e`
+(`logout:`, `launch:`), by hand for F286. No C touched.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 286 findings;
+spec v1.61, 103 errata (unchanged).

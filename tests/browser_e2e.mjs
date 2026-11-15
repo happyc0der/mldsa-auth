@@ -27,7 +27,7 @@
 // and it measures Argon2id and a login IN the browser, next to V4-2 S6.
 import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -430,12 +430,20 @@ try {
   // after "Logged out": the account's recovery codes left on a screen whose
   // user believes they have logged out. (Same page, no reload: a reload
   // would hide it.)
-  { await b.eval(`(() => { delete document.body.dataset.result; document.getElementById('passphrase').value = 'typed and not yet used'; document.getElementById('logout').click(); })()`);
+  { const meBefore = await b.eval("fetch('/api/me', { cache: 'no-store' }).then((x) => x.status)");
+    check(meBefore === 200, `logout: before it, /api/me from the page is 200 (${meBefore}) (the control)`);
+    await b.eval(`(() => { delete document.body.dataset.result; document.getElementById('passphrase').value = 'typed and not yet used'; document.getElementById('logout').click(); })()`);
     await b.waitFor('!!document.body.dataset.result', 'a result after logging out', 6000);
     const after = await b.eval(`JSON.stringify({ result: document.body.dataset.result, who: document.getElementById('who').textContent,
                                                  codes: document.getElementById('codelist').textContent,
                                                  left: document.getElementById('passphrase').value.length })`).then(JSON.parse);
-    const gone = (await fetch(`${origin}/api/me`, { headers: { Cookie: await b.eval('document.cookie') } })).status;
+    // Asked FROM the page, which is the only place the session cookie is
+    // (V4-207, F284). This used to be asked from the test's own process with
+    // `document.cookie`, which is empty for an HttpOnly cookie: it would have
+    // been 401 whatever the site did, and its value was then thrown away.
+    // Every check below read only what the PAGE says; a site that answered
+    // the logout 200 and kept the session passed them all.
+    const gone = await b.eval("fetch('/api/me', { cache: 'no-store' }).then((x) => x.status)");
     check(after.result === 'ok', `logout: the page reports the logout (${after.result}) (the canary)`);
     check(after.codes === '', `logout: the recovery codes are no longer on the page (${after.codes.split('\n').filter(Boolean).length} still shown) (F265)`);
     check(after.left === 0, `logout: a passphrase typed and not used is not left in its field (${after.left} characters) (F265)`);
@@ -446,7 +454,7 @@ try {
     const again = await b.eval(`JSON.stringify({ result: document.body.dataset.result, msg: document.getElementById('status')?.textContent ?? '' })`).then(JSON.parse);
     check(again.result !== 'ok' && /log in first/.test(again.msg),
           `logout: the page's other buttons then say to log in first (${again.result}: ${again.msg}) (F265)`);
-    void gone;
+    check(gone === 401, `logout: and the SITE no longer knows the session: /api/me from the page is 401 (${gone}) (F284)`);
     r = await act(b, 'login.html', { passphrase: PASS });
     check(r.result === 'ok', 'logout: and the device logs in again (the rest of this test needs the session)'); }
 
@@ -544,6 +552,30 @@ try {
     const closed = await Promise.race([b3.close().then(() => true), new Promise((r) => setTimeout(() => r(false), 20000))]);
     check(closed && Date.now() - t0 < 20000,
           `teardown: closing a browser that was killed returns, not waits for ever (${Date.now() - t0} ms)`);
+  }
+  // V4-207, F285: a launch that FAILS cleans up after itself. A browser that
+  // started and never offered a DevTools port left its process running and
+  // its profile directory behind: launch() threw, the caller had no Browser
+  // to close, and nothing else knew the process existed.
+  {
+    const scratch = mkdtempSync(join(tmpdir(), 'mldsa-fake-browser-'));
+    const fake = join(scratch, 'fake-browser.sh'), pidFile = join(scratch, 'pid');
+    writeFileSync(fake, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 120\n`, { mode: 0o755 });
+    const profiles = () => readdirSync(tmpdir()).filter((n) => n.startsWith('mldsa-cdp-')).length;
+    const before = profiles();
+    let outcome = 'launched';
+    try { const fb = await Browser.launch(fake, [], { timeoutMs: 1500 }); await fb.close(); }
+    catch (e) { outcome = /DevTools port/.test(String(e.message)) ? 'refused' : `threw ${e.message}`; }
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
+    let alive = pid > 0;
+    for (let i = 0; i < 40 && alive; i++) {
+      try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
+    }
+    check(outcome === 'refused' && pid > 0, `launch: a browser that never offers its DevTools port is given up on (${outcome}, pid ${pid}) (the control)`);
+    check(!alive, 'launch: and its process is not left running (F285)');
+    check(profiles() === before, `launch: nor its profile directory (${profiles() - before} left) (F285)`);
+    if (alive) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    rmSync(scratch, { recursive: true, force: true });
   }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);

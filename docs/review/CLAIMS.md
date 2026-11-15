@@ -44,7 +44,7 @@ the most important thing on this page.
 - check `test_vectors` "chacha20poly1305_rfc8439: aead_encrypt matches RFC 8439's published ciphertext+tag"
 - mutation `v24 M1` — the hybrid combiner's IKM uses ss_x twice and drops ss_k
 - mutation `v53 F12` — liboqs no longer routed to libsodium's generator (only the client-core KAT golden sees it)
-- tool `tests/web_no_crypto.mjs` — no JavaScript under `web/client` reaches WebCrypto, Node crypto, `getRandomValues` or `Math.random` (CTest `web_no_crypto`)
+- tool `tests/web_no_crypto.mjs` — no JavaScript under `web/client` or `web/pages` reaches the `crypto` global, WebCrypto, Node crypto, `getRandomValues` or `Math.random` (CTest `web_no_crypto`; since V4-207 both directories, and a self-test of the matcher)
 - check `no_hand_rolled_primitives` "no primitive's defining constant appears anywhere else in src/, apps/ or web/client/"
 - check `no_hand_rolled_primitives` "sha1() is called by apps/authd/ws.c and by nothing else in src/ or apps/"
 **Not established:** the gate looks for primitives by their defining constants; one written without any (a construction from generic operations, or constants computed at run time) would pass it. The tree holds one sanctioned primitive, a hand-written SHA-1 (`apps/authd/sha1.c`), used only for RFC 6455's accept value and pinned by FIPS 180-1 vectors; its scope is now checked, not asserted (audit F102). The gate was shown red by hand (a planted SHA-256 IV, the ChaCha sigma in JS, a stray `sha1()` call), not by a campaign.

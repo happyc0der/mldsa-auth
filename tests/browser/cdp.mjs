@@ -36,7 +36,7 @@ const until = async (cond, what, ms = 20000, every = 50) => {
 };
 
 export class Browser {
-  static async launch(path, extraArgs = []) {
+  static async launch(path, extraArgs = [], { timeoutMs = 20000 } = {}) {
     const profile = mkdtempSync(join(tmpdir(), 'mldsa-cdp-'));
     const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
                   '--no-first-run', '--no-default-browser-check', '--disable-extensions', ...extraArgs,
@@ -44,16 +44,30 @@ export class Browser {
     const proc = spawn(path, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     proc.stderr.on('data', (d) => { err += d; });
-    const portFile = join(profile, 'DevToolsActivePort');
-    const port = await until(() => existsSync(portFile) && readFileSync(portFile, 'utf8').split('\n')[0],
-                             `the browser's DevTools port (stderr: ${err.slice(0, 200)})`);
-    const list = await until(async () => {
-      try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page'); }
-      catch { return null; }
-    }, 'a page target');
-    const b = new Browser(proc, profile);
-    await b.attach(list.webSocketDebuggerUrl);
-    return b;
+    // V4-207, F285: whatever fails from here on, the process that was started
+    // and the profile that was made are this function's to remove. launch()
+    // used to throw past both, and its caller, holding no Browser, could
+    // close neither.
+    try {
+      const portFile = join(profile, 'DevToolsActivePort');
+      const port = await until(() => existsSync(portFile) && readFileSync(portFile, 'utf8').split('\n')[0],
+                               `the browser's DevTools port (stderr: ${err.slice(0, 200)})`, timeoutMs);
+      const list = await until(async () => {
+        try { return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page'); }
+        catch { return null; }
+      }, 'a page target');
+      const b = new Browser(proc, profile);
+      await b.attach(list.webSocketDebuggerUrl);
+      return b;
+    } catch (e) {
+      const gone = new Promise((r) => {
+        if (proc.exitCode !== null || proc.signalCode !== null) { r(); } else { proc.once('exit', r); }
+      });
+      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+      await Promise.race([gone, new Promise((r) => setTimeout(r, 5000))]);
+      rmSync(profile, { recursive: true, force: true });
+      throw e;
+    }
   }
 
   constructor(proc, profile) {
