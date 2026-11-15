@@ -47,6 +47,30 @@ make("rot_sigold",
      ("(* LEAK:c2s *)", "out(c, kc2s);"),
      ("let mo = checksign(sigOld, pkA) in", "let mo = hash((rotold, mrot)) in"))
 
+# V4-204 (F281): the four queries that had no control.
+#
+# The daemon must verify sig_A. Without the check anyone who sees a
+# ClientHello can finish the handshake as the device; the daemon's
+# authentication of the device must break.
+make("siga",
+     ("  if m = th then                                             (* CONTROL:siga *)\n", ""))
+# Key confirmation is the initiator DECRYPTING the daemon's first record. If
+# it takes the record as it comes, anyone can "confirm"; the correspondence
+# with the daemon having established must break.
+make("conf",
+     ("  let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in                  (* CONTROL:conf *)\n",
+      "  let (=opLOGIN, code: bitstring) = rec in\n"))
+# The login code is secret because it travels under the session key. Sent in
+# the clear as well, it must stop being secret.
+make("codeplain",
+     ("  out(c, senc((opLOGIN, code), ks2c));                       (* CONTROL:codeplain *)\n",
+      "  out(c, (opLOGIN, code));\n  out(c, senc((opLOGIN, code), ks2c));\n"))
+# The site must compare the state a code is presented under with the state
+# it was issued under (Req 5). Without the comparison a code lands in
+# whichever session the request names; the login-CSRF property must break.
+make("state",
+     ("  if exstate = boundstate then                                (* CONTROL:state *)\n", ""))
+
 # Resilience (these must still PROVE): leak one KEX half, key stays secret.
 make("leak_kem", ("(* LEAK:kem *)", "out(c, ssk);"))
 make("leak_dh",  ("(* LEAK:dh *)",  "out(c, ssx);"))

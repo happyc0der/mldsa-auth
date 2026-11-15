@@ -25,8 +25,10 @@ that rests on reading says that too.
   compiled to WebAssembly, with a thin JavaScript transport, IndexedDB storage
   and no cryptography in JavaScript (`web/`).
 - **A symbolic model** ([`formal/`](../../formal/README.md)). ProVerif proves
-  agreement, key secrecy, login-code secrecy and rotation binding, and has
-  controls that must make each proof fail.
+  agreement, key secrecy, login-code secrecy, the login `state` binding and
+  rotation binding, exhibits a login that reaches the site, and has a
+  control for every query that must make its proof fail (ten, since
+  V4-204). Its README lists what the model leaves out.
 
 ## In and out of scope
 
@@ -47,7 +49,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 280 findings (F0–F280), with severity, evidence and
+   register](../v4/audit.md). 281 findings (F0–F281), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 102 errata, each
    citing the finding that forced it.

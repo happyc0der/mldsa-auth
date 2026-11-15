@@ -13,11 +13,20 @@
    (channel ls, peer-authenticated, authd 8/Req 11). Conflating them made an
    earlier model prove its controls vacuously (V4-4, and the S7 warning).
 
-   Lines marked (* CONTROL:xx *) / (* LEAK:xx *) are anchors run.sh rewrites. *)
+   Lines marked (* CONTROL:xx *) / (* LEAK:xx *) are anchors gen_controls.py
+   rewrites, one variant each; run.sh proves the base and requires every
+   variant's target query to stop proving.
+
+   What this model does NOT contain (formal/README.md, "Limits"): one honest
+   device and no dishonest enrolled one; no compromise of a long-term key;
+   the records after the handshake as bare encryption, with no sequence
+   numbers and no ROTATE_ACK. *)
 
 set traceDisplay = short.
 free c: channel.               (* the network: attacker-controlled *)
 free ls: channel [private].    (* daemon<->site local socket: not attacker-controlled (Req 11) *)
+free ws: channel [private].    (* the page's own WebSocket URL, under TLS: carries `state` (authd 7.1) *)
+free form: channel [private].  (* the page's own POST of its login code to the site, under TLS *)
 
 type skey. type pkey. type kemsk. type kempk. type kemss.
 type G. type exponent. type key. type id. type nonce.
@@ -80,12 +89,21 @@ query d: id, st: bitstring;
 query d: id, po: pkey, pn: pkey, h: bitstring;
   inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)).
 
+(* R: every event the queries above speak of can occur. A model in which the
+   protocol cannot run proves every correspondence vacuously -- which is what
+   the site's login was until V4-204 (F281). ProVerif answers "not event(..)
+   is false" when it finds a run. *)
+query d: id, st: bitstring; event(siteLoggedIn(d,st)).
+query d: id, st: bitstring, cd: bitstring; event(codeIssued(d,st,cd)).
+query a: id, b: id, s: nonce, nb: nonce, k: key; event(initEstablished(a,b,s,nb,k)).
+query a: id, b: id, s: nonce, nb: nonce, k: key; event(respEstablished(a,b,s,nb,k)).
+
 let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   new sid: nonce; new nA: nonce; new x: exponent; new dk: kemsk;
   let epkA = exp(g, x) in let ekA = kempub(dk) in
   let ch = (A, epkA, ekA, sid, nA) in
   event loginStart(A, state);
-  out(c, (ch, state));
+  out(c, ch); out(ws, (ch, state));
   in(c, (shu: bitstring, sigB: bitstring));
   let (bid: id, epkB: G, ct: bitstring, nB: nonce, =sid) = shu in
   if bid = B then                                             (* CONTROL:peerid *)
@@ -93,7 +111,7 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   let m = checksign(sigB, pkX) in
   if m = hash((serverauth, ch, shu)) then
   let sh = (shu, sigB) in
-  let th = hash((clientauth, ch, sh)) in                     (* CONTROL:nb (via sh) *)
+  let th = hash((clientauth, ch, sh)) in
   let hsid = hash((hsidlabel, ch, sh)) in
   let ssx = exp(epkB, x) in let ssk = decaps(ct, dk) in
   let kc2s = kdf(ssx, ssk, sid, A, B, th, c2s) in
@@ -102,8 +120,9 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   (* LEAK:dh *)  (* LEAK:kem *)  (* LEAK:c2s *)
   out(c, (hsid, sign(th, skA)));
   in(c, rec: bitstring);
-  let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in
+  let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in                  (* CONTROL:conf *)
   event initConfirmed(A, B, sid, nB, kc2s);
+  out(form, code);
   new skNew: skey; let pkNew = pk(skNew) in
   let mrot = (hsid, A, pk2b(pk(skA)), pk2b(pkNew)) in
   event rotateRequested(A, pk(skA), pkNew, hsid);
@@ -112,7 +131,7 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
 (* daemon, client-facing session: handshake -> issue code -> accept ROTATE.
    ROTATE is gated on the handshake only, never on the site's EXCHANGE. *)
 let responder(B: id, skB: skey, A: id, pkA: pkey) =
-  in(c, (ch: bitstring, state: bitstring));
+  in(c, ch: bitstring); in(ws, (=ch, state: bitstring));
   let (=A, epkA: G, ekA: kempk, sid: nonce, nA: nonce) = ch in
   new y: exponent; new nB: nonce; new ssk: kemss;
   let epkB = exp(g, y) in let ct = encaps(ekA, ssk) in
@@ -121,11 +140,11 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
   event respSentServerHello(A, B, sid, nB);
   out(c, (shu, sigB));
   let sh = (shu, sigB) in
-  let th = hash((clientauth, ch, sh)) in                     (* CONTROL:nb (via sh) *)
+  let th = hash((clientauth, ch, sh)) in
   let hsid = hash((hsidlabel, ch, sh)) in
   in(c, (=hsid, sigA: bitstring));
   let m = checksign(sigA, pkA) in
-  if m = th then
+  if m = th then                                             (* CONTROL:siga *)
   let ssx = exp(epkA, y) in
   let kc2s = kdf(ssx, ssk, sid, A, B, th, c2s) in
   let ks2c = kdf(ssx, ssk, sid, A, B, th, s2c) in
@@ -133,7 +152,7 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
   new code: bitstring;
   event codeIssued(A, state, code);
   out(ls, (code, A, state));                                 (* daemon records the binding *)
-  out(c, senc((opLOGIN, code), ks2c));
+  out(c, senc((opLOGIN, code), ks2c));                       (* CONTROL:codeplain *)
   in(c, rrec: bitstring);
   let (=opROTATE, =A, pkNew: pkey, sigOld: bitstring, sigNew: bitstring) = sdec(rrec, kc2s) in
   let mrot = (hsid, A, pk2b(pkA), pk2b(pkNew)) in            (* CONTROL:hsid *)
@@ -147,7 +166,8 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
    binding (code -> the state it was issued under); EXCHANGE must present it. *)
 let site() =
   in(ls, (code: bitstring, dev: id, boundstate: bitstring));  (* daemon's stored binding *)
-  in(c, (excode: bitstring, exstate: bitstring));             (* the request, attacker-reachable *)
+  in(form, excode: bitstring);                                (* the code, posted by the page that holds it *)
+  in(c, exstate: bitstring);                                  (* the session it lands in: the web attacker's choice (login-CSRF) *)
   if excode = code then
   if exstate = boundstate then                                (* CONTROL:state *)
   event siteLoggedIn(dev, exstate).

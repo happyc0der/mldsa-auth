@@ -13,11 +13,16 @@ carries a comment citing the specification line it mirrors.
 - **Session-key secrecy.**
 - **Login-code secrecy**, and that a site login under a `state` was begun by
   that device with that `state`.
+- **That it runs** (V4-204): ProVerif exhibits a run that reaches the site's
+  login, which passes through the daemon establishing the session, issuing
+  the code, and the device confirming it. Until V4-204 the site's login could
+  not occur in the model at all, and the `state` property above was true of
+  a protocol that logged nobody in (audit F281).
 - **Rotation binding**: a committed rotation was requested in that session.
 
 ## Why the controls exist
 
-A proof that cannot fail proves nothing. `gen_controls.py` derives nine
+A proof that cannot fail proves nothing. `gen_controls.py` derives thirteen
 variants from `authd.pv` by exact string replacement, each asserting the edit
 changed the file:
 
@@ -33,6 +38,12 @@ changed the file:
   key becomes recoverable — so both halves are load-bearing); drop
   `handshake_id` from the rotation digest, or skip the outgoing-key signature,
   while leaking the record key (rotation is no longer bound to its session).
+  Since V4-204 the other four properties have one each: the daemon skips
+  `sig_A` (it no longer authenticates the device); the device takes the
+  daemon's first record without decrypting it (key confirmation breaks); the
+  login code is also sent in the clear (it is no longer secret); the site
+  does not compare the `state` (a login can land in a session that never
+  began it). Every query now has a control.
 
 The base *proves* each property "true"; a control makes the same query "false"
 or "cannot be proved". Either regression means the guarantee is gone, which is
@@ -41,7 +52,38 @@ a control, and requires "is true" for the base and resilience runs. Two
 rotation controls land on "cannot be proved" rather than "false": injective
 agreement with a leaked key is a hard case for ProVerif's resolution (the
 P5′ risk V4-4 named), and the honest reading is that the check under test is
-exactly what moved the property from provable to unprovable.
+exactly what moved the property from provable to unprovable. The login-code
+control lands there too.
+
+## Limits
+
+What the model leaves out, so that nothing is read into it:
+
+- **One honest device, no dishonest enrolled one.** The daemon's process is
+  given the device's id and key; the code resolves a key by the handle
+  claimed, and answers an unknown handle with a decoy. Misbinding between
+  two enrolled devices is not analysed. The identities are in both
+  signatures' transcripts and in the KDF, which is the usual defence; the
+  model does not show it.
+- **No long-term key is ever given to the attacker.** Forward secrecy and
+  key-compromise impersonation are not modelled, so nothing here supports
+  or contradicts the protocol specification's statement about them.
+- **`state` reaches the daemon on a channel the attacker cannot write.**
+  It travels in the WebSocket URL, under the site's TLS. The property is
+  about a web attacker who chooses which session a code is presented in
+  (login-CSRF), not one who rewrites the page's own connection.
+- **Records are bare encryption.** No sequence numbers, no associated data,
+  no BYE, no `ROTATE_ACK`; a completed rotation does not change the key the
+  daemon expects next. Replay protection and "the old key is refused
+  afterwards" rest on tests, not on this model.
+- **A completed rotation is not exhibited.** ProVerif proves that a rotation
+  the daemon commits was requested in that session, and its two controls
+  bite; asked to exhibit a run that reaches a committed rotation, it
+  answers "cannot be proved" either way. That the honest rotation completes
+  is shown by the tests.
+- **Secrecy and agreement name the client-to-server key.** The other
+  direction's key has the same inputs and protects the login code, whose
+  secrecy is its own query.
 
 ## Running it
 

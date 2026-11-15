@@ -27,6 +27,18 @@ expect base authd.pv \
   "event(codeIssued(d,st_1,cd)) && attacker(cd)) is true" \
   "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1)) is true" \
   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true"
+# V4-204 (F281): the events the properties speak of can OCCUR. "not event(X)
+# is false" is ProVerif exhibiting a run that reaches X. Until V4-204 the
+# site's login could not occur at all, and the state query above was true of
+# a protocol that never logged anyone in. A site login is reached only
+# through the daemon establishing, the code being issued and the initiator
+# confirming it, so this one run covers the whole login path.
+echo "-- reachability: the honest protocol runs --"
+expect reachable authd.pv \
+  "not event(siteLoggedIn(d,st_1)) is false" \
+  "not event(codeIssued(d,st_1,cd)) is false" \
+  "not event(initEstablished(a,b,s,nb,k)) is false" \
+  "not event(respEstablished(a,b,s,nb,k)) is false"
 echo "-- resilience: one KEX half or the record key leaks, guarantee holds --"
 expect leak_kem controls/leak_kem.pv "event(initEstablished(a,b,s,nb,k)) && attacker(k)) is true"
 expect leak_dh  controls/leak_dh.pv  "event(initEstablished(a,b,s,nb,k)) && attacker(k)) is true"
@@ -46,6 +58,10 @@ broken ctl_sigb        controls/sigb.pv       "inj-event(initEstablished(a,b,s,n
 broken ctl_peerid      controls/peerid.pv     "inj-event(initEstablished(a,b,s,nb,k)) ==> inj-event(respSentServerHello(a,b,s,nb))"
 broken ctl_kdf_nodh    controls/kdf_nodh.pv   "event(initEstablished(a,b,s,nb,k)) && attacker(k))"
 broken ctl_kdf_nokem   controls/kdf_nokem.pv  "event(initEstablished(a,b,s,nb,k)) && attacker(k))"
+broken ctl_siga        controls/siga.pv       "inj-event(respEstablished(a,b,s,nb,k)) ==> inj-event(initEstablished(a,b,s,nb,k))"
+broken ctl_conf        controls/conf.pv       "inj-event(initConfirmed(a,b,s,nb,k)) ==> inj-event(respEstablished(a,b,s,nb,k))"
+broken ctl_codeplain   controls/codeplain.pv  "event(codeIssued(d,st_1,cd)) && attacker(cd))"
+broken ctl_state       controls/state.pv      "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1))"
 broken ctl_rot_hsid    controls/rot_hsid.pv   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
 broken ctl_rot_sigold  controls/rot_sigold.pv "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
 echo "---"

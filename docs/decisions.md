@@ -17015,3 +17015,47 @@ No code.
 
 Counts: 567 mutations, 98 campaigns, 609 anchors; 280 findings; spec v1.60,
 102 errata (all unchanged by this step).
+
+## V4-204: the model's login can happen, and every query has a control (F281)
+
+An eleventh reviewer agent compared `formal/authd.pv` with the code it is a
+model of. On the two things a model must get right it found agreement,
+field by field: `sig_B` and `sig_A` cover what `transcript.c` hashes, and
+the key term has the KDF's inputs, both secrets, the session id, both
+identities, the transcript hash and the direction. The model signs nothing
+the code does not. What was wrong was the model's own evidence.
+
+**Reproduced before changed.** ProVerif is not on this machine; it was
+built in a container from the tarball the nightly pins, by the same hash.
+The committed model ran as the nightly's does (base, three resilience
+runs, six controls). Then one added query, `event(siteLoggedIn(d,st))`:
+`not event(...) is true`. The site's login was unreachable.
+
+**The repair.** Two private channels stand for the two places TLS is: the
+page's WebSocket URL, which carries `state` to the daemon, and the page's
+POST of its code to the site. The attacker still owns the network between
+device and daemon for every handshake message, and now also chooses the
+`state` a code is presented under at the site. That is the web attacker
+login-CSRF is about. With that, the site's login is reachable, the
+property is proved, and removing the site's comparison makes it false.
+
+**What "reachable" covers.** A site login happens only after the daemon
+established the session, issued the code and the device decrypted it, so
+the one exhibited run covers the login path. For a committed rotation
+ProVerif answers "cannot be proved" to both the property's negation and a
+marker published after it; that is stated in the README, not papered over.
+
+**Four controls.** `siga`, `conf`, `codeplain`, `state`. Each was run and
+each makes its query unprovable; `codeplain` lands on "cannot be proved",
+like the rotation controls.
+
+**Stated, not fixed.** The Limits section. In particular the protocol
+specification says the handshake gives forward secrecy; the model never
+gives the attacker a long-term key, so it neither supports nor contradicts
+that sentence. The specification is not edited here.
+
+**Not proved until the nightly runs it.** The container run is this
+machine's; the `formal` nightly job is the one of record.
+
+Counts: 567 mutations, 98 campaigns, 609 anchors (unchanged); 281 findings;
+spec v1.60, 102 errata (unchanged).
