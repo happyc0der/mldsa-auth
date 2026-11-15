@@ -17284,3 +17284,23 @@ is not changed.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 289 findings
 (F273 and F288 open); spec v1.61, 103 errata (unchanged).
+
+## V4-212: cleanup after V4-207 to V4-209 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `63e9955`, now main: CI
+  43695429311 (16/16), nightly 43695431406 (114/114, 99 campaigns).
+- Main's push CI on that commit, 43699675196: 16/16.
+- The bench workflow, dispatched once on the same commit (43695441981),
+  ran five suites: V4-208's change to the runner works on Linux. What that
+  run measured is V4-210.
+- V4-210 and V4-211 sit under this entry and go to CI and the nightly with
+  it as one branch.
+- Open for the owner: F273 (the unit and a refused configuration), F288
+  (the floor on server hardware), the reference site's one login state per
+  session, and whether the symbolic model should cover the compromise of a
+  long-term key.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors; 289 findings (F273 and
+F288 open); spec v1.61, 103 errata (all unchanged by this step).
