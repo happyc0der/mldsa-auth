@@ -629,52 +629,6 @@ kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
 grep -q '^info event=stopped accepted=' "$TMP/su-hup.log" \
     || fail "after a SIGHUP, SIGTERM no longer drains and stops the daemon -- the canary (F206): $(cat "$TMP/su-hup.log")"
 echo "PASS: E2E: SIGHUP does not stop the daemon; each one is logged as 'warn event=sighup-ignored', and SIGTERM still drains and stops it (F206)"
-# V4-201, F280: the daemon started with standard input, output and error ALL
-# closed. Without the fix its first open descriptors are 0, 1 and 2, and the
-# first file it opens for writing is the store: every log line it "prints to
-# standard error" is written into one of its own files. The daemon must
-# serve, stop cleanly, and leave a store that still verifies and holds no log
-# text.
-"$DAEMON" --config "$TMP/su.conf" <&- >&- 2>&- &
-SUPID=$!
-i=0
-while ! "$ADMIN" list-users --socket "$TMP/su-a.sock" > "$TMP/su-nofd.txt" 2> /dev/null; do
-    i=$((i + 1))
-    [ "$i" -gt 400 ] && fail "a daemon started with descriptors 0-2 closed never answered its admin socket (F280)"
-    sleep 0.05
-done
-# What the running daemon has on 0, 1 and 2: /dev/null, three times. Looked at
-# directly, because where a stray log line lands otherwise depends on the
-# order the platform hands out descriptors (on macOS the leg below this found
-# nothing with the fix removed).
-if [ -d "/proc/$SUPID/fd" ]; then
-    f280_fds="$(readlink "/proc/$SUPID/fd/0") $(readlink "/proc/$SUPID/fd/1") $(readlink "/proc/$SUPID/fd/2")"
-elif command -v lsof > /dev/null 2>&1; then
-    f280_fds=$(lsof -a -p "$SUPID" -d 0,1,2 -Fn 2> /dev/null | sed -n 's/^n//p' | tr '\n' ' ' | sed 's/ $//')
-else
-    f280_fds="/dev/null /dev/null /dev/null"
-    echo "  (neither /proc nor lsof: the daemon's descriptors are not inspected here)"
-fi
-[ "$f280_fds" = "/dev/null /dev/null /dev/null" ] \
-    || { kill -TERM "$SUPID"; fail "a daemon started with descriptors 0-2 closed has something other than /dev/null on them: '$f280_fds' (F280)"; }
-kill -TERM "$SUPID"
-rc=0
-wait "$SUPID" || rc=$?
-SUPID=""
-[ "$rc" -eq 0 ] || fail "a daemon started with descriptors 0-2 closed exited $rc on SIGTERM (F280)"
-f280_in=0
-for f in "$TMP"/su/*; do
-    [ -f "$f" ] || continue
-    if grep -a -q -e 'event=started' -e 'event=listening' -e 'event=stopped' "$f"; then
-        f280_in=1
-        echo "  log text found in $f"
-    fi
-done
-[ "$f280_in" -eq 0 ] || fail "a daemon started with standard error closed wrote its log into its own files (F280)"
-"$ADMIN" audit-verify --store "$TMP/su/store.sqlite3" --key "$TMP/su/server.ek" \
-    --passphrase-file "$TMP/su/pass" --server-id authd > "$TMP/su-nofd-av.txt" 2>&1 \
-    || fail "after a daemon ran with descriptors 0-2 closed its store no longer verifies (F280): $(cat "$TMP/su-nofd-av.txt")"
-echo "PASS: E2E: a daemon started with descriptors 0, 1 and 2 closed serves, stops with 0, and writes no log text into its store (F280)"
 # F219 (V4-137): a stop while the site is being answered. A handler queues
 # its reply and the loop writes it on its next turn; the stop waited for the
 # protocol connections alone, so a SIGTERM that landed during a handler ended
@@ -769,6 +723,56 @@ done
 grep -q '^info event=draining$' "$TMP/su-dr.log" && grep -q '^info event=stopped accepted=' "$TMP/su-dr.log" \
     || fail "the daemon of the drain leg did not log draining and stopped (F219): $(cat "$TMP/su-dr.log")"
 echo "PASS: E2E: a daemon sent SIGTERM while it is answering the site writes the reply before it stops (F219)"
+# (This leg stands AFTER the F219 leg, V4-202: both check a daemon's exit
+# status at a clean stop, and campaign v99's LF2 is credited to the F219
+# leg's line. Standing before it, this one failed first and LF2 "survived"
+# on the nightly for want of its named line.)
+# V4-201, F280: the daemon started with standard input, output and error ALL
+# closed. Without the fix its first open descriptors are 0, 1 and 2, and the
+# first file it opens for writing is the store: every log line it "prints to
+# standard error" is written into one of its own files. The daemon must
+# serve, stop cleanly, and leave a store that still verifies and holds no log
+# text.
+"$DAEMON" --config "$TMP/su.conf" <&- >&- 2>&- &
+SUPID=$!
+i=0
+while ! "$ADMIN" list-users --socket "$TMP/su-a.sock" > "$TMP/su-nofd.txt" 2> /dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] && fail "a daemon started with descriptors 0-2 closed never answered its admin socket (F280)"
+    sleep 0.05
+done
+# What the running daemon has on 0, 1 and 2: /dev/null, three times. Looked at
+# directly, because where a stray log line lands otherwise depends on the
+# order the platform hands out descriptors (on macOS the leg below this found
+# nothing with the fix removed).
+if [ -d "/proc/$SUPID/fd" ]; then
+    f280_fds="$(readlink "/proc/$SUPID/fd/0") $(readlink "/proc/$SUPID/fd/1") $(readlink "/proc/$SUPID/fd/2")"
+elif command -v lsof > /dev/null 2>&1; then
+    f280_fds=$(lsof -a -p "$SUPID" -d 0,1,2 -Fn 2> /dev/null | sed -n 's/^n//p' | tr '\n' ' ' | sed 's/ $//')
+else
+    f280_fds="/dev/null /dev/null /dev/null"
+    echo "  (neither /proc nor lsof: the daemon's descriptors are not inspected here)"
+fi
+[ "$f280_fds" = "/dev/null /dev/null /dev/null" ] \
+    || { kill -TERM "$SUPID"; fail "a daemon started with descriptors 0-2 closed has something other than /dev/null on them: '$f280_fds' (F280)"; }
+kill -TERM "$SUPID"
+rc=0
+wait "$SUPID" || rc=$?
+SUPID=""
+[ "$rc" -eq 0 ] || fail "a daemon started with descriptors 0-2 closed exited $rc on SIGTERM (F280)"
+f280_in=0
+for f in "$TMP"/su/*; do
+    [ -f "$f" ] || continue
+    if grep -a -q -e 'event=started' -e 'event=listening' -e 'event=stopped' "$f"; then
+        f280_in=1
+        echo "  log text found in $f"
+    fi
+done
+[ "$f280_in" -eq 0 ] || fail "a daemon started with standard error closed wrote its log into its own files (F280)"
+"$ADMIN" audit-verify --store "$TMP/su/store.sqlite3" --key "$TMP/su/server.ek" \
+    --passphrase-file "$TMP/su/pass" --server-id authd > "$TMP/su-nofd-av.txt" 2>&1 \
+    || fail "after a daemon ran with descriptors 0-2 closed its store no longer verifies (F280): $(cat "$TMP/su-nofd-av.txt")"
+echo "PASS: E2E: a daemon started with descriptors 0, 1 and 2 closed serves, stops with 0, and writes no log text into its store (F280)"
 # F208 (V4-124): a loop that fails. The daemon logged error event=loop-failed
 # and then exited 0, which systemd reads as a clean stop: Restart=on-failure
 # left the service down. Linux's prlimit can stage it from outside -- poll()

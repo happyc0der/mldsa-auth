@@ -1063,6 +1063,57 @@ static void test_rotate(void)
              AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
              "rotate: a ROTATE whose flags byte changed after signing is REJECTED");
 
+    /* V4-198 (spec erratum 102): the ORDER of the checks. Both signatures are
+     * verified before the store is asked anything about pk_new. A ROTATE
+     * naming a key that is already enrolled, with a sig_new that does not
+     * verify, is therefore refused for its signature: the journal says
+     * rotate-sig-new and nothing about the store. With the store asked first
+     * (the order spec 6.3 used to state) an authenticated peer could time
+     * "that key is enrolled somewhere" without holding the key; in this
+     * order reaching that check needs a valid sig_new, which needs the key. */
+    {
+        char lpath[512];
+        snprintf(lpath, sizeof lpath, "%s/rotate_order.log", g_dir);
+        FILE *lf = fopen(lpath, "w+");
+        CHECK(lf != NULL, "rotate: order capture file");
+        if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+        CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session (order)");
+        uint8_t dig_o[32], so[MLDSA_SIGNATURE_MAX_BYTES], sn[MLDSA_SIGNATURE_MAX_BYTES];
+        size_t sol = 0, snl = 0;
+        (void)authmsg_rotate_digest(dig_o, AUTHMSG_LABEL_ROTATE_OLD, c.hsid, 0u,
+                                    HANDLE1, sizeof HANDLE1, old_kp.public_key, other_kp.public_key);
+        /* sig_new by the WRONG key (the old one): well-formed, does not verify
+         * under other_kp, whose public half is the in-use pk_new. */
+        CHECK(mldsa_sign(so, &sol, dig_o, sizeof dig_o, &old_kp) == 0 &&
+              mldsa_sign(sn, &snl, dig_o, sizeof dig_o, &old_kp) == 0, "rotate: sign for the order check");
+        CHECK(authmsg_encode_rotate(rot, sizeof rot, &rl, 0u, HANDLE1, sizeof HANDLE1,
+                                    other_kp.public_key, so, sol, sn, snl) == AUTHMSG_OK,
+              "rotate: encode for the order check");
+        pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+        CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
+              "rotate: an in-use key with a sig_new that does not verify is refused (the canary)");
+        client_close(&c);
+        authd_log_init(stderr, AUTHD_LOG_ERROR);
+        char *lb = NULL;
+        long sz = 0;
+        if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+            fseek(lf, 0, SEEK_SET) == 0) {
+            lb = (char *)calloc((size_t)sz + 1u, 1u);
+            if (lb != NULL && fread(lb, 1, (size_t)sz, lf) != (size_t)sz) { free(lb); lb = NULL; }
+        }
+        CHECK(lb != NULL && strstr(lb, "rotate-sig-new") != NULL,
+              "rotate: ...for its signature: the journal says rotate-sig-new (erratum 102)");
+        CHECK(lb != NULL && strstr(lb, "rotate-store-refused") == NULL && strstr(lb, "rotate-store-error") == NULL,
+              "rotate: ...and the store was not asked about the key first (erratum 102)");
+        free(lb);
+        if (lf != NULL) { (void)fclose(lf); }
+    }
+    /* (Placed BEFORE the cases a missing sig_new check breaks, V4-202: with
+     * that check removed, the first of them accepts a ROTATE and every later
+     * session in this test starts from a changed key. On Linux the test did
+     * not get as far as this block -- the nightly's v126 RO1 "survived" for
+     * want of its named line. Here nothing has been accepted yet.) */
+
     /* sig_new by the OLD key: no proof of possession of the incoming key. */
     ROT_CASE("rotate: session (sig_new by old)", 0u, 0u, HANDLE1, sizeof HANDLE1, &old_kp,
              AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW, 0, AUTHMSG_ERR_REJECTED,
@@ -1197,52 +1248,6 @@ static void test_rotate(void)
         CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
               "rotate: pk-in-use and bad-signature produce the SAME error code");
         client_close(&c);
-    }
-
-    /* V4-198 (spec erratum 102): the ORDER of the checks. Both signatures are
-     * verified before the store is asked anything about pk_new. A ROTATE
-     * naming a key that is already enrolled, with a sig_new that does not
-     * verify, is therefore refused for its signature: the journal says
-     * rotate-sig-new and nothing about the store. With the store asked first
-     * (the order spec 6.3 used to state) an authenticated peer could time
-     * "that key is enrolled somewhere" without holding the key; in this
-     * order reaching that check needs a valid sig_new, which needs the key. */
-    {
-        char lpath[512];
-        snprintf(lpath, sizeof lpath, "%s/rotate_order.log", g_dir);
-        FILE *lf = fopen(lpath, "w+");
-        CHECK(lf != NULL, "rotate: order capture file");
-        if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
-        CHECK(rotate_session(&d, &c, &old_kp) == 0, "rotate: session (order)");
-        uint8_t dig_o[32], so[MLDSA_SIGNATURE_MAX_BYTES], sn[MLDSA_SIGNATURE_MAX_BYTES];
-        size_t sol = 0, snl = 0;
-        (void)authmsg_rotate_digest(dig_o, AUTHMSG_LABEL_ROTATE_OLD, c.hsid, 0u,
-                                    HANDLE1, sizeof HANDLE1, old_kp.public_key, other_kp.public_key);
-        /* sig_new by the WRONG key (the old one): well-formed, does not verify
-         * under other_kp, whose public half is the in-use pk_new. */
-        CHECK(mldsa_sign(so, &sol, dig_o, sizeof dig_o, &old_kp) == 0 &&
-              mldsa_sign(sn, &snl, dig_o, sizeof dig_o, &old_kp) == 0, "rotate: sign for the order check");
-        CHECK(authmsg_encode_rotate(rot, sizeof rot, &rl, 0u, HANDLE1, sizeof HANDLE1,
-                                    other_kp.public_key, so, sol, sn, snl) == AUTHMSG_OK,
-              "rotate: encode for the order check");
-        pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
-        CHECK(pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
-              "rotate: an in-use key with a sig_new that does not verify is refused (the canary)");
-        client_close(&c);
-        authd_log_init(stderr, AUTHD_LOG_ERROR);
-        char *lb = NULL;
-        long sz = 0;
-        if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
-            fseek(lf, 0, SEEK_SET) == 0) {
-            lb = (char *)calloc((size_t)sz + 1u, 1u);
-            if (lb != NULL && fread(lb, 1, (size_t)sz, lf) != (size_t)sz) { free(lb); lb = NULL; }
-        }
-        CHECK(lb != NULL && strstr(lb, "rotate-sig-new") != NULL,
-              "rotate: ...for its signature: the journal says rotate-sig-new (erratum 102)");
-        CHECK(lb != NULL && strstr(lb, "rotate-store-refused") == NULL && strstr(lb, "rotate-store-error") == NULL,
-              "rotate: ...and the store was not asked about the key first (erratum 102)");
-        free(lb);
-        if (lf != NULL) { (void)fclose(lf); }
     }
 
     /* The happy path LAST: it changes the active key, so nothing after it can

@@ -19,3 +19,8 @@ oom-*
 slow-unit-*
 formal/controls/
 formal/out/
+
+# tests/test_authd_conn.c makes its scratch directory in the working
+# directory. Under ctest that is the build tree; run by hand from here it
+# is this directory, and `git add -A` once committed one (V4-202).
+/authd-conn-??????/

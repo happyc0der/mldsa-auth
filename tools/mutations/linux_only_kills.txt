@@ -14,3 +14,4 @@
 v65 RU1 the peer check compares the daemon's own uid: only a real second user (nobody, via setpriv) can tell
 v75 KC5 keyfile_open ignores the owner: only root can make another user's key file readable to the client
 v79 PF6 authd_secret_read ignores the owner: only root can make another user's passphrase file readable to the client
+v99 LF1 a loop that fails is staged with prlimit on the running daemon (F208): Linux has it, nothing portable does, and the leg is skipped elsewhere

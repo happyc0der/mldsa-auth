@@ -1,4 +1,3 @@
 SF1|^test_authd_cli$|stdfds: with 0, 1 and 2 closed all three are opened on /dev/null, and the next descriptor is 3 or more (F280)
 SF2|^authd_e2e$|authd_client login started with standard output closed exited 0, expected 1 and 'standard output is closed' (F280)
 SF3|^authd_e2e$|authd_admin list-users started with standard output closed exited 0, expected 1 and 'standard output is closed' (F280)
-SF4|^authd_e2e$|a daemon started with descriptors 0-2 closed has something other than /dev/null on them

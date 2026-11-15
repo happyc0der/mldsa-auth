@@ -16947,3 +16947,53 @@ again as one branch.
 
 Counts: 568 mutations, 98 campaigns, 610 anchors; 280 findings; spec v1.60,
 102 errata (unchanged).
+
+## V4-202: three campaigns that differ on Linux (after V4-198 and V4-201)
+
+No finding. The nightly on the branch carrying V4-190 to V4-201, run
+43660309484, was 110 of 113; CI on the same commit, 43660307451, was 16/16
+with every Linux job green, so V4-201's fix holds there. The three red
+jobs were campaigns, each for a reason in the campaign, none in the
+daemon.
+
+- **v128 SF4, equivalent under the sanitizer on Linux.** The mutant stops
+  the daemon looking at its descriptors. The nightly's campaigns run in
+  AddressSanitizer trees, and on Linux that runtime reserves descriptors
+  0-2 for itself when it finds them closed: the mutant daemon had
+  `/dev/null` on all three anyway. On macOS, and in a plain Linux build,
+  nothing does that. The mutant is removed from the campaign and described
+  in its script; the check it was written for is shown by hand on a plain
+  build.
+- **v126 RO1, its named line never reached on Linux.** With sig_new
+  unverified, an earlier case in `test_authd_conn` accepts a ROTATE, and
+  everything after it starts from a changed key; on Linux the test ended
+  before the order check. The order check now stands before the first case
+  that mutant breaks, where nothing has been accepted yet.
+- **v99 LF2, pre-empted.** V4-201's daemon leg in `authd_e2e` checked a
+  clean stop's exit status before the F219 leg did, and LF2 is credited to
+  the F219 leg's line. The new leg now stands after it.
+
+The second and third are the shape recorded under V4-137 and again under
+"V4-170, afterwards": a new check placed in front of an older campaign's
+named line takes its kill, and only running every campaign shows it. The
+first is new: a mutant can be real on one platform and equivalent on
+another because of what the test build's own runtime does.
+
+**v99 LF1, listed as Linux's.** Rerunning v99 here showed its other
+mutant SURVIVED(BAD) on macOS: the leg that kills it stages a failing loop
+with `prlimit`, which only Linux has, and the mutant was not on
+`linux_only_kills.txt`. The nightly has always killed it. It is listed now,
+so a local run of v99 finishes clean and still says the nightly is the
+authority.
+
+**A scratch directory was committed, and is not in what lands.**
+`test_authd_conn` makes its scratch directory in the working directory.
+Run by hand from the repository root while a mutant was being tried, it
+left `authd-conn-J4mo8n/` there, thirteen throwaway SQLite stores and
+logs, 838 KB, and V4-198's `git add -A` took it. It was found here, on the
+unlanded branch. The four commits from V4-198 on were rebuilt on a new
+branch without it (their content is otherwise byte for byte the same; the
+old branch was deleted, not overwritten), and the name is now ignored.
+
+Counts: 567 mutations, 98 campaigns, 609 anchors; 280 findings; spec v1.60,
+102 errata.

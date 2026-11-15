@@ -10,7 +10,13 @@ catch it (F90).
     SF1   stdfds_ensure_open reports the closed ones and opens nothing.
     SF2   authd_client goes on with standard output closed.
     SF3   authd_admin goes on with standard output closed.
-    SF4   The daemon does not look at its descriptors at all.
+
+(The daemon not calling it at all is not here. On macOS that mutant is killed
+by authd_e2e's "has something other than /dev/null on them"; on Linux the
+campaigns run under AddressSanitizer, whose runtime reserves descriptors 0-2
+for itself when they are closed, so the mutant changes nothing there and the
+nightly reported it SURVIVED (run 43660309484). Shown by hand on a plain
+build, V4-201 and V4-202.)
 """
 import sys, pathlib
 
@@ -24,9 +30,6 @@ M = {
     "SF3": [("apps/authd/authd_admin.c",
              "    if ((closed & STDFDS_STDOUT_WAS_CLOSED) != 0) {\n",
              "    if (0 && (closed & STDFDS_STDOUT_WAS_CLOSED) != 0) { /* MUTATION SF3 */\n")],
-    "SF4": [("apps/authd/authd_main.c",
-             "    if (stdfds_ensure_open() < 0) {\n",
-             "    if (0 && stdfds_ensure_open() < 0) { /* MUTATION SF4 */\n")],
 }
 
 def main():
