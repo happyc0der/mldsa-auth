@@ -17366,3 +17366,21 @@ RD1-RD4.
 
 Counts: 571 mutations, 100 campaigns, 615 anchors; 291 findings (F273 and
 F288 open); spec v1.61, 103 errata (unchanged).
+
+## V4-214: cleanup after V4-210 to V4-212 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `a85c82a`, now main: CI
+  43701052536 (16/16), nightly 43701054796 (114/114, 99 campaigns).
+- V4-213 sits under this entry and goes to CI and the nightly with it. Its
+  change is at the head of the store's open path, which a hundred
+  campaigns pass through; three older mutants were already found changed
+  by it on this machine. The nightly's Linux run of all of them is the
+  check that none was missed.
+- Open for the owner: F273, F288, the reference site's one login state per
+  session, whether the symbolic model should cover long-term key
+  compromise, and what the audit chain should record (V4-213's notes).
+
+Counts: 571 mutations, 100 campaigns, 615 anchors; 291 findings (F273 and
+F288 open); spec v1.61, 103 errata (all unchanged by this step).
