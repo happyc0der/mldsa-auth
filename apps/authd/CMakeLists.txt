@@ -52,6 +52,7 @@ endif()
 # header-only, in cli_common.h.
 add_library(mldsa_cli_common STATIC
   authd_secret.c
+  stdfds.c
 )
 target_include_directories(mldsa_cli_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mldsa_cli_common PUBLIC mldsa_core)

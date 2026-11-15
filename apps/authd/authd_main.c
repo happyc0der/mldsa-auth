@@ -38,6 +38,7 @@
 #include "recovery.h"
 #include "tokens.h"
 #include "secure_mem.h"
+#include "stdfds.h"
 #include "store.h"
 
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
@@ -103,6 +104,13 @@ static void usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+    /* V4-201, F280: before anything is opened. Started with standard error
+     * closed, the daemon's log lines would go to whichever file took
+     * descriptor 2 -- and the first file it opens for writing is the store.
+     * A closed one of the three becomes /dev/null instead. */
+    if (stdfds_ensure_open() < 0) {
+        return 1;
+    }
     const char *cfg_path = NULL;
     int check_only = 0;
 

@@ -16907,3 +16907,43 @@ W12 by hand against the new checks; campaign v127, LB1.
 
 Counts: 564 mutations, 97 campaigns, 606 anchors; 279 findings; spec v1.60,
 102 errata (unchanged).
+
+## V4-201: descriptors 0, 1 and 2 are open before anything else is (F280)
+
+**How it was found.** The branch carrying V4-190 to V4-199 failed CI on
+every Linux job and passed on every macOS one. The failing check was
+V4-194's own: a login with standard output closed exited 0. On Linux the
+client's socket had become descriptor 1, so the code was written, with
+success, to the daemon. V4-194 had checked a write that could fail and
+missed one that succeeds into the wrong place; its test passed on macOS
+because another descriptor took the number first.
+
+**The general defect.** No binary here made sure its three standard
+descriptors were open. For the CLIs that is a result written somewhere
+other than where the caller reads. For the daemon it is worse and was
+never observed: its log goes to descriptor 2, and with that closed the
+store is among the first things it opens for writing.
+
+**The fix, in one place.** `stdfds_ensure_open()`, called first in each
+`main()`: a closed 0, 1 or 2 becomes `/dev/null`. The daemon goes on, with
+its log discarded if that is what its starter chose. The CLIs refuse when
+standard output was closed: their output is their result.
+
+**Seeing it.** Where a stray line lands depends on the platform's
+descriptor order, so a test that looks for the damage is a test of the
+platform: with the fix removed the first version of the daemon leg passed
+here. The leg reads the running daemon's descriptors (`/proc` on Linux,
+`lsof` here) and requires `/dev/null` three times; without the fix
+descriptor 0 was libsodium's `/dev/urandom`.
+
+**V4-194's check.** Now a pipe whose reader has exited, SIGPIPE ignored,
+so the write really fails: v124 CW1 is still killed by it.
+
+**The branch.** `v4-199` is not landed and its remote branch is deleted.
+The whole stack, with V4-200 and this step, goes to CI and the nightly
+again as one branch.
+
+**Tests.** `test_authd_cli`, `authd_e2e`. Campaign v128, SF1-SF4.
+
+Counts: 568 mutations, 98 campaigns, 610 anchors; 280 findings; spec v1.60,
+102 errata (unchanged).

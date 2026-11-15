@@ -33,6 +33,7 @@
 
 #include "sdnotify.h"
 #include "authd_secret.h"
+#include "stdfds.h"
 #include "child_exit.h"
 #include "key_windows.h"
 #include "keyfile.h"
@@ -1881,6 +1882,47 @@ static void test_sd_watchdog(void)
     (void)unsetenv("WATCHDOG_USEC");
 }
 
+/* V4-201, F280: stdfds_ensure_open, in a child whose descriptors this test
+ * may close. The child reports through its exit status: 0, or 10 plus what
+ * went wrong. */
+static int stdfds_child(int close_mask, int want_mask)
+{
+    const pid_t pid = fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        for (int fd = 0; fd <= 2; fd++) {
+            if ((close_mask & (1 << fd)) != 0) { (void)close(fd); }
+        }
+        const int got = stdfds_ensure_open();
+        if (got != want_mask) { _exit(10); }
+        for (int fd = 0; fd <= 2; fd++) {
+            if (fcntl(fd, F_GETFD) == -1) { _exit(11 + fd); }
+        }
+        /* the next descriptor opened is none of the three */
+        const int next = open("/dev/null", O_RDONLY);
+        if (next <= 2) { _exit(20); }
+        /* a closed 1 or 2 became write-only /dev/null; a closed 0 read-only */
+        if ((close_mask & 2) != 0 && write(1, "x", 1) != 1) { _exit(21); }
+        if ((close_mask & 1) != 0) { char ch; if (read(0, &ch, 1) != 0) { _exit(22); } }
+        _exit(0);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid || !WIFEXITED(st)) { return -1; }
+    return WEXITSTATUS(st);
+}
+
+static void test_stdfds(void)
+{
+    CHECK(stdfds_child(0, 0) == 0, "stdfds: with all three open nothing is changed and the mask is 0 (the canary)");
+    CHECK(stdfds_child(7, 7) == 0,
+          "stdfds: with 0, 1 and 2 closed all three are opened on /dev/null, and the next descriptor is 3 or more (F280)");
+    CHECK(stdfds_child(2, STDFDS_STDOUT_WAS_CLOSED) == 0,
+          "stdfds: standard output alone closed is reported as that, and is writable afterwards (F280)");
+    CHECK(stdfds_child(4, STDFDS_STDERR_WAS_CLOSED) == 0 && stdfds_child(1, STDFDS_STDIN_WAS_CLOSED) == 0 &&
+              stdfds_child(5, STDFDS_STDIN_WAS_CLOSED | STDFDS_STDERR_WAS_CLOSED) == 0,
+          "stdfds: standard error, standard input, and the two together are each reported exactly (F280)");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1908,6 +1950,7 @@ int main(void)
     test_rotate_reply_refused_or_lost();
     test_passphrase_custody();
     test_credential_custody();
+    test_stdfds();
     test_sd_notify();
     test_sd_watchdog();
 
