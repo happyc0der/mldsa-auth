@@ -17229,3 +17229,39 @@ No code.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors; 287 findings; spec v1.61,
 103 errata (all unchanged by this step).
+
+## V4-210: the floor, measured on a server VM (F288, open)
+
+**How it came up.** V4-208 put `bench_decoy` on the bench runner's list.
+The bench workflow was dispatched once on that branch to show the runner
+change works on Linux (run 43695441981: `running 5 suites`, success). That
+was also the first time the decoy bench ran in Release on anything but
+the bench machine.
+
+**What it measured.** A Xeon 6975P-C shared VM. The lookup alone: 7.40 us
+for an enrolled handle, 6.90 for an unknown one, a difference nobody could
+miss (t = 271). Under the 10 us floor: 10.09 us for all three classes, no
+difference. Lookups over the floor: 48, 38 and 42 of 4,000. End to end:
+t = 3.06, below 4.5, all five cuts positive.
+
+**Why it is the owner's.** The floor's value is recorded as the owner's
+choice (V4-85), made on one fact: 10 us is twice the lookup's 99th
+percentile on the bench machine. On this VM the 99th percentile is 12 us.
+Nothing is shown to leak, and nothing was shown not to at the sample size
+that settled it before. Raising the floor costs every handshake the
+difference; leaving it accepts about one unhidden lookup in a hundred on
+such hosts; making it a setting moves the choice to the operator. Each is
+defensible and they are not mine to pick between. The numbers are in
+`bench/results.md` beside the earlier ones, and F288 is open.
+
+**What this step does not do.** It changes no code and no constant. It
+does not run the 100,000-a-class measurement on a runner: that is a
+workflow input away (`MLDSA_DECOY_SAMPLES`) and is what would say whether
+the end-to-end lean is real, if the owner wants it before deciding.
+
+**Also landed since V4-209's entry.** `63e9955` is main: CI 43695429311
+(16/16), nightly 43695431406 (114/114); main's push CI on `e3d58d2`,
+43695415386, 16/16.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 288 findings
+(F273 and F288 open); spec v1.61, 103 errata (unchanged).

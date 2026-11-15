@@ -981,6 +981,39 @@ two-sided.
 - A lookup slower than the floor is not hidden: a cold page, a contended
   store.
 
+### The floor on a shared server VM (V4-210, 2026-11-15)
+
+The first run of `bench_decoy` by the bench workflow (V4-208 put it on the
+runner's list): run 43695441981, one repetition, Release, on a GitHub-hosted
+`ubuntu-26.04` VM, an Intel Xeon 6975P-C with 4 logical cores, clock
+resolution 19 ns, 4,000 samples a class. The floor is 10 µs (V4-85).
+
+| Section | real | unknown | revoked | real vs unknown, max \|t\| | revoked vs unknown |
+|---|---|---|---|---|---|
+| ClientHello → ServerHello, end to end | 223.2 µs | 220.1 µs | 220.9 µs | 3.06 | 1.53 |
+| The lookup alone, no floor | 7.40 µs | 6.90 µs | 6.89 µs | **271.01** | 0.89 |
+| The lookup under its floor | 10.09 µs | 10.09 µs | 10.09 µs | 1.67 | 1.38 |
+
+Lookups that alone took longer than the floor: 48, 38 and 42 of 4,000,
+about 1 in 100. The unfloored lookup's pooled 99th percentile was 12.0 µs.
+
+What this says, and does not:
+
+- **The floor does its work at the median.** Unfloored, the enrolled
+  handle's lookup is half a microsecond slower and unmistakable (|t| 271).
+  Floored, the three classes have the same median and no difference shows.
+- **Its margin is thin on this hardware.** The floor's value was chosen as
+  twice the lookup's 99th percentile on the bench machine, about 5 µs. On
+  this VM the median is 7 µs and the 99th percentile 12 µs: above the
+  floor. About one lookup in a hundred is not hidden, against about one in
+  ten thousand in the 50 µs measurements above.
+- **End to end nothing shows at 4,000 a class, and every cut leans the
+  same way.** |t| is 3.06, below 4.5, with all five cuts positive for the
+  enrolled handle. That is one run on a shared machine. The 100,000-a-class
+  runs that settled this question for the bench machine have not been made
+  here.
+- One repetition, one VM type, neighbours unknown.
+
 ## Hardware and network matrix (V4-71, 2026-11-07)
 
 The owner asked how the protocol performs across hardware and network
