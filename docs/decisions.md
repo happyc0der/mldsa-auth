@@ -17210,3 +17210,22 @@ next reader of that output does not take the same turn.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 287 findings;
 spec v1.61, 103 errata (unchanged).
+
+## V4-209: cleanup after V4-206 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `e3d58d2`, now main: CI
+  43690981559 (16/16), nightly 43690983389 (114/114, 99 campaigns).
+- Main's push CI on the landing before it, 43690301240 on `ce7c200`: 16/16.
+- V4-207 and V4-208 were written while that branch was in CI and sit under
+  this entry; they go to CI and the nightly with it as one branch. The
+  bench workflow is not part of either: V4-208's change to it was run here
+  by hand, once, end to end.
+- Open for the owner, unchanged: F273 (what the unit does with a refused
+  configuration), the reference site's one login state per session, and
+  whether the symbolic model should cover the compromise of a long-term
+  key (V4-204's Limits).
+
+Counts: 569 mutations, 99 campaigns, 611 anchors; 287 findings; spec v1.61,
+103 errata (all unchanged by this step).
