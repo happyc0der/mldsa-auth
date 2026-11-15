@@ -316,6 +316,10 @@ int main(int argc, char **argv)
         const int pin = authd_conn_resolve_pin(&d.app, handles[k], HANDLE_LEN, pk, uid, sizeof uid, &uid_len);
         const uint64_t t1 = bench_now_ns();
         BENCH_REQUIRE(pin == (k == REAL ? 0 : 1), "the %s handle's resolution", class_name[k]);
+        /* The observer must have fired, or "over the floor: 0" below would be
+         * a count of nothing (V4-208, F287): the daemon skips the observer
+         * when it cannot read its clock. */
+        BENCH_REQUIRE(g_before_ns != 0u, "the pin observer reported the %s handle's lookup time", class_name[k]);
         if (g_before_ns > AUTHD_PIN_FLOOR_NS) { overruns[k]++; }
         f[k].v[f[k].n++] = (double)(t1 - t0) / 1000.0;
     }

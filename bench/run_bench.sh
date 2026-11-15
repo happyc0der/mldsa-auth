@@ -31,8 +31,19 @@ OUT="$BUILD/bench-results"
 # it is added, and one that is missing from the build fails loudly.
 SUITES=$(sed -n 's/^foreach(_bench \(.*\))$/\1/p' "$(dirname "$0")/CMakeLists.txt")
 [ -n "$SUITES" ] || { echo "cannot derive the suite list from bench/CMakeLists.txt"; exit 2; }
-# add_executable targets declared outside the foreach are named explicitly.
-SUITES="$SUITES authd"
+# add_executable targets declared outside the foreach are named explicitly --
+# ALL of them, and that is checked (V4-208, F287): bench_decoy was declared
+# beside bench_authd and never added to this line, so the one bench that
+# measures whether an enrolled handle can be told from an unknown one was
+# run by nothing but its 8-sample smoke.
+SUITES="$SUITES authd decoy"
+DECLARED=$(sed -n 's/^add_executable(bench_\([a-z_]*\) .*/\1/p' "$(dirname "$0")/CMakeLists.txt" | grep -v '^\$' | sort | tr '\n' ' ')
+for t in $DECLARED; do
+    case " $SUITES " in
+        *" $t "*) ;;
+        *) echo "bench_$t is declared in bench/CMakeLists.txt and not run by this script"; exit 2 ;;
+    esac
+done
 NSUITES=$(printf '%s\n' $SUITES | wc -l | tr -d ' ')
 
 for t in $SUITES; do

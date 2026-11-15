@@ -17180,3 +17180,33 @@ calls. The CSP header is checked on one page of three.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 286 findings;
 spec v1.61, 103 errata (unchanged).
+
+## V4-208: the bench workflow runs the decoy bench (F287)
+
+**The hole.** A list derived from the build file plus a hand-written
+addendum for what the derivation cannot see. The addendum had one entry of
+two. The script's own comment tells the story of F49, a hardcoded list
+beside a derived one; this was the same thing one line further down. The
+script now reads every `add_executable(bench_...)` in the build file and
+refuses to run if one of them is not in its list, so a third bench cannot
+be forgotten the same way.
+
+**Not a gate.** `bench_decoy` prints a t statistic and says whether it is
+above dudect's 4.5. It does not exit non-zero on a difference, and this
+step leaves that alone: the bench workflow runs on shared virtual
+machines, and a timing verdict there would fail for reasons that are not
+the daemon's. What changes is that the numbers exist for every bench run,
+where before there were none to read.
+
+**A number that looked like a finding and is not.** Run on this
+machine's ordinary test tree, the bench's in-process section printed every
+lookup over the 10 us floor and a real-against-unknown difference with
+|t| near 90. That tree is built without optimisation. The floor's comment
+and `bench/results.md` both say a Debug build's lookup is 14 to 15 us and
+that the floor is sized for a Release build's (99th percentile about 5 us;
+10 us was the owner's choice in V4-85). End to end, in the same run, the
+ServerHello's timing showed no difference (|t| 0.94). Recorded so that the
+next reader of that output does not take the same turn.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 287 findings;
+spec v1.61, 103 errata (unchanged).
