@@ -17405,3 +17405,26 @@ rerun whole.
 
 Counts: 573 mutations, 101 campaigns, 617 anchors; 292 findings (F273 and
 F288 open); spec v1.61, 103 errata (unchanged).
+
+## V4-216: cleanup after V4-213 to V4-215 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `a79c1d2`, now main: CI
+  43737639489 (16/16), nightly 43737641881 (116/116, 101 campaigns).
+- Before it, `ca83de2` (V4-213, V4-214): CI 43723686356 (16/16), nightly
+  43723688854 (115/115), main's push CI 43728904230 (16/16). V4-214's
+  entry called that nightly the check that V4-213's change to the store's
+  open path had altered no older mutant unnoticed: all 100 campaigns
+  passed on Linux.
+- Two of the store review's notes were looked at again and left. Two
+  internal reads answer "not found" for any failure: one only decides
+  whether a login says a rotation is due, and the other runs after a
+  three-table check in the same transaction that refuses first.
+- Open for the owner: F273 (the unit and a refused configuration), F288
+  (the floor on server hardware), the reference site's one login state per
+  session, what the audit chain should record, whether the symbolic model
+  should cover long-term key compromise, and pull request 1.
+
+Counts: 573 mutations, 101 campaigns, 617 anchors; 292 findings (F273 and
+F288 open); spec v1.61, 103 errata (all unchanged by this step).
