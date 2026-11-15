@@ -1,0 +1,4 @@
+RD1|^test_authd_store$|reader: opening and verifying a backup leaves it byte for byte as it was (F290)
+RD2|^test_authd_store$|reader: a store with no decoy key is refused, and is not given one (F290)
+RD3|^test_authd_store$|version: a schema_version with its top bit set is refused, not read as negative and old (F291)
+RD4|^test_authd_store$|version: zero is not a version (F291)

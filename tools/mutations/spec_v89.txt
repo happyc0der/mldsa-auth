@@ -1,8 +1,7 @@
 OE1|^test_authd_store$|existing: a path that names no file is an I/O failure (F193)
 OE2|^test_authd_store$|existing: a path that names no file is an I/O failure (F193)
-OE3|^test_authd_store$|existing: and it is left empty (F193)
+OE3|^test_authd_store$|existing: an empty file is not a store (F193)
 OE4|^test_authd_store$|existing: a database with no store id is not a store (F193)
-OE5|^test_authd_store$|busy: store_open_existing waits for the lock instead of failing (F192)
 OE6|^test_authd_store$|busy: the daemon's handle waits out a lock held for 60 ms (F192)
 OE7|^test_authd_store$|busy: the daemon's handle waits only briefly, then reports database-error
 OE8|^test_authd_cli$|audit-verify: a --store that names no file fails (1) as io (F193)

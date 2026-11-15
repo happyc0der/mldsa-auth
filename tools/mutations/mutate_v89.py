@@ -34,14 +34,20 @@ CLI = "apps/authd/authd_cli.c"
 M = {
     "OE1": [(ST, "    return open_impl(path, kek, 1, out);\n",
                  "    return open_impl(path, kek, 0 /* MUTATION OE1 */, out);\n")],
-    "OE2": [(ST, "                        existing ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),\n",
+    # (OE2 and OE4 re-anchored in V4-213: F290 made the reader's open
+    # read-only and added a second `!found && existing`. Same mutants.)
+    "OE2": [(ST, "                        existing ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),\n",
                  "                        (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE), /* MUTATION OE2 */\n")],
     "OE3": [(ST, "        if (!has) { r = STORE_ERR_DAMAGED; goto fail; }\n",
                  "        if (0 && !has) { r = STORE_ERR_DAMAGED; goto fail; } /* MUTATION OE3 */\n")],
-    "OE4": [(ST, "    if (!found && existing) {\n",
-                 "    if (0 && !found && existing) { /* MUTATION OE4 */\n")],
-    "OE5": [(ST, "    if (sqlite3_busy_timeout(s->db, existing ? STORE_BUSY_MS_OFFLINE : STORE_BUSY_MS_DAEMON) != SQLITE_OK) {\n",
-                 "    if (sqlite3_busy_timeout(s->db, STORE_BUSY_MS_DAEMON) != SQLITE_OK) { /* MUTATION OE5 */\n")],
+    "OE4": [(ST, "    if (!found && existing) {\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */\n",
+                 "    if (0 && !found && existing) { /* MUTATION OE4 */\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */\n")],
+    # (OE5, the reader given the daemon's short busy timeout, is gone since
+    # V4-213: a reader opens read-only and takes a read transaction, which a
+    # writer holding the store's lock does not block, so no timeout is ever
+    # waited out and the mutant changed nothing a test can see. OE3's kill is
+    # now the status, not the file: an empty file is no longer written to by
+    # a reader whatever the gate does.)
     "OE6": [(ST, "#define STORE_BUSY_MS_DAEMON  250\n",
                  "#define STORE_BUSY_MS_DAEMON  0 /* MUTATION OE6 */\n")],
     "OE7": [(ST, "    if (sqlite3_busy_timeout(s->db, existing ? STORE_BUSY_MS_OFFLINE : STORE_BUSY_MS_DAEMON) != SQLITE_OK) {\n",

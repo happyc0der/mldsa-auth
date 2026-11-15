@@ -17304,3 +17304,65 @@ No code.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors; 289 findings (F273 and
 F288 open); spec v1.61, 103 errata (all unchanged by this step).
+
+## V4-213: a reader changes nothing (F290, F291)
+
+A thirteenth reviewer agent read `store.c` from its first line to its
+last. Every transaction is paired on every path and every statement
+finalized; the audit chain's append is inside each mutation's transaction;
+enrollment, revocation, the sweep and the listings held. Two things at the
+very start of the file did not.
+
+**F290.** There are two opens: one for the daemon and `init`, which make a
+store, and one for the tools that read somebody else's. They shared a
+body, and the reader's "creates nothing" was true only of the file itself
+and of the store id. Reproduced with a backup: its digest before and after
+`authd_admin audit-verify`. The reader now opens read-only and the body's
+writes are the creating open's alone.
+
+**What read-only means for a live store.** The runbook runs `audit-verify`
+beside the running daemon, on a store in WAL mode. SQLite reads such a
+file through its `-shm`, which is there while the daemon is, and the
+end-to-end test does exactly this, before and after the change. Against a
+store nobody has open, SQLite needs to create that file, so the tool must
+be able to write in the store's directory, as the service user can.
+
+**A reader's store handle is for reading.** Nothing checks that at each
+call; the two callers verify and compute a pseudonym. A write through it
+fails in SQLite. Said in the header.
+
+**F291.** One line. The version is a count from 1, so it is read as one.
+
+**Four older mutants re-anchored,** two in v77 and two in v89, whose lines
+these fixes rewrote. Same mutants; each tried by hand and rerun.
+
+**Three more changed by what the fixes do, found by rerunning both
+campaigns whole.** v77 SD1 (the version's length check removed) and v89
+OE5 (a reader given the daemon's short busy timeout) survived: each is now
+a change no input can show, the first because a short value decodes to
+zero or to something far too large, the second because a read-only reader
+is not blocked by a writer at all. Both are removed from their campaigns,
+with the reason beside where they stood. v89 OE3 (the "has a meta table"
+gate removed) is still killed, by the status and no longer by the file
+having been written to; its named check is changed to the one that fails.
+None of the three would have been seen without running the older
+campaigns: their anchors were intact.
+
+**Noted from the same review, not changed.**
+
+- `store_enroll_device_ex` does not re-check that the user is active
+  inside its transaction (the handler checks before it). No second writer
+  exists today.
+- The audit row for an enrollment or a rotation does not name the key, and
+  `REVOKE-TOKENS` and `BACKUP` append no row. A change to what the chain
+  records is a specification matter.
+- Site enrollment, revocation and disabling stamp their rows with the
+  wall clock, where rotation, tickets and tokens use the caller's time.
+- No `secure_delete`: a deleted token's hash stays in free pages until
+  they are reused.
+
+**Tests.** `test_authd_store`, `reader:` and `version:`. Campaign v130,
+RD1-RD4.
+
+Counts: 571 mutations, 100 campaigns, 615 anchors; 291 findings (F273 and
+F288 open); spec v1.61, 103 errata (unchanged).

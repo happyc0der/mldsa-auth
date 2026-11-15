@@ -63,6 +63,22 @@ static void check(int ok, const char *what)
 /* Runs one SQL statement straight against the store file. Used only to play
  * the attacker who has write access to the database -- the store's own API
  * deliberately offers no way to rewrite history. Returns 0 on success. */
+/* SHA-256 of a file's bytes. 0 on success. */
+static int file_sha256(const char *p, uint8_t out[crypto_hash_sha256_BYTES])
+{
+    FILE *f = fopen(p, "rb");
+    if (f == NULL) { return -1; }
+    crypto_hash_sha256_state st;
+    crypto_hash_sha256_init(&st);
+    uint8_t buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) { crypto_hash_sha256_update(&st, buf, n); }
+    const int bad = ferror(f);
+    (void)fclose(f);
+    crypto_hash_sha256_final(&st, out);
+    return bad ? -1 : 0;
+}
+
 static int raw_sql(const char *db, const char *sql)
 {
     sqlite3 *h = NULL;
@@ -1003,6 +1019,90 @@ int main(void)
               "existing: a real store opens, with the same pseudonym, and its chain verifies");
         store_close(t);
         t = NULL;
+
+        /* V4-213, F290: a reader CHANGES nothing. `authd_admin audit-verify`
+         * opened its store read-write and did what a creating open does:
+         * switched the file to WAL, ran the schema, generated what was
+         * missing. Pointed at a backup it rewrote the backup. */
+        { char bk[600], sql[900], side[700];
+          path(bk, sizeof bk, "oe-backup.sqlite3");
+          (void)unlink(bk);
+          snprintf(sql, sizeof sql, "VACUUM INTO '%s';", bk);
+          CHECK(raw_sql(dbp, sql) == 0, "reader: a backup of the store, as VACUUM INTO makes one");
+          uint8_t h0[crypto_hash_sha256_BYTES], h1[crypto_hash_sha256_BYTES];
+          CHECK(file_sha256(bk, h0) == 0, "reader: the backup's digest before");
+          CHECK(store_open_existing(bk, KEK, &t) == STORE_OK && t != NULL && store_audit_verify(t) == STORE_OK &&
+                store_log_pseudonym(t, U1, sizeof U1, p2) == STORE_OK && memcmp(p1, p2, sizeof p1) == 0,
+                "reader: the backup opens, its chain verifies and its pseudonym is the store's (the canary)");
+          store_close(t);
+          t = NULL;
+          CHECK(file_sha256(bk, h1) == 0 && memcmp(h0, h1, sizeof h0) == 0,
+                "reader: opening and verifying a backup leaves it byte for byte as it was (F290)");
+          snprintf(side, sizeof side, "%s-wal", bk);
+          const int wal = stat(side, &sb) == 0;
+          snprintf(side, sizeof side, "%s-shm", bk);
+          CHECK(!wal && stat(side, &sb) != 0, "reader: and no -wal or -shm file appears beside it (F290)");
+
+          /* a database that is not a store but has a table called meta */
+          char other[600];
+          long long tables = -1;
+          char unused[8];
+          path(other, sizeof other, "oe-other.sqlite3");
+          (void)unlink(other);
+          { sqlite3 *h = NULL;
+            const int made = sqlite3_open_v2(other, &h, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) == SQLITE_OK &&
+                             sqlite3_exec(h, "CREATE TABLE meta(key TEXT, value BLOB); CREATE TABLE theirs(x);",
+                                          NULL, NULL, NULL) == SQLITE_OK;
+            (void)sqlite3_close(h);
+            CHECK(made, "reader: somebody else's database, with a table called meta"); }
+          CHECK(file_sha256(other, h0) == 0 && store_open_existing(other, KEK, &t) == STORE_ERR_DAMAGED && t == NULL,
+                "reader: it is refused as not a store");
+          CHECK(file_sha256(other, h1) == 0 && memcmp(h0, h1, sizeof h0) == 0 &&
+                raw_row(other, "SELECT COUNT(*), '' FROM sqlite_master WHERE type='table';", &tables, unused, sizeof unused) == 0 &&
+                tables == 2,
+                "reader: and it is left as it was: its bytes, and its two tables (F290)");
+
+          /* a store with a meta value missing is refused, not completed */
+          static const char *const gone[] = { "schema_version", "decoy_pk" };
+          for (size_t k = 0; k < 2u; k++) {
+              char part[600];
+              long long rows = -1;
+              snprintf(side, sizeof side, "oe-part%zu.sqlite3", k);
+              path(part, sizeof part, side);
+              (void)unlink(part);
+              snprintf(sql, sizeof sql, "VACUUM INTO '%s';", part);
+              int ok = raw_sql(dbp, sql) == 0;
+              snprintf(sql, sizeof sql, "DELETE FROM meta WHERE key='%s';", gone[k]);
+              ok = ok && raw_sql(part, sql) == 0;
+              ok = ok && store_open_existing(part, KEK, &t) == STORE_ERR_DAMAGED && t == NULL;
+              snprintf(sql, sizeof sql, "SELECT COUNT(*), '' FROM meta WHERE key='%s';", gone[k]);
+              ok = ok && raw_row(part, sql, &rows, unused, sizeof unused) == 0 && rows == 0;
+              CHECK(ok, k == 0 ? "reader: a store with no schema_version is refused, and is not given one (F290)"
+                               : "reader: a store with no decoy key is refused, and is not given one (F290)");
+          }
+
+          /* V4-213, F291: the schema version is an unsigned number from 1. */
+          static const struct { const char *sql; const char *what; } vers[] = {
+              { "UPDATE meta SET value=x'8000000000000000' WHERE key='schema_version';",
+                "version: a schema_version with its top bit set is refused, not read as negative and old (F291)" },
+              { "UPDATE meta SET value=x'ffffffffffffffff' WHERE key='schema_version';",
+                "version: all ones is refused (F291)" },
+              { "UPDATE meta SET value=x'0000000000000000' WHERE key='schema_version';",
+                "version: zero is not a version (F291)" },
+          };
+          for (size_t k = 0; k < sizeof vers / sizeof vers[0]; k++) {
+              char vp[600];
+              snprintf(side, sizeof side, "oe-ver%zu.sqlite3", k);
+              path(vp, sizeof vp, side);
+              (void)unlink(vp);
+              snprintf(sql, sizeof sql, "VACUUM INTO '%s';", vp);
+              store_t *w = NULL;
+              const int ok = raw_sql(dbp, sql) == 0 && raw_sql(vp, vers[k].sql) == 0 &&
+                             store_open_existing(vp, KEK, &t) == STORE_ERR_SCHEMA && t == NULL &&
+                             store_open(vp, KEK, &w) == STORE_ERR_SCHEMA && w == NULL;
+              CHECK(ok, vers[k].what);
+              if (w != NULL) { store_close(w); }
+          } }
 
         /* Another process holds the write lock until told to let go. The
          * daemon's handle gives up after a quarter of a second, however long

@@ -70,10 +70,13 @@ const char *store_status_name(store_status_t st);
 store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
 /* The same, for a tool that reads a store somebody else made (V4-109): it
- * creates nothing. A path that names no file is STORE_ERR_IO; a file that is
- * not a store -- no meta table, or no store_id -- is STORE_ERR_DAMAGED. It
- * waits up to five seconds for a running daemon's lock (store_open: a quarter
- * of a second). */
+ * creates nothing, and since V4-213 (F290) it CHANGES nothing: the file is
+ * opened read-only, its journal mode and schema are left as they are, and a
+ * missing meta value is not generated. A path that names no file is
+ * STORE_ERR_IO; a file that is not a store -- no meta table, or no
+ * schema_version, store_id or decoy key -- is STORE_ERR_DAMAGED. It waits up
+ * to five seconds for a running daemon's lock (store_open: a quarter of a
+ * second). Only reads may be made through the store it returns. */
 store_status_t store_open_existing(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
 /* 1 if the open that returned `s` made the store -- found no store id and

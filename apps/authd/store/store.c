@@ -574,8 +574,15 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
             (void)close(fd);
         }
     }
+    /* V4-213, F290: a tool that reads a store opens it READ-ONLY. It used to
+     * open read-write and then do everything a creating open does: switch the
+     * file to WAL, run the whole schema, and generate and commit whatever
+     * meta row was missing. `authd_admin audit-verify` on a backup rewrote
+     * the backup -- its hash was different afterwards -- and a file that was
+     * not a store, or was a newer build's, was altered before it was
+     * refused. */
     if (sqlite3_open_v2(path, &s->db,
-                        existing ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),
+                        existing ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),
                         NULL) != SQLITE_OK) {
         r = STORE_ERR_IO;
         goto fail;
@@ -589,19 +596,25 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         if ((r = has_meta_table(s->db, &has)) != STORE_OK) { goto fail; }
         if (!has) { r = STORE_ERR_DAMAGED; goto fail; }
     }
-    /* Spec §9: WAL, durable commits, foreign keys enforced. */
-    if (exec_simple(s->db, "PRAGMA journal_mode=WAL;") != STORE_OK ||
-        exec_simple(s->db, "PRAGMA synchronous=FULL;") != STORE_OK ||
-        exec_simple(s->db, "PRAGMA foreign_keys=ON;") != STORE_OK) {
-        r = STORE_ERR_DB;
-        goto fail;
-    }
-    if (exec_simple(s->db, STORE_SCHEMA_SQL) != STORE_OK) {
-        r = STORE_ERR_DB;
-        goto fail;
+    /* Spec §9: WAL, durable commits, foreign keys enforced. None of it for a
+     * reader (F290): the journal mode and the schema are the file's, and a
+     * reader changes neither. */
+    if (!existing) {
+        if (exec_simple(s->db, "PRAGMA journal_mode=WAL;") != STORE_OK ||
+            exec_simple(s->db, "PRAGMA synchronous=FULL;") != STORE_OK ||
+            exec_simple(s->db, "PRAGMA foreign_keys=ON;") != STORE_OK) {
+            r = STORE_ERR_DB;
+            goto fail;
+        }
+        if (exec_simple(s->db, STORE_SCHEMA_SQL) != STORE_OK) {
+            r = STORE_ERR_DB;
+            goto fail;
+        }
     }
 
-    if ((r = tx_begin(s)) != STORE_OK) {
+    /* The meta values are read in one transaction: a write transaction for
+     * the open that may create them, a read transaction for a reader. */
+    if ((r = existing ? exec_simple(s->db, "BEGIN;") : tx_begin(s)) != STORE_OK) {
         goto fail;
     }
 
@@ -615,9 +628,16 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     }
     if (found) {
         if (vlen != 8u) { r = STORE_ERR_SCHEMA; goto fail_tx; }
-        int64_t v = 0;
-        for (size_t i = 0; i < 8u; i++) { v = (v << 8) | vbuf[i]; }
-        if (v > STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }
+        /* Unsigned (V4-213, F291): built up in an int64_t, a value with its
+         * top bit set overflowed the shift, came out negative, and passed
+         * `v > STORE_SCHEMA_VERSION` as an older store. Version 0 is not a
+         * version either. */
+        uint64_t v = 0;
+        for (size_t i = 0; i < 8u; i++) { v = (v << 8) | (uint64_t)vbuf[i]; }
+        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }
+    } else if (existing) {
+        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
+        goto fail_tx;
     } else {
         uint8_t nv[8];
         be64(nv, (int64_t)STORE_SCHEMA_VERSION);
@@ -646,6 +666,10 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * unknown identity gets a ServerHello indistinguishable from a real one
      * (spec decision 4 / §5). Generated once, at first open. */
     if ((r = meta_get(s->db, "decoy_pk", s->decoy_pk, sizeof s->decoy_pk, &n, &found)) != STORE_OK) {
+        goto fail_tx;
+    }
+    if (!found && existing) {
+        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
         goto fail_tx;
     }
     if (!found) {

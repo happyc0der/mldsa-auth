@@ -18,12 +18,17 @@ import sys, pathlib
 ST = "apps/authd/store/store.c"
 
 M = {
-    "SD1": [(ST, "        if (vlen != 8u) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-                 "        if (0) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD1: any length */\n")],
-    "SD2": [(ST, "        if (v > STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-                 "        if (v > STORE_SCHEMA_VERSION && 0) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD2: later schemas open */\n")],
-    "SD3": [(ST, "        if (v > STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-                 "        if (v > STORE_SCHEMA_VERSION + 1) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD3: off by one */\n")],
+    # (SD1, the length check on schema_version removed, is gone since V4-213:
+    # the value is read into a zeroed buffer and decoded unsigned, so a short
+    # one is a multiple of 256 -- zero, which F291 refuses, or far above this
+    # build's version. The check stays in the code for what it says; no input
+    # can tell a build without it.)
+    # (Re-anchored in V4-213: F291 made the comparison unsigned and added
+    # v == 0. The mutants are the same.)
+    "SD2": [(ST, "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
+                 "        if (v == 0u || (v > (uint64_t)STORE_SCHEMA_VERSION && 0)) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD2: later schemas open */\n")],
+    "SD3": [(ST, "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
+                 "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION + 1u) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD3: off by one */\n")],
     "SD4": [(ST, "    } else if (n != sizeof s->store_id) {\n",
                  "    } else if (n != sizeof s->store_id && 0) { /* MUTATION SD4: any store_id length */\n")],
     "SD5": [(ST, "    } else if (n != sizeof s->decoy_pk) {\n",
