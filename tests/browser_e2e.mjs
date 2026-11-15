@@ -85,6 +85,9 @@ const info = await new Promise((res, rej) => {
   setTimeout(() => rej(new Error('fixture never became ready')), 20000);
 });
 
+// Whatever ends this process before its own teardown -- a site that cannot
+// start, an import that fails -- the fixture goes with it (F289).
+process.on('exit', () => { try { fx.kill('SIGTERM'); } catch { /* already gone */ } });
 const { startSite, CSP } = await import(pathToFileURL(resolve('examples/site-node/server.mjs')).href);
 const site = await startSite({ authdSite: info.site, authdWs: `127.0.0.1:${info.ws_port}`, serverId: info.server_id,
                                serverPub: Buffer.from(info.server_pub, 'hex'), moduleDir, invite: INVITE });

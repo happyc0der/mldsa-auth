@@ -17265,3 +17265,22 @@ the end-to-end lean is real, if the owner wants it before deciding.
 
 Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 288 findings
 (F273 and F288 open); spec v1.61, 103 errata (unchanged).
+
+## V4-211: the timing tool takes its fixture with it (F289)
+
+One line in the tool and the same line in the browser test. The tool's
+signal handlers already stopped the fixture when the tool was killed; the
+way out nobody had covered was the tool failing by itself, before it had
+anything to wait for. An `exit` handler covers that and whatever comes
+next.
+
+**Left from the twelfth review, said once more.** `/api/timing`, the
+route the tool adds, takes a row from anyone who can reach the tool's
+address. The tool runs for minutes on a network its operator chose and
+measures phones, not secrets; a forged row would spoil a measurement. It
+is not changed.
+
+**Tests.** `phone_timing_tool`: one new case, failing before the fix.
+
+Counts: 569 mutations, 99 campaigns, 611 anchors (unchanged); 289 findings
+(F273 and F288 open); spec v1.61, 103 errata (unchanged).

@@ -69,6 +69,11 @@ const info = await new Promise((res, rej) => {
 // Stopped from outside (a test's SIGTERM, or kill): take the fixture along,
 // rather than leave it serving for --minutes more.
 for (const sig of ['SIGTERM', 'SIGINT']) { process.on(sig, () => { fx.kill('SIGTERM'); process.exit(1); }); }
+// ...and whenever this process ends for any other reason (V4-211, F289). A
+// site that could not start -- its port taken -- rejected below, Node ended
+// on the rejection, and the fixture served on for --minutes more with its
+// store and its sockets. 'exit' runs for every way out, that one included.
+process.on('exit', () => { try { fx.kill('SIGTERM'); } catch { /* already gone */ } });
 
 const invite = randomBytes(16).toString('hex');
 let got = 0;

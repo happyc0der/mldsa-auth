@@ -58,6 +58,28 @@ try {
   check(idleCode === 1 && /time is up/.test(idle.out), `with no result before --minutes, the tool says "time is up" and exits 1 (exit ${idleCode})`);
   check(!existsSync(join(work, 'none.jsonl')), 'and it wrote no row');
 
+  // 1b. V4-211, F289: a tool that cannot start its site takes its fixture
+  // with it. The site's port was taken; startSite rejected; Node ended on
+  // the rejection, and the fixture the tool had already started served on
+  // for --minutes more, with its store and its sockets.
+  { const { createServer } = await import('node:net');
+    const { spawnSync } = await import('node:child_process');
+    const squat = createServer();
+    await new Promise((r) => squat.listen(0, '127.0.0.1', r));
+    const port = squat.address().port;
+    // 7.77 minutes: the fixture's lifetime argument is then 496.2, which no
+    // other test's fixture has, so its process can be looked for by name.
+    const fixtures = () => spawnSync('pgrep', ['-f', 'authd_wasm_fixture 496.2'], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).length;
+    const busy = runTool(['--count', '1', '--minutes', '7.77', '--port', String(port), '--out', join(work, 'busy.jsonl')]);
+    const code = await Promise.race([busy.exited, new Promise((r) => setTimeout(() => r('still running'), 30000))]);
+    await new Promise((r) => setTimeout(r, 500));
+    const left = fixtures();
+    check(code !== 0 && code !== 'still running', `with its port taken, the tool exits non-zero (exit ${code}) (the control)`);
+    check(left === 0, `and the fixture it had started is not left running (${left} left) (F289)`);
+    if (code === 'still running') { busy.p.kill('SIGKILL'); }
+    spawnSync('pkill', ['-f', 'authd_wasm_fixture 496.2']);
+    await new Promise((r) => squat.close(r)); }
+
   // 2. The real run: two results, one per origin.
   const rows = join(work, 'rows.jsonl');
   // timing.test is mapped to 127.0.0.1 below, so the site must be told the
