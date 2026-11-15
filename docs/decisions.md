@@ -16997,3 +16997,21 @@ old branch was deleted, not overwritten), and the name is now ignored.
 
 Counts: 567 mutations, 98 campaigns, 609 anchors; 280 findings; spec v1.60,
 102 errata.
+
+## V4-203: cleanup after V4-190 to V4-202 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `9cf038b`, now main: CI
+  43668622281 (16/16), nightly 43668624866 (113/113, 98 campaigns).
+- V4-199's entry says its stack went to CI as one branch. It did, twice
+  more than planned: that branch failed on Linux (F280, V4-201), the next
+  was 110/113 on the nightly (V4-202), and the third is what landed. Main
+  did not move in between; its last push CI before this landing,
+  43645927111 on `4230fd4`, was 16/16.
+- Still open for the owner: F273 (what the unit does with a refused
+  configuration; measured, recommendation recorded), and the reference
+  site's one login state per session (V4-187).
+
+Counts: 567 mutations, 98 campaigns, 609 anchors; 280 findings; spec v1.60,
+102 errata (all unchanged by this step).
