@@ -210,7 +210,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-59 tests in a native tree (57 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 62 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 64 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+60 tests in a native tree (58 if no `node` is found: two run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 63 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 65 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -233,6 +233,7 @@ with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; ev
 | `backend_symbols` | One ML-DSA-65/ML-KEM-768 backend is linked in every executable of the tree, and it is the intended family: aarch64 on arm64, x86_64 on x86_64, portable C only for x86_64 `generic`. `tools/check_backend_symbols.sh` is first tested on planted executables, once for each verdict it can give (V4-39, CLAIMS P10) |
 | `doc_test_counts` | The test counts this README, REPRODUCE.md and the review packet state, checked in the tree they describe: the README's number for this configuration must be the number of tests ctest registers, and the other two must repeat the README's (V4-41; audit F107, F116, F120) |
 | `dependency_gates` | Which dependency bytes reach the linker: libsodium is built inside the build tree, or under a private directory when the tree's path has whitespace, never under `/tmp` by default; and the liboqs pin check refuses another commit, a tracked file edited after checkout and a file added to the tree (V4-229; audit F315, F316) |
+| `gate_claims` | Three gates shown able to fail on what they name: the systemd unit against spec §16 value by value, the CPU target `check_hardening.sh --require` refuses when a build tree records `auto`, and the fault-hook check given an executable `nm` cannot read (V4-230; audit F319 to F321) |
 | `build_flags` | What every project translation unit was told, from `compile_commands.json`: the hardening flags, FORTIFY outside sanitizer trees, and each tree's sanitizer flags by its intent — a UBSan tree must carry `-fno-sanitize-recover` (V4-15c, V4-24b) |
 | `ubsan_aborts` | In a UBSan or fuzz tree, a planted signed overflow must stop the process — undefined behaviour cannot pass a test (V4-24b; *Skipped* elsewhere) |
 | `store_fault_hook` | The store's test-only fault hooks are absent from the shipped library and binaries and present in the test (V4-15a) |

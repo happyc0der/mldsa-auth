@@ -158,6 +158,13 @@ add_test(NAME test_authd_store COMMAND test_authd_store)
 # whole tree built, which is what ctest runs against.
 add_test(NAME store_fault_hook
          COMMAND /bin/bash ${PROJECT_SOURCE_DIR}/tools/check_store_fault_hook.sh ${CMAKE_BINARY_DIR})
+# V4-230 (audit F319 to F321): three gates that said more than they checked,
+# each shown able to fail on what it names -- the unit against spec 16 by
+# value, the CPU target check_hardening.sh --require gates, and the check
+# above given a file nm cannot read. Needs the whole tree built, as it does.
+add_test(NAME gate_claims
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/gate_claims.sh ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+set_tests_properties(gate_claims PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL: ")
 # V4-15b (CLAIMS P3/D3): the constant-time comparison sites, checked both ways
 # against constant_time_sites.txt. tools/audit/constant_time_inventory.sh is
 # the report; this is the gate that sees a sodium_memcmp swapped for memcmp.

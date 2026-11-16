@@ -49,7 +49,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 318 findings (F0–F318), with severity, evidence and
+   register](../v4/audit.md). 321 findings (F0–F321), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 110 errata, each
    citing the finding that forced it.
@@ -60,7 +60,7 @@ system, which decides who may enroll.
 
 ## What "verified" means here
 
-- **Tests** are named checks, not exit codes. The suite is 64 tests with the
+- **Tests** are named checks, not exit codes. The suite is 65 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
 - **Mutations**: 600 committed defects in 107 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a

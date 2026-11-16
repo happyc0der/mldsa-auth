@@ -114,14 +114,9 @@ echo "PASS: DEPLOY: removing one directive raises it to $WSCORE (the score is lo
 # --- the unit and the spec must name the same directives ------------------
 # §16's list is normative. A unit that quietly dropped one would still score
 # well and still verify; only a comparison catches it.
-MISSING=""
-for d in NoNewPrivileges ProtectSystem ProtectHome PrivateTmp PrivateDevices \
-         ProtectControlGroups ProtectProc RestrictAddressFamilies RestrictNamespaces \
-         RestrictSUIDSGID LockPersonality MemoryDenyWriteExecute SystemCallFilter \
-         CapabilityBoundingSet UMask LimitCORE LimitMEMLOCK RuntimeDirectory \
-         Restart WatchdogSec WatchdogSignal; do
-    grep -q "^${d}=" "$REPO/$UNIT" || MISSING="$MISSING $d"
-done
-[ -z "$MISSING" ] || fail "the unit omits directives spec 16 requires:$MISSING"
-echo "PASS: DEPLOY: the unit sets every directive spec 16 names"
+# By value, and exactly once each (V4-230, F319): this compared names only,
+# so `NoNewPrivileges=no` passed here, passed `systemd-analyze verify`, and
+# moved the score by less than the threshold's margin.
+sh "$REPO/tests/unit_directives.sh" "$REPO/$UNIT" || fail "the unit is not as spec 16 requires (above)"
+echo "PASS: DEPLOY: the unit sets every directive spec 16 names, to its value"
 echo "PASS: DEPLOY: all checks"

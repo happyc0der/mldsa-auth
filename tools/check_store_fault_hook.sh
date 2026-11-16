@@ -29,11 +29,14 @@ case "$(uname -s)" in
     *) echo "FAIL: unsupported platform $(uname -s)"; exit 2 ;;
 esac
 
-# nm is present on both platforms; a missing symbol table is itself a failure
-# rather than a pass, so `nm` errors are not swallowed into "0 matches".
+# nm is present on both platforms; a file it cannot read is a failure, not
+# "0 matches". (This comment said so before the code did: the pipeline's
+# status was grep's, so an unreadable artefact counted as "absent" -- V4-230,
+# audit F320.) Prints the count, or ERR.
 count_sym() {
     # $1 = file
-    nm "$1" 2>/dev/null | grep -c "$SYM" || true
+    _syms=$(nm "$1" 2>/dev/null) || { echo ERR; return; }
+    printf '%s\n' "$_syms" | grep -c "$SYM" || true
 }
 
 fail=0
@@ -41,10 +44,16 @@ checked=0
 
 # --- the shipped static library and executables must NOT carry it ----------
 lib="$BUILD/apps/authd/libmldsa_authd.a"
-if [ -f "$lib" ]; then
+if [ ! -f "$lib" ]; then
+    echo "FAIL: the shipped library $lib is not there to be checked"
+    fail=1
+else
     checked=$((checked + 1))
     n=$(count_sym "$lib")
-    if [ "$n" -ne 0 ]; then
+    if [ "$n" = ERR ]; then
+        echo "FAIL: nm cannot read the shipped library $lib"
+        fail=1
+    elif [ "$n" -ne 0 ]; then
         echo "FAIL: $SYM is present in the shipped library $lib ($n match(es))"
         fail=1
     else
@@ -64,7 +73,10 @@ while IFS= read -r exe; do
     esac
     checked=$((checked + 1))
     n=$(count_sym "$exe")
-    if [ "$n" -ne 0 ]; then
+    if [ "$n" = ERR ]; then
+        echo "FAIL: nm cannot read $exe, so nothing says the hook is absent from it"
+        fail=1
+    elif [ "$n" -ne 0 ]; then
         echo "FAIL: $SYM is present in $exe ($n match(es))"
         fail=1
     fi
@@ -76,7 +88,7 @@ EOF
 t="$BUILD/tests/test_authd_store"
 if [ -f "$t" ]; then
     n=$(count_sym "$t")
-    if [ "$n" -eq 0 ]; then
+    if [ "$n" = ERR ] || [ "$n" -eq 0 ]; then
         echo "FAIL: $SYM is absent from the test binary $t -- this gate is checking nothing"
         fail=1
     else

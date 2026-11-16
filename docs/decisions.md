@@ -17954,3 +17954,44 @@ Left from that review, for the next step or as stated limits:
 
 Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 318 findings
 (F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 64 tests.
+
+## V4-230: three gates check what they name (F319 to F321)
+
+Left from the twentieth review. Each of these gates was right about the
+tree it ran on; each would also have passed a tree it should refuse.
+
+- **F319, the unit by value.** One list in `tests/unit_directives.sh`,
+  exactly once and exactly equal. "Exactly once" because systemd takes the
+  last of two lines, so a drop-in style `MemoryDenyWriteExecute=no` at the
+  end of the file would otherwise sit behind a correct first line. The
+  comparison was moved out of the Docker script so that it runs in every
+  suite, not only in the one CI job with systemd's analysers.
+- **F320, an unreadable file is a failure.** `count_sym` prints `ERR` when
+  `nm` fails, and each caller refuses it. A missing library fails too: the
+  test runs after the whole tree is built, so its absence means the path
+  moved, and a gate that then checks only executables is half a gate.
+- **F321, the CPU target.** The target cannot be read back from a binary,
+  so the script reads the build tree's own record. That makes it a check of
+  the tree the runbook's step 2 hands it, which is what §16 claimed. An
+  install tree (CI's release job checks one) has no record; the script says
+  so in its report and does not fail, since refusing every install tree
+  would turn the existing gate red for a property it cannot see. Considered
+  and not done: refusing `cmake --install` from a tree configured `auto`.
+  It would stop a developer's local install for a risk that only exists
+  when the binary moves to another machine.
+
+One new test, `gate_claims`, shows all three red on stand-ins: five
+weakened units, five records of the target, and a tree with half an
+executable and then no library. Against the old scripts: the target cases
+and both hook cases failed; the old unit loop, by hand, accepted
+`NoNewPrivileges=no`. No C changed, so no campaign. 60 tests native, 63
+with a wasm tree, 65 with a browser.
+
+Still left from that review: the `deploy` CI job downloads the dependencies
+a second time (pointing the offline test at the restored cache would let
+its tamper controls write into a directory the job may then save); Node,
+Chrome and ProVerif downloads have no retry; and the unverified items
+listed under V4-229.
+
+Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 321 findings
+(F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.

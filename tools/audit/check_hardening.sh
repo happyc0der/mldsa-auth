@@ -65,8 +65,26 @@ done < <(find "$BUILD" -path "$BUILD/_deps" -prune -o -path "*/CMakeFiles/*" -pr
 echo "  ---"
 echo "  executables checked: $checked; hardening properties absent: $missing"
 [ "$checked" -eq 0 ] && { echo "  FAIL: no executables found in $BUILD (nothing was checked)"; exit 1; }
+# The CPU target (V4-230, audit F321). Spec 16: "a named CPU target (never
+# -march=native), and check_hardening.sh --require gates it" -- and this
+# script did not look. The target is not in the binary in any form that can
+# be read back, so it is read from the build tree's own record, where there
+# is one: `auto` is the project's default and means this machine's CPU. An
+# install tree has no record, and that is said, not passed over.
+TARGET_BAD=0
+if [ -f "$BUILD/CMakeCache.txt" ]; then
+  TARGET=$(sed -n 's/^MLDSA_OQS_OPT_TARGET:[A-Z]*=//p' "$BUILD/CMakeCache.txt" | head -1)
+  case "$TARGET" in
+    "")   echo "  CPU target: this build tree's CMakeCache.txt does not record one"; TARGET_BAD=1 ;;
+    auto) echo "  CPU target: auto -- built for THIS machine's CPU (-march=native / -mcpu=native)"; TARGET_BAD=1 ;;
+    *)    echo "  CPU target: $TARGET (named)" ;;
+  esac
+else
+  echo "  CPU target: not a build tree (no CMakeCache.txt), so not checked here"
+fi
 if [ "$REQUIRE" -eq 1 ]; then
   [ "$missing" -eq 0 ] || { echo "FAIL: $missing hardening property/properties absent"; exit 1; }
+  [ "$TARGET_BAD" -eq 0 ] || { echo "FAIL: the CPU target is not a named one: configure with -DMLDSA_OQS_OPT_TARGET=generic, or a CPU name such as x86-64-v3"; exit 1; }
   echo "OK: every discovered executable carries the full hardening set [$PLATFORM]"
 fi
 exit 0
