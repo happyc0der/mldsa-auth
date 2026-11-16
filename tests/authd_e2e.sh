@@ -1333,6 +1333,128 @@ grep -q 'event=device-enroll' "$TMP/audit.txt" || fail "the enrollment was not a
 grep -q '^END$' "$TMP/audit.txt" || fail "audit-tail did not terminate with END"
 echo "PASS: E2E: list-users, list-devices and audit-tail all return complete lists"
 
+# ------------------------------- two runs on one key file (V4-217, F293)
+#
+# rotate looked for .ek.next once, spent a key derivation opening .ek, and
+# then deleted whatever .ek.next was there by then -- another run's freshly
+# sealed key, if one had started in between. That run's ROTATE then committed
+# and its rename found nothing: the key the daemon accepted was on no disk.
+# Every run that may write beside the key now takes the directory's lock
+# first, and says so when it has to wait.
+rot() {
+    "$CLIENT" rotate --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2
+}
+fp_now() { "$ADMIN" list-devices --socket "$TMP/a.sock" --user alice | sed -n 's/.*fp=//p'; }
+
+# 1. Something else holds the lock: the rotation waits, and touches nothing.
+FP_L0=$(fp_now)
+python3 - "$TMP/dev" "$TMP/lk.held" "$TMP/lk.go" <<'PYEOF' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+end = time.time() + 180
+while not os.path.exists(sys.argv[3]) and time.time() < end:
+    time.sleep(0.05)
+PYEOF
+LKPY=$!
+i=0
+while [ ! -e "$TMP/lk.held" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+[ -e "$TMP/lk.held" ] || fail "F293: the lock holder never took the lock"
+rot > "$TMP/rotw.txt" 2> "$TMP/rotw.err" &
+RWPID=$!
+i=0
+while ! grep -q "another run is using" "$TMP/rotw.err" 2>/dev/null && [ "$i" -lt 1200 ]; do
+    kill -0 "$RWPID" 2>/dev/null || break
+    sleep 0.05; i=$((i + 1))
+done
+if ! grep -q "another run is using" "$TMP/rotw.err"; then
+    : > "$TMP/lk.go"; wait "$LKPY" 2>/dev/null || true; wait "$RWPID" 2>/dev/null || true
+    cat "$TMP/rotw.err"
+    fail "a rotation did not wait while another run held the key's directory (F293)"
+fi
+# It SAID it would wait; that it does is a separate fact. A rotation takes
+# about a second, so one that is still there after five did wait.
+i=0
+while kill -0 "$RWPID" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+if ! kill -0 "$RWPID" 2>/dev/null; then
+    : > "$TMP/lk.go"; wait "$LKPY" 2>/dev/null || true
+    fail "a rotation announced that it would wait and then ran while the lock was held (F293)"
+fi
+[ ! -e "$TMP/dev/$HANDLE.ek.next" ] || fail "F293: a waiting rotation had already written .ek.next"
+[ "$(fp_now)" = "$FP_L0" ] || fail "F293: a waiting rotation had already changed the active key"
+: > "$TMP/lk.go"
+wait "$LKPY" || fail "F293: the lock holder failed"
+wait "$RWPID" || { cat "$TMP/rotw.err"; fail "F293: the rotation failed once the lock was free"; }
+FP_L1=$(fp_now)
+[ "$FP_L1" != "$FP_L0" ] || fail "F293: the rotation that waited did not rotate"
+echo "PASS: E2E: a rotation waits while another run holds the key's directory, then completes (F293)"
+
+# 1b. A login that finds a .ek.next decides what it is, and may finish a
+#     rename: it waits for the same lock. (The file here is a copy of the live
+#     key, so the answer is "never committed" and the login deletes nothing.)
+rm -f "$TMP/lk.held" "$TMP/lk.go"
+python3 - "$TMP/dev" "$TMP/lk.held" "$TMP/lk.go" <<'PYEOF' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+end = time.time() + 180
+while not os.path.exists(sys.argv[3]) and time.time() < end:
+    time.sleep(0.05)
+PYEOF
+LKPY=$!
+i=0
+while [ ! -e "$TMP/lk.held" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+[ -e "$TMP/lk.held" ] || fail "F293: the second lock holder never took the lock"
+cp "$TMP/dev/$HANDLE.ek" "$TMP/dev/$HANDLE.ek.next"; chmod 600 "$TMP/dev/$HANDLE.ek.next"
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/code-lw.txt" 2> "$TMP/login-lw.err" &
+LWPID=$!
+i=0
+while ! grep -q "another run is using" "$TMP/login-lw.err" 2>/dev/null && [ "$i" -lt 1200 ]; do
+    kill -0 "$LWPID" 2>/dev/null || break
+    sleep 0.05; i=$((i + 1))
+done
+: > "$TMP/lk.go"
+wait "$LKPY" || fail "F293: the second lock holder failed"
+lw=0
+wait "$LWPID" || lw=$?
+grep -q "another run is using" "$TMP/login-lw.err" \
+    || { cat "$TMP/login-lw.err"; fail "a login that found .ek.next did not wait for the run holding the key's directory (F293)"; }
+[ "$lw" -eq 0 ] && [ "$(wc -c < "$TMP/code-lw.txt" | tr -d ' ')" -eq 44 ] \
+    || { cat "$TMP/login-lw.err"; fail "F293: the login that waited did not then log in"; }
+[ -e "$TMP/dev/$HANDLE.ek.next" ] || fail "F293: a login deleted .ek.next"
+rm -f "$TMP/dev/$HANDLE.ek.next"
+echo "PASS: E2E: a login that finds .ek.next waits for the lock too, and deletes nothing (F293)"
+
+# 2. Two rotations started together: both complete, one after the other, and
+#    the device still holds the key the daemon accepts.
+rot > "$TMP/rota.txt" 2> "$TMP/rota.err" &
+RAPID=$!
+rot > "$TMP/rotb.txt" 2> "$TMP/rotb.err" &
+RBPID=$!
+ra=0; rb=0
+wait "$RAPID" || ra=$?
+wait "$RBPID" || rb=$?
+[ "$ra" -eq 0 ] && [ "$rb" -eq 0 ] \
+    || { cat "$TMP/rota.err" "$TMP/rotb.err"; fail "two rotations at once: exit $ra and $rb, not 0 and 0 (F293)"; }
+[ ! -e "$TMP/dev/$HANDLE.ek.next" ] || fail "two rotations at once: .ek.next was left behind (F293)"
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > "$TMP/code-2rot.txt" 2> "$TMP/login-2rot.err" \
+    || { cat "$TMP/login-2rot.err"; fail "two rotations at once: the device can no longer log in (F293)"; }
+FP_L2=$(fp_now)
+PUBFP=$(dd if="$TMP/dev/$HANDLE.pub" bs=1 skip=$((9 + ${#HANDLE})) count=1952 2>/dev/null \
+        | shasum -a 256 | cut -d' ' -f1)
+[ "$FP_L2" != "$FP_L1" ] && [ "$PUBFP" = "$FP_L2" ] \
+    || fail "two rotations at once: the device's .pub does not name the daemon's active key (F293)"
+[ -z "$(ls "$TMP/dev" | grep newpub || true)" ] || fail "two rotations at once: a temporary .pub was left (F293)"
+echo "PASS: E2E: two rotations of one key at once both complete and the device still logs in (F293)"
+
 rc=0
 "$ADMIN" audit-tail --socket "$TMP/a.sock" --n 50 > /dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "audit-tail --n 50 exited $rc, expected a usage error naming the bound"

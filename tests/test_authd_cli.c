@@ -1459,6 +1459,37 @@ static void test_rotate_on_disk(void)
               "rotate: a raw copy of the new key, planted beside it, IS found (the canary)");
         (void)unlink(canary);
     }
+    /* V4-217, F293: a --key path so long that "<key>.next" does not fit.
+     * The name was built with an unchecked snprintf; at PATH_MAX - 1 bytes it
+     * came out EQUAL to the key's own path, the "leftover .ek.next" was the
+     * live key, and rotate deleted it. The same file through a path padded
+     * with "/." segments: the rotation is refused and the key stays. */
+    {
+        static char longp[PATH_MAX + 8];
+        /* The resolved directory: on macOS /tmp is a link, and the kernel
+         * counts the name it expands to against the same limit. */
+        static char realdev[PATH_MAX];
+        if (realpath(dev, realdev) == NULL) { (void)snprintf(realdev, sizeof realdev, "%s", dev); }
+        size_t at = (size_t)snprintf(longp, sizeof longp, "%s", realdev);
+        const size_t tail = 1u + hlen + 3u;            /* "/<handle>.ek" */
+        const size_t want = (size_t)PATH_MAX - 1u;
+        if ((want - tail - at) % 2u != 0u) { longp[at++] = '/'; }
+        while (at + tail < want) { longp[at++] = '/'; longp[at++] = '.'; }
+        (void)snprintf(longp + at, sizeof longp - at, "/%s.ek", handle);
+        static uint8_t before[8192], after[8192];
+        size_t n0 = 0, n1 = 0;
+        const int have = read_bytes(ek, before, sizeof before, &n0) == 0;
+        const int named = strlen(longp) == want && access(longp, F_OK) == 0;
+        rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", longp,
+                                               "--passphrase-file", pass, "--server-id", "authd",
+                                               "--server-pub", spub, "--port", port, NULL });
+        CHECK(named,
+              "long path: the padded path is PATH_MAX - 1 bytes and names the key");
+        CHECK(have && rc != 0 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
+              memcmp(before, after, n0) == 0,
+              "long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)");
+    }
+
     CHECK(read_bytes(ek, sealed_b, sizeof sealed_b, &nb) == 0, "rotate: the new sealed key is saved");
 
     /* 2. The rename was interrupted: .ek is still A, the daemon holds B, and

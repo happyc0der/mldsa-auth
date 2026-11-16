@@ -561,15 +561,26 @@ try {
   // its profile directory behind: launch() threw, the caller had no Browser
   // to close, and nothing else knew the process existed.
   {
+    const LAUNCH_CONTROL_WAITS = [1500, 5000, 15000];
     const scratch = mkdtempSync(join(tmpdir(), 'mldsa-fake-browser-'));
     const fake = join(scratch, 'fake-browser.sh'), pidFile = join(scratch, 'pid');
     writeFileSync(fake, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 120\n`, { mode: 0o755 });
     const profiles = () => readdirSync(tmpdir()).filter((n) => n.startsWith('mldsa-cdp-')).length;
     const before = profiles();
-    let outcome = 'launched';
-    try { const fb = await Browser.launch(fake, [], { timeoutMs: 1500 }); await fb.close(); }
-    catch (e) { outcome = /DevTools port/.test(String(e.message)) ? 'refused' : `threw ${e.message}`; }
-    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
+    // V4-217, F294: the control is "a process existed", and 1.5 s was not
+    // always enough for the stand-in to write its pid on a loaded machine
+    // (once in about 75 runs of the whole suite: "refused, pid 0"). An
+    // attempt that was given up on before the stand-in ran proves nothing
+    // either way, so it is repeated with a longer wait; one that did run is
+    // judged as before.
+    let outcome = 'launched', pid = 0;
+    for (const timeoutMs of LAUNCH_CONTROL_WAITS) {
+      rmSync(pidFile, { force: true });
+      try { const fb = await Browser.launch(fake, [], { timeoutMs }); await fb.close(); outcome = 'launched'; }
+      catch (e) { outcome = /DevTools port/.test(String(e.message)) ? 'refused' : `threw ${e.message}`; }
+      pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
+      if (pid > 0 || outcome !== 'refused') { break; }
+    }
     let alive = pid > 0;
     for (let i = 0; i < 40 && alive; i++) {
       try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }

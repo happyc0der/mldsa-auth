@@ -17428,3 +17428,63 @@ No code.
 
 Counts: 573 mutations, 101 campaigns, 617 anchors; 292 findings (F273 and
 F288 open); spec v1.61, 103 errata (all unchanged by this step).
+
+## V4-217: one run at a time beside a device's key (F293, erratum 104)
+
+Found by the fourteenth reviewer run (the device client, the admin tool's
+backup path, the key file and passphrase readers, three local handlers).
+
+- **The defect.** `rotate` checked for `.ek.next`, opened `.ek` (one key
+  derivation), and then looked again and deleted any `.ek.next` it found. The
+  comment said `.ek` had authenticated; when the first look found no file, the
+  daemon had not been asked anything. A second rotation that sealed its new
+  key in that interval lost it, went on to have its `ROTATE` accepted, and
+  could not rename a file that was gone. The daemon then accepted a key that
+  existed nowhere. If instead the second run's file existed when the first
+  run's acknowledgement arrived, the first run renamed the second run's key
+  over `.ek`.
+- **The second defect, deterministic.** `snprintf("%s.next")` was checked for
+  a negative result only. A key path of `PATH_MAX - 1` bytes gave a name equal
+  to the key's own path; the recovery probe found `.ek` live and the delete
+  removed it. Reproduced in `test_authd_cli` before the fix: exit 1, key gone.
+- **The fix.** An exclusive `flock` on the key's directory. The key file is
+  replaced by a rename, so it cannot carry the lock, and a lock file would be
+  one more file beside a secret. A rotation takes it after reading the
+  passphrase and holds it to exit; a login takes it only if `.ek.next` exists,
+  because only then may it rename. A run that finds it taken prints one line
+  and waits; the kernel releases it when the holder dies. A run that cannot
+  take it (the directory will not open, the filesystem has no `flock`) fails
+  with `cannot-lock-key-directory`, as a page that cannot take a Web Lock does
+  not rotate. The delete now follows the proof (`stale_next`, set only where
+  the daemon was asked and `.ek` authenticated), not the file's presence.
+- **What the lock does not cover.** An ordinary login takes no lock and reads
+  `.ek` by path; one that reads the old file a moment before a rotation's
+  rename gets no login code once and succeeds when run again. Two machines
+  sharing a key directory over a filesystem without `flock` are refused, not
+  serialised. Locks are per directory, so rotations of two identities kept in
+  one directory take turns.
+- **Not a mutant.** Restoring "delete if the file is there" cannot be seen
+  once the lock is held: under the lock a file present after the resolve is
+  one the resolve judged. The long-path check kills it without the length
+  check, and KL1 covers that.
+- **Left from the same review, small:** `authd_admin` and `keygen` exit 0
+  when stdout cannot be written (the F272 shape, for output that can be asked
+  for again); `backup --path` between 512 and about 4,000 bytes is refused by
+  the daemon as malformed with no bound named; `RECOVERY-ISSUE count=01` and
+  `AUDIT-TAIL n=0005` are accepted by the daemon itself; the recovery store
+  functions do not repeat the user's status inside their transactions (F292's
+  shape, unreachable today); a killed rotation leaves `.newpub.<pid>`; the
+  admin tool treats any first line that is not `ERR` as success. Candidates
+  for the next steps.
+
+- **Campaigns.** v132, KL1-KL4: KILLED 4/4. The eight older campaigns that
+  mutate `client_cli.c` (v49c, v50b, v56, v70, v73, v104, v105, v124) rerun
+  whole on the fixed tree: 57/57 killed, every clean suite passing.
+- **F294, found on the way.** The clean suite after KL4 failed once, in
+  `browser_e2e`: F285's control gave its stand-in browser 1.5 s to write a pid
+  and, under four parallel tests, it had not. The control now repeats an
+  attempt in which the stand-in never ran. A test repair; no mutant (it is
+  JavaScript), shown red and green by hand.
+
+Counts: 577 mutations, 102 campaigns, 621 anchors; 294 findings (F273 and
+F288 open); spec v1.62, 104 errata.

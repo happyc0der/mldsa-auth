@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -624,14 +625,58 @@ static void client_republish_pub(const char *prog, const char *sub, const client
     }
 }
 
-static int client_resolve_key(const char *prog, const char *sub, const client_args_t *a,
-                              const char *pass, size_t pass_len, const uint8_t *server_pk,
-                              char *next_path, size_t next_cap, mldsa_keypair_t *kp_out)
+/* V4-217, F293: one run at a time beside a key. The lock is an flock on the
+ * key's DIRECTORY -- the key file itself is replaced by a rename, and a lock
+ * file would be one more thing left beside a secret. It is held by a rotation
+ * from before it reads the key until it exits, and by any run that finds a
+ * .ek.next, while it decides what that file is. A second run waits, and says
+ * that it is waiting; the kernel drops the lock when its holder dies. Returns
+ * the descriptor to close, or -1. */
+static int client_key_lock(const char *prog, const char *sub, const char *key_path)
 {
-    memset(kp_out, 0, sizeof *kp_out);
-    if (snprintf(next_path, next_cap, "%s.next", a->key_path) < 0) {
-        return EX_FAIL;
+    char dir[PATH_MAX];
+    const char *slash = strrchr(key_path, '/');
+    const size_t dl = (slash == NULL) ? 0u : (size_t)(slash - key_path);
+    if (dl >= sizeof dir) {
+        return -1;
     }
+    if (slash == NULL) {
+        memcpy(dir, ".", 2u);
+    } else if (dl == 0u) {
+        memcpy(dir, "/", 2u);
+    } else {
+        memcpy(dir, key_path, dl);
+        dir[dl] = '\0';
+    }
+    const int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno != EWOULDBLOCK) {
+            (void)close(fd);
+            return -1;
+        }
+        fprintf(stderr, "%s %s: another run is using the keys in %s; waiting for it to finish\n",
+                prog, sub, dir);
+        int r;
+        do {
+            r = flock(fd, LOCK_EX);
+        } while (r != 0 && errno == EINTR);
+        if (r != 0) {
+            (void)close(fd);
+            return -1;
+        }
+    }
+    return fd;
+}
+
+/* *stale_next is set only when the daemon was ASKED and .ek authenticated
+ * with a .ek.next present: the one proof that lets the caller delete it. */
+static int client_resolve_key_locked(const char *prog, const char *sub, const client_args_t *a,
+                              const char *pass, size_t pass_len, const uint8_t *server_pk,
+                              const char *next_path, mldsa_keypair_t *kp_out, int *stale_next)
+{
     const int next_present = path_exists(next_path);
 
     /* The ordinary case: no interrupted rotation, so open .ek and go. */
@@ -697,6 +742,7 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
                 prog, sub, a->key_path, next_path);
         memcpy(kp_out, &ek_kp, sizeof ek_kp);
         memset(&ek_kp, 0, sizeof ek_kp);
+        *stale_next = 1;
         rc = EX_OK;
         break;
     case KEY_PLAN_PROMOTE_NEXT:
@@ -748,6 +794,38 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     return rc;
 }
 
+/* have_lock: the caller (rotate) already holds the directory's lock. A login
+ * takes it only when there is a .ek.next to decide about -- the ordinary
+ * login writes nothing and waits for nobody. */
+static int client_resolve_key(const char *prog, const char *sub, const client_args_t *a,
+                              const char *pass, size_t pass_len, const uint8_t *server_pk,
+                              int have_lock, char *next_path, size_t next_cap,
+                              mldsa_keypair_t *kp_out, int *stale_next)
+{
+    memset(kp_out, 0, sizeof *kp_out);
+    *stale_next = 0;
+    /* F293: a name that did not fit used to be used as it came out. At
+     * PATH_MAX - 1 bytes it came out equal to the key's own path, and the
+     * "leftover .ek.next" rotate then deleted was the live key. */
+    const int nn = snprintf(next_path, next_cap, "%s.next", a->key_path);
+    if (nn < 0 || (size_t)nn >= next_cap) {
+        return failed(prog, sub, a->key_path, "path-too-long");
+    }
+    int lock_fd = -1;
+    if (!have_lock && path_exists(next_path)) {
+        lock_fd = client_key_lock(prog, sub, a->key_path);
+        if (lock_fd < 0) {
+            return failed(prog, sub, a->key_path, "cannot-lock-key-directory");
+        }
+    }
+    const int rc = client_resolve_key_locked(prog, sub, a, pass, pass_len, server_pk,
+                                             next_path, kp_out, stale_next);
+    if (lock_fd >= 0) {
+        (void)close(lock_fd);
+    }
+    return rc;
+}
+
 static int cmd_client_login(int argc, char **argv, const char *prog)
 {
     client_args_t a;
@@ -774,8 +852,9 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
      * discovers one, not rotate. */
     char next_path[PATH_MAX];
     mldsa_keypair_t kp;
+    int stale_next = 0;          /* login deletes nothing */
     rc = client_resolve_key(prog, "login", &a, (const char *)pass, pass_len, server_pk,
-                            next_path, sizeof next_path, &kp);
+                            0, next_path, sizeof next_path, &kp, &stale_next);
     authd_secret_free(pass, pass_len);
     if (rc != EX_OK) { return rc; }
 
@@ -812,7 +891,20 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
     return EX_OK;
 }
 
+static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_fd);
+
+/* The lock taken inside is dropped on every way out, by the one caller. */
 static int cmd_client_rotate(int argc, char **argv, const char *prog)
+{
+    int lock_fd = -1;
+    const int rc = client_rotate_run(argc, argv, prog, &lock_fd);
+    if (lock_fd >= 0) {
+        (void)close(lock_fd);
+    }
+    return rc;
+}
+
+static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_fd)
 {
     client_args_t a;
     int rc = parse_client_args(argc, argv, prog, "rotate", &a);
@@ -828,10 +920,18 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
     rc = get_pass(prog, "rotate", a.pass_path, a.pass_prompt, a.key_path, 0, &pass, &pass_len);
     if (rc != EX_OK) { return rc; }
 
+    /* F293: from here to the exit this run is the only one beside this key. */
+    *lock_fd = client_key_lock(prog, "rotate", a.key_path);
+    if (*lock_fd < 0) {
+        authd_secret_free(pass, pass_len);
+        return failed(prog, "rotate", a.key_path, "cannot-lock-key-directory");
+    }
+
     char next_path[PATH_MAX];
     mldsa_keypair_t old_kp;
+    int stale_next = 0;
     rc = client_resolve_key(prog, "rotate", &a, (const char *)pass, pass_len, server_pk,
-                            next_path, sizeof next_path, &old_kp);
+                            1, next_path, sizeof next_path, &old_kp, &stale_next);
     if (rc != EX_OK) {
         authd_secret_free(pass, pass_len);
         return rc;
@@ -839,8 +939,11 @@ static int cmd_client_rotate(int argc, char **argv, const char *prog)
 
     /* A leftover .ek.next that the probe did NOT promote is stale -- .ek
      * authenticated, which proves the server never committed it. Only now, on
-     * that proof, is deleting it safe; never on the probe failing. */
-    if (path_exists(next_path)) {
+     * that proof, is deleting it safe; never on the probe failing. F293: on
+     * the proof itself, not on the file being there -- this used to look
+     * again, and delete a .ek.next that had appeared since and that nobody
+     * had asked the daemon about: another run's newly sealed key. */
+    if (stale_next) {
         (void)unlink(next_path);
     }
 

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.61, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205)
+# mldsa-authd — deployment specification (v1.62, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -733,6 +733,14 @@ every tab of the origin shares (the Web Locks API; the browser releases it
 when a tab dies), and reads the record again once it holds it. A page that
 cannot take such a lock does not rotate. And the promoting transaction
 promotes the envelope its caller staged and no other (erratum 92).
+
+The CLI is one process per run, and **two runs on one key file** are the same
+hazard (erratum 104). A rotation holds an exclusive advisory lock on the
+directory that holds the key, from before it reads the key until it exits,
+and a run that finds `.ek.next` holds it while it decides what that file is. A
+run that finds the lock taken says so and waits; one that cannot take the lock
+does neither thing. And a rotation discards `.ek.next` only when this run
+asked the daemon and `.ek` authenticated — never because the file is there.
 
 **On the server there is no overlap window**: `one_active_key` makes two
 simultaneously-active keys for a handle unrepresentable, and that is enforced
@@ -2028,3 +2036,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 103 | 15, 16 | A local connection that arrives while every local slot is in use waits in the listen queue; it is no longer accepted and closed, and the event `local-accept-refused-no-slot` is gone. The site socket's queue is 128 | the daemon is single-threaded and one recovery computation holds it for about 0.1 s. Measured on Linux (V4-205): site connections beyond the pool that arrived in that time were closed at once, 388 of them in one burst test, and the 18th connection of a burst failed at `connect()`; the reference site answers each with 503. A stranger on the protocol listener is still refused at capacity, with `accept-refused-no-slot` (audit F282) |
+
+### Revision v1.62 (V4-217)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 104 | 10.2 | Two runs of the CLI on one key file are serialised: a rotation holds an exclusive advisory lock on the key's directory from before it reads the key until it exits, a run that finds `.ek.next` holds it while it resolves that file, a run that finds the lock taken waits, and one that cannot take it does not rotate or resolve. A rotation discards `.ek.next` only on its own run's proof that `.ek` authenticates. A key path whose `.ek.next` name does not fit the platform's path limit is refused | `rotate` looked for `.ek.next` once, spent a key derivation opening `.ek`, and then deleted whatever `.ek.next` existed by then — a second run's newly sealed key, if one had started in between; that run's `ROTATE` committed and its rename found nothing, so the key the daemon accepted was on no disk. Separately, the name was built unchecked: at one byte under the limit it came out equal to the key's own path and the rotation deleted the live key (audit F293) |

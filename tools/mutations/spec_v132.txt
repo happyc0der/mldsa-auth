@@ -1,0 +1,4 @@
+KL1|^test_authd_cli$|long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)
+KL2|^authd_e2e$|a rotation did not wait while another run held the key's directory (F293)
+KL3|^authd_e2e$|a rotation announced that it would wait and then ran while the lock was held (F293)
+KL4|^authd_e2e$|a login that found .ek.next did not wait for the run holding the key's directory (F293)
