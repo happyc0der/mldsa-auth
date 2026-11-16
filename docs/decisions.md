@@ -18231,3 +18231,26 @@ where V4-233's run had 700, no crash.
 
 Counts: 608 mutations, 110 campaigns, 652 anchors; 332 findings (F273, F288
 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
+
+## V4-237: cleanup after V4-231 to V4-233 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `d48bc69`, now main: CI
+  43923567162 (16/16), nightly 43923571453 (123/123, 108 campaigns).
+- Before it: `83360c2` (V4-231 and V4-232, landed together) had CI
+  43917411098 (16/16) and nightly 43917416659 (122/122); `f6c8bc1` had
+  main's push CI 43910325305 (16/16).
+- Still waiting when this was written: V4-235 (`877322f`, CI 43928780089
+  passed, nightly queued) and V4-236 (`4208596`). GitHub held dispatched
+  nightlies in its queue for about an hour each on 2026-11-16.
+- Open for the owner, unchanged: F273, F288, F309, the reference site's one
+  login state per session, what the audit chain should record, whether the
+  symbolic model should cover long-term key compromise, pull request 1,
+  `user_id` "opaque" in §3.2 against printable ASCII in the daemon, the
+  browser rotation applying the new-passphrase policy to an existing
+  passphrase, lifetimes on the wall clock when the clock is stepped, and
+  uppercase hex accepted where §8 says lowercase.
+
+Counts: 608 mutations, 110 campaigns, 652 anchors; 332 findings (F273, F288
+and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
