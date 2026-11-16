@@ -1933,6 +1933,27 @@ static void test_passphrase_custody(void)
           "passphrase custody: an empty file is refused as empty-or-too-large");
     CHECK(pc_write(nl, "\n", 1u, 0600) == 0 && refused_as(nl, AUTHD_SECRET_ERR_SIZE),
           "passphrase custody: a file holding only a newline is refused as empty");
+    /* F337: the probe --check-config uses answers what the read would, on
+     * every file above, without reading. The one stated difference is a file
+     * holding only a newline: its size is in range, and only the read sees
+     * that nothing is left of it. */
+    { char missing[320]; (void)snprintf(missing, sizeof missing, "%s/absent", d);
+      int all = (pc_write(f, "correct horse\n", 14u, 0600) == 0);
+      all = all && authd_secret_probe(f) == AUTHD_SECRET_OK;
+      all = all && authd_secret_probe(lnk) == AUTHD_SECRET_ERR_OPEN;
+      all = all && authd_secret_probe(missing) == AUTHD_SECRET_ERR_OPEN;
+      all = all && authd_secret_probe(d) == AUTHD_SECRET_ERR_NOT_REGULAR;
+      const mode_t bad[] = {0640, 0620, 0610, 0604, 0602, 0601};
+      for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+          if (chmod(f, bad[i]) != 0 || authd_secret_probe(f) != AUTHD_SECRET_ERR_PERMISSIONS) { all = 0; }
+      }
+      (void)chmod(f, 0600);
+      CHECK(all, "passphrase probe: the good file, a symlink, a missing file, a directory and each unsafe mode are answered as the read answers them");
+      CHECK(pc_write(f, "", 0u, 0600) == 0 && authd_secret_probe(f) == AUTHD_SECRET_ERR_SIZE,
+            "passphrase probe: an empty file is refused as empty-or-too-large");
+      CHECK(authd_secret_probe(nl) == AUTHD_SECRET_OK,
+            "passphrase probe: a file holding only a newline is in range for the probe (the read refuses it)");
+      CHECK(pc_write(f, "correct horse\n", 14u, 0600) == 0, "passphrase probe: the file is put back"); }
     { static uint8_t b[AUTHD_PASSPHRASE_MAX + 1u];
       memset(b, 'x', sizeof b);
       CHECK(pc_write(big, b, sizeof b, 0600) == 0 && refused_as(big, AUTHD_SECRET_ERR_SIZE),

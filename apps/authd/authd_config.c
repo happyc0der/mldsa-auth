@@ -533,6 +533,20 @@ static void detail_set(char *detail, size_t cap, const char *key, const char *va
     }
 }
 
+/* Cuts `path` down to its directory, given its last slash. A file directly
+ * under the root has the root as its directory: "/x" becomes "/". (F336:
+ * this wrote a '/' over the '/' that was already there, left "/x" whole, and
+ * then refused it because "/x" is not a directory -- so a store or a socket
+ * placed directly under / was refused as "its directory does not exist".) */
+static void dir_of(char *path, char *last_slash)
+{
+    if (last_slash == path) {
+        path[1] = '\0';
+    } else {
+        *last_slash = '\0';
+    }
+}
+
 /* A configured Unix socket path must fit sun_path, and its directory must
  * already exist -- the daemon creates sockets, never directories. */
 static authd_config_status_t check_sock(const char *key, const char *path, char *detail, size_t cap)
@@ -549,7 +563,7 @@ static authd_config_status_t check_sock(const char *key, const char *path, char 
     (void)snprintf(dir, sizeof dir, "%s", path);
     char *slash = strrchr(dir, '/');
     if (slash != NULL) {
-        *slash = (slash == dir) ? '/' : '\0';
+        dir_of(dir, slash);
         struct stat st;
         if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
             detail_set(detail, cap, key, path, "its directory does not exist");
@@ -593,7 +607,7 @@ authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *
         (void)snprintf(dir, sizeof dir, "%s", cfg->store_path);
         char *slash = strrchr(dir, '/');
         if (slash != NULL) {
-            *slash = (slash == dir) ? '/' : '\0';
+            dir_of(dir, slash);
             struct stat ds;
             if (stat(dir, &ds) != 0 || !S_ISDIR(ds.st_mode)) {
                 detail_set(detail, detail_cap, K_STORE, cfg->store_path,

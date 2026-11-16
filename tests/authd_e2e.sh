@@ -170,7 +170,10 @@ echo "PASS: E2E: a configuration refused for what it lacks names the setting, fr
 EX="$(cd "$(dirname "$0")/.." && pwd)/deploy/authd.conf.example"
 if [ -f "$EX" ]; then
     mkdir -p "$TMP/ex"
-    : > "$TMP/ex/server.ek"; : > "$TMP/ex/pass"
+    # The key and the passphrase file made above, copied: the daemon's
+    # --check-config now looks at them as the start would (F337), and the two
+    # empty files that stood here are, rightly, refused.
+    cp -p "$TMP/d/server.ek" "$TMP/ex/server.ek"; cp -p "$TMP/d/pass" "$TMP/ex/pass"
     sed -e "s|/var/lib/mldsa-authd|$TMP/ex|g" \
         -e "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/ex/pass|" \
         -e "s|/run/mldsa-authd|$TMP|g" \
@@ -180,6 +183,9 @@ if [ -f "$EX" ]; then
         -e "s|^listen_port = .*|listen_port = 0|" "$EX" > "$TMP/ex.conf"
     "$DAEMON" --config "$TMP/ex.conf" --check-config > "$TMP/ex.out" 2>&1 \
         || { cat "$TMP/ex.out"; fail "deploy/authd.conf.example does not pass --check-config"; }
+    # Gone at once: a second copy of the passphrase file is what the scan at
+    # the end of this script is there to find.
+    rm -f "$TMP/ex/server.ek" "$TMP/ex/pass"
     # F63: the file an operator copies must turn the rate limiter ON. A
     # default-shaped example would leave a deployment with a proxy-facing
     # listener, no client address and no complaint.
@@ -228,6 +234,28 @@ site_uids = $(id -u)
 admin_uids = $(id -u)
 EOF
 "$ADMIN" --check-config --config "$TMP/authd.conf" > /dev/null || fail "the generated config is invalid"
+
+# F337: the daemon's own --check-config refuses the key and passphrase files
+# the start would refuse, with the start's words and the start's exit 3. It
+# said "is valid" of each of these, and the unit's ExecStartPre passed.
+"$DAEMON" --config "$TMP/authd.conf" --check-config > "$TMP/cc.out" 2>&1 \
+    || fail "the daemon's --check-config refuses the good configuration: $(cat "$TMP/cc.out")"
+chmod 0640 "$TMP/d/server.ek"
+rc=0; "$DAEMON" --config "$TMP/authd.conf" --check-config > "$TMP/cc.out" 2>&1 || rc=$?
+chmod 0600 "$TMP/d/server.ek"
+{ [ "$rc" -eq 3 ] && grep -q "server.ek: unsafe-permissions" "$TMP/cc.out"; } \
+    || fail "--check-config on a group-readable server key: exit $rc, said: $(cat "$TMP/cc.out")"
+ln -s "$TMP/d/pass" "$TMP/d/pass.lnk"
+sed "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/d/pass.lnk|" "$TMP/authd.conf" > "$TMP/lnk.conf"
+rc=0; "$DAEMON" --config "$TMP/lnk.conf" --check-config > "$TMP/cc.out" 2>&1 || rc=$?
+{ [ "$rc" -eq 3 ] && grep -q "pass.lnk: cannot-open" "$TMP/cc.out"; } \
+    || fail "--check-config on a symlinked passphrase file: exit $rc, said: $(cat "$TMP/cc.out")"
+rc=0; "$DAEMON" --config "$TMP/lnk.conf" > "$TMP/cc.out" 2>&1 || rc=$?
+{ [ "$rc" -eq 3 ] && grep -q "pass.lnk: cannot-open" "$TMP/cc.out"; } \
+    || fail "the start on the same configuration: exit $rc, said: $(cat "$TMP/cc.out")"
+rm -f "$TMP/d/pass.lnk" "$TMP/lnk.conf" "$TMP/cc.out"
+"$DAEMON" --config "$TMP/authd.conf" --check-config > /dev/null 2>&1 || fail "--check-config no longer accepts the good configuration"
+echo "PASS: E2E: --check-config refuses a group-readable key and a symlinked passphrase file as the start does, exit 3"
 
 "$DAEMON" --config "$TMP/authd.conf" > "$TMP/authd.log" 2>&1 &
 DPID=$!

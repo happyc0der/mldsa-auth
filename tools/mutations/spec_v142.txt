@@ -1,0 +1,5 @@
+CP1|^test_authd_evloop$|cfg: a store and sockets directly under / are accepted: their directory is the root
+CP2|^authd_e2e$|--check-config on a symlinked passphrase file
+CP3|^authd_e2e$|--check-config on a group-readable server key
+CP4|^test_authd_cli$|passphrase probe: the good file, a symlink, a missing file, a directory and each unsafe mode are answered as the read answers them
+CP5|^test_authd_keyfile$|probe: a key file with any one group or other bit set is refused as unsafe-permissions

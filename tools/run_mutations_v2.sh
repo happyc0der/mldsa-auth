@@ -232,7 +232,11 @@ while IFS='|' read -r M TESTRE WANT; do
           grep -qF "ERROR: AddressSanitizer: " "$LOG/$M.test" &&
             grep -qE "#[0-9]+ 0x[0-9a-f]+ in ${fn}[ +]" "$LOG/$M.test" || missing="$missing [$w]"
           asan=1 ;;
-        *) grep -F "FAIL: " "$LOG/$M.test" | grep -qF "$w" || missing="$missing [$w]" ;;
+        # -e: an expected text may begin with a dash. Without it grep read
+        # "--check-config on ..." as an option, matched nothing, and two
+        # mutants a test had caught by exactly that name were reported
+        # SURVIVED (V4-239, F339; v142's CP2 and CP3 are the standing proof).
+        *) grep -F "FAIL: " "$LOG/$M.test" | grep -qF -e "$w" || missing="$missing [$w]" ;;
       esac
     done
   fi

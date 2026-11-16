@@ -178,6 +178,27 @@ int main(int argc, char **argv)
         }
     }
     if (check_only) {
+        /* The two secret files, as the start will find them (F337): the same
+         * checks, the same words and the same exit status as the start's
+         * below, without reading either. --check-config printed "is valid" of
+         * a key file that was a symlink, group-readable or another user's,
+         * and of a passphrase file that was any of those or empty; the unit's
+         * ExecStartPre passed, ExecStart exited 3, and systemd tried again
+         * every two seconds. Here and not at the start, which has the
+         * readers themselves; and not in authd_config_check_paths, which
+         * authd_admin shares: an operator runs that as whoever they are, and
+         * these checks are about who the daemon is. */
+        const authd_secret_status_t probe_pass = authd_secret_probe(cfg.key_passphrase_file);
+        if (probe_pass != AUTHD_SECRET_OK) {
+            fprintf(stderr, "mldsa-authd: passphrase file %s: %s\n", cfg.key_passphrase_file,
+                    authd_secret_status_name(probe_pass));
+            return 3;
+        }
+        const keyfile_status_t probe_key = keyfile_probe(cfg.key_path);
+        if (probe_key != KEYFILE_OK) {
+            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(probe_key));
+            return 3;
+        }
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
                "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
                "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "

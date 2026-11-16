@@ -68,6 +68,15 @@ authd_secret_status_t authd_secret_custody(const char *path, uid_t uid, gid_t gi
  * the caller owns. On EVERY failure *out is NULL and *out_len is 0. */
 authd_secret_status_t authd_secret_read(const char *path, uint8_t **out, size_t *out_len);
 
+/* Everything authd_secret_read checks before it reads a byte: the file opens
+ * without following a symlink, is a regular file, is in this user's custody,
+ * and is 1..AUTHD_PASSPHRASE_MAX bytes. Reads nothing and allocates nothing.
+ * For the daemon's --check-config (F337), which said "is valid" of a
+ * passphrase file the start then refused. Never AUTHD_SECRET_ERR_READ or
+ * _CRYPTO; a file holding only a newline passes here and is refused by the
+ * read. */
+authd_secret_status_t authd_secret_probe(const char *path);
+
 /* Wipes and frees. Idempotent on NULL. */
 void authd_secret_free(uint8_t *p, size_t len);
 

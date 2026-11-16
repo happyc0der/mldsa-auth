@@ -176,6 +176,27 @@ int main(void) {
           (void)unlink(lnk);
       } }
 
+    /* F337: the probe --check-config uses, on the same file. */
+    { char lnk[256], gone[256], shrt[256];
+      path(lnk, sizeof(lnk), "probe-link.ek"); path(gone, sizeof(gone), "probe-absent.ek");
+      path(shrt, sizeof(shrt), "probe-short.ek");
+      CHECK(keyfile_probe(ek) == KEYFILE_OK, "probe: a good envelope passes -- the canary");
+      CHECK(symlink(ek, lnk) == 0 && keyfile_probe(lnk) == KEYFILE_ERR_IO, "probe: a symlinked envelope is refused, as open refuses it");
+      (void)unlink(lnk);
+      CHECK(keyfile_probe(gone) == KEYFILE_ERR_IO, "probe: a missing file is refused");
+      const mode_t bad[] = {0640, 0620, 0610, 0604, 0602, 0601};
+      int all = 1;
+      for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+          if (chmod(ek, bad[i]) != 0 || keyfile_probe(ek) != KEYFILE_ERR_PERMISSIONS) { all = 0; }
+      }
+      (void)chmod(ek, 0600);
+      CHECK(all, "probe: a key file with any one group or other bit set is refused as unsafe-permissions");
+      FILE *sf = fopen(shrt, "wb");
+      int wrote = 0;
+      if (sf != NULL) { wrote = (fwrite("MLDSAEK1", 1, 8, sf) == 8); (void)fclose(sf); (void)chmod(shrt, 0600); }
+      CHECK(wrote && keyfile_probe(shrt) == KEYFILE_ERR_FORMAT, "probe: a file too short to be an envelope is refused as malformed");
+      (void)unlink(shrt); }
+
     /* ---- V4-42 (audit F122, spec 12): custody ---------------------------
      * keyfile_open refuses a key file anyone but its owner can read or write,
      * and keyfile_promote refuses to rename such a file into place. V4-40's

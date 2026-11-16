@@ -188,7 +188,8 @@ user. It cannot change it: the unit's `ProtectSystem=strict` makes `/etc`
 read-only to the service.
 
 **`--check-config` runs at every start, not here.** It checks that the key,
-its passphrase and the socket directories exist, and two of those — the
+its passphrase and the socket directories exist, that the key and the
+passphrase are the service user's alone, and two of those — the
 credential in `/run/credentials/mldsa-authd.service/` and `/run/mldsa-authd/`
 itself — exist only while systemd is starting the service. Run by hand at this
 point it can only fail (`key_passphrase_file … does not exist`, exit 3;

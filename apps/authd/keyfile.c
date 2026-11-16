@@ -348,6 +348,36 @@ freebufs:
     return r;
 }
 
+/* What keyfile_open checks of the FILE before it reads it: it opens without
+ * following a symlink, is a regular file, is this user's alone, and has a
+ * size an envelope can have. Reads nothing. For the daemon's --check-config
+ * (F337). Kept beside keyfile_open and not folded into it, so that the
+ * open's own lines stay where the campaigns that mutate them expect;
+ * tests/test_authd_keyfile.c holds the two to the same answer. */
+keyfile_status_t keyfile_probe(const char *ek_path)
+{
+    if (ek_path == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    const int probe_fd = open(ek_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (probe_fd < 0) {
+        return KEYFILE_ERR_IO;
+    }
+    const size_t max_total = KEYFILE_HEADER_LEN + demo_keys_sk2_image_len(64) + KEYFILE_ROOT_BYTES +
+                             crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    struct stat st;
+    keyfile_status_t r = KEYFILE_OK;
+    if (fstat(probe_fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        r = KEYFILE_ERR_IO;
+    } else if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {   /* its owner's alone */
+        r = KEYFILE_ERR_PERMISSIONS;
+    } else if (st.st_size < 0 || (size_t)st.st_size <= KEYFILE_HEADER_LEN || (size_t)st.st_size > max_total) {
+        r = KEYFILE_ERR_FORMAT;
+    }
+    (void)close(probe_fd);
+    return r;
+}
+
 keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, size_t id_len,
                               const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                               uint8_t *kek_out) {

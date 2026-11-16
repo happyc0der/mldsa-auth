@@ -75,6 +75,32 @@ authd_secret_status_t authd_secret_custody(const char *path, uid_t uid, gid_t gi
     return AUTHD_SECRET_OK;
 }
 
+/* The checks of authd_secret_read, in its order, and nothing else. Kept
+ * beside it and not folded into it so that the read's own lines stay where
+ * the campaigns that mutate them expect; tests/test_authd_cli.c holds the two
+ * to the same answer on every file it tries. */
+authd_secret_status_t authd_secret_probe(const char *path)
+{
+    if (path == NULL) {
+        return AUTHD_SECRET_ERR_ARG;
+    }
+    const int probe_fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (probe_fd < 0) {
+        return AUTHD_SECRET_ERR_OPEN;
+    }
+    struct stat st;
+    authd_secret_status_t r = AUTHD_SECRET_OK;
+    if (fstat(probe_fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        r = AUTHD_SECRET_ERR_NOT_REGULAR;
+    } else if ((r = authd_secret_custody(path, st.st_uid, st.st_gid, st.st_mode,
+                                         geteuid(), getenv("CREDENTIALS_DIRECTORY"))) == AUTHD_SECRET_OK &&
+               (st.st_size <= 0 || (uintmax_t)st.st_size > (uintmax_t)AUTHD_PASSPHRASE_MAX)) {
+        r = AUTHD_SECRET_ERR_SIZE;
+    }
+    (void)close(probe_fd);
+    return r;
+}
+
 authd_secret_status_t authd_secret_read(const char *path, uint8_t **out, size_t *out_len)
 {
     if (path == NULL || out == NULL || out_len == NULL) {

@@ -73,6 +73,25 @@ static void test_config(void)
           cfg.idle_timeout_ms == 60000u && cfg.pad_bucket == 256u,
           "cfg: documented defaults apply to the optional keys");
 
+    /* F336: a store or a socket directly under the root. Its directory is
+     * "/", which exists; it was refused as "its directory does not exist".
+     * /bin/sh stands in for the two files that must be regular files. */
+    { char detail[AUTHD_CONFIG_DETAIL_MAX];
+      CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
+                      "server_id = sid\nlisten_unix = /p.sock\nproxy_uids = 1\nsite_socket = /s.sock\nsite_uids = 1\n",
+                      &cfg, &line) == AUTHD_CFG_OK &&
+            authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_OK,
+            "cfg: a store and sockets directly under / are accepted: their directory is the root");
+      CHECK(parse_str("store_path = /no-such-dir-zz/x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
+                      "server_id = sid\nlisten_port = 9\n", &cfg, &line) == AUTHD_CFG_OK &&
+            authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE &&
+            strstr(detail, "its directory does not exist") != NULL,
+            "cfg: a store in a directory that is not there is still refused, by name (the canary)");
+      CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
+                      "server_id = sid\nlisten_unix = /no-such-dir-zz/p.sock\nproxy_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
+            authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE,
+            "cfg: a socket in a directory that is not there is still refused (the canary)"); }
+
     /* strictness */
     CHECK(parse_str("listen_port = 9\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,
           "cfg: a missing required key is refused");

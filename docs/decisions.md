@@ -18299,3 +18299,79 @@ Left from that review, and why:
 
 Counts: 615 mutations, 111 campaigns, 659 anchors; 335 findings (F273, F288
 and F309 open); spec v1.69, 111 errata; 65 tests.
+
+## V4-239: --check-config looks at the secret files as the start does (F336, F337, F339, erratum 112; F338 open)
+
+The twenty-third review followed every configuration key to its uses, at
+both ends of the range the parser accepts. The arithmetic came out sound:
+the refill after F310, the memory-lock and descriptor sums, the allocation
+sizes at 4,096 slots, the rotation age. What it found is at the edges of
+the checks.
+
+- **F336.** One helper, `dir_of`, for the two places that cut a path down
+  to its directory.
+- **F337, two probes.** The choice was between probes and running the real
+  open in `--check-config`. The real open would also catch a passphrase
+  that does not open the key, and it costs the KDF, 64 MiB and about a
+  second, twice at every start, in a process whose job is to say yes or
+  no. The probes cost two `open` calls. They repeat the readers' first
+  checks instead of being called by them: `authd_secret_read` and
+  `keyfile_open` are mutated by older campaigns line by line, and moving
+  those lines into a helper would have re-anchored them for no change in
+  behaviour. The price is two copies that could drift; the unit tests hold
+  each probe to its reader's answer on every file they try, and one stated
+  difference (a passphrase file holding only a newline is in range for the
+  probe and empty to the read).
+  The probes are the daemon's, not `authd_admin`'s: custody is about who
+  the daemon runs as, and an operator checking a configuration as root or
+  as themselves would be told a correct key is not theirs. They run for
+  `--check-config` only. The first version ran them at the start too, ahead
+  of the readers, and the anchor gate and a look at campaign v81 said why
+  not: with either check enough to refuse, removing one alone changes
+  nothing, and v81's two mutants of the start's refusals would have
+  survived.
+  `authd_e2e`'s example-configuration leg had two empty files standing in
+  for the key and the passphrase. It now copies the real ones and removes
+  the copies at once; the script's own scan for a second copy of the
+  passphrase caught the first version, which left them.
+- **F338, recorded open.** The limiter's table binds before its rates do at
+  settings the parser accepts. It is a capacity decision with a spec
+  constant in it, so it goes to the owner with three choices and a
+  recommendation.
+
+Not changed, and why:
+
+- `handshake_timeout_ms` is also the replay ledger's lifetime, so the
+  sustained login rate is the ledger's capacity over that timeout: 25.6 a
+  second at the defaults, 0.43 at the largest timeout. F1 and §17 state the
+  formula. What they do not say is that an enrolled device is refunded its
+  rate-limit token at every login, so one device can spend that capacity
+  alone. Whether a successful login should cost anything is the owner's
+  (the refund is F81's fix); noted here, with the example file's comment as
+  the place a sentence belongs.
+- A hard descriptor limit below what is needed leaves the soft limit where
+  it was. Already an owner question (the unit test pins "LOW changes
+  nothing").
+- `deploy/authd.conf.example` says a slot is about 91 KiB; a comment in
+  `authd_conn.h` says V4-12 brought the connection record to about 28.
+  Which figure the example should carry depends on what "a slot" counts
+  (the record, its buffers, the ledger); not measured, not changed.
+- Timeouts under a second are enforced up to a second late on a quiet loop
+  (known: the poll timeout is not shortened to the nearest deadline).
+
+- **F339, found by the campaign.** v142's first run called CP2 and CP3
+  survived. The end-to-end test had failed on both, with the very lines the
+  spec names; those lines begin `--check-config`, and the runner handed
+  them to grep without `-e`. A mutant caught and reported uncaught is the
+  safe way to be wrong, and it still cost a 35-minute run to see. The spec
+  lines keep their dashes.
+
+Verification: the new checks were red against the old `authd_config.c` and
+the old daemon; campaign v142, five mutants, by name by hand before the
+run. Not run here, and for CI to say: the unit's `ExecStartPre=` under
+systemd with the encrypted credential, which the runbook rehearsal runs.
+The custody rule for a credential (root-owned, in `$CREDENTIALS_DIRECTORY`)
+is the reader's own, called by the probe.
+
+Counts: 620 mutations, 112 campaigns, 664 anchors; 339 findings (F273,
+F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests.

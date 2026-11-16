@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.69, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238)
+# mldsa-authd — deployment specification (v1.70, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1377,7 +1377,13 @@ is root-owned, mode 0750, group `mldsa-authd`; the unit's `ProtectSystem=strict`
 keeps `/etc` read-only to the service, so it cannot change its own
 configuration. It is validated by `--check-config` as the unit's
 `ExecStartPre=`, because the passphrase credential and `/run/mldsa-authd/` that
-it checks exist only while systemd starts the service (erratum 75).
+it checks exist only while systemd starts the service (erratum 75). The
+daemon's own `--check-config` also looks at the server key and its
+passphrase file as the start will, without reading either (erratum 112): a
+symbolic link, a file that is not the service user's alone, an empty or
+oversized passphrase file, or a key file of a size no envelope has is
+refused there, exit 3, in the start's words. `authd_admin --check-config`,
+which an operator runs as themselves, checks only that the two files exist.
 
 **Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
 **To drain** (erratum 93) is to accept no further connection, on any socket;
@@ -2132,3 +2138,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 111 | 8 | A line on the site socket is refused as pipelined when anything is behind it in the daemon's buffer or waiting on the socket, not only in the buffer | The daemon reads 4096 bytes a turn. A first line of exactly 4096 or 8192 bytes ended where a read ends, so nothing of the second line was in the buffer, the first was answered, and the second then ran. The length of a value is the sender's to choose, and a smuggled line break is the case this refusal exists for (audit F333) |
+
+### Revision v1.70 (V4-239)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 112 | 16 | The daemon's `--check-config` refuses a server key or passphrase file the start would refuse for its custody or size; a store or socket directly under `/` is accepted | `--check-config` asked only whether the two files existed, following symbolic links. A key that was group-readable, another user's or a symbolic link, and a passphrase file that was any of those or empty, was called valid; the unit's `ExecStartPre=` passed, `ExecStart=` exited 3, and systemd restarted it every two seconds (audit F337). A path whose only slash is its first was refused as "its directory does not exist" (audit F336) |
