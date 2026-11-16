@@ -86,10 +86,26 @@ if bash "$REPO/tools/check_store_fault_hook.sh" "$H" > "$D/h.out" 2>&1; then
 else
     bad "HOOK: the control tree is refused: $(grep FAIL "$D/h.out" | head -2 | tr '\n' ' ')"
 fi
-# Half an executable: `file` still calls it one, and nm cannot read it.
-head -c 20000 "$DAEMON" > "$H/apps/authd/half" && chmod +x "$H/apps/authd/half"
-if nm "$H/apps/authd/half" > /dev/null 2>&1; then
-    bad "HOOK: nm reads the truncated executable on this platform, so this case shows nothing"
+# An executable `file` still calls one and nm cannot read. Mach-O: the first
+# 20000 bytes. ELF: the whole file with its section-header offset pointed
+# past the end -- half an ELF loses the dynamic section `file` tells a PIE
+# executable from a shared object by, and the check, rightly, only opens
+# executables (so V4-230's first run on Linux skipped the stand-in and
+# failed here).
+case "$(file -b "$DAEMON")" in
+    *ELF*) cp "$DAEMON" "$H/apps/authd/half" &&
+           printf '\377\377\377\377\377\377\377\177' | dd of="$H/apps/authd/half" bs=1 seek=40 conv=notrunc 2>/dev/null ;;
+    *)     head -c 20000 "$DAEMON" > "$H/apps/authd/half" ;;
+esac
+chmod +x "$H/apps/authd/half"
+case "$(file -b "$H/apps/authd/half")" in
+    *Mach-O*executable*|*ELF*executable*|*ELF*pie*) standin=1 ;;
+    *) standin=0 ;;
+esac
+if [ "$standin" -eq 0 ]; then
+    bad "HOOK: the stand-in is not an executable to \`file\` ($(file -b "$H/apps/authd/half" | cut -c1-80)), so this case shows nothing"
+elif nm "$H/apps/authd/half" > /dev/null 2>&1; then
+    bad "HOOK: nm reads the damaged executable on this platform, so this case shows nothing"
 elif bash "$REPO/tools/check_store_fault_hook.sh" "$H" > "$D/h.out" 2>&1; then
     bad "HOOK: an executable nm cannot read was counted as free of the hook"
 elif grep -q 'nm cannot read .*half' "$D/h.out"; then
