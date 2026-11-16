@@ -1,0 +1,3 @@
+CL1|^fuzz_replay_authd_conn$|more than one login per frame
+CL2|^fuzz_replay_authd_conn$|a login was issued without entering SERVING
+CL3|^fuzz_replay_authd_conn$|a closed connection still holds a live session

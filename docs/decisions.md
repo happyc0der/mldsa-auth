@@ -18163,3 +18163,44 @@ No code.
 
 Counts: 602 mutations, 108 campaigns, 646 anchors; 330 findings (F273, F288
 and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
+
+## V4-235: the connection fuzz target completes a login (F331)
+
+The largest gap the twenty-first review left. Three things stood between
+the target and a login, and each alone was enough.
+
+- **The daemon's randomness.** It restarts for every input, on a stream of
+  its own (7; the seed builder's client uses 8, and neither is one
+  `fuzz_common.h` names). The seed builder asks the daemon for its
+  ServerHello in a world made by the same `start_world()` an input gets, so
+  what it saw is what the seed will meet. The client's own draws do not
+  need to line up with anything: its messages are fixed bytes by then.
+- **The seeds.** Built by the library's initiator with the key the store
+  holds. Each post-login record is the client's first after the handshake,
+  so each comes from a handshake of its own; with both streams restarted
+  the three handshakes are the same bytes. (A copy of the session struct
+  would have shared its key block.)
+- **The peer reads.** The harness now marks each reply sent, as a socket
+  would. Without that the first ServerHello stayed in the buffer and the
+  login code had nowhere to go: the first run of the new seed stopped at
+  `login-code-failed`, which is how this was found.
+
+An input that logged in changed the store, a login code at least and the
+device's key after a ROTATE, so the store is rebuilt after it and before the
+next input. Inputs that did not log in leave it alone; the target ran at
+about 4,900 inputs a second in the 60 s run (294,109 in all).
+
+The canary is in the seed builder: it runs the login seed and requires one
+login. A fixture that stops logging in fails every replay and every
+libFuzzer start, with a line that says what was lost.
+
+Campaign v139, three defects that each need an accepted ClientAuth: CL1 a
+login counted twice, CL2 a login without SERVING, CL3 a session left live
+at close. All three by name, by hand before the run.
+
+Still not reached by any target: a successful token or login-code operation
+on the local socket (no target holds a code it knows), the WebSocket
+client's reading of a server's bytes, and the line reassembler.
+
+Counts: 605 mutations, 109 campaigns, 649 anchors; 331 findings (F273, F288
+and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.

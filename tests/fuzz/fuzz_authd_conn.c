@@ -25,6 +25,23 @@
  *
  * Every one of those is a property a mutation can break, and none of them
  * restates the implementation.
+ *
+ * A GENUINE LOGIN IS REACHABLE (V4-235, audit F331). Until then it was not:
+ * no seed carried a ClientAuth, the one ClientHello seed was made with a key
+ * the store does not hold, and the daemon's randomness ran on from wherever
+ * the previous input left it, so its ServerHello was different for every
+ * input and no fixed ClientAuth could have verified. Oracles 2 and 3 could
+ * not fire, and nothing after the handshake -- the login code, a record, a
+ * rotation -- was run by any fuzz target.
+ *
+ * Now: the daemon's randomness restarts for every input on a stream of its
+ * own, so the same ClientHello always draws the same ServerHello; the seeds
+ * are built by the real initiator with the ENROLLED device's key against
+ * that ServerHello, and go on to a sealed BYE, a sealed ROTATE to a new key,
+ * and a sealed record of garbage. The seed function itself checks that the
+ * login seed logs in, so this cannot quietly stop being true. An input that
+ * logged in has changed the store (a login code; after ROTATE, the device's
+ * key), so the store is rebuilt after it: every input meets the same store.
  */
 #include <stdint.h>
 #include <string.h>
@@ -53,10 +70,28 @@ static const uint8_t HANDLE1[]   = { 'd','1','a','a' };
 static const uint8_t KEK[32] = { 9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9,
                                  9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9 };
 
+/* The daemon's own stream, restarted for every input. Distinct from the
+ * streams fuzz_common.h names, which the seed builder's client uses. */
+#define STREAM_DAEMON 7u
+#define STREAM_CLIENT 8u
+
 static int g_ready;
 static store_t *g_store;
 static mldsa_keypair_t g_server_kp;
 static mldsa_keypair_t g_device_kp;
+
+/* An in-memory store holding one user and one device: no filesystem. Made at
+ * start, and again after any input that logged in. */
+static void fresh_store(void)
+{
+    if (g_store != NULL) { store_close(g_store); g_store = NULL; }
+    FUZZ_ASSERT(store_open(":memory:", KEK, &g_store) == STORE_OK, "fixture: the store did not open");
+    FUZZ_ASSERT(store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) == STORE_OK,
+                "fixture: the user could not be added");
+    FUZZ_ASSERT(store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
+                                    g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) == STORE_OK,
+                "fixture: the device could not be enrolled");
+}
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
@@ -71,13 +106,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
      * and was still counted as a run. */
     FUZZ_ASSERT(mldsa_keypair_generate(&g_server_kp) == 0, "fixture: the server key could not be made");
     FUZZ_ASSERT(mldsa_keypair_generate(&g_device_kp) == 0, "fixture: the device key could not be made");
-    /* An in-memory store: no filesystem, and a fresh one per process. */
-    FUZZ_ASSERT(store_open(":memory:", KEK, &g_store) == STORE_OK, "fixture: the store did not open");
-    FUZZ_ASSERT(store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) == STORE_OK,
-                "fixture: the user could not be added");
-    FUZZ_ASSERT(store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
-                                    g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) == STORE_OK,
-                "fixture: the device could not be enrolled");
+    fresh_store();
     g_ready = 1;
     return 0;
 }
@@ -95,15 +124,17 @@ static int stage_rank(conn_stage_t s)
     }
 }
 
-int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+/* The fixture one input runs in. start_world() builds it and restarts the
+ * daemon's randomness; the seed builder uses the same call, so what it sees
+ * the daemon answer is what the daemon will answer the seed. */
+static authd_conn_t conn;
+static authd_slot_t slot;
+static authd_app_t app;
+static handshake_pending_store_t pending;
+
+static void start_world(void)
 {
-    FUZZ_ASSERT(g_ready, "fixture: LLVMFuzzerInitialize did not run");
-    if (size > fuzz_target_max_len) { return 0; }
-
-    static authd_conn_t conn;
-    static authd_slot_t slot;
-    static authd_app_t app;
-
+    fuzz_rng_reset_stream(STREAM_DAEMON);
     memset(&conn, 0, sizeof conn);
     memset(&slot, 0, sizeof slot);
     memset(&app, 0, sizeof app);
@@ -119,10 +150,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     app.now_ms = FUZZ_CLOCK_T0;
     app.now_unix = 1700000000;
 
-    static handshake_pending_store_t pending;
-    if (handshake_pending_store_init(&pending, 8u, 10000u, authd_app_clock, &app) != PENDING_OK) {
-        return 0;
-    }
+    FUZZ_ASSERT(handshake_pending_store_init(&pending, 8u, 10000u, authd_app_clock, &app) == PENDING_OK,
+                "fixture: the pending-handshake table could not be made");
     app.pending = &pending;
 
     slot.index = 0;
@@ -130,6 +159,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     slot.state = SLOT_ACTIVE;
     conn_io_reset(&slot.io);
     authd_conn_bind(&app, &slot);
+}
+
+/* Runs one input; returns how many logins it was issued. */
+static uint64_t run_input(const uint8_t *data, size_t size)
+{
+    start_world();
 
     int prev_rank = stage_rank(conn.stage);
     uint64_t prev_logins = app.logins_issued;
@@ -173,6 +208,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
 
         if (act == EV_ACTION_CLOSE) { break; }
+        /* The peer reads what it was sent. Without this the ServerHello sat
+         * in the out buffer for the rest of the input, and the login code
+         * that follows a genuine ClientAuth had nowhere to go. */
+        conn_io_sent(&slot.io, conn_io_pending(&slot.io));
     }
 
     /* 4. the close path leaves nothing behind */
@@ -193,6 +232,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     conn_io_reset(&slot.io);
     handshake_pending_store_wipe(&pending);
+    const uint64_t logins = app.logins_issued;
+    if (logins > 0u) {
+        fresh_store();          /* a login code was stored; a ROTATE may have changed the key */
+    }
+    return logins;
+}
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+{
+    FUZZ_ASSERT(g_ready, "fixture: LLVMFuzzerInitialize did not run");
+    if (size > fuzz_target_max_len) { return 0; }
+    (void)run_input(data, size);
     return 0;
 }
 
@@ -210,6 +261,57 @@ static void emit_chunked(fuzz_emit_fn emit, void *ctx, const char *name,
         off = w;
     }
     emit(ctx, name, seed, off);
+}
+
+/* The real initiator, holding the ENROLLED device's key, against the
+ * ServerHello the daemon gives this ClientHello from a freshly restarted
+ * stream -- which is the one it will give again when the seed is run. Leaves
+ * the client's session ready to seal its first record. */
+static void genuine_login(uint8_t *ch_out, size_t *chl, uint8_t *ca_out, size_t *cal,
+                          session_t *sess, uint8_t hsid[STORE_HSID_BYTES])
+{
+    static uint8_t sh[AUTHD_FRAME_MAX];
+    size_t shl = 0;
+    keystore_t pins;
+    handshake_ctx_t hs;
+    memset(&hs, 0, sizeof hs);
+    memset(sess, 0, sizeof *sess);
+    keystore_init(&pins);
+
+    fuzz_rng_reset_stream(STREAM_CLIENT);
+    FUZZ_ASSERT(keystore_add(&pins, SERVER_ID, sizeof SERVER_ID, g_server_kp.public_key) == KEYSTORE_OK &&
+                handshake_initiator_init(&hs, HANDLE1, sizeof HANDLE1, &g_device_kp, &pins,
+                                         SERVER_ID, sizeof SERVER_ID) == HANDSHAKE_OK &&
+                handshake_initiator_create_client_hello(&hs, ch_out, CLIENT_HELLO_MAX_ENCODED_LEN, chl) == HANDSHAKE_OK,
+                "fixture: the genuine ClientHello could not be made");
+
+    start_world();                      /* a world exactly like an input's */
+    (void)authd_conn_on_frame(&app, &slot, ch_out, *chl);
+    {
+        const size_t pn = conn_io_pending(&slot.io);
+        const uint8_t *pp = conn_io_pending_ptr(&slot.io);
+        FUZZ_ASSERT(conn.stage == CONN_STAGE_AWAIT_CA && pn > AUTHD_FRAME_HEADER &&
+                    pn - AUTHD_FRAME_HEADER <= sizeof sh,
+                    "fixture: the daemon did not answer the genuine ClientHello");
+        shl = pn - AUTHD_FRAME_HEADER;
+        memcpy(sh, pp + AUTHD_FRAME_HEADER, shl);
+    }
+    authd_conn_on_close(&app, &slot);
+    conn_io_reset(&slot.io);
+    handshake_pending_store_wipe(&pending);
+
+    fuzz_rng_reset_stream(STREAM_CLIENT);
+    session_limits_t lim;
+    session_default_limits(&lim);
+    lim.pad_bucket = 256u;
+    FUZZ_ASSERT(handshake_initiator_verify_server_hello(&hs, sh, shl) == HANDSHAKE_OK &&
+                handshake_initiator_create_client_auth(&hs, ca_out, CLIENT_AUTH_MAX_ENCODED_LEN, cal) == HANDSHAKE_OK &&
+                handshake_initiator_finish(&hs) == HANDSHAKE_OK &&
+                handshake_get_handshake_id(&hs, hsid) == HANDSHAKE_OK &&
+                session_init_from_handshake(sess, &hs, &lim, fuzz_clock_fn, NULL) == SESSION_OK,
+                "fixture: the genuine client could not finish the handshake");
+    handshake_ctx_wipe(&hs);
+    keystore_wipe(&pins);
 }
 
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
@@ -255,6 +357,77 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
         const uint8_t *p3[2] = { ch_buf, ch_buf };
         const size_t l3[2] = { ch_len, ch_len };
         emit_chunked(emit, ctx, "client-hello-twice", p3, l3, 2);
+    }
+
+    /* A GENUINE LOGIN, and what an authenticated device can then send. Each
+     * record below is the client's FIRST after the handshake, so each comes
+     * from a handshake of its own; the streams restart, so the three
+     * handshakes are byte for byte the same one. */
+    {
+        static uint8_t g_ch[CLIENT_HELLO_MAX_ENCODED_LEN], g_ca[CLIENT_AUTH_MAX_ENCODED_LEN];
+        static uint8_t rec[AUTHD_MAX_RECORD];
+        static uint8_t rot[AUTHMSG_ROTATE_MAX_CONTENT];
+        size_t chl = 0, cal = 0, recl = 0, rl = 0;
+        session_t sess;
+        uint8_t hsid[STORE_HSID_BYTES];
+
+        genuine_login(g_ch, &chl, g_ca, &cal, &sess, hsid);
+        const uint8_t *p2[2] = { g_ch, g_ca };
+        const size_t l2[2] = { chl, cal };
+        emit_chunked(emit, ctx, "login", p2, l2, 2);
+        {
+            /* The canary: this seed, run as an input, logs in. */
+            static uint8_t seed[16384];
+            size_t off = fuzz_seed_put_chunk(seed, 0, sizeof seed, 2u, g_ch, chl);
+            off = fuzz_seed_put_chunk(seed, off, sizeof seed, 2u, g_ca, cal);
+            FUZZ_ASSERT(off > 0u && run_input(seed, off) == 1u,
+                        "fixture: the genuine login seed does not log in -- nothing after the handshake is being fuzzed");
+        }
+        {
+            uint8_t bye[AUTHMSG_BYE_CONTENT_LEN];
+            FUZZ_ASSERT(authmsg_encode_bye(bye, sizeof bye, &rl) == AUTHMSG_OK &&
+                        session_seal(&sess, bye, rl, rec, sizeof rec, &recl) == SESSION_OK,
+                        "fixture: BYE could not be sealed");
+            const uint8_t *p3[3] = { g_ch, g_ca, rec };
+            const size_t l3[3] = { chl, cal, recl };
+            emit_chunked(emit, ctx, "login-then-bye", p3, l3, 3);
+        }
+        session_wipe(&sess);
+
+        genuine_login(g_ch, &chl, g_ca, &cal, &sess, hsid);
+        {
+            mldsa_keypair_t new_kp;
+            uint8_t d_old[32], d_new[32];
+            static uint8_t s_old[MLDSA_SIGNATURE_MAX_BYTES], s_new[MLDSA_SIGNATURE_MAX_BYTES];
+            size_t sol = 0, snl = 0;
+            FUZZ_ASSERT(mldsa_keypair_generate(&new_kp) == 0 &&
+                        authmsg_rotate_digest(d_old, AUTHMSG_LABEL_ROTATE_OLD, hsid, 0u, HANDLE1, sizeof HANDLE1,
+                                              g_device_kp.public_key, new_kp.public_key) == AUTHMSG_OK &&
+                        authmsg_rotate_digest(d_new, AUTHMSG_LABEL_ROTATE_NEW, hsid, 0u, HANDLE1, sizeof HANDLE1,
+                                              g_device_kp.public_key, new_kp.public_key) == AUTHMSG_OK &&
+                        mldsa_sign(s_old, &sol, d_old, sizeof d_old, &g_device_kp) == 0 &&
+                        mldsa_sign(s_new, &snl, d_new, sizeof d_new, &new_kp) == 0 &&
+                        authmsg_encode_rotate(rot, sizeof rot, &rl, 0u, HANDLE1, sizeof HANDLE1, new_kp.public_key,
+                                              s_old, sol, s_new, snl) == AUTHMSG_OK &&
+                        session_seal(&sess, rot, rl, rec, sizeof rec, &recl) == SESSION_OK,
+                        "fixture: ROTATE could not be built and sealed");
+            mldsa_keypair_free(&new_kp);
+            const uint8_t *p3[3] = { g_ch, g_ca, rec };
+            const size_t l3[3] = { chl, cal, recl };
+            emit_chunked(emit, ctx, "login-then-rotate", p3, l3, 3);
+        }
+        session_wipe(&sess);
+
+        genuine_login(g_ch, &chl, g_ca, &cal, &sess, hsid);
+        {
+            static const uint8_t junk[40] = { 0x7Fu, 0x01u, 0x02u };
+            FUZZ_ASSERT(session_seal(&sess, junk, sizeof junk, rec, sizeof rec, &recl) == SESSION_OK,
+                        "fixture: the junk record could not be sealed");
+            const uint8_t *p3[3] = { g_ch, g_ca, rec };
+            const size_t l3[3] = { chl, cal, recl };
+            emit_chunked(emit, ctx, "login-then-unknown-op", p3, l3, 3);
+        }
+        session_wipe(&sess);
     }
 
     /* application ops arriving before any handshake */
