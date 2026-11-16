@@ -17507,6 +17507,16 @@ Two of the fourteenth review's small leftovers.
 - **No erratum.** Spec 13's exit statuses already say 1 is "operation
   failed"; 511 is an implementation bound the spec does not state, and the
   daemon's behaviour did not change.
+- **An older mutant changed its answer (nightly 43785857594, 117 of 118).**
+  v124 CW1 removes `login`'s own check of its write. Until this step that
+  exited 0; now the common check catches the unwritten code and the exit is
+  1 with the general message, so the test still fails, on the missing
+  specific message, and its line reads "exited 1" where the spec said
+  "exited 0". The mutant is still caught by the same check; the spec now
+  names the part of the line that does not depend on the number. `login`'s
+  own check stays: it is what says the code is lost and to log in again. I
+  had not rerun the older client campaigns for this step, only for V4-217;
+  the nightly did.
 - **Left, still:** the daemon accepts `count=01` and `n=0005`; the recovery
   store functions do not repeat the user's status in their transactions; a
   killed rotation leaves `.newpub.<pid>`; the admin tool takes any first line
