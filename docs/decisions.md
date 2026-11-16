@@ -18136,3 +18136,30 @@ Left from that review:
 
 Counts: 602 mutations, 108 campaigns, 646 anchors; 330 findings (F273, F288
 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
+
+## V4-234: cleanup after V4-230 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `5472bbb`, now main: CI
+  43908581329 (16/16), nightly 43908587227 (122/122, 107 campaigns). These
+  are the second runs of V4-230; V4-231 records why the first failed.
+- V4-232 (`83360c2`) has CI 43917411098, 16/16: the widened stack-protector
+  check holds with gcc on Linux, all nine archives, which V4-232 had left
+  for CI to say. Its nightly, and V4-233's runs, were still queued when
+  this was written; GitHub held dispatched runs in the queue for over an
+  hour on 2026-11-16.
+- A correction to V4-232's entry: under load `browser_e2e` was rerun six
+  times, not five, and all six passed; two of them were slow (387 s and
+  346 s), not one. With the load gone it took 22 s again, twice.
+- Open for the owner: F273, F288, F309, the reference site's one login
+  state per session, what the audit chain should record, whether the
+  symbolic model should cover long-term key compromise, pull request 1,
+  `user_id` "opaque" in §3.2 against printable ASCII in the daemon, the
+  browser rotation applying the new-passphrase policy to an existing
+  passphrase, and two from the twenty-first review: lifetimes on the wall
+  clock when the clock is stepped, and uppercase hex accepted where §8 says
+  lowercase. Each entry carries a recommendation or the question to settle.
+
+Counts: 602 mutations, 108 campaigns, 646 anchors; 330 findings (F273, F288
+and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
