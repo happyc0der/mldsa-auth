@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.66, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224)
+# mldsa-authd — deployment specification (v1.67, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1531,7 +1531,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Recovery lockout | 5 failures → 1 hour | §10.3 |
 | Key rotation cadence | `rotation_due_age_s`, default 180 days, `0` disables | §6.2 |
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
-| Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded | §7.2, §7.3 |
+| Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded; the rate holds exactly at every value the configuration accepts, however often an address asks (erratum 109) | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
 | The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
@@ -2107,3 +2107,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 108 | 16 | One turn of the loop takes at most 16 connections from a listener and leaves the rest queued; a turn starts with the listener after the one that accepted last; a hang-up closes a connection only when there was nothing to read from it that turn | The accept loop ran until the queue was empty, so arrivals that outpaced it (refusals at a full pool are cheap for the peer) held the loop off every slot, deadline and watchdog message. Listeners were served in registration order, site before admin, on a shared pool: a busy site took every freed slot and the admin tool waited without bound. A request longer than one 4,096-byte read from a peer that wrote it and closed was dropped unread, where a shorter one was served (audit F306–F308) |
+
+### Revision v1.67 (V4-226)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 109 | 17 | The per-address rate holds exactly at every `rate_per_min` the configuration accepts: a bucket is credited in whole steps of the rate's reduced fraction (100 a minute is 5 thousandths of a token every 3 ms), and its clock moves by exactly the time credited | The refill added the floor of what had been earned and moved the clock by the floor of the time that had earned it. At a rate that is not a whole number of thousandths a millisecond, one elapsed millisecond added one and moved the clock by nothing, so every further request in that millisecond added one more: at `rate_per_min = 100` an address asking ten times a millisecond was admitted 729 times in a minute. The shipped 5, and every rate that divides 60,000, was exact (audit F310) |

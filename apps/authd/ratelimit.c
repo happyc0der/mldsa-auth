@@ -49,25 +49,50 @@ void ratelimit_init(ratelimit_t *r, uint32_t per_min, uint32_t burst,
  *
  * Integer arithmetic throughout, in THOUSANDTHS of a token, because a limiter
  * whose refill depends on floating point is a limiter whose boundary cannot be
- * asserted exactly. `*last_ms` is advanced only by the time that actually
- * produced whole milli-tokens, so repeated calls in the same millisecond
- * cannot round the accrual away. */
+ * asserted exactly.
+ *
+ * The rate is per_ms_num milli-tokens every per_ms_den milliseconds. Reduced
+ * by their common divisor that is `step_tok` milli-tokens every `step_ms`
+ * milliseconds, both whole, and the bucket is credited in whole steps only:
+ * what is added and how far `*last_ms` moves are then exactly the same
+ * amount of time, at every rate, and the part of a step that has not yet
+ * elapsed stays behind `*last_ms` for the next call.
+ *
+ * F310: it used to add floor(elapsed * num / den) and advance the clock by
+ * floor(add * den / num). At a rate that is not a whole number of
+ * milli-tokens a millisecond (100 a minute is 5 every 3 ms) one elapsed
+ * millisecond added 1 and advanced the clock by 0, so every further call in
+ * that millisecond added 1 again: an address asking ten times a millisecond
+ * was admitted 729 times in a minute at a limit of 100. The shipped 5 a
+ * minute, and every rate that divides 60000, was exact. */
+static uint64_t gcd_u64(uint64_t a, uint64_t b)
+{
+    while (b != 0u) {
+        const uint64_t t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
 static void refill(uint64_t *tokens_milli, uint64_t *last_ms, uint64_t now_ms,
                    uint64_t per_ms_num, uint64_t per_ms_den, uint64_t cap_milli)
 {
-    if (now_ms <= *last_ms) {
+    if (now_ms <= *last_ms || per_ms_num == 0u || per_ms_den == 0u) {
         return;                       /* a clock that did not advance owes nothing */
     }
-    const uint64_t elapsed = now_ms - *last_ms;
-    const uint64_t add = (elapsed * per_ms_num) / per_ms_den;
-    if (add == 0u) {
-        return;                       /* keep last_ms: the remainder is not lost */
+    const uint64_t g = gcd_u64(per_ms_num, per_ms_den);
+    const uint64_t step_tok = per_ms_num / g;
+    const uint64_t step_ms = per_ms_den / g;
+    const uint64_t steps = (now_ms - *last_ms) / step_ms;
+    if (steps == 0u) {
+        return;                       /* keep last_ms: the part of a step is not lost */
     }
-    *tokens_milli += add;
+    *tokens_milli += steps * step_tok;
     if (*tokens_milli > cap_milli) {
         *tokens_milli = cap_milli;
     }
-    *last_ms += (add * per_ms_den) / per_ms_num;
+    *last_ms += steps * step_ms;
 }
 
 /* per_min tokens a minute is (per_min * 1000) milli-tokens per 60000 ms, i.e.

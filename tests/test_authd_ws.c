@@ -759,6 +759,49 @@ static void test_ratelimit(void)
           "limiter: a different address has its own bucket");
     CHECK(r.denied_addr == 2u, "limiter: every per-address refusal is counted");
 
+    /* F310: a rate that is not a whole number of milli-tokens a millisecond,
+     * asked ten times every millisecond for a minute. The bucket starts with
+     * its burst of 10 and earns `rate` in the minute, whoever asks how often;
+     * the refusals in between must mint nothing. */
+    { static const uint32_t rates[] = { 5u, 61u, 100u, 600u, 1000u, 7777u };
+      int exact = 1;
+      for (size_t k = 0; k < sizeof rates / sizeof rates[0]; k++) {
+          ratelimit_init(&r, rates[k], 10u, 10000u, 8u, 0u);
+          uint64_t admitted = 0;
+          for (uint64_t ms = 0; ms < 60000u; ms++) {
+              for (int j = 0; j < 10; j++) {
+                  if (ratelimit_admit(&r, &a, ms) == RATELIMIT_ALLOW) {
+                      admitted++;
+                      ratelimit_release(&r, &a);
+                  }
+              }
+          }
+          /* Never more than the burst and the rate. Less by what the last,
+           * unfinished step would have brought: a step is at most 60 ms, so
+           * at most rate/1000 tokens (7.8 at the largest rate here), and one
+           * more for the token the 60000th millisecond completes. */
+          const uint64_t want_hi = 10u + rates[k], want_lo = want_hi - (rates[k] / 1000u + 2u);
+          if (admitted < want_lo || admitted > want_hi) {
+              printf("  rate %u a minute: admitted %llu in the minute, expected %llu to %llu\n",
+                     (unsigned)rates[k], (unsigned long long)admitted,
+                     (unsigned long long)want_lo, (unsigned long long)want_hi);
+              exact = 0;
+          }
+      }
+      CHECK(exact, "limiter: an address asking ten times a millisecond is admitted its burst and its rate, "
+                   "at rates that do and do not divide the minute (F310)"); }
+    /* ...and the boundary at such a rate: 100 a minute is one token every 600 ms. */
+    ratelimit_init(&r, 100u, 1u, 10000u, 8u, 0u);
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW, "limiter: 100 a minute, the burst of one");
+    ratelimit_release(&r, &a);
+    { int early = 0;
+      for (uint64_t ms = 0; ms < 600u; ms++) {
+          if (ratelimit_admit(&r, &a, ms) == RATELIMIT_ALLOW) { early = 1; ratelimit_release(&r, &a); }
+      }
+      CHECK(!early, "limiter: at 100 a minute nothing returns before 600 ms, asked every millisecond (F310)");
+      CHECK(ratelimit_admit(&r, &a, 600u) == RATELIMIT_ALLOW,
+            "limiter: and at 600 ms exactly one token has returned (F310)"); }
+
     /* The global bucket, which is what bounds the damage when the addresses
      * are many and genuine -- or when the proxy is lying about them. */
     ratelimit_init(&r, 1000u, 1000u, 2u, 100u, 0u);

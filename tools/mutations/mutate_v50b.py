@@ -84,7 +84,7 @@ M = {
  # J5 -- the refill discards its remainder by advancing last_ms to now. The
  # bucket still fills, just never at the moment it should, so only a boundary
  # with a LOWER bound sees it.
- "J5": (RL, [("    *last_ms += (add * per_ms_den) / per_ms_num;",
+ "J5": (RL, [("    *last_ms += steps * step_ms;",
               "    *last_ms = now_ms; /* MUTATION J5: the remainder is discarded */")]),
 
  # J6 -- the whole-daemon bucket is never consulted, so many addresses (or one

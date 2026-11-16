@@ -98,7 +98,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-596 committed mutations in 105 campaigns, each a defect the tests must catch
+598 committed mutations in 106 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -117,7 +117,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (640 anchors checked; 596 mutations across 105 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (642 anchors checked; 598 mutations across 106 campaigns)
 ```
 
 ## The formal model

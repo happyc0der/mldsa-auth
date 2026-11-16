@@ -812,7 +812,10 @@ sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
 
 It prints that it wrote `server.ek.new` (`MLDSAEK1 version 2, mode 0600`) and
 that the chain and the pseudonyms carry over. **Copy the new passphrase
-offline now**, as in step 6: there is still no escrow.
+offline now**, exactly as in step 6 (`sudo base64 /var/lib/mldsa-authd/pass.new`,
+and keep the line it prints): there is still no escrow. This file already
+looks like base64; encode it all the same, so that what you keep is always
+undone the same way, by one `base64 -d`.
 
 The new credential, beside the old one, and proof that the new pair opens the
 store **before** anything is swapped:
@@ -879,7 +882,11 @@ On the new host, do steps 1–4 as written. **Do not run step 5**: `init`
 would make a new server identity, and the point is to keep the old one. Copy
 the directory back to `/root/mldsa-authd-offhost`. Write the passphrase you
 kept into `/var/lib/mldsa-authd/pass` (mode 0600, owned by `mldsa-authd`):
-from the line step 6 printed, `base64 -d` gives back the 32 bytes. Then run
+from the line step 6 printed (or step 23, if the passphrase was changed
+since), `base64 -d` gives back the file, byte for byte. Do not put the line
+on a command line, where the shell's history keeps it: run
+`sudo -u mldsa-authd sh -c 'umask 077; base64 -d > /var/lib/mldsa-authd/pass'`,
+paste the line, press Enter and then Ctrl-D. Then run
 step 6's last block, which encrypts it for *this* host and shreds the file.
 Install your `authd.conf` from the directory instead of the example in step
 7, and **check its `site_uids` and `proxy_uids` against this host**

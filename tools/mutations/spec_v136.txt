@@ -1,0 +1,2 @@
+RF1|^test_authd_ws$|limiter: an address asking ten times a millisecond is admitted its burst and its rate
+RF2|^test_authd_ws$|limiter: at 11999 ms the bucket has NOT yet refilled (5 a minute)

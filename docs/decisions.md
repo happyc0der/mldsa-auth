@@ -17765,3 +17765,49 @@ No code.
 
 Counts: 596 mutations, 105 campaigns, 640 anchors; 309 findings (F273, F288
 and F309 open); spec v1.66, 108 errata (all unchanged by this step).
+
+## V4-226: the limiter credits whole steps (F310, F311, erratum 109)
+
+The eighteenth review read the rate limiter, the PROXY header parser and the
+deployment files. The PROXY v2 parser, the limiter's admit and release
+accounting and the shipped configuration's defaults were read and found
+sound. Two candidates are fixed here, both Low.
+
+- **F310, whole steps.** The refill reduces the rate to `step_tok`
+  thousandths every `step_ms` milliseconds by their common divisor and
+  credits whole steps, moving the bucket's clock by exactly the time it
+  credited. Carrying a remainder in the bucket would also have been exact; it
+  needs a field in every bucket and a rule for it when the bucket is full,
+  and the reduced step needs neither. The cost is a coarser grain at rates
+  that share little with the minute: 7,777 a minute is credited 7.777 tokens
+  at a time, every 60 ms, where 100 a minute is 0.005 every 3 ms. The test's
+  lower bound allows for it (`rate/1000 + 2` below the limit). The shipped
+  rate, 5 a minute, steps every 12 ms as before. A zero rate now returns
+  before the division.
+- **F311, one way to undo what is kept.** Step 23 encodes the new passphrase
+  file with step 6's command although it already looks like base64, so that
+  step 24's one `base64 -d` is right for either. Step 24 reads the line from
+  the terminal. Prose only; the rehearsed blocks are byte for byte the same,
+  so the rehearsal says nothing new about these two paragraphs.
+
+Verification: `test_authd_ws` `limiter:` was run against the old file first
+and went red (669, 729, 10,629 and 85,208 admitted at 61, 100, 1,000 and
+7,777 a minute). Campaign v136 (RF1, the old arithmetic; RF2, a step credited
+early) 2/2 by name. The rewrite moved the line v50b's J5 mutates; its anchor
+follows and v50b was rerun whole, 13/13.
+
+Left from that review, and why:
+
+- The memory-lock check works out its need assuming 4 KiB pages. On a 16 KiB
+  or 64 KiB kernel it would under-ask and the daemon would fail at the lock,
+  loudly, at start. Not reproduced: no such host is rehearsed.
+- One IPv6 /48 can spend the global bucket, because the per-address key is a
+  /64. That is the global bucket doing what it is for; a per-/48 tier is a
+  design choice, noted here and not opened as a finding.
+- Wording: the limiter's comment says it "keys on the full address" where
+  IPv6 is keyed by /64; the runbook's lines on `server.ek.old` say keep in
+  one place and shred in another; the audit timer is not stopped during the
+  restore and rewrap swaps.
+
+Counts: 598 mutations, 106 campaigns, 642 anchors; 311 findings (F273, F288
+and F309 open); spec v1.67, 109 errata.
