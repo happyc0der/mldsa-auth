@@ -46,6 +46,9 @@ export class AuthdClient {
   // ---- wasm memory: copy in, copy out, zero on the way out --------------
   put(bytes) {
     const p = this.M._malloc(Math.max(bytes.length, 1));
+    // F305: a refused allocation is 0, and writing there overwrote the
+    // module's own low memory.
+    if (!p) { throw new Error('the client module is out of memory'); }
     this.M.HEAPU8.set(bytes, p);
     return p;
   }
@@ -222,6 +225,11 @@ export class Session {
   async feed(call) {
     const msg = await this.next();
     if (msg === null) { return 3; /* CC_ERR_FRAME: the daemon closed without answering */ }
+    // F305: no frame of this protocol is larger than the frame buffer, so a
+    // larger message is refused HERE, as the frame error it is. It used to be
+    // copied into the module first, whatever its size, and the module's
+    // memory grows and never shrinks.
+    if (msg.length > this.cap) { return 3; }
     const p = this.client.put(msg);
     try { this.tick(); return call(p, msg.length); } finally { this.client.drop(p, msg.length); }
   }

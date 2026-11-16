@@ -17682,3 +17682,20 @@ No code.
 
 Counts: 592 mutations, 104 campaigns, 636 anchors; 304 findings (F273 and
 F288 open); spec v1.64, 106 errata (all unchanged by this step).
+
+## V4-223: a page hands the module nothing larger than a frame (F305, erratum 107)
+
+Left over from the sixteenth review. `feed()` refuses a message longer than
+the frame buffer before copying it, with the status the core gives a bad
+frame, so the caller's error is the one it already reports. The bound is the
+buffer, not `ccw_recv_max`: that is a payload bound for the current state,
+and the core applies it itself once it has the frame; the page only needs
+"no frame is this large". `put()` throws on a refused allocation.
+
+JavaScript, so no campaign: the bound was removed by hand, `web_flows`
+`frame:` went red (the 1 MiB message was copied whole), and the file was
+restored byte for byte. The stand-in speaks just enough WebSocket to answer
+the upgrade and send one binary frame.
+
+Counts: 592 mutations, 104 campaigns, 636 anchors (unchanged); 305 findings
+(F273 and F288 open); spec v1.65, 107 errata.

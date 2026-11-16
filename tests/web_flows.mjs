@@ -447,6 +447,50 @@ try {
       check(threw === null && (await store.list()).length === 0,
             `forget: a key the site never confirmed is removed (${threw && threw.message}) (V4-140)`); } }
 
+  // F305: a peer that answers the upgrade and then sends one message far
+  // larger than any frame. It is refused as a frame error without being
+  // copied into the module: nothing that large is ever handed to put().
+  { const { createServer } = await import('node:net');
+    const { createHash } = await import('node:crypto');
+    const BIG = 1 << 20;
+    const conns = [];
+    const loud = createServer((c) => {
+      conns.push(c);
+      c.on('error', () => {});
+      let buf = '';
+      const onData = (d) => {
+        buf += d.toString('latin1');
+        if (!buf.includes('\r\n\r\n')) { return; }
+        c.off('data', onData);
+        const key = /sec-websocket-key: *([^\r\n]+)/i.exec(buf)?.[1] ?? '';
+        const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+        c.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+        const head = Buffer.alloc(10);
+        head[0] = 0x82; head[1] = 127; head.writeBigUInt64BE(BigInt(BIG), 2);
+        c.write(Buffer.concat([head, Buffer.alloc(BIG, 0x41)]));
+      };
+      c.on('data', onData);
+    });
+    await new Promise((r) => loud.listen(0, '127.0.0.1', r));
+    const { store, params } = await fresh();
+    const cap = client.M._ccw_frame_buf_bytes();
+    const realPut = client.put.bind(client);
+    let largest = 0;
+    client.put = (bytes) => { largest = Math.max(largest, bytes.length); return realPut(bytes); };
+    let got;
+    try {
+      got = await flows.login(client, store, { ...params, url: `ws://127.0.0.1:${loud.address().port}/authd/v1`, timeoutMs: 5000 })
+        .then(() => 'resolved', (e) => `rejected: ${e.statusName ?? e.message}`);
+    } finally { delete client.put; }
+    check(/^rejected: /.test(got) && !/timed out/.test(got) && largest > 0 && largest <= cap,
+          `frame: a ${BIG}-byte message is refused as a frame error and never copied into the module ` +
+          `(${got}; largest copy ${largest} bytes, frame buffer ${cap}) (F305)`);
+    const s = await flows.login(client, store, params);
+    check(s.code.length === 32, 'frame: the same identity then logs in to the real daemon (the canary)');
+    await s.close();
+    for (const c of conns) { c.destroy(); }
+    await new Promise((r) => loud.close(r)); }
+
   // V4-187, F264: a socket that connects and never answers the upgrade. The
   // client's timeout bounded each wait for a FRAME; nothing bounded the wait
   // for the connection to open, so a login stayed pending for as long as the
