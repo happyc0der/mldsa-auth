@@ -17655,3 +17655,30 @@ Left from that review:
 
 Counts: 592 mutations, 104 campaigns, 636 anchors (unchanged); 304 findings
 (F273 and F288 open); spec v1.64, 106 errata.
+
+## V4-222: cleanup after V4-219 to V4-221 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `5f79965`, now main: CI
+  43827016458 (16/16), nightly 43827019314 (119/119, 104 campaigns).
+- Before it: `73cb26e` (V4-219) had CI 43808217743 (16/16), nightly
+  43808220776 (118/118) and main's push CI 43814926557 (16/16); `04190ed`
+  (V4-220) had CI 43823200478 (16/16) and nightly 43823206369 (119/119).
+- V4-219's first two dispatched runs, 43799391358 and 43799393967, sat
+  queued for ninety minutes with no jobs and no incident posted; they could
+  not be cancelled ("already completed") and were dispatched again.
+- Campaign v134's first local run credited OB2 as a compile kill that was
+  not allowed: the mutant left a variable unused. It was rewritten to keep
+  the variable and killed by its named check; the nightly ran the rewritten
+  one. A local campaign costs about six minutes a mutant, because each is
+  followed by the whole clean suite.
+- Open for the owner: F273, F288, the reference site's one login state per
+  session, what the audit chain should record, whether the symbolic model
+  should cover long-term key compromise, pull request 1, and two from these
+  steps: `user_id` is "opaque" in §3.2 and printable ASCII in the daemon
+  (V4-220), and a browser rotation applies the new-passphrase policy to an
+  existing passphrase (V4-221). Each entry carries a recommendation.
+
+Counts: 592 mutations, 104 campaigns, 636 anchors; 304 findings (F273 and
+F288 open); spec v1.64, 106 errata (all unchanged by this step).
