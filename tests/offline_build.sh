@@ -88,6 +88,18 @@ inc "cd /src && cmake --build b -j\$(nproc) --target mldsa_authd_bin > /tmp/b.lo
 inc "test -x /src/b/apps/authd/mldsa-authd" || fail "no daemon binary was produced"
 echo "PASS: OFFLINE: configured and built with no network, from the cache alone"
 
+# --- control 2b: a named cache that lacks a file (V4-232, F323) --------------
+# It used to fall back to the network for that one artefact without saying
+# so; offline that is a failed download much later, and online it is a build
+# that was not the offline build it was asked to be.
+inc "rm -rf /src/b4 && mkdir -p /cache5 && cp -R /cache/liboqs.git /cache5/ && cp /cache/sqlite-amalgamation-3530400.zip /cache5/"
+if inc "cd /src && cmake -S . -B b4 -DCMAKE_C_COMPILER=clang -DMLDSA_DEPS_CACHE=/cache5 > /tmp/c4.log 2>&1"; then
+    fail "a cache with no libsodium archive was accepted"
+fi
+inc "grep -q 'missing: libsodium-1.0.22.tar.gz' /tmp/c4.log" \
+  || { inc "tail -n 20 /tmp/c4.log"; fail "the incomplete cache was refused, but not for the missing file"; }
+echo "PASS: OFFLINE: a named cache that lacks an archive is refused, naming the file"
+
 # --- control 3: a corrupted archive ---------------------------------------
 inc "rm -rf /src/b2 && printf 'x' | dd of=/cache/libsodium-1.0.22.tar.gz bs=1 seek=500 conv=notrunc 2>/dev/null"
 if inc "cd /src && cmake -S . -B b2 -DCMAKE_C_COMPILER=clang -DMLDSA_DEPS_CACHE=/cache > /tmp/c2.log 2>&1 && cmake --build b2 --target libsodium_ext > /tmp/b2.log 2>&1"; then

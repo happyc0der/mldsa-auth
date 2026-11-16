@@ -71,6 +71,15 @@ if [ "$rc" -eq 3 ] && grep -q 'is empty or missing' "$TMP/out" && kept; then
 else
     bad "an empty spec: exit $rc, output: $(cat "$TMP/out")"
 fi
+# F322: a spec with nothing but comments and blank lines names no mutation.
+printf '# a campaign that was emptied\n\n# and nothing else\n' > "$TMP/comments.txt"
+plant
+run "$TMP/comments.txt"; rc=$?
+if [ "$rc" -eq 3 ] && grep -q 'names no mutation' "$TMP/out" && kept; then
+    ok "a spec of comments only is refused, and nothing was touched (F322)"
+else
+    bad "a spec of comments only was not refused (F322): exit $rc, output: $(cat "$TMP/out")"
+fi
 run "$TMP/absent.txt"; rc=$?
 if [ "$rc" -eq 3 ] && kept; then ok "a spec that is not there is refused"
 else bad "a missing spec: exit $rc, output: $(cat "$TMP/out")"; fi

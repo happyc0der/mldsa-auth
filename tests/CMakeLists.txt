@@ -277,7 +277,7 @@ add_test(NAME build_flags
                  -DEXPECT_FORTIFY=${_mldsa_expect_fortify}
                  -DEXPECT_ASAN=${_mldsa_expect_asan}
                  -DEXPECT_UBSAN=${_mldsa_expect_ubsan}
-                 "-DARCHIVES=$<TARGET_FILE:mldsa_core>|$<TARGET_FILE:mldsa_authd>"
+                 "-DARCHIVES=$<TARGET_FILE:mldsa_core>|$<TARGET_FILE:mldsa_authd>|$<TARGET_FILE:mldsa_keys>|$<TARGET_FILE:mldsa_demo>|$<TARGET_FILE:mldsa_ws>|$<TARGET_FILE:mldsa_client>|$<TARGET_FILE:mldsa_client_wasm>|$<TARGET_FILE:mldsa_cli_common>|$<TARGET_FILE:mldsa_client_cli>"
                  -DNM=${CMAKE_NM}
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/check_build_flags.cmake)
 # V4-24b (CLAIMS P8, audit F94): what the compiler DID with the UBSan flags.

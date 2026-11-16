@@ -94,7 +94,24 @@ if(NOT MLDSA_DEPS_CACHE AND DEFINED ENV{MLDSA_DEPS_CACHE})
   set(MLDSA_DEPS_CACHE "$ENV{MLDSA_DEPS_CACHE}")
 endif()
 
+# A cache that is named must hold what it is named for (V4-232, F323). Each
+# artefact below used to be taken from the cache if it was there and from
+# the network if it was not, without a word: a mistyped path, or a cache
+# with one file missing, gave a build that was not the offline build it was
+# asked to be. The pins held either way; "no network" did not.
+function(mldsa_cache_must_hold name)
+  if(MLDSA_DEPS_CACHE AND NOT EXISTS "${MLDSA_DEPS_CACHE}/${name}")
+    message(FATAL_ERROR
+      "The dependency cache that was named does not hold everything it is named for.\n"
+      "  cache:   ${MLDSA_DEPS_CACHE}\n"
+      "  missing: ${name}\n"
+      "A named cache is the only source: nothing is fetched from the network in its place. "
+      "Fill it with deploy/fetch-deps.sh, or configure without MLDSA_DEPS_CACHE to download.")
+  endif()
+endfunction()
+
 set(_mldsa_oqs_repo "https://github.com/open-quantum-safe/liboqs.git")
+mldsa_cache_must_hold("liboqs.git")
 if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/liboqs.git")
   set(_mldsa_oqs_repo "${MLDSA_DEPS_CACHE}/liboqs.git")
   message(STATUS "liboqs from the offline cache: ${_mldsa_oqs_repo}")
@@ -230,6 +247,7 @@ set(LIBSODIUM_LIBRARY ${LIBSODIUM_PREFIX}/lib/libsodium.a)
 set(_mldsa_sodium_url
     "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz"
     "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz")
+mldsa_cache_must_hold("libsodium-1.0.22.tar.gz")
 if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
   set(_mldsa_sodium_url "${MLDSA_DEPS_CACHE}/libsodium-1.0.22.tar.gz")
   message(STATUS "libsodium from the offline cache: ${_mldsa_sodium_url}")
@@ -291,6 +309,7 @@ endif()
 # apply here; it builds straight in the build tree as pure CMake.
 set(MLDSA_SQLITE_SHA3 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e)
 set(_mldsa_sqlite_url "https://sqlite.org/2026/sqlite-amalgamation-3530400.zip")
+mldsa_cache_must_hold("sqlite-amalgamation-3530400.zip")
 if(MLDSA_DEPS_CACHE AND EXISTS "${MLDSA_DEPS_CACHE}/sqlite-amalgamation-3530400.zip")
   set(_mldsa_sqlite_url "${MLDSA_DEPS_CACHE}/sqlite-amalgamation-3530400.zip")
   message(STATUS "sqlite from the offline cache: ${_mldsa_sqlite_url}")

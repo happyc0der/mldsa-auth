@@ -57,6 +57,14 @@ unnamed=$(awk -F'|' '$1 != "" && $1 !~ /^#/ && $3 == "" { print $1 }' "$SPEC" | 
 # 0, with one row fewer than the spec has lines.
 [ -s "$SPEC" ] || { echo "FATAL: spec $SPEC is empty or missing"; exit 3; }
 [ -z "$(tail -c 1 "$SPEC")" ] || { echo "FATAL: spec $SPEC does not end in a newline -- its last mutation would never be run"; exit 3; }
+# ---- and there must be something to run (V4-232, F322) --------------------
+# A spec of comments and blank lines passed the two checks above, ran no
+# mutation, and ended "residue: none", exit 0. The count is also what the
+# loop is held to at the end: the loop reads the spec on stdin, and so does
+# every child it starts, so a child that read from it would end the
+# campaign early with fewer rows than the spec has mutations.
+SPEC_N=$(awk -F'|' '$1 != "" && $1 !~ /^#/ { n++ } END { print n + 0 }' "$SPEC")
+[ "$SPEC_N" -gt 0 ] || { echo "FATAL: spec $SPEC names no mutation (comments and blank lines only)"; exit 3; }
 
 # ---- discovery (never a hardcoded list) ---------------------------------
 # ---- platform shim (V3-1) ------------------------------------------------
@@ -176,9 +184,11 @@ finish_mutation() {
   printf '%-4s %-19s %-26s | %s | %s | residue=%s\n' "$M" "$prov" "$res" "$rp" "$cs" "$residue"
 }
 
+RAN=0
 while IFS='|' read -r M TESTRE WANT; do
   [ -z "${M:-}" ] && continue
   case "$M" in \#*) continue ;; esac
+  RAN=$((RAN + 1))
   restore || { echo "$M: FATAL pre-restore"; exit 3; }
   python3 "$MUTATE" "$REPO" "$M" > "$LOG/$M.apply" 2>&1 || { echo "$M: FATAL apply: $(cat "$LOG/$M.apply")"; overall=1; continue; }
   if ! forced_build "$LOG/$M.build"; then
@@ -240,6 +250,7 @@ done < "$SPEC"
 
 restore; forced_build "$LOG/final.build" > /dev/null 2>&1
 echo "---"
+[ "$RAN" -eq "$SPEC_N" ] || { echo "rows: $RAN of the spec's $SPEC_N mutations were run (BAD)"; overall=1; }
 grep -rn "MUTATION" $(sources) 2>/dev/null && { echo "residue found (BAD)"; overall=1; } || echo "residue: none"
 [ "$(fp)" = "$CLEAN" ] && echo "final: all sources restored; all artifacts identical to clean fingerprints" || { echo "final: MISMATCH (BAD)"; overall=1; }
 if [ "${MLDSA_CLEAN_SUITE:-each}" = once ]; then

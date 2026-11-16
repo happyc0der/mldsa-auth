@@ -18029,3 +18029,49 @@ No code.
 
 Counts: 600 mutations, 107 campaigns, 644 anchors; 321 findings (F273, F288
 and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
+
+## V4-232: three more checks that could pass on nothing (F322 to F324)
+
+The last of the twentieth review's candidates that could be settled by
+running them.
+
+- **F322, the runner counts.** A spec must name at least one mutation, and
+  the loop must have run as many as the spec names. The second half is for
+  the loop's standard input, which is the spec and which every child
+  inherits: no child reads it today, and the count is cheaper than
+  redirecting each of the loop's commands and trusting that none is missed.
+- **F323, a named cache is the only source.** `MLDSA_DEPS_CACHE` set and an
+  artefact missing is now a refusal that names the cache and the file, on
+  lines of their own (CMake re-wraps a long message, and the first form of
+  the control's `grep` missed a file name that had moved to the next line).
+  CI always names a cache, filled by the same script that defines what a
+  full one holds, so nothing there changes. Online without a cache is as
+  before.
+- **F324, all nine archives.** Each must import `__stack_chk_fail`. With
+  clang on macOS every one does; whether gcc on Linux instruments at least
+  one function in each of the smaller ones is for this step's CI to say,
+  and an archive that legitimately has none would be listed as an
+  exception with its reason, not dropped from the list.
+
+Verification: `mutation_runner_gate` red against the old runner (the
+comments-only spec went on to the build); `tests/offline_build.sh` run in
+Docker here, 7/7 with the new control, which also showed the offline Linux
+build working with libsodium inside the tree; `build_flags` 9 of 9 in the
+plain, ASan and UBSan trees. No C changed, so no new campaign; campaign
+v137 was run through the edited runner to show the row count agrees on a
+real spec (2 of 2 run, both killed by name). In that run the clean suite
+after UC1 failed once, in `browser_e2e` ("DevTools connection closed", just
+after its first login): the machine's load average was 14 to 20 from
+another project's jobs, the three suites before it were 65 of 65, and five
+reruns of the test passed, one of them taking 387 s where 22 s is usual.
+Recorded as load on this host, not as a finding; if CI ever shows that
+line, it is one.
+
+Still not verified from that review: whether an offline liboqs cache with
+its `shallow` file removed is re-hashed on clone; whether
+`-D_FORTIFY_SOURCE=2` lowers Ubuntu gcc's default of 3; `emsdk install`
+fetches compiler binaries with no checksum of ours. Not done: the `deploy`
+CI job's second download, and retries for Node, Chrome and ProVerif.
+
+Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 324 findings
+(F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
