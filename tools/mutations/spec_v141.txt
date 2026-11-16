@@ -1,0 +1,7 @@
+PL1|^test_authd_localapi$|pipelined: a 4096-byte first line and a second in one write get ONE refusal, pipelined, and EOF
+PL2|^test_authd_localapi$|pipelined: one request followed at once by the peer's close is served, not refused
+WK1|^test_authd_ws$|client 101: a status that only begins with 101 is refused
+WK2|^test_authd_ws$|client 101: an accept value with bytes after it is refused
+WK3|^test_authd_ws$|client 101: two accept headers are refused
+WR1|^test_authd_ws$|client reader: a 16-bit length for a payload 7 bits would hold is refused (RFC 6455 5.2)
+WR2|^test_authd_ws$|client reader: a fragmented control frame is refused, not skipped (RFC 6455 5.5)

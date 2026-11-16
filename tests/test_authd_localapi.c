@@ -291,10 +291,47 @@ static void test_pipelined(void)
     CHECK(eof, "pipelined: ...and closes the connection");
     if (site >= 0) { (void)close(site); }
 
+    /* F333: a first line whose newline is the last byte of one of the
+     * daemon's reads. The loop reads 4096 bytes a turn, so with a first line
+     * of exactly 4096 bytes (or 8192, the longest line there is) nothing of
+     * the second line is in the buffer when the first is served, and "bytes
+     * already buffered behind this line" saw a lock-step peer. The length of
+     * a value is the sender's to choose. 4095 and 4097 were always refused. */
+    {
+        static const size_t firsts[] = { 4095u, 4096u, 4097u, 8192u };
+        static char two[8192 + 8];
+        for (size_t i = 0; i < sizeof firsts / sizeof firsts[0]; i++) {
+            const size_t n = firsts[i];
+            memcpy(two, "PING x=", 7);
+            memset(two + 7, 'a', n - 8u);
+            two[n - 1u] = '\n';
+            memcpy(two + n, "PING\n", 5);
+            site = h_dial_unix(d.site_path);
+            eof = 0;
+            resp[0] = '\0';
+            const int sent = (site >= 0) ? h_write_all(&d, site, two, n + 5u) : -1;
+            const int got = (sent == 0) ? read_to_eof(&d, site, resp, sizeof resp, &eof) : -1;
+            char what[160];
+            snprintf(what, sizeof what,
+                     "pipelined: a %zu-byte first line and a second in one write get ONE refusal, pipelined, and EOF",
+                     n);
+            CHECK(got == 0 && strcmp(resp, "ERR code=pipelined\n") == 0 && eof, what);
+            if (site >= 0) { (void)close(site); }
+        }
+    }
+
     site = h_dial_unix(d.site_path);
     CHECK(site >= 0 && h_local_cmd(&d, site, "PING", resp, sizeof resp) == 0 && starts(resp, "OK") &&
           h_local_cmd(&d, site, "PING", resp, sizeof resp) == 0 && starts(resp, "OK"),
           "pipelined: a lock-step site, one request per reply, is served (canary)");
+    if (site >= 0) { (void)close(site); }
+    /* A peer that sends one request and closes its side at once has sent
+     * nothing more: the end of the stream is not a second request. */
+    site = h_dial_unix(d.site_path);
+    eof = 0;
+    CHECK(site >= 0 && h_write_all(&d, site, "PING\n", 5) == 0 && shutdown(site, SHUT_WR) == 0 &&
+          read_to_eof(&d, site, resp, sizeof resp, &eof) == 0 && starts(resp, "OK version="),
+          "pipelined: one request followed at once by the peer's close is served, not refused");
     if (site >= 0) { (void)close(site); }
 
     int adm = h_dial_unix(d.admin_path);

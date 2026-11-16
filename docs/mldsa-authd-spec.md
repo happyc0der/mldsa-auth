@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.68, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227)
+# mldsa-authd — deployment specification (v1.69, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -475,8 +475,12 @@ before its reply — is not run, nor is anything behind it; the daemon answers
 before it writes the next request. This is a second layer under the client's
 duty below: a line break smuggled into a value usually arrives in the same
 write as the request it splits, and is refused here even if the site
-forwarded it. It cannot see bytes the daemon has not yet read when the first
-reply goes out, so it does not replace that duty.
+forwarded it. "Already behind it" means in the daemon's buffer or waiting
+on the socket when the line is served (erratum 111): the daemon reads in
+fixed pieces, and a first line that ended exactly where a piece ends used to
+be served with the second still unread. It cannot see bytes that have not
+reached the socket when the first reply goes out, so it does not replace
+that duty.
 
 ```
 request  = CMD SP key=value (SP key=value)* LF        ≤ 8192 bytes
@@ -2122,3 +2126,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 110 | 14 | The browser client refuses a text WebSocket message as a frame error, and a closed session refuses every later call without reaching the module; the module's contract counts 23 `ccw_` entry points, as `web/exports.txt` lists | A text message reaches a page as a string, and the client built a byte array of the length the string spelled (`2000000000` is two billion bytes) before any bound was applied; a session's handle and frame buffer are freed when it closes, and `rotate()` and `send()` still passed them to the module (audit F313, F314). The count had said 22 since `ccw_passphrase_check` was added in V4-13c |
+
+### Revision v1.69 (V4-238)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 111 | 8 | A line on the site socket is refused as pipelined when anything is behind it in the daemon's buffer or waiting on the socket, not only in the buffer | The daemon reads 4096 bytes a turn. A first line of exactly 4096 or 8192 bytes ended where a read ends, so nothing of the second line was in the buffer, the first was answered, and the second then ran. The length of a value is the sender's to choose, and a smuggled line break is the case this refusal exists for (audit F333) |

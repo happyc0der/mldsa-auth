@@ -475,24 +475,83 @@ int ws_client_request(char *out, size_t cap, size_t *out_len,
     return 0;
 }
 
+/* ASCII case-insensitive: does [v, v+n) contain `word`? */
+static int ci_contains(const uint8_t *v, size_t n, const char *word)
+{
+    const size_t wn = strlen(word);
+    for (size_t i = 0; i + wn <= n; i++) {
+        size_t k = 0;
+        while (k < wn) {
+            uint8_t c = v[i + k];
+            if (c >= 'A' && c <= 'Z') { c = (uint8_t)(c + 32u); }
+            if (c != (uint8_t)word[k]) { break; }
+            k++;
+        }
+        if (k == wn) { return 1; }
+    }
+    return 0;
+}
+
+/* Is the header line [l, l+n) named `name` (lowercase)? On yes, *v and *vn are
+ * its value with the blanks around it removed. */
+static int header_is(const uint8_t *l, size_t n, const char *name, const uint8_t **v, size_t *vn)
+{
+    const size_t nn = strlen(name);
+    if (n <= nn || l[nn] != ':') { return 0; }
+    for (size_t i = 0; i < nn; i++) {
+        uint8_t c = l[i];
+        if (c >= 'A' && c <= 'Z') { c = (uint8_t)(c + 32u); }
+        if (c != (uint8_t)name[i]) { return 0; }
+    }
+    size_t a = nn + 1u, b = n;
+    while (a < b && (l[a] == ' ' || l[a] == '\t')) { a++; }
+    while (b > a && (l[b - 1u] == ' ' || l[b - 1u] == '\t')) { b--; }
+    *v = l + a;
+    *vn = b - a;
+    return 1;
+}
+
+/* RFC 6455 4.1, the client's side, as a whole (F334). It used to accept any
+ * response that BEGAN "HTTP/1.1 101" and CONTAINED the accept value anywhere:
+ * a status of 1010, the value inside some other header or with bytes after
+ * it, no Upgrade or Connection header, a header block that never ended. The
+ * handshake that follows authenticates the server, so none of that let
+ * anyone in; it is the check doing what its header says, "exactly". */
 int ws_client_check_101(const uint8_t *resp, size_t len, const char *expect)
 {
-    if (resp == NULL || expect == NULL || len < 12u) {
+    if (resp == NULL || expect == NULL || len < 16u) {
         return -1;
     }
-    if (memcmp(resp, "HTTP/1.1 101", 12) != 0) {
+    if (memcmp(resp + len - 4u, "\r\n\r\n", 4) != 0) {
+        return -1;                              /* not a whole header block */
+    }
+    if (memcmp(resp, "HTTP/1.1 101", 12) != 0 || (resp[12] != ' ' && resp[12] != '\r')) {
         return -1;
     }
-    /* The accept value is the point of the handshake: without checking it a
-     * client would complete an "upgrade" with something that never read its
-     * key (RFC 6455 §1.3). */
     const size_t elen = strlen(expect);
-    for (size_t i = 0; i + elen <= len; i++) {
-        if (memcmp(resp + i, expect, elen) == 0) {
-            return 0;
+    int accepts = 0, accept_ok = 0, upgrade_ok = 0, connection_ok = 0;
+    size_t i = 0;
+    while (i < len && resp[i] != '\n') { i++; }  /* past the status line */
+    i++;
+    while (i < len) {
+        size_t e = i;
+        while (e < len && resp[e] != '\n') { e++; }
+        size_t n = e - i;
+        if (n > 0u && resp[i + n - 1u] == '\r') { n--; }
+        const uint8_t *v = NULL;
+        size_t vn = 0;
+        if (header_is(resp + i, n, "sec-websocket-accept", &v, &vn)) {
+            accepts++;
+            /* Not a secret: the value is a hash of what this client just sent. */
+            accept_ok = (vn == elen && memcmp(v, expect, elen) == 0);
+        } else if (header_is(resp + i, n, "upgrade", &v, &vn)) {
+            upgrade_ok = ci_contains(v, vn, "websocket");
+        } else if (header_is(resp + i, n, "connection", &v, &vn)) {
+            connection_ok = ci_contains(v, vn, "upgrade");
         }
+        i = e + 1u;
     }
-    return -1;
+    return (accepts == 1 && accept_ok && upgrade_ok && connection_ok) ? 0 : -1;
 }
 
 size_t ws_client_frame(uint8_t *out, size_t cap, const uint8_t *payload, size_t n,
@@ -538,18 +597,30 @@ ws_client_status_t ws_client_read_message(ws_read_fn rd, void *ctx,
         const uint8_t b0 = h[0];
 
         uint64_t len = (uint64_t)(h[1] & 0x7fu);
+        /* The shortest encoding, as §5.2 requires and as the server side of
+         * this file (ws_consume) has always required of a client (F335). A
+         * 64-bit length with its top bit set needs no rule of its own: it is
+         * longer than any buffer and longer than any control frame, and both
+         * are refused below. */
         if (len == 126u) {
             if (rd(ctx, h, 2u) != 0) { return WS_CLIENT_IO; }
             len = ((uint64_t)h[0] << 8) | h[1];
+            if (len < 126u) { return WS_CLIENT_PROTOCOL; }
         } else if (len == 127u) {
             if (rd(ctx, h, 8u) != 0) { return WS_CLIENT_IO; }
             len = 0u;
             for (unsigned i = 0; i < 8u; i++) { len = (len << 8) | h[i]; }
-            if ((len >> 63) != 0u) { return WS_CLIENT_PROTOCOL; }
+            if (len <= 0xffffu) { return WS_CLIENT_PROTOCOL; }
         }
 
         const uint8_t op = (uint8_t)(b0 & 0x0fu);
-        if (op == WS_OP_CLOSE) { return WS_CLIENT_CLOSED; }
+        /* §5.5: a control frame is never fragmented and never over 125 bytes.
+         * A Close used to report CLOSED whatever its header said. */
+        if ((op & 0x08u) != 0u && (b0 & 0x80u) == 0u) { return WS_CLIENT_PROTOCOL; }
+        if (op == WS_OP_CLOSE) {
+            if (len > WS_CTRL_MAX) { return WS_CLIENT_PROTOCOL; }
+            return WS_CLIENT_CLOSED;
+        }
         if (op == WS_OP_PING || op == WS_OP_PONG) {
             uint8_t drain[WS_CTRL_MAX];
             if (len > sizeof drain) { return WS_CLIENT_PROTOCOL; }

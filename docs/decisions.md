@@ -18254,3 +18254,48 @@ No code.
 
 Counts: 608 mutations, 110 campaigns, 652 anchors; 332 findings (F273, F288
 and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
+
+## V4-238: one request in flight is asked of the socket (F333 to F335, erratum 111)
+
+The twenty-second review read the byte parsers no fuzz target reaches: the
+WebSocket client side, the line and frame reassemblers, the passphrase
+check, the recovery-code alphabet and the recovery match. The reassemblers,
+the UTF-8 decoder, `base32_normalize` and `recovery_find_match` came out
+sound. Three candidates are fixed here.
+
+- **F333, the socket is asked too.** Two fixes were possible. Reading the
+  socket dry before serving would have closed the 4096 case and not the
+  8192 one, where the buffer is full and there is nowhere to read into. A
+  one-byte peek at the moment the line is served covers every length with
+  one rule, and reads nothing: the byte stays for the refusal path or for
+  the close. End of stream is not a byte, so a peer that writes one request
+  and shuts its side is served; that case has its own check, because the
+  natural mistake in this fix (`r >= 0`) breaks exactly it.
+- **F334, the 101 as a whole.** Header names in any case and order; one
+  accept header; the block must end. A proxy in front of the daemon (the
+  runbook's Caddy) sends `Upgrade: websocket` and `Connection: Upgrade` as
+  the daemon does, and CI's proxy job logs in through it.
+- **F335, the reader agrees with the daemon's.** The top-bit rule went
+  rather than stay as a line no test could tell from its absence; v76's
+  WC3 follows the rule that now does its work.
+
+Verification: 12 of the 16 new `test_authd_ws` checks and two of the five
+new `test_authd_localapi` checks were red against the old code; campaign
+v141, seven mutants, and v76's WC3, each killed by name by hand before the
+run. `authd_e2e` and `test_authd_cli` pass.
+
+Left from that review, and why:
+
+- A control character raises the passphrase estimate the way any character
+  outside ASCII does, so twelve lowercase letters and a stray carriage
+  return (a passphrase file with CRLF) pass where the twelve alone do not.
+  The estimate is documented as not certifying strength; a question for
+  the owner whether C0 controls should be refused in a passphrase.
+- Under memory pressure a failed KDF answers `internal` for a known user
+  and `invalid` for an unknown one. Not shown reachable under the unit's
+  limits.
+- A bad frame header behind a good frame marks the connection failed
+  without logging until the next read.
+
+Counts: 615 mutations, 111 campaigns, 659 anchors; 335 findings (F273, F288
+and F309 open); spec v1.69, 111 errata; 65 tests.

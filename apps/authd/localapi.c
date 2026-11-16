@@ -1,8 +1,10 @@
 #include "localapi.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 
 #include <sodium.h>
 
@@ -1356,6 +1358,22 @@ static const entry_t ADMIN_TABLE[] = {
     { "BACKUP",          h_backup },
 };
 
+/* Is anything waiting on the socket behind the line being served? One byte,
+ * looked at and left where it is. A slot with no descriptor (a harness) has
+ * nothing waiting; a peer that has closed has sent nothing more. */
+static int more_is_waiting(const authd_slot_t *slot)
+{
+    if (slot->fd < 0) {
+        return 0;
+    }
+    uint8_t b = 0;
+    ssize_t r;
+    do {
+        r = recv(slot->fd, &b, 1u, MSG_PEEK | MSG_DONTWAIT);
+    } while (r < 0 && errno == EINTR);
+    return r > 0;
+}
+
 ev_action_t localapi_on_line(void *user, authd_slot_t *slot, const uint8_t *line, size_t len)
 {
     authd_app_t *app = (authd_app_t *)user;
@@ -1370,8 +1388,15 @@ ev_action_t localapi_on_line(void *user, authd_slot_t *slot, const uint8_t *line
      * second "request" would run with the site's authority. So neither line
      * runs: the connection gets one refusal and is closed. Nothing of the
      * line is logged, as for a malformed one. The admin socket's clients are
-     * the operator's own tools and are not affected. */
-    if (!slot->is_admin && conn_io_line_rest(&slot->io) > 0u) {
+     * the operator's own tools and are not affected.
+     *
+     * "Already sent" is asked of the SOCKET as well as of the buffer (F333).
+     * The loop reads 4096 bytes a turn, so a first line of exactly 4096 or
+     * 8192 bytes ends where a read ends: nothing of the second line was in
+     * the buffer, the first was served, and the second then ran as if the
+     * peer had waited. Whoever smuggles a line break into a value also
+     * chooses the value's length. */
+    if (!slot->is_admin && (conn_io_line_rest(&slot->io) > 0u || more_is_waiting(slot))) {
         authd_log_local(AUTHD_LOG_WARN, "local-request", "?", slot->peer.uid, slot->peer.pid, "pipelined");
         (void)send_err(slot, "pipelined");
         return EV_ACTION_CLOSE;

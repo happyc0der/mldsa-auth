@@ -9,7 +9,8 @@ run. Every spec line names the check that must catch it (F90).
 
     WC1   RSV bits are no longer refused.
     WC2   a masked server frame is accepted.
-    WC3   a 64-bit length's top bit is allowed (on a Close it reports CLOSED).
+    WC3   a Close of any length reports CLOSED (a 64-bit length with its top
+          bit set among them; the rule was its own line until V4-238).
     WC4   a control frame's length is not bounded: a 126-byte ping is read
           into the 125-byte drain on the stack.
     WC5   a text frame (or a continuation) is accepted as a message.
@@ -28,8 +29,11 @@ M = {
                  "        if (0) { return WS_CLIENT_PROTOCOL; }   /* MUTATION WC1: RSV ignored */\n")],
     "WC2": [(WS, "        if ((h[1] & 0x80u) != 0u) { return WS_CLIENT_PROTOCOL; }   /* §5.1: server frames are UNMASKED */\n",
                  "        if (0) { return WS_CLIENT_PROTOCOL; }   /* MUTATION WC2: masked server frames accepted */\n")],
-    "WC3": [(WS, "            if ((len >> 63) != 0u) { return WS_CLIENT_PROTOCOL; }\n",
-                 "            if (0) { return WS_CLIENT_PROTOCOL; } /* MUTATION WC3: top bit allowed */\n")],
+    # V4-238: the top-bit line is gone (the shortest-encoding and control-frame
+    # rules cover it); what stands between such a Close and CLOSED is now the
+    # Close's own length rule, so WC3 removes that.
+    "WC3": [(WS, "            if (len > WS_CTRL_MAX) { return WS_CLIENT_PROTOCOL; }\n            return WS_CLIENT_CLOSED;\n",
+                 "            return WS_CLIENT_CLOSED; /* MUTATION WC3: any Close length */\n")],
     "WC4": [(WS, "            if (len > sizeof drain) { return WS_CLIENT_PROTOCOL; }\n",
                  "            if (0) { return WS_CLIENT_PROTOCOL; } /* MUTATION WC4: control length unbounded */\n")],
     "WC5": [(WS, "        if (op != WS_OP_BINARY || (b0 & 0x80u) == 0u) {\n",

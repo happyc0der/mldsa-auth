@@ -1315,6 +1315,44 @@ static ws_client_status_t cr_run(const uint8_t *wire, size_t wn, uint8_t *out, s
     return ws_client_read_message(cr_read, &s, out, cap, len);
 }
 
+/* F334: the client's check of the server's 101, as a whole response. */
+static int c101(const char *resp, const char *expect)
+{
+    return ws_client_check_101((const uint8_t *)resp, strlen(resp), expect);
+}
+
+static void test_client_check_101(void)
+{
+    static const char E[] = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+    CHECK(c101("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) == 0,
+          "client 101: a correct response is accepted -- the canary");
+    CHECK(c101("HTTP/1.1 101 Switching Protocols\r\nconnection: keep-alive, upgrade\r\nUPGRADE: WebSocket\r\n"
+               "sec-websocket-accept:   s3pPLMBiTxaQ9kYGzzhZRbK+xOo=  \r\n\r\n", E) == 0,
+          "client 101: header names in any case, in any order, with blanks around the value, are accepted");
+    CHECK(c101("HTTP/1.1 1010 x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) != 0,
+          "client 101: a status that only begins with 101 is refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "X-Junk: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) != 0,
+          "client 101: the accept value in some other header is refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=EXTRA\r\n\r\n", E) != 0,
+          "client 101: an accept value with bytes after it is refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: wrong\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) != 0,
+          "client 101: two accept headers are refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) != 0,
+          "client 101: a response with no Upgrade: websocket is refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nUpgrade: websocket\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n", E) != 0,
+          "client 101: a response with no Connection: Upgrade is refused");
+    CHECK(c101("HTTP/1.1 101 x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n", E) != 0,
+          "client 101: a header block that does not end is refused");
+}
+
 static void test_client_reader(void)
 {
     static uint8_t wire[80000], out[72000], big[70000];
@@ -1391,6 +1429,34 @@ static void test_client_reader(void)
     CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_CLOSED,
           "client reader: a Close frame reports CLOSED");
 
+    /* F335: the shortest length encoding, and control frames whole and
+     * small -- what ws_consume has always asked of a client. */
+    { n = cr_frame(wire, BIN, 0, 1, pl, 5);                      /* 64-bit form for 5 bytes */
+      const ws_client_status_t a64 = cr_run(wire, n, out, sizeof out, &len);
+      n = cr_frame(wire, BIN, 0, 1, pl, 300);                    /* 64-bit form for 300 bytes */
+      const ws_client_status_t b64 = cr_run(wire, n, out, sizeof out, &len);
+      CHECK(a64 == WS_CLIENT_PROTOCOL && b64 == WS_CLIENT_PROTOCOL,
+            "client reader: a 64-bit length for a payload 16 bits would hold is refused (RFC 6455 5.2)"); }
+    { wire[0] = BIN; wire[1] = 126u; wire[2] = 0u; wire[3] = 5u; memcpy(wire + 4, pl, 5);
+      CHECK(cr_run(wire, 9u, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+            "client reader: a 16-bit length for a payload 7 bits would hold is refused (RFC 6455 5.2)");
+      wire[2] = 0u; wire[3] = 126u; memcpy(wire + 4, pl, 126);
+      CHECK(cr_run(wire, 130u, out, sizeof out, &len) == WS_CLIENT_OK && len == 126u,
+            "client reader: the smallest 16-bit length, 126, is delivered -- the canary"); }
+    { size_t w = cr_frame(wire, (uint8_t)WS_OP_PING, 0, 0, NULL, 0);           /* a ping without FIN */
+      w += cr_frame(wire + w, BIN, 0, 0, pl, 9);
+      CHECK(cr_run(wire, w, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+            "client reader: a fragmented control frame is refused, not skipped (RFC 6455 5.5)");
+      n = cr_frame(wire, (uint8_t)WS_OP_CLOSE, 0, 0, NULL, 0);                 /* a Close without FIN */
+      CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+            "client reader: a Close without FIN is refused");
+      n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_CLOSE), 0, 0, pl, 126);
+      CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_PROTOCOL,
+            "client reader: a Close over 125 bytes is refused");
+      n = cr_frame(wire, (uint8_t)(0x80u | WS_OP_CLOSE), 0, 0, pl, 125);
+      CHECK(cr_run(wire, n, out, sizeof out, &len) == WS_CLIENT_CLOSED,
+            "client reader: a Close of 125 bytes reports CLOSED -- the canary"); }
+
     /* EOF: clean at a boundary, an I/O error inside a frame. */
     CHECK(cr_run(wire, 0u, out, sizeof out, &len) == WS_CLIENT_CLOSED,
           "client reader: end of stream at a frame boundary reports CLOSED");
@@ -1427,6 +1493,7 @@ int main(void)
     test_listener_modes();
     test_listener_paths();
     test_client_reader();
+    test_client_check_101();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }
