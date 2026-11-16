@@ -616,7 +616,12 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
              (role == STORE_ROLE_OPERATOR) ? "operator" : "user",
              (long long)issued, (long long)expires);
     authd_log_slot_id(AUTHD_LOG_INFO, "exchange", slot->index, handle, handle_len);
-    return send_resp(slot, &r);
+    /* The reply holds the token in hex. It is copied into the slot's out
+     * buffer, which conn_io wipes once sent; this copy on the stack was left
+     * as it was (F329), where the two recovery replies below are wiped. */
+    const ev_action_t act = send_resp(slot, &r);
+    sodium_memzero(&r, sizeof r);
+    return act;
 }
 
 static ev_action_t h_verify(authd_app_t *app, authd_slot_t *slot, const req_t *req)

@@ -20,9 +20,35 @@
  *      request must not have half-mutated the store; this compares the head
  *      MAC before and after every single input, which no amount of reading
  *      the handlers would prove.
- *   4. Determinism: the same line twice gives the same answer (modulo the
- *      commands that legitimately change state, which are re-checked against
- *      invariant 3 rather than for equality).
+ *   4. Determinism: a line that was REFUSED is refused again, byte for byte,
+ *      when sent a second time -- a refusal changed nothing, so nothing can
+ *      have changed its answer. The one refusal that legitimately changes
+ *      state, RECOVERY-USE's `invalid`, is held to invariant 3's inverse
+ *      instead. (This header listed the invariant from V4-9a; the second
+ *      call was never made until V4-233, audit F326.)
+ *
+ * EVERY INPUT GETS ITS OWN STORE, AND RUNS ON BOTH SOCKETS (V4-233, F325).
+ *
+ * The store was one per process. The five RECOVERY-USE seeds each failed for
+ * the one enrolled user, the fifth locked that user for an hour of a clock
+ * that never moves, and from then on every RECOVERY-USE answered `locked`
+ * before its code was looked at: the code parser and the comparison were
+ * reached five times a run, with seed text. A crash artefact also depended
+ * on everything that had run before it. A fresh store per input costs about
+ * a millisecond and makes each input its own experiment; two recovery codes
+ * are issued into it first, so a guess is compared with something.
+ *
+ * The socket was chosen by the low bit of the line's own first byte, so each
+ * command only ever ran on one: DISABLE-USER, LIST-USERS and BACKUP start
+ * with an even letter and were always refused on the site socket, their
+ * handlers never entered. Each line now runs on the site socket and then on
+ * the admin socket, each with a store of its own. The one exception is
+ * BACKUP on the admin socket: it writes a file at a path the fuzzer chose,
+ * so there it is NOT run, and its handler stays outside this target (its
+ * arguments are parsed by the same get_* helpers every other handler uses).
+ *
+ * A fixture that cannot be built is fatal. It used to return 0, and a run in
+ * which the store never opened counted every input as executed.
  */
 #include <stdint.h>
 #include <string.h>
@@ -54,7 +80,7 @@ static const uint8_t KEK[32] = { 7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,
                                  7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7 };
 
 static int g_ready;
-static store_t *g_store;
+static store_t *g_store;            /* this input's store: made and closed in run_once() */
 static mldsa_keypair_t g_server_kp;
 static mldsa_keypair_t g_device_kp;
 
@@ -64,14 +90,22 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     fuzz_common_init();
     authd_log_init(stderr, AUTHD_LOG_ERROR);   /* the daemon's chatter would drown libFuzzer */
 
-    if (mldsa_keypair_generate(&g_server_kp) != 0) { return 0; }
-    if (mldsa_keypair_generate(&g_device_kp) != 0) { return 0; }
-    if (store_open(":memory:", KEK, &g_store) != STORE_OK) { return 0; }
-    if (store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) != STORE_OK) { return 0; }
-    if (store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
-                            g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) != STORE_OK) { return 0; }
+    FUZZ_ASSERT(mldsa_keypair_generate(&g_server_kp) == 0, "fixture: the server key could not be made");
+    FUZZ_ASSERT(mldsa_keypair_generate(&g_device_kp) == 0, "fixture: the device key could not be made");
     g_ready = 1;
     return 0;
+}
+
+/* One user, one device: the world every input starts from. */
+static void fresh_store(void)
+{
+    g_store = NULL;
+    FUZZ_ASSERT(store_open(":memory:", KEK, &g_store) == STORE_OK, "fixture: the store did not open");
+    FUZZ_ASSERT(store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) == STORE_OK,
+                "fixture: the user could not be added");
+    FUZZ_ASSERT(store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
+                                    g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) == STORE_OK,
+                "fixture: the device could not be enrolled");
 }
 
 /* Reads everything the handler queued into `out`. The response lives in the
@@ -137,9 +171,12 @@ static int expects_list(const uint8_t *line, size_t len)
     return 0;
 }
 
+static void run_once(const uint8_t *line, size_t len, int is_admin);
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    if (!g_ready || size == 0u || size > fuzz_target_max_len) { return 0; }
+    FUZZ_ASSERT(g_ready, "fixture: LLVMFuzzerInitialize did not run");
+    if (size == 0u || size > fuzz_target_max_len) { return 0; }
 
     /* The input is one request line: strip anything the reassembler would
      * already have removed, so the fuzzer explores the GRAMMAR rather than the
@@ -152,6 +189,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     if (len == 0u) { return 0; }
 
+    run_once(line, len, 0);
+    /* BACKUP on the admin socket writes a file where the input says. */
+    if (!cmd_is(line, len, "BACKUP")) {
+        run_once(line, len, 1);
+    }
+    return 0;
+}
+
+static void run_once(const uint8_t *line, size_t len, int is_admin)
+{
+    fresh_store();
     static authd_conn_t conns[2];
     static authd_slot_t slots[2];
     static authd_slot_t local[2];
@@ -187,23 +235,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     app.now_unix = 1700000000;
     app.started_ms = FUZZ_CLOCK_T0;
 
-    if (handshake_pending_store_init(&pending, 2u, 10000u, authd_app_clock, &app) != PENDING_OK) {
-        return 0;
-    }
+    FUZZ_ASSERT(handshake_pending_store_init(&pending, 2u, 10000u, authd_app_clock, &app) == PENDING_OK,
+                "fixture: the pending-handshake table could not be made");
     app.pending = &pending;
-    if (evloop_init(&ev, slots, 2u, 10000u, 60000u,
-                    authd_conn_on_frame, authd_conn_on_close, &app) != 0) {
-        return 0;
-    }
+    FUZZ_ASSERT(evloop_init(&ev, slots, 2u, 10000u, 60000u,
+                            authd_conn_on_frame, authd_conn_on_close, &app) == 0,
+                "fixture: the event loop could not be made");
     (void)evloop_set_local(&ev, local, 2u, localapi_on_line);
     app.ev = &ev;
 
-    /* Both tables are exercised: the selector picks the socket, so an admin
-     * command's refusal on the site socket is on the fuzzer's path too. */
-    const uint8_t sel = fuzz_selector(data, size, 0u);
     authd_slot_t *slot = &local[0];
     slot->kind = SLOT_KIND_LOCAL;
-    slot->is_admin = (sel & 1u) ? 1 : 0;
+    slot->is_admin = is_admin;
     slot->index = 0u;
     slot->fd = -1;
     slot->state = SLOT_ACTIVE;
@@ -212,12 +255,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     conn_io_reset(&slot->io);
     conn_io_set_mode(&slot->io, CONN_IO_MODE_LINE);
 
+    static char resp[16384];
+    /* Two real recovery codes for the user, so a guessed code is normalised
+     * and compared with something. Issued through the API itself. */
+    {
+        static const char issue[] = "RECOVERY-ISSUE user=7531 count=2";
+        (void)localapi_on_line(&app, slot, (const uint8_t *)issue, sizeof issue - 1u);
+        (void)drain(slot, resp, sizeof resp);
+        FUZZ_ASSERT(strncmp(resp, "OK codes=", 9) == 0, "fixture: two recovery codes could not be issued");
+        sodium_memzero(resp, sizeof resp);
+    }
+
     uint8_t head_before[STORE_AUDIT_MAC_BYTES], head_after[STORE_AUDIT_MAC_BYTES];
     const int have_before = (store_audit_head_mac(g_store, head_before) == STORE_OK);
 
     (void)localapi_on_line(&app, slot, line, len);
 
-    static char resp[16384];
     const size_t rn = drain(slot, resp, sizeof resp);
 
     /* 1. exactly one well-formed response */
@@ -251,13 +304,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
      *    RECOVERY-USE's own `locked`, `malformed` and `user-disabled`, must
      *    still leave the store untouched. */
     const int have_after = (store_audit_head_mac(g_store, head_after) == STORE_OK);
-    if (strncmp(resp, "ERR code=", 9) == 0 && have_before && have_after) {
+    FUZZ_ASSERT(have_before && have_after, "the audit head could not be read, so invariant 3 was not checked");
+    int counted_failure = 0;
+    if (strncmp(resp, "ERR code=", 9) == 0) {
         const int moved = (memcmp(head_before, head_after, sizeof head_before) != 0);
         if (cmd_is(line, len, "RECOVERY-USE") && strncmp(resp, "ERR code=invalid", 16) == 0) {
             /* Only for the user this harness actually enrolled ("u1" = 7531):
              * an UNKNOWN user answers `invalid` too -- deliberately
              * indistinguishable -- but has no row to count against, so
              * requiring movement there would be a false alarm, not a finding. */
+            counted_failure = 1;
             if (kv_equals(line, len, "user=", "7531")) {
                 FUZZ_ASSERT(moved,
                             "a failed RECOVERY-USE did NOT record the attempt: the lockout cannot count");
@@ -268,9 +324,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
     }
 
+    /* 4. A refusal is repeatable. */
+    if (strncmp(resp, "ERR code=", 9) == 0 && !counted_failure) {
+        static char again[16384];
+        (void)localapi_on_line(&app, slot, line, len);
+        const size_t an = drain(slot, again, sizeof again);
+        FUZZ_ASSERT(an == rn && memcmp(again, resp, rn) == 0,
+                    "the same refused line was answered differently the second time");
+    }
+
     conn_io_reset(&slot->io);
     handshake_pending_store_wipe(&pending);
-    return 0;
+    store_close(g_store);
+    g_store = NULL;
 }
 
 static void emit_str(fuzz_emit_fn emit, void *ctx, const char *name, const char *s)
@@ -299,7 +365,7 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
     emit(ctx, "empty", fuzz_empty, 0);
     emit_str(emit, ctx, "ping", "PING");
     emit_str(emit, ctx, "unknown-command", "NOSUCHCOMMAND");
-    emit_str(emit, ctx, "admin-on-site", "LIST-USERS");
+    emit_str(emit, ctx, "admin-on-site", "LIST-USERS");           /* refused on site, answered on admin */
     emit_str(emit, ctx, "list-devices", "LIST-DEVICES user=7531");
     emit_str(emit, ctx, "verify-short", "VERIFY token=00");
     emit_str(emit, ctx, "verify-len", "VERIFY token="

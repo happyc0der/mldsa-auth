@@ -111,12 +111,34 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
 
     /* ---- the fixed-length messages, for free ---- */
+    /* These three were run with their results thrown away, so the contract
+     * in this file's header held for them only by reading (V4-233, F327;
+     * F312 lived in authmsg_decode_error and this target could not see it). */
     authmsg_login_code_t lc;
-    (void)authmsg_decode_login_code(in, size, &lc);
-    uint8_t code = 0;
-    (void)authmsg_decode_error(in, size, &code);
-    uint8_t op = 0;
-    (void)authmsg_peek_op(in, size, &op);
+    if (authmsg_decode_login_code(in, size, &lc) == AUTHMSG_OK) {
+        static uint8_t again[AUTHMSG_LOGIN_CODE_CONTENT_LEN];
+        size_t n = 0;
+        FUZZ_ASSERT(size == AUTHMSG_LOGIN_CODE_CONTENT_LEN, "LOGIN_CODE accepted at the wrong length");
+        FUZZ_ASSERT(authmsg_encode_login_code(again, sizeof again, &n, &lc) == AUTHMSG_OK,
+                    "a decoded LOGIN_CODE does not re-encode");
+        FUZZ_ASSERT(n == size && memcmp(again, in, size) == 0,
+                    "re-encoding a decoded LOGIN_CODE changed the bytes");
+    }
+    uint8_t code = 0xEEu;
+    if (authmsg_decode_error(in, size, &code) == AUTHMSG_OK) {
+        FUZZ_ASSERT(size == AUTHMSG_ERROR_CONTENT_LEN, "ERROR accepted at the wrong length");
+        FUZZ_ASSERT(code >= AUTHMSG_ERR_MALFORMED && code <= AUTHMSG_ERR_INTERNAL,
+                    "a decoded ERROR code is not one of the five");
+        /* spec 6.5: a code this build does not know is read as 0x03 */
+        FUZZ_ASSERT(code == in[2] || code == AUTHMSG_ERR_REJECTED,
+                    "an unrecognised ERROR code was not read as 0x03");
+    } else {
+        FUZZ_ASSERT(code == 0u, "a failed ERROR decode handed a code back");
+    }
+    uint8_t op = 0xEEu;
+    if (authmsg_peek_op(in, size, &op) == AUTHMSG_OK) {
+        FUZZ_ASSERT(size >= 1u && op == in[0], "peek_op answered something other than the first byte");
+    }
     return 0;
 }
 

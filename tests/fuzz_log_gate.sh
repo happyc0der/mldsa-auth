@@ -70,13 +70,34 @@ fi
 
 # ---- ...and both workflows end their fuzz step with this gate, on a pipe
 # ---- whose status they keep. A count of zero means the gate is not wired.
+# Comment lines are not wiring (V4-233, F330): the three counts were taken
+# over the whole file, so a gate line that had been commented out still
+# counted, and `run_fuzz.sh` was already satisfied by a comment that names it.
+wired() {   # $1 = workflow file; prints "g p r"
+    grep -v '^[[:space:]]*#' "$1" > "$TMP/wf.txt"
+    g=$(grep -c 'tests/fuzz/check_fuzz_log.sh' "$TMP/wf.txt" || true)
+    p=$(grep -B3 'tests/fuzz/check_fuzz_log.sh' "$TMP/wf.txt" | grep -c 'set -o pipefail' || true)
+    r=$(grep -c 'run_fuzz.sh' "$TMP/wf.txt" || true)
+    echo "$g $p $r"
+}
+is_wired() { set -- $(wired "$1"); [ "$1" -ge 1 ] && [ "$2" -ge 1 ] && [ "$3" -ge 1 ]; }
 for wf in ci.yml nightly.yml; do
     f="$REPO/.github/workflows/$wf"
-    g=$(grep -c 'tests/fuzz/check_fuzz_log.sh' "$f")
-    p=$(grep -B3 'tests/fuzz/check_fuzz_log.sh' "$f" | grep -c 'set -o pipefail')
-    r=$(grep -c 'run_fuzz.sh' "$f")
-    if [ "$g" -ge 1 ] && [ "$p" -ge 1 ] && [ "$r" -ge 1 ]; then ok "$wf runs run_fuzz.sh under pipefail and ends with the gate"
-    else bad "$wf does not run the fuzz gate under pipefail (gate lines $g, pipefail $p, run_fuzz lines $r) (F245)"; fi
+    if is_wired "$f"; then ok "$wf runs run_fuzz.sh under pipefail and ends with the gate"
+    else bad "$wf does not run the fuzz gate under pipefail (gate, pipefail, run_fuzz lines: $(wired "$f")) (F245)"; fi
+    # The control: the same workflow with its gate line commented out, and
+    # with its run_fuzz.sh line commented out, is NOT wired.
+    sed 's|^\([[:space:]]*\)\(.*tests/fuzz/check_fuzz_log.sh\)|\1# \2|' "$f" > "$TMP/nogate.yml"
+    sed 's|^\([[:space:]]*\)\([^#]*run_fuzz.sh\)|\1# \2|' "$f" > "$TMP/norun.yml"
+    if cmp -s "$f" "$TMP/nogate.yml" || cmp -s "$f" "$TMP/norun.yml"; then
+        bad "$wf: the control's edit changed nothing"
+    elif is_wired "$TMP/nogate.yml"; then
+        bad "$wf with its gate line commented out still counts as wired (F330)"
+    elif is_wired "$TMP/norun.yml"; then
+        bad "$wf with its run_fuzz.sh line commented out still counts as wired (F330)"
+    else
+        ok "$wf with the gate line, or the run_fuzz.sh line, commented out is not wired (F330)"
+    fi
 done
 
 [ "$fail" -eq 0 ] && echo "PASS: FUZZ-GATE: all" || { echo "FAIL: FUZZ-GATE"; exit 1; }

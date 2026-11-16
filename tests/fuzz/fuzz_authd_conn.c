@@ -66,13 +66,18 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     authd_log_init(stderr, AUTHD_LOG_ERROR);
 
     /* Keys come from the deterministic fuzz DRBG, so a crash replays. */
-    if (mldsa_keypair_generate(&g_server_kp) != 0) { return 0; }
-    if (mldsa_keypair_generate(&g_device_kp) != 0) { return 0; }
+    /* A fixture that cannot be built is fatal (V4-233, F328): each of these
+     * returned 0, and with g_ready unset every input then returned at once
+     * and was still counted as a run. */
+    FUZZ_ASSERT(mldsa_keypair_generate(&g_server_kp) == 0, "fixture: the server key could not be made");
+    FUZZ_ASSERT(mldsa_keypair_generate(&g_device_kp) == 0, "fixture: the device key could not be made");
     /* An in-memory store: no filesystem, and a fresh one per process. */
-    if (store_open(":memory:", KEK, &g_store) != STORE_OK) { return 0; }
-    if (store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) != STORE_OK) { return 0; }
-    if (store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
-                            g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) != STORE_OK) { return 0; }
+    FUZZ_ASSERT(store_open(":memory:", KEK, &g_store) == STORE_OK, "fixture: the store did not open");
+    FUZZ_ASSERT(store_add_user(g_store, USER1, sizeof USER1, STORE_ROLE_USER) == STORE_OK,
+                "fixture: the user could not be added");
+    FUZZ_ASSERT(store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
+                                    g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) == STORE_OK,
+                "fixture: the device could not be enrolled");
     g_ready = 1;
     return 0;
 }
@@ -92,7 +97,8 @@ static int stage_rank(conn_stage_t s)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    if (!g_ready || size > fuzz_target_max_len) { return 0; }
+    FUZZ_ASSERT(g_ready, "fixture: LLVMFuzzerInitialize did not run");
+    if (size > fuzz_target_max_len) { return 0; }
 
     static authd_conn_t conn;
     static authd_slot_t slot;

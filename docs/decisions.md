@@ -18075,3 +18075,64 @@ CI job's second download, and retries for Node, Chrome and ProVerif.
 
 Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 324 findings
 (F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
+
+## V4-233: the fuzz targets reach what they are named for (F325 to F330)
+
+The twenty-first review read the fuzz harnesses and the daemon's token and
+login-code handling. The daemon came out sound: every bearer value hashed
+before storage, lifetimes that cannot overflow and agree at their edges,
+single use decided inside one transaction, the failure answers §8 lists and
+no others. One wipe was missing (F329). The rest is about the harnesses.
+
+- **F325, a store per input, and both sockets.** The alternatives to a
+  fresh store were moving the harness's clock (the lock would still depend
+  on input order) and clearing the lock between inputs (one more thing the
+  harness knows about the store). A fresh store costs about 0.65 ms an
+  input and makes an artefact reproduce alone. Two recovery codes are
+  issued into it through the API, so a guess is normalised and compared.
+  Running each line on both sockets, each with its own store, keeps the
+  input format, so the committed regressions still mean what they meant; a
+  selector byte would have re-read every one of them. `BACKUP` on the admin
+  socket stays out: it writes where the input says.
+- **F326.** The second call is made for refusals only. A line that
+  succeeded may legitimately answer differently the second time.
+- **F327.** Oracles for the three decoders that had none.
+- **F328.** Fixtures assert. `fuzz_authd_conn` keeps its one store per
+  process: nothing in it is locked or spent by a handshake that cannot
+  complete.
+- **F329.** One `sodium_memzero`, after the reply is queued. Not pinned,
+  and said so in the audit row.
+- **F330.** Comments are not wiring, with a control made from each
+  workflow.
+
+Measured, not argued: over the CI replay the old target answered
+`RECOVERY-USE` for its user 5 times `invalid` and 43 times `locked`, and
+`DISABLE-USER` or `LIST-USERS` 0 times `OK`; the new one 96, 0, and 5. The
+first attempt at that measurement compared a binary with itself: the second
+edit landed in the same second as the first build, make saw nothing to do,
+and both rows printed the same numbers. The rows above are from a rebuild
+that was seen to link.
+
+Campaign v138: FA1 and FA2, two defects in the admin-only handlers, killed
+by `fuzz_replay_localapi` by name. A 60 s coverage-guided run of the three
+changed targets ran clean before the push.
+
+Left from that review:
+
+- `fuzz_authd_conn` cannot complete a login (no ClientAuth seed signed by
+  the enrolled device, and the server's randomness is not reset per input),
+  so its two SERVING oracles cannot fire and nothing after the handshake is
+  fuzzed. The largest gap left; its own step.
+- No target holds a login code, token or ticket it knows, so the success
+  paths of `EXCHANGE`, `VERIFY`, `LOGOUT` and a ticketed `ENROLL` are
+  reached by the unit tests and the end-to-end test only.
+- The replay driver does not validate its iteration count; the secret
+  scanner passes on zero files; `fuzz_client` drops an oversized genuine
+  seed without a word. None reachable today.
+- For the owner, as questions about the specification: lifetimes run on the
+  wall clock, so a step of the clock moves every expiry and lockout with it
+  (§11 and §18 are silent); the local API accepts uppercase hex where §8
+  says "lowercase hex".
+
+Counts: 602 mutations, 108 campaigns, 646 anchors; 330 findings (F273, F288
+and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.

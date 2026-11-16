@@ -1,6 +1,24 @@
 # Fuzzing and adversarial robustness (Step 7)
 
-Five targets cover every attacker-controlled input:
+Twelve targets, single-sourced from `FUZZ_TARGETS` in `CMakeLists.txt`. The
+first five, from Step 7, cover the protocol core's attacker-controlled
+input and are tabled below; the seven added since each say in their own
+file header what they reach and what they do not: `fuzz_envelope` (the
+sealed key file), `fuzz_authd_config`, `fuzz_authd_conn` (the daemon's
+connection up to ClientAuth; a completed login is not reached),
+`fuzz_localapi` (the local socket protocol, on both sockets, a fresh store
+per input; `BACKUP` on the admin socket is not run), `fuzz_authmsg`,
+`fuzz_ws` (server side) and `fuzz_client`. This file said "five targets
+cover every attacker-controlled input" long after that stopped being the
+list (V4-233).
+
+Not reached by any target, and stated here so that it is not assumed: the
+WebSocket client's reading of a server's bytes (`ws_client_*`), the daemon's
+line reassembler in `conn_io` (covered by `test_authd_evloop`), records
+after a completed login (`on_record`, `on_rotate`), a successful token or
+login-code operation, and `keyfile_open_buf` past its header (the KDF's
+cost; deliberate).
+
 
 | Target | Code under test | Input |
 |---|---|---|
