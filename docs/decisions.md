@@ -17524,3 +17524,32 @@ Two of the fourteenth review's small leftovers.
 
 Counts: 581 mutations, 103 campaigns, 625 anchors; 296 findings (F273 and
 F288 open); spec v1.62, 104 errata.
+
+## V4-219: cleanup after V4-216 to V4-218 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `80ecb71`, now main: CI
+  43793244396 (16/16), nightly 43793246483 (118/118, 103 campaigns).
+- Before it: `994b18d` (V4-216) had CI 43742981092 (16/16), nightly
+  43742983844 (116/116) and main's push CI 43748931922 (16/16); `a03cc41`
+  (V4-217) had CI 43782403782 (16/16), nightly 43782406857 (117/117) and
+  main's push CI 43788474074 (16/16).
+- V4-218's first nightly, 43785857594 on `208f76b`, was 117/118: campaign
+  v124's one mutant survived because its expected line ended in an exit
+  status that V4-218 changed. That commit was never on main. The lesson is
+  the one V4-218's entry records: every older campaign of a touched file
+  is rerun before the push, not left to the nightly.
+- Left from the client and admin review, all Low and none reproduced as a
+  fault yet: the daemon accepts a count or a line number with leading
+  zeros; two store writes do not re-read the user's status inside their
+  transaction; a killed rotation leaves `.newpub.<pid>`; the admin tool
+  takes any first line that is not `ERR` as success; a FIFO at the
+  passphrase path blocks the open.
+- Open for the owner, unchanged: F273, F288, the reference site's one
+  login state per session, what the audit chain should record, whether
+  the symbolic model should cover long-term key compromise, and pull
+  request 1.
+
+Counts: 581 mutations, 103 campaigns, 625 anchors; 296 findings (F273 and
+F288 open); spec v1.62, 104 errata (all unchanged by this step).
