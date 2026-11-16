@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.67, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226)
+# mldsa-authd — deployment specification (v1.68, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1105,12 +1105,15 @@ session.
 
 A page hands the module nothing larger than a frame (erratum 107): a
 WebSocket message longer than the module's frame buffer is a frame error
-where it arrives, and is not copied in.
+where it arrives, and is not copied in. A text message is a frame error
+too (erratum 110): the daemon sends binary messages only (§7.1), and a page
+makes nothing of what a text message says. A session that has been closed
+answers every later call with an error and does not reach the module.
 
 **The module's contract** (V4-13b, addition 32). It is built with **Emscripten
 6.0.9** exactly, and its known-answer test must reproduce the native golden
 (`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
-functions in `web/exports.txt` — the 22 `ccw_` entry points of
+functions in `web/exports.txt` — the 23 `ccw_` entry points of
 `apps/authd/client_wasm.h`, `malloc` and `free` — and the raw module exports
 nothing beyond those, one runtime constructor and its memory. It has no
 filesystem and no dynamic code execution, so a CSP without `unsafe-eval` can
@@ -2113,3 +2116,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 109 | 17 | The per-address rate holds exactly at every `rate_per_min` the configuration accepts: a bucket is credited in whole steps of the rate's reduced fraction (100 a minute is 5 thousandths of a token every 3 ms), and its clock moves by exactly the time credited | The refill added the floor of what had been earned and moved the clock by the floor of the time that had earned it. At a rate that is not a whole number of thousandths a millisecond, one elapsed millisecond added one and moved the clock by nothing, so every further request in that millisecond added one more: at `rate_per_min = 100` an address asking ten times a millisecond was admitted 729 times in a minute. The shipped 5, and every rate that divides 60,000, was exact (audit F310) |
+
+### Revision v1.68 (V4-227)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 110 | 14 | The browser client refuses a text WebSocket message as a frame error, and a closed session refuses every later call without reaching the module; the module's contract counts 23 `ccw_` entry points, as `web/exports.txt` lists | A text message reaches a page as a string, and the client built a byte array of the length the string spelled (`2000000000` is two billion bytes) before any bound was applied; a session's handle and frame buffer are freed when it closes, and `rotate()` and `send()` still passed them to the module (audit F313, F314). The count had said 22 since `ccw_passphrase_check` was added in V4-13c |

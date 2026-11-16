@@ -1,0 +1,2 @@
+UC1|^test_client_core$|fake: an ERROR with a code above the known ones is a refusal, 0x03 (spec 6.5)
+UC2|^test_client_core$|fake: an ERROR with code zero is a refusal, 0x03 (spec 6.5)

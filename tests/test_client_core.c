@@ -348,8 +348,11 @@ static void test_fake(void)
     uint8_t wrong_hid[CC_HANDLE_LEN];
     memcpy(wrong_hid, hid, hl);
     wrong_hid[hl - 1u] = (uint8_t)(wrong_hid[hl - 1u] == '0' ? '1' : '0');
-    enum { ACK_OK, ACK_OTHER_KEY, ACK_OTHER_HANDLE, ACK_SHORT_HANDLE, ACK_ERROR };
-    for (int c = ACK_OK; c <= ACK_ERROR; c++) {
+    enum { ACK_OK, ACK_OTHER_KEY, ACK_OTHER_HANDLE, ACK_SHORT_HANDLE, ACK_ERROR, ACK_ERROR_NEW, ACK_ERROR_ZERO };
+    /* Spec 6.5: a code this build does not know is a refusal, 0x03 (F312). */
+    static const uint8_t err_new[] = { AUTHMSG_OP_ERROR, AUTHMSG_VERSION, 0x06u };
+    static const uint8_t err_zero[] = { AUTHMSG_OP_ERROR, AUTHMSG_VERSION, 0x00u };
+    for (int c = ACK_OK; c <= ACK_ERROR_ZERO; c++) {
         fs_t fs;
         (void)fs_init(&fs, SID, sizeof SID, hid, hl, kp.public_key);
         (void)fake_login(&fs, &g_cc, hid, hl, &kp, CC_KEEP_FOR_ROTATE);
@@ -368,6 +371,8 @@ static void test_fake(void)
         case ACK_OTHER_KEY:    sent = fs_send_rotate_ack(&fs, hid, hl, other.public_key, 7u, g_in, sizeof g_in, &m); break;
         case ACK_OTHER_HANDLE: sent = fs_send_rotate_ack(&fs, wrong_hid, hl, nkp.public_key, 7u, g_in, sizeof g_in, &m); break;
         case ACK_SHORT_HANDLE: sent = fs_send_rotate_ack(&fs, hid, hl - 1u, nkp.public_key, 7u, g_in, sizeof g_in, &m); break;
+        case ACK_ERROR_NEW:    sent = fs_send(&fs, err_new, sizeof err_new, g_in, sizeof g_in, &m); break;
+        case ACK_ERROR_ZERO:   sent = fs_send(&fs, err_zero, sizeof err_zero, g_in, sizeof g_in, &m); break;
         default:               sent = fs_send(&fs, err, el, g_in, sizeof g_in, &m); break;
         }
         uint8_t ec = 0;
@@ -381,6 +386,12 @@ static void test_fake(void)
             CHECK(st == CC_ERR_ACK_MISMATCH, "fake: a ROTATE_ACK naming a different handle of the SAME length is refused"); break;
         case ACK_SHORT_HANDLE:
             CHECK(st == CC_ERR_ACK_MISMATCH, "fake: a ROTATE_ACK naming a prefix of the handle is refused"); break;
+        case ACK_ERROR_NEW:
+            CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_REJECTED,
+                  "fake: an ERROR with a code above the known ones is a refusal, 0x03 (spec 6.5)"); break;
+        case ACK_ERROR_ZERO:
+            CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_REJECTED,
+                  "fake: an ERROR with code zero is a refusal, 0x03 (spec 6.5)"); break;
         default:
             CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_REJECTED,
                   "fake: an ERROR reply is a refusal, with its code"); break;

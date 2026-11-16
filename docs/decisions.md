@@ -17811,3 +17811,55 @@ Left from that review, and why:
 
 Counts: 598 mutations, 106 campaigns, 642 anchors; 311 findings (F273, F288
 and F309 open); spec v1.67, 109 errata.
+
+## V4-227: three edges of the client (F312 to F314, erratum 110)
+
+The nineteenth review read the browser module's C entry points, the
+JavaScript that calls them, and the handshake and session core. The core
+came out sound: decoders strict and fully consuming, the transcript hashed
+over received bytes, sequence numbers reserved before encryption, every
+receive failure wiping the keys, every entry point's pointer and length
+checked before use. Three candidates are fixed here, all Low.
+
+- **F312, an unknown code is `0x03`.** The decoder maps it, so every caller
+  gets the spec's reading and none has to remember it. Zero is unknown too:
+  §6.5 lists `0x01` to `0x05`. No erratum, because §6.5 already says MUST.
+- **F313, a text message is a frame error.** It is queued as a marker and
+  `feed()` answers 3, the status a closed socket and an oversized message
+  already get, so the caller's error is the one it reports today. The test
+  uses the text `500`, not a large number: in Node two billion zero bytes are
+  allocated lazily and refused by F305's bound, so only the small case shows
+  the old behaviour by what reaches the module.
+- **F314, a closed session refuses calls.** One `live()` check in `send()`,
+  `rotate()` and on both sides of `feed()`'s wait, since a session can be
+  closed while a reply is awaited; the error is thrown before
+  `client.fail()` would read the freed handle's diagnostics. `close()` and
+  `destroy()` stay silent on a second call.
+
+The spec's §14 said 22 `ccw_` entry points; `web/exports.txt`, the header
+and the module gate have had 23 since V4-13c added `ccw_passphrase_check`.
+Erratum 110 corrects the number with the two behaviours.
+
+JavaScript has no campaign: each fix was reverted by hand (the whole file
+put back to its committed form), `web_flows` went red on `frame:` (one
+500-byte zero frame) and `closed:` (one call into the module), and the file
+was restored byte for byte. Campaign v137 covers the C fix, 2/2 by hand
+before the run.
+
+Left from that review, and why:
+
+- The client accepts a rotate reply up to the session's own record maximum
+  (65,561 bytes) where §6.1's cap is 12,313. §6.1 is the daemon's
+  tightening; the client's buffer is sized for the larger bound and the
+  daemon never sends more than the smaller. Lowering it would bind the
+  client to one daemon's cap for nothing gained.
+- `login()` copies the passphrase in without a `finally`; no path was found
+  on which `ccw_login_begin` throws rather than returns. `Session.queue` is
+  unbounded and a timed-out wait leaves its waiter behind; both are followed
+  by `destroy()` in every shipped flow. `u32Slot()` does not check a refused
+  allocation.
+- No test scans the module's memory for key bytes after release, only for
+  the passphrase (F266).
+
+Counts: 600 mutations, 107 campaigns, 644 anchors; 314 findings (F273, F288
+and F309 open); spec v1.68, 110 errata.

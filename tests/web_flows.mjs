@@ -453,6 +453,7 @@ try {
   { const { createServer } = await import('node:net');
     const { createHash } = await import('node:crypto');
     const BIG = 1 << 20;
+    let sendText = null;                 // when set, the stand-in answers with this TEXT message
     const conns = [];
     const loud = createServer((c) => {
       conns.push(c);
@@ -465,6 +466,10 @@ try {
         const key = /sec-websocket-key: *([^\r\n]+)/i.exec(buf)?.[1] ?? '';
         const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
         c.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+        if (sendText !== null) {
+          c.write(Buffer.concat([Buffer.from([0x81, sendText.length]), Buffer.from(sendText, 'latin1')]));
+          return;
+        }
         const head = Buffer.alloc(10);
         head[0] = 0x82; head[1] = 127; head.writeBigUInt64BE(BigInt(BIG), 2);
         c.write(Buffer.concat([head, Buffer.alloc(BIG, 0x41)]));
@@ -485,9 +490,44 @@ try {
     check(/^rejected: /.test(got) && !/timed out/.test(got) && largest > 0 && largest <= cap,
           `frame: a ${BIG}-byte message is refused as a frame error and never copied into the module ` +
           `(${got}; largest copy ${largest} bytes, frame buffer ${cap}) (F305)`);
+    // F313: a TEXT message. The page receives a string, and
+    // `new Uint8Array("500")` is 500 zero bytes (two billion for a longer
+    // number): the old client built that array and handed it to the module.
+    sendText = '500';
+    let zeros = 0;
+    client.put = (bytes) => {
+      if (bytes.length === 500 && bytes.every((b) => b === 0)) { zeros += 1; }
+      return realPut(bytes);
+    };
+    try {
+      got = await flows.login(client, store, { ...params, url: `ws://127.0.0.1:${loud.address().port}/authd/v1`, timeoutMs: 5000 })
+        .then(() => 'resolved', (e) => `rejected: ${e.statusName ?? e.message}`);
+    } finally { delete client.put; }
+    check(/^rejected: /.test(got) && !/timed out/.test(got) && zeros === 0,
+          `frame: a text message is refused as a frame error, and the number it spells is never made into a frame ` +
+          `(${got}; ${zeros} such frames) (F313)`);
     const s = await flows.login(client, store, params);
     check(s.code.length === 32, 'frame: the same identity then logs in to the real daemon (the canary)');
     await s.close();
+    // F314: a closed session's handle and frame buffer are freed. Every later
+    // call is refused before it reaches the module.
+    { const cur = await store.get(params.handle);
+      const realBuild = client.M._ccw_rotate_build;
+      let reached = 0;
+      client.M._ccw_rotate_build = (...a) => { reached += 1; return realBuild(...a); };
+      let said;
+      try {
+        said = await s.rotate(cur.envelope, PASS).then(() => 'resolved', (e) => e.message);
+      } finally { client.M._ccw_rotate_build = realBuild; }
+      let sendSaid = 'no error';
+      try { s.send(); } catch (e) { sendSaid = e.message; }
+      check(said === 'session is closed' && sendSaid === 'session is closed' && reached === 0,
+            `closed: rotate() and send() on a closed session are refused and the module is not called ` +
+            `(rotate: ${said}; send: ${sendSaid}; module calls ${reached}) (F314)`);
+      await s.close();                   // still a quiet no-op
+      const s3 = await flows.login(client, store, params);
+      check(s3.code.length === 32, 'closed: the identity still logs in afterwards');
+      await s3.close(); }
     for (const c of conns) { c.destroy(); }
     await new Promise((r) => loud.close(r)); }
 

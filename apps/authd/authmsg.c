@@ -150,8 +150,12 @@ authmsg_status_t authmsg_decode_error(const uint8_t *in, size_t len, uint8_t *co
     if (in[1] != AUTHMSG_VERSION) {
         return AUTHMSG_ERR_BAD_VERSION;
     }
+    /* Spec 6.5: "A peer that receives any unrecognised code MUST treat it as
+     * 0x03." It used to be a decode failure (F312), so a refusal from a
+     * daemon with one more code read as "unexpected reply". */
     if (in[2] < AUTHMSG_ERR_MALFORMED || in[2] > AUTHMSG_ERR_INTERNAL) {
-        return AUTHMSG_ERR_BAD_FIELD;
+        *code_out = AUTHMSG_ERR_REJECTED;
+        return AUTHMSG_OK;
     }
     *code_out = in[2];
     return AUTHMSG_OK;

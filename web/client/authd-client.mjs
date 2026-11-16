@@ -170,6 +170,9 @@ export class AuthdClient {
   }
 }
 
+// What a text message is queued as: feed() answers it as a frame error.
+const BAD_FRAME = Symbol('bad-frame');
+
 export class Session {
   constructor(client, h, frame, cap, outLen, tick, timeoutMs) {
     Object.assign(this, { client, h, frame, cap, outLen, tick, timeoutMs });
@@ -195,7 +198,10 @@ export class Session {
       ws.onopen = () => { clearTimeout(t); resolve(); };
       ws.onerror = () => { clearTimeout(t); reject(new Error(`WebSocket error on ${url}`)); this.wake(null); };
       ws.onclose = () => this.wake(null);
-      ws.onmessage = (ev) => this.wake(new Uint8Array(ev.data));
+      // The daemon sends binary messages only (spec 7.1). A text message
+      // arrives as a string, and `new Uint8Array("2000000000")` is two
+      // billion zero bytes: it is a frame error where it arrives (F313).
+      ws.onmessage = (ev) => this.wake(typeof ev.data === 'string' ? BAD_FRAME : new Uint8Array(ev.data));
       this.ws = ws;
     });
   }
@@ -215,6 +221,7 @@ export class Session {
 
   // Sends the frame the core just wrote (its length is in outLen).
   send() {
+    this.live();
     const M = this.client.M;
     const n = this.client.u32(this.outLen);
     this.ws.send(M.HEAPU8.slice(this.frame, this.frame + n));
@@ -223,8 +230,11 @@ export class Session {
 
   // Receives one frame and hands it to the core via `call(ptr, len)`.
   async feed(call) {
+    this.live();
     const msg = await this.next();
+    this.live();                       // closed while this was waiting
     if (msg === null) { return 3; /* CC_ERR_FRAME: the daemon closed without answering */ }
+    if (msg === BAD_FRAME) { return 3; }
     // F305: no frame of this protocol is larger than the frame buffer, so a
     // larger message is refused HERE, as the frame error it is. It used to be
     // copied into the module first, whatever its size, and the module's
@@ -237,6 +247,7 @@ export class Session {
   // Rotation (spec 10.2): `newEnvelope` must ALREADY be stored durably by the
   // caller. Resolves only on a ROTATE_ACK naming this handle and that key.
   async rotate(newEnvelope, passphrase) {
+    this.live();
     const c = this.client, M = c.M;
     const pass = te.encode(passphrase);
     const pe = c.put(newEnvelope), pp = c.put(pass);
@@ -256,6 +267,13 @@ export class Session {
       st = await this.feed((p, n) => M._ccw_rotate_on_reply(this.h, p, n, ec));
       if (st !== 0) { const e = c.fail(this.h, st, this.sent); e.errorCode = c.u32(ec); throw e; }
     } finally { c.drop(ec, 8); }
+  }
+
+  // Once destroyed, the handle and the frame buffer are freed: nothing may
+  // reach the module through this object again (F314). close() and destroy()
+  // stay quiet no-ops.
+  live() {
+    if (this.closed) { throw new Error('session is closed'); }
   }
 
   // BYE (best effort), then close and wipe.
