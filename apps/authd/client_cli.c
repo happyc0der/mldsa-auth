@@ -976,6 +976,12 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
             return failed(prog, "rotate", next_path, "path-too-long");
         }
     }
+    /* F298: a rotation that was KILLED after its seal left this file, and the
+     * public-key writer refuses an existing one. A later run with the same
+     * pid -- every run, in a container -- then failed here each time and
+     * left a fresh .ek.next for the run after it to probe and delete. The
+     * key directory's lock is held, so whatever has this name is nobody's. */
+    (void)unlink(pub_tmp);
     rc = client_seal_new_identity(prog, "rotate", next_path, pub_tmp, a.hid, a.hid_len,
                                   (const char *)pass, pass_len, new_pk);
     if (rc != EX_OK) {

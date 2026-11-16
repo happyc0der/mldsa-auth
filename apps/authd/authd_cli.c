@@ -558,6 +558,14 @@ static int local_call(const char *prog, const char *sub, const char *sock,
         fprintf(stderr, "%s %s: refused: %s\n", prog, sub, code);
         return EX_FAIL;
     }
+    /* F299: a first line that is neither form of spec 8's response is not an
+     * agreement. `ERR`, `ERR internal`, an HTTP status line from whatever
+     * else listens on that path: each was printed and the command exited 0. */
+    if (!localcli_reply_ok(resp)) {
+        fprintf(stderr, "%s %s: the reply is not one this protocol has (neither OK nor ERR code=); "
+                        "check that --socket names mldsa-authd's admin socket\n", prog, sub);
+        return EX_FAIL;
+    }
     (void)fwrite(resp, 1u, len, stdout);
     return EX_OK;
 }
@@ -565,6 +573,9 @@ static int local_call(const char *prog, const char *sub, const char *sock,
 /* Every online subcommand shares one option loop: --socket plus up to four
  * declared keys. Each key is either sent as hex (an identifier, a label, a
  * reason, a path) or verbatim (a decimal count). */
+#define AUTHD_CLI_ID_MAX     64u    /* STORE_ID_MAX; localapi's id_valid */
+#define AUTHD_CLI_REASON_MAX 256u   /* localapi's reason[256] */
+
 typedef struct {
     const char *flag;   /* "--user" */
     const char *key;    /* "user" */
@@ -600,6 +611,36 @@ static int online(int argc, char **argv, const char *prog, const char *sub,
     for (size_t k = 0; k < n_opts; k++) {
         if (opts[k].required && opts[k].val == NULL) {
             return need(prog, sub, usage);
+        }
+    }
+
+    /* F300: the daemon's own bounds, named here. It answers every one of
+     * these with a bare `malformed`, which says neither which argument nor
+     * what the limit is (the shape of F263 and F296). */
+    for (size_t k = 0; k < n_opts; k++) {
+        if (opts[k].val == NULL) {
+            continue;
+        }
+        const size_t vlen = strlen(opts[k].val);
+        if (strcmp(opts[k].key, "user") == 0) {
+            int printable = 1;
+            for (size_t i = 0; i < vlen; i++) {
+                const unsigned char ch = (unsigned char)opts[k].val[i];
+                if (ch < 0x20u || ch > 0x7eu) {
+                    printable = 0;
+                }
+            }
+            if (vlen < 1u || vlen > AUTHD_CLI_ID_MAX || !printable) {
+                fprintf(stderr, "%s %s: --user is 1 to %u bytes of printable ASCII\n", prog, sub,
+                        (unsigned)AUTHD_CLI_ID_MAX);
+                return EX_USAGE;
+            }
+        } else if (strcmp(opts[k].key, "reason") == 0) {
+            if (vlen < 1u || vlen > AUTHD_CLI_REASON_MAX) {
+                fprintf(stderr, "%s %s: --reason is 1 to %u bytes\n", prog, sub,
+                        (unsigned)AUTHD_CLI_REASON_MAX);
+                return EX_USAGE;
+            }
         }
     }
 

@@ -1,0 +1,11 @@
+FF1|^test_authd_cli$|fifo: a passphrase path that is a FIFO is refused as not-a-regular-file, not waited on (F297)
+FF2|^test_authd_cli$|fifo: a sealed-key path that is a FIFO is refused, not waited on (F297)
+FF3|^test_authd_cli$|fifo: a key to promote that is a FIFO is refused, not waited on (F297)
+FF4|^test_authd_cli$|fifo: a configuration path that is a FIFO is refused, not waited on (F297)
+NP1|^test_authd_cli$|rotate: a temp file left by a killed rotation with this pid does not stop the next one
+RO1|^test_authd_cli$|reply: a first line that is neither OK nor ERR code= fails the command and says so (F299)
+RO2|^test_authd_cli$|reply: a first line that is neither OK nor ERR code= fails the command and says so (F299)
+OB1|^test_authd_cli$|bounds: --user of 65 bytes, of none, or with a byte outside printable ASCII is usage
+OB2|^test_authd_cli$|bounds: --user of 65 bytes, of none, or with a byte outside printable ASCII is usage
+OB3|^test_authd_cli$|bounds: --reason of 257 bytes or of none is usage, with the bound named (F300)
+OB4|^test_authd_cli$|bounds: --reason of 257 bytes or of none is usage, with the bound named (F300)

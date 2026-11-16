@@ -55,6 +55,11 @@ int localcli_error_code(const char *resp, char *code_out, size_t cap)
     return 1;
 }
 
+int localcli_reply_ok(const char *resp)
+{
+    return resp != NULL && resp[0] == 'O' && resp[1] == 'K' && (resp[2] == ' ' || resp[2] == '\n');
+}
+
 /* A complete response is: an ERR first line (always one line), OR -- for a
  * list command -- everything through a line that is exactly "END", OR the
  * first line. Returns 1 when `buf` (NUL-terminated, `len` bytes) holds one.

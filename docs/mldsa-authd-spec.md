@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.62, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217)
+# mldsa-authd — deployment specification (v1.63, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -495,6 +495,14 @@ break in it would end the site's request and begin another, made with the
 site's authority. Unknown keys, duplicate keys, a missing required key or
 a malformed value are `ERR code=malformed`.
 
+**A reply is one of the two forms above or it is not an answer** (erratum
+105). `authd_admin` exits 1 on a first line that is neither `OK` — alone or
+followed by a space — nor `ERR code=`, and says the reply is not this
+protocol's; it prints nothing of it. Before it sends, it refuses with exit 2,
+naming the bound, a `--user` that is not 1 to 64 bytes of printable ASCII and
+a `--reason` that is not 1 to 256 bytes: the daemon's own limits, which it
+answers only with `malformed`.
+
 A command that does not exist, and a command that exists but is not reachable
 on this socket, both answer `ERR code=not-permitted`. The two are deliberately
 indistinguishable: a site process must not be able to use the refusal to
@@ -943,6 +951,11 @@ regular file, owner == euid, `mode & 077 == 0`) → size bounds → magic and
 version → algorithm ids → parameter bounds → KDF → AEAD open into
 `secure_mem` → `MLDSASK2` parse with its digest and id checks → sign/verify
 self-test. The passphrase and derived key are wiped immediately.
+
+A path that is not a regular file is refused **without waiting on it**
+(erratum 105): a sealed key, a passphrase file and the configuration file are
+opened without blocking, so a FIFO with no writer is `not-a-regular-file` (or
+the key file's I/O refusal) at once, not a tool that never exits.
 
 **Server passphrase delivery** on a headless host: 32 random bytes from
 `authd_admin init`, delivered by systemd `LoadCredentialEncrypted`
@@ -2042,3 +2055,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 104 | 10.2 | Two runs of the CLI on one key file are serialised: a rotation holds an exclusive advisory lock on the key's directory from before it reads the key until it exits, a run that finds `.ek.next` holds it while it resolves that file, a run that finds the lock taken waits, and one that cannot take it does not rotate or resolve. A rotation discards `.ek.next` only on its own run's proof that `.ek` authenticates. A key path whose `.ek.next` name does not fit the platform's path limit is refused | `rotate` looked for `.ek.next` once, spent a key derivation opening `.ek`, and then deleted whatever `.ek.next` existed by then — a second run's newly sealed key, if one had started in between; that run's `ROTATE` committed and its rename found nothing, so the key the daemon accepted was on no disk. Separately, the name was built unchecked: at one byte under the limit it came out equal to the key's own path and the rotation deleted the live key (audit F293) |
+
+### Revision v1.63 (V4-220)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 105 | 5, 8 | A sealed key, a passphrase file and the configuration file are opened without blocking, so a path that is a FIFO is refused as not a regular file instead of waited on. `authd_admin` treats a reply whose first line is neither `OK` (alone or followed by a space) nor `ERR code=` as a failure, exit 1, and prints none of it. It refuses with exit 2, naming the bound, a `--user` that is not 1 to 64 bytes of printable ASCII and a `--reason` that is not 1 to 256 bytes | A FIFO at any of those paths blocked the tool in `open` with no message and no exit. Any first line that did not begin `ERR code=` — `ERR`, `ERR internal`, an HTTP status line from another program on that path — was printed and the command exited 0. A `--user` or `--reason` the daemon was bound to refuse came back as `refused: malformed`, naming neither the argument nor the limit (audit F297, F299, F300) |

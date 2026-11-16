@@ -32,8 +32,8 @@ import sys, pathlib
 S = "apps/authd/authd_secret.c"
 
 M = {
-    "PF1": [(S, "    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);\n",
-                "    const int fd = open(path, O_RDONLY | O_CLOEXEC); /* MUTATION PF1: symlinks followed */\n")],
+    "PF1": [(S, "    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);\n",
+                "    const int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK); /* MUTATION PF1: symlinks followed */\n")],
     "PF2": [(S, "    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {\n        (void)close(fd);\n        return AUTHD_SECRET_ERR_NOT_REGULAR;\n",
                 "    if (fstat(fd, &st) != 0) { /* MUTATION PF2: any file type */\n        (void)close(fd);\n        return AUTHD_SECRET_ERR_NOT_REGULAR;\n")],
     "PF3": [(S, "    if ((mode & 077) != 0) {\n        return AUTHD_SECRET_ERR_PERMISSIONS;\n",

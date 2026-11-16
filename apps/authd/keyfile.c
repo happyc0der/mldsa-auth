@@ -364,7 +364,8 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
     if (ek_path == NULL || expect_id == NULL || passphrase == NULL || id_len < 1u || id_len > 64u) {
         return KEYFILE_ERR_ARG;
     }
-    const int fd = open(ek_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* F297: O_NONBLOCK -- a FIFO is refused below, not waited on. */
+    const int fd = open(ek_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return KEYFILE_ERR_IO;
     }
@@ -409,7 +410,7 @@ keyfile_status_t keyfile_promote(const char *from, const char *to) {
      * regular file, or that anyone else can read. The same three checks
      * keyfile_open applies -- a rename does not get to skip them. */
     struct stat st;
-    const int fd = open(from, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    const int fd = open(from, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);   /* F297 */
     if (fd < 0) {
         return KEYFILE_ERR_IO;
     }

@@ -1300,6 +1300,20 @@ static int run_client_pumped(h_daemon_t *d, char **argv)
     return run_client_pumped_hook(d, argv, NULL, NULL);
 }
 
+/* F298: something for the CHILD to do before it becomes the client -- the
+ * one place a test can know the pid the client will run as. */
+static void (*g_child_pre)(void);
+static char g_stale_base[512];
+static void plant_stale_newpub(void)
+{
+    char p[600];
+    /* The name rotate itself builds, inside this test's mkdtemp directory: not
+     * a scratch name of the test's own choosing (F114's gate, scratch_dirs). */
+    const long me = (long)getpid();
+    (void)snprintf(p, sizeof p, "%s.newpub.%ld", g_stale_base, me);
+    if (write_file(p, "left by a killed rotation\n", 0600) != 0) { child_exit(124); }
+}
+
 static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook, void *ctx)
 {
     fflush(stdout);
@@ -1308,6 +1322,7 @@ static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook,
     if (pid < 0) { return -1; }
     if (pid == 0) {
         if (freopen("/dev/null", "w", stdout) == NULL) { child_exit(125); }
+        if (g_child_pre != NULL) { g_child_pre(); }
         const int rc = run_cli(authd_cli_client, argv);
         fflush(stderr);
         child_exit(rc & 0xff);
@@ -1405,6 +1420,141 @@ static void test_backup_path_bound(void)
           "backup: one of 511 bytes passes the check and fails only at the socket that is not there");
 }
 
+/* F297: a FIFO where a file is expected. open() without O_NONBLOCK waits for a
+ * writer that never comes, so each reader runs in a child with a deadline:
+ * the answer is its exit status, or 99 for "still blocked after 3 s". */
+static int fifo_child(int which, const char *p)
+{
+    fflush(stdout);
+    fflush(stderr);
+    const pid_t pid = fork();
+    if (pid < 0) { return -1; }
+    if (pid == 0) {
+        int out = 0;
+        if (which == 0) {
+            uint8_t *s = NULL; size_t n = 0;
+            out = (int)authd_secret_read(p, &s, &n);
+        } else if (which == 1) {
+            mldsa_keypair_t kp;
+            memset(&kp, 0, sizeof kp);
+            out = (int)keyfile_open(p, (const uint8_t *)"h", 1u, "x", 1u, &kp, NULL);
+        } else if (which == 2) {
+            char to[600];
+            (void)snprintf(to, sizeof to, "%s.to", p);
+            out = (int)keyfile_promote(p, to);
+        } else {
+            static authd_config_t cfg;
+            size_t line = 0;
+            out = (int)authd_config_load(p, &cfg, &line);
+        }
+        child_exit(out & 0x7f);
+    }
+    int ws = 0;
+    for (int i = 0; i < 300; i++) {
+        if (waitpid(pid, &ws, WNOHANG) == pid) {
+            return WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
+        }
+        usleep(10000);
+    }
+    (void)kill(pid, SIGKILL);
+    (void)waitpid(pid, &ws, 0);
+    return 99;
+}
+
+static void test_fifo_refused(void)
+{
+    char p[300];
+    (void)snprintf(p, sizeof p, "%s/a-fifo", g_dir);
+    CHECK(mkfifo(p, 0600) == 0, "fifo: a FIFO with no writer exists");
+    CHECK(fifo_child(0, p) == (int)AUTHD_SECRET_ERR_NOT_REGULAR,
+          "fifo: a passphrase path that is a FIFO is refused as not-a-regular-file, not waited on (F297)");
+    CHECK(fifo_child(1, p) == (int)KEYFILE_ERR_IO,
+          "fifo: a sealed-key path that is a FIFO is refused, not waited on (F297)");
+    CHECK(fifo_child(2, p) == (int)KEYFILE_ERR_IO,
+          "fifo: a key to promote that is a FIFO is refused, not waited on (F297)");
+    CHECK(fifo_child(3, p) == (int)AUTHD_CFG_ERR_IO,
+          "fifo: a configuration path that is a FIFO is refused, not waited on (F297)");
+    (void)unlink(p);
+}
+
+/* F299: a reply that is neither form of spec 8's response. */
+static void test_reply_not_protocol(void)
+{
+    static const char *const bad[] = { "ERR\n", "ERR internal\n", "ERRx code=y\n", "err code=x\n", "\n",
+                                       "HTTP/1.1 400 Bad Request\r\n", "OKAY\n" };
+    char path[400], err[1024];
+    (void)snprintf(path, sizeof path, "%s/np.sock", g_dir);
+    int ws = 0, all = 1;
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        const int lfd = lc_listen(path);
+        const pid_t pid = lc_daemon(lfd, bad[i], strlen(bad[i]), 50000);
+        const int rc = run_admin_capture((char *[]){ "authd_admin", "enable-user", "--socket", path,
+                                                     "--user", "u", NULL }, err, sizeof err);
+        (void)waitpid(pid, &ws, 0); (void)close(lfd);
+        if (lfd < 0 || rc != 1 || strstr(err, "not one this protocol has") == NULL) {
+            printf("  reply %zu: rc %d, stderr: %s\n", i, rc, err);
+            all = 0;
+        }
+    }
+    CHECK(all, "reply: a first line that is neither OK nor ERR code= fails the command and says so (F299)");
+    { const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, "OK\n", 3u, 50000);
+      const int rc = run_admin_capture((char *[]){ "authd_admin", "enable-user", "--socket", path,
+                                                   "--user", "u", NULL }, err, sizeof err);
+      (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      CHECK(lfd >= 0 && rc == 0 && err[0] == '\0', "reply: a bare OK is agreement -- the canary"); }
+    { const int lfd = lc_listen(path);
+      const pid_t pid = lc_daemon(lfd, "OK count=0\nEND\n", 15u, 50000);
+      const int rc = run_admin_capture((char *[]){ "authd_admin", "list-users", "--socket", path, NULL },
+                                       err, sizeof err);
+      (void)waitpid(pid, &ws, 0); (void)close(lfd);
+      CHECK(lfd >= 0 && rc == 0 && err[0] == '\0', "reply: OK followed by a space is agreement too"); }
+    CHECK(localcli_reply_ok("OK\n") && localcli_reply_ok("OK a=b\n") && !localcli_reply_ok("OK") &&
+          !localcli_reply_ok("") && !localcli_reply_ok(NULL) && !localcli_reply_ok("O"),
+          "reply: localcli_reply_ok takes OK then a space or the line's end, and nothing shorter");
+    (void)unlink(path);
+}
+
+/* F300: the daemon's bounds on --user and --reason, named by the tool. */
+static void test_online_bounds(void)
+{
+    char sock[256], err[1024];
+    static char u65[66], u64[65], r257[258], r256[257];
+    memset(u65, 'u', 65u); memset(u64, 'u', 64u); memset(r257, 'r', 257u); memset(r256, 'r', 256u);
+    (void)snprintf(sock, sizeof sock, "%s/no-such.sock", g_dir);
+    static const char *const subs[] = { "enable-user", "list-devices" };
+    int all = 1;
+    for (size_t i = 0; i < 2u; i++) {
+        static const char *bad_users[3];
+        bad_users[0] = u65; bad_users[1] = ""; bad_users[2] = "jos\xc3\xa9";
+        for (size_t k = 0; k < 3u; k++) {
+            const int rc = run_admin_capture((char *[]){ "authd_admin", (char *)subs[i], "--socket", sock,
+                                                         "--user", (char *)bad_users[k], NULL }, err, sizeof err);
+            if (rc != 2 || strstr(err, "--user is 1 to 64 bytes of printable ASCII") == NULL) {
+                printf("  %s user case %zu: rc %d, stderr: %s\n", subs[i], k, rc, err);
+                all = 0;
+            }
+        }
+    }
+    CHECK(all, "bounds: --user of 65 bytes, of none, or with a byte outside printable ASCII is usage, "
+               "with the bound named (F300)");
+    int rc = run_admin_capture((char *[]){ "authd_admin", "enable-user", "--socket", sock, "--user", u64, NULL },
+                               err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "--user is") == NULL,
+          "bounds: --user of 64 bytes passes and fails only at the socket that is not there");
+    rc = run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", sock, "--user", "u",
+                                       "--reason", r257, NULL }, err, sizeof err);
+    const int long_ok = (rc == 2 && strstr(err, "--reason is 1 to 256 bytes") != NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", sock, "--user", "u",
+                                       "--reason", "", NULL }, err, sizeof err);
+    CHECK(long_ok && rc == 2 && strstr(err, "--reason is 1 to 256 bytes") != NULL,
+          "bounds: --reason of 257 bytes or of none is usage, with the bound named (F300)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", sock, "--user", "u",
+                                       "--reason", r256, NULL }, err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "--reason is") == NULL,
+          "bounds: --reason of 256 bytes passes and fails only at the socket that is not there");
+}
+
 static void test_rotate_on_disk(void)
 {
     static const uint8_t RU[] = { 'r', 'u' };
@@ -1460,10 +1610,26 @@ static void test_rotate_on_disk(void)
     size_t na = 0, nb = 0;
     CHECK(read_bytes(ek, sealed_a, sizeof sealed_a, &na) == 0, "rotate: the first sealed key is saved");
 
-    /* 1. An acknowledged rotation: A -> B. */
+    /* 1. An acknowledged rotation: A -> B. F298: it runs with the temp file
+     * of a rotation that was killed under the SAME pid already in place. */
+    (void)snprintf(g_stale_base, sizeof g_stale_base, "%s", next);
+    g_child_pre = plant_stale_newpub;
     int rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
                                                "--passphrase-file", pass, "--server-id", "authd",
                                                "--server-pub", spub, "--port", port, NULL });
+    g_child_pre = NULL;
+    { int left = 0;
+      DIR *dl = opendir(dev);
+      if (dl != NULL) {
+          struct dirent *e;
+          while ((e = readdir(dl)) != NULL) {
+              if (strstr(e->d_name, ".newpub.") != NULL) { left++; }
+          }
+          (void)closedir(dl);
+      }
+      CHECK(rc == 0 && left == 0,
+            "rotate: a temp file left by a killed rotation with this pid does not stop the next one, "
+            "and none is left (F298)"); }
     uint8_t pub_pk[MLDSA_PUBLIC_KEY_BYTES];
     const int b_ok = keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &b, NULL)
                      == KEYFILE_OK;
@@ -2003,6 +2169,9 @@ int main(void)
     test_localcli_robustness();
     test_key_plan();
     test_backup_path_bound();
+    test_fifo_refused();
+    test_reply_not_protocol();
+    test_online_bounds();
     test_rotate_on_disk();
     test_rotate_reply_refused_or_lost();
     test_passphrase_custody();

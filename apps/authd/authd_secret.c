@@ -83,7 +83,10 @@ authd_secret_status_t authd_secret_read(const char *path, uint8_t **out, size_t 
     *out = NULL;
     *out_len = 0;
 
-    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* F297: O_NONBLOCK so that a FIFO with no writer is opened at once and
+     * refused below as not a regular file, instead of blocking in open()
+     * with no message and no exit. It changes nothing for a regular file. */
+    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return AUTHD_SECRET_ERR_OPEN;
     }

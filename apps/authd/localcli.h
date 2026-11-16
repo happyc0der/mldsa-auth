@@ -65,8 +65,9 @@ int localcli_is_list_command(const char *cmd);
  * `timeout_ms`.
  *
  * LOCALCLI_OK means "a well-formed response arrived", NOT "the daemon agreed":
- * the caller inspects `out` for a leading "ERR ". That split is deliberate --
- * a transport failure and a refusal are different exit codes (spec 13). */
+ * the caller asks localcli_error_code and then localcli_reply_ok. That split
+ * is deliberate -- a transport failure and a refusal are different exit
+ * codes (spec 13). */
 localcli_status_t localcli_call(const char *sock_path, const char *cmd, const char *args,
                                 uint64_t timeout_ms, char *out, size_t cap, size_t *out_len);
 
@@ -74,5 +75,11 @@ localcli_status_t localcli_call(const char *sock_path, const char *cmd, const ch
  * `code_out` when it is an `ERR code=NAME` line; returns 0 otherwise.
  * `code_out` is always NUL-terminated. */
 int localcli_error_code(const char *resp, char *code_out, size_t cap);
+
+/* 1 when the response's first line is `OK`, alone or followed by a space.
+ * A reply is one of the two forms above or it is not this protocol: the
+ * caller treats "neither an ERR code nor OK" as a failure (F299), never as
+ * agreement. */
+int localcli_reply_ok(const char *resp);
 
 #endif /* MLDSA_AUTHD_LOCALCLI_H */

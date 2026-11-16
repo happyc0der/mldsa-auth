@@ -479,7 +479,8 @@ authd_config_status_t authd_config_load(const char *path, authd_config_t *out, s
     authd_config_defaults(out);
     if (err_line != NULL) { *err_line = 0; }
 
-    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* F297: O_NONBLOCK -- a FIFO is refused below, not waited on. */
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return AUTHD_CFG_ERR_IO;               /* errno: open's */
     }

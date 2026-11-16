@@ -17553,3 +17553,60 @@ No code.
 
 Counts: 581 mutations, 103 campaigns, 625 anchors; 296 findings (F273 and
 F288 open); spec v1.62, 104 errata (all unchanged by this step).
+
+## V4-220: four faults at the tools' edges (F297 to F300, erratum 105)
+
+The fifteenth review read the admin socket's request parsing, the admin
+tool's `local_call`, what a killed rotation leaves, the passphrase reader and
+the configuration loader. Four of its candidates are faults and are fixed
+here; all are Low.
+
+- **F297, a FIFO is refused, not waited on.** Four opens (`authd_secret_read`,
+  `keyfile_open`, `keyfile_promote`, `authd_config_load`) carry `O_NONBLOCK`.
+  The regular-file check that follows each was already there; the open never
+  returned to reach it. `O_NONBLOCK` does nothing to a regular file's reads.
+  Campaign v79's PF1 anchors on the passphrase open and follows the line.
+  The readers in `apps/demo_keys.c` have the same shape and are left: they
+  serve the demo tools, not the daemon or its two CLIs.
+- **F298, the temp name is cleared before the seal.** One `unlink`, under the
+  key directory's lock from F293, so the name cannot belong to a live run.
+  A fixed name without the pid was the alternative; `client_republish_pub`
+  uses the same pid-named file on the login path, without the lock, so the
+  pid stays.
+- **F299, `OK` is required.** `localcli_reply_ok` is the second half of the
+  response grammar; `local_call` exits 1 on a first line that is neither
+  half and prints none of it. `OKAY` is not `OK`.
+- **F300, the bounds are named.** `online()` checks `--user` (1 to 64 bytes,
+  printable ASCII) and `--reason` (1 to 256 bytes) before it builds the
+  line. The printable rule is the daemon's `id_valid`, not a new one.
+
+The test for F298 needs the pid the client will run under, which only the
+forked child knows; `run_client_pumped_hook` gained a hook that runs in the
+child before it becomes the client. The FIFO checks run each reader in a
+child with a 3 s deadline, so a regression is a failed check and not a hung
+suite.
+
+Left, and why:
+
+- **For the owner: `user_id` is "an opaque byte string" in §3.2 and printable
+  ASCII in the daemon.** `id_valid` refuses a raw 16-byte id or a UTF-8 name
+  on every command. Erratum 1 narrowed only the handle. Either the spec says
+  printable, or the daemon takes any bytes (the values are hex on the wire
+  already; the log would need to encode them). Recommendation: an erratum
+  that says printable, since every deployed store already satisfies it.
+- The daemon's line grammar is looser than §8 in ways that change nothing:
+  leading zeros in `count=` and `n=`, runs of spaces, one CR before the LF,
+  uppercase hex. `REVOKE-DEVICE` without `reason=` and `ENROLL` without
+  `label=` are accepted though §8's table lists both unbracketed (F197's
+  shape). Tightening any of these could refuse a site that works today, so
+  it is a spec question first.
+- `AUDIT-TAIL` items print `detail=` unencoded, with spaces and one `§`; the
+  item format is not in §8. Not injectable: every detail is a literal.
+- Login tests for `.ek.next` once without the lock and once with it. The
+  worst interleaving found is a rotation that completed and exits 1 because
+  the login promoted its key first; the disk is consistent.
+- The configuration loader has no inline comments, accepts relative paths
+  and leading zeros, and compares socket paths as text.
+
+Counts: 592 mutations, 104 campaigns, 636 anchors; 300 findings (F273 and
+F288 open); spec v1.63, 105 errata.
