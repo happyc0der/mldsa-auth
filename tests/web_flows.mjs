@@ -395,6 +395,24 @@ try {
       check(status === 'passphrase-policy' && !asked && (await store.list()).length === 0,
             'enroll: a passphrase the policy refuses stores nothing and asks the site nothing'); }
 
+    // F303: a key cannot be forgotten while its enrollment is in flight. The
+    // forget is started from inside the site's answer -- another tab pressing
+    // Forget while the POST is pending -- and settles only after the
+    // enrollment has confirmed the key, which it then refuses to remove.
+    { const store = new MemoryStore();
+      let forgetting = null, early = 'not settled';
+      const r = await flows.enroll(client, store, want, async (id) => {
+        forgetting = flows.forgetUnconfirmed(store, id.handle).then(() => 'removed', (e) => e.name);
+        early = await Promise.race([forgetting, new Promise((res) => setTimeout(() => res('not settled'), 300))]);
+        return enroll(id.handle, id.publicImage);
+      });
+      const how = await forgetting;
+      const rec = await store.get(r.handle);
+      check(early === 'not settled' && how === 'ForgetRefused' && rec !== null && rec.unconfirmed === false,
+            `enroll: a forget started while the site is enrolling the key waits, and then leaves the confirmed key ` +
+            `(during: ${early}; after: ${how}; kept: ${rec !== null}) (F303)`);
+      check(await logsIn(store, r.handle), 'enroll: and the key the daemon holds still logs in (F303)'); }
+
     // V4-140: a key the site never confirmed can be forgotten, and only such
     // a key. Without this an enrollment the site never answered left its key
     // on the login page for good.

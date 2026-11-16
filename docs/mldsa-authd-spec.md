@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.63, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220)
+# mldsa-authd — deployment specification (v1.64, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1090,6 +1090,19 @@ then needs a recovery code, and removes the record on a second press. The
 check and the removal hold the identity's lock, so a key that a login in
 another tab has just confirmed is left.
 
+The enrollment holds that lock too (erratum 106), from before the record is
+written until the site's answer has been acted on: a key cannot be forgotten
+while the site is enrolling it. And **an answer is the site's own JSON or it
+is not an answer**: a page takes a 2xx whose body is anything else — a front
+end's catch-all page — as no answer at all, so nothing is confirmed, logged
+in or logged out on the strength of it. The reference handler holds the same
+line towards the daemon: a reply is `OK`, alone or followed by a space, with
+the fields that reply carries (a login its token, a recovery its ticket), or
+it is `malformed-response`; a recovery is enrolled as one because a ticket
+was given, never because of what the ticket holds; and a ticket the daemon
+refuses as spent, or whose expiry has passed, is dropped from the site's
+session.
+
 **The module's contract** (V4-13b, addition 32). It is built with **Emscripten
 6.0.9** exactly, and its known-answer test must reproduce the native golden
 (`tests/golden/client_core_kat.txt`) byte for byte. A page can call exactly the
@@ -2061,3 +2074,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 105 | 5, 8 | A sealed key, a passphrase file and the configuration file are opened without blocking, so a path that is a FIFO is refused as not a regular file instead of waited on. `authd_admin` treats a reply whose first line is neither `OK` (alone or followed by a space) nor `ERR code=` as a failure, exit 1, and prints none of it. It refuses with exit 2, naming the bound, a `--user` that is not 1 to 64 bytes of printable ASCII and a `--reason` that is not 1 to 256 bytes | A FIFO at any of those paths blocked the tool in `open` with no message and no exit. Any first line that did not begin `ERR code=` — `ERR`, `ERR internal`, an HTTP status line from another program on that path — was printed and the command exited 0. A `--user` or `--reason` the daemon was bound to refuse came back as `refused: malformed`, naming neither the argument nor the limit (audit F297, F299, F300) |
+
+### Revision v1.64 (V4-221)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 106 | 14 | A browser's enrollment holds the identity's lock from before the record is written until the site's answer is acted on. A page takes a 2xx that is not the site's JSON as no answer. The reference handler accepts `OK` only alone or followed by a space and requires each reply's own fields, chooses `via=recovery` because a ticket was given and refuses an empty one, and drops from the session a ticket the daemon refuses as invalid or whose expiry has passed | Another tab could forget a key while the site was enrolling it, leaving an account whose only key was gone. A catch-all page served 200 was read as an empty object: "Logged in as undefined", "Logged out" over a live session, a key marked enrolled that never was. The handler took `OKAY` as agreement, returned a login with no token and a recovery with no ticket, and sent that recovery as `via=site`. A dead ticket kept the session recovering for as long as it was touched (audit F301–F304) |

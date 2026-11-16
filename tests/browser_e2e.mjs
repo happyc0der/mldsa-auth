@@ -242,6 +242,14 @@ try {
         check(wants.test(r.result) && leftNow === '',
               `early failure: /api/session answering ${what} is reported as that (${r.result.slice(0, 110)}) (F268)`);
       } }
+    // F302: a POST answered 200 with something that is not the site's JSON --
+    // a front end's catch-all page -- is not the site's answer. post() read it
+    // as an empty object: "Logged in as undefined", reported as a success.
+    { const PAGE = `const f = window.fetch; window.fetch = (u, ...a) => (String(u).includes('/api/login')
+        ? Promise.resolve(new Response('<html><body>We will be back soon</body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })) : f(u, ...a));`;
+      r = await act(b, 'login.html', { passphrase: PASS }, 'go', PAGE);
+      check(/^error: the site did not answer as this page expects \(HTTP 200/.test(r.result),
+            `early failure: a 200 that is not the site's JSON is not taken as its answer (${r.result.slice(0, 110)}) (F302)`); }
     await b.navigate(`${origin}/account.html`);
     await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
     await b.eval(`(() => { delete document.body.dataset.result; ${STUB('/api/logout')} document.getElementById('logout').click(); })()`);

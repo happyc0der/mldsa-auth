@@ -293,6 +293,11 @@ export async function startSite(opt) {
     const m = COOKIE_RE.exec(req.headers.cookie || '');
     const s = m ? sessions.get(m[1]) : undefined;
     if (s && Date.now() - s.seen <= IDLE_MS) {
+      // F304: a ticket past the daemon's own expiry is no longer held. It
+      // stayed, so the session kept saying it was recovering, kept refusing
+      // any other account name on the enroll page, and kept the eviction
+      // rank a live ticket earns, for as long as it was touched.
+      if (s.ticket && Number.isFinite(s.ticket.expires) && s.ticket.expires * 1000 <= Date.now()) { s.ticket = null; }
       sessions.delete(s.sid);         // to the back: most recently used
       sessions.set(s.sid, s);
       s.seen = Date.now();
@@ -452,7 +457,13 @@ export async function startSite(opt) {
                                            signup: !s.ticket }));   // F145: a signup is a NEW account
         s.signupUser = null; s.ticket = null;
         send(res, 200, { user, handle });
-      } catch (e) { if (away(e)) { return unavailable(res); } send(res, 403, { error: e.code }); }
+      } catch (e) {
+        if (away(e)) { return unavailable(res); }
+        // F304: the daemon says the ticket is spent or expired; it will say
+        // so every time, so the session stops holding it.
+        if (e.code === 'ticket-invalid') { s.ticket = null; }
+        send(res, 403, { error: e.code });
+      }
     },
     // Minting recovery codes needs a LOGIN, not only a session (V4-62, the
     // owner's decision). The page logs in again -- the device key and the
@@ -482,7 +493,7 @@ export async function startSite(opt) {
       if (typeof user !== 'string' || typeof code !== 'string') { return send(res, 403, { error: 'recover-failed' }); }
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code));
-        rotate(res, s).ticket = { user, ticket: t.ticket };  // stays on the server, under a new id (F131)
+        rotate(res, s).ticket = { user, ticket: t.ticket, expires: t.expires };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
       } catch (e) {
         if (away(e)) { return unavailable(res); }          // F210: says nothing about the user or the code

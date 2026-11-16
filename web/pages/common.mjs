@@ -56,8 +56,16 @@ export function loginParams(sess, handle, passphrase) {
 export async function post(path, obj) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify(obj ?? {}) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { throw Object.assign(new Error(j.error || `HTTP ${r.status}`), { status: r.status }); }
+  const j = await r.json().catch(() => null);
+  if (!r.ok) { throw Object.assign(new Error((j && j.error) || `HTTP ${r.status}`), { status: r.status }); }
+  // F302: a 2xx that is not the site's JSON is not the site's answer. A
+  // front end's catch-all or maintenance page, served 200, was read as `{}`:
+  // "Logged out" over a live session, a key marked enrolled that never was.
+  // The error carries no status, so callers treat it as no answer at all.
+  if (j === null || typeof j !== 'object' || Array.isArray(j)) {
+    throw new Error(`the site did not answer as this page expects (HTTP ${r.status}, not its JSON); ` +
+                    'nothing is assumed to have happened');
+  }
   return j;
 }
 

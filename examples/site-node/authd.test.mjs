@@ -19,7 +19,9 @@ import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { dirname, join } from 'node:path';
 
-import { Authd, AuthdError, exchange, verify, logout, ping, listDevices } from './authd.mjs';
+import { Authd, AuthdError, exchange, verify, logout, ping, listDevices, enroll, recoveryUse, recoveryIssue } from './authd.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const FIXTURE = process.env.AUTHD_FIXTURE;
 
@@ -240,3 +242,54 @@ if (!FIXTURE || !existsSync(FIXTURE)) {
     });
   });
 }
+
+// F301: replies that are not the protocol's, from a stand-in that plays one
+// line per connection. No daemon sends these; a wrong socket path does, and
+// each used to be returned to the site as a success.
+test('a reply that is not the protocol\'s is malformed-response, not a success (F301)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'authd-f301-'));
+  const path = join(dir, 's.sock');
+  let reply = 'OK\n';
+  const seen = [];
+  const srv = createServer((conn) => {
+    conn.on('error', () => {});
+    conn.once('data', (d) => { seen.push(String(d)); conn.end(reply); });
+  });
+  await new Promise((r) => srv.listen(path, r));
+  const call = async (line, fn) => {
+    reply = line;
+    const a = await new Authd(path).connect();
+    try { await fn(a); return 'resolved'; } catch (e) { return e instanceof AuthdError ? e.code : `threw ${e}`; } finally { a.destroy(); }
+  };
+  const CODE = Buffer.alloc(32, 7).toString('base64url');
+  const PK = Buffer.alloc(1952, 1);
+  try {
+    assert.equal(await call('OK\n', (a) => logout(a, 'ab')), 'resolved', 'a bare OK is an answer (the canary)');
+    assert.equal(await call('OK deleted=1\n', (a) => logout(a, 'ab')), 'resolved', 'OK and a space is an answer (the canary)');
+    for (const line of ['OKAY\n', 'OKdeleted=1\n', 'ERR\n', 'HTTP/1.1 400 Bad Request\r\n', '\n']) {
+      assert.equal(await call(line, (a) => logout(a, 'ab')), 'malformed-response', JSON.stringify(line));
+    }
+    assert.equal(await call('OK token=aa user=75 handle=68 role=user issued=1 expires=2\n', (a) => exchange(a, CODE, '')),
+                 'resolved', 'a whole EXCHANGE reply (the canary)');
+    assert.equal(await call('OK user=75 handle=68 role=user issued=1 expires=2\n', (a) => exchange(a, CODE, '')),
+                 'malformed-response', 'EXCHANGE without a token is not a login');
+    assert.equal(await call('OK role=user\n', (a) => verify(a, 'ab')), 'malformed-response', 'VERIFY without a user');
+    assert.equal(await call('OK ticket=ab expires=9\n', (a) => recoveryUse(a, 'u', 'CODE')), 'resolved', 'a whole RECOVERY-USE reply (the canary)');
+    assert.equal(await call('OK\n', (a) => recoveryUse(a, 'u', 'CODE')), 'malformed-response', 'RECOVERY-USE without a ticket');
+    assert.equal(await call('OK ticket=\n', (a) => recoveryUse(a, 'u', 'CODE')), 'malformed-response', 'RECOVERY-USE with an empty ticket');
+    assert.equal(await call('OK\n', (a) => recoveryIssue(a, 'u', 1)), 'malformed-response', 'RECOVERY-ISSUE without codes');
+    assert.equal(await call('OK\n', (a) => enroll(a, { user: 'u', handle: 'h', pk: PK })), 'malformed-response', 'ENROLL without a fingerprint');
+    // The path is the caller's intent, not the ticket's truthiness.
+    const before = seen.length;
+    assert.equal(await call('OK fp=ab\n', (a) => enroll(a, { user: 'u', handle: 'h', pk: PK, ticket: '' })),
+                 'bad-request-field', 'an empty ticket is refused');
+    assert.equal(seen.length, before, 'and nothing was sent for it');
+    assert.equal(await call('OK fp=ab\n', (a) => enroll(a, { user: 'u', handle: 'h', pk: PK, ticket: 'abcd' })), 'resolved');
+    assert.match(seen.at(-1), / via=recovery ticket=abcd\n$/, 'a ticket given is a recovery');
+    assert.equal(await call('OK fp=ab\n', (a) => enroll(a, { user: 'u', handle: 'h', pk: PK })), 'resolved');
+    assert.match(seen.at(-1), / via=site\n$/, 'no ticket and no signup is via=site (the canary)');
+  } finally {
+    await new Promise((r) => srv.close(r));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

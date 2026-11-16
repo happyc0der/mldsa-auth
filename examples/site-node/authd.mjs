@@ -206,10 +206,22 @@ function ensureOk(lines) {
   if (first.startsWith('ERR code=')) {
     throw new AuthdError(first.slice('ERR code='.length).trim());
   }
-  if (!first.startsWith('OK')) {
+  // `OK` alone or followed by a space (spec 8, erratum 105; F301). A prefix
+  // test took `OKAY` and anything else that began with the two letters.
+  if (first !== 'OK' && !first.startsWith('OK ')) {
     throw new AuthdError('malformed-response');
   }
   return first;
+}
+
+// The fields a reply must carry to be that reply (F301). An `OK` without its
+// token is not a login and an `OK` without its ticket is not a recovery: each
+// was returned to the site as one, with `undefined` where the value belongs.
+function need(f, ...keys) {
+  for (const k of keys) {
+    if (typeof f[k] !== 'string' || f[k] === '') { throw new AuthdError('malformed-response'); }
+  }
+  return f;
 }
 
 /**
@@ -224,7 +236,7 @@ export async function exchange(authd, codeBase64url, state = '') {
     code: codeToHex(codeBase64url),
     state: hex(Buffer.from(state, 'utf8')),
   });
-  const f = fields(ensureOk(lines));
+  const f = need(fields(ensureOk(lines)), 'token', 'user', 'handle');
   return {
     token: f.token,                                        // keep SERVER-SIDE only
     user: Buffer.from(f.user, 'hex').toString('utf8'),
@@ -237,7 +249,7 @@ export async function exchange(authd, codeBase64url, state = '') {
 
 /** Verify a token on each request. Also slides its idle window. */
 export async function verify(authd, token) {
-  const f = fields(ensureOk(await authd.request('VERIFY', { token })));
+  const f = need(fields(ensureOk(await authd.request('VERIFY', { token }))), 'user', 'handle');
   return {
     user: Buffer.from(f.user, 'hex').toString('utf8'),
     handle: Buffer.from(f.handle, 'hex').toString('utf8'),
@@ -261,14 +273,21 @@ export async function logout(authd, token) {
 // it `user-exists` if the user is known. Without it and without a ticket the
 // enrollment is via=site, the site vouching for an existing person (spec 10).
 export async function enroll(authd, { user, handle, pk, label, ticket, signup }) {
-  const f = fields(ensureOk(await authd.request('ENROLL', {
+  // F301: a ticket that was GIVEN makes this a recovery, whatever it holds.
+  // The path used to be chosen by the ticket's truthiness, so a recovery whose
+  // ticket had come back empty was sent as via=site: the path that adds a
+  // device with no proof of continuity. An empty ticket is now a recovery the
+  // daemon refuses.
+  const recovery = ticket !== undefined && ticket !== null;
+  if (recovery && (typeof ticket !== 'string' || ticket === '')) { throw new AuthdError('bad-request-field'); }
+  const f = need(fields(ensureOk(await authd.request('ENROLL', {
     user: hex(Buffer.from(user, 'utf8')),
     handle: hex(Buffer.from(handle, 'utf8')),
     pk: hex(pk),
     label: label ? hex(Buffer.from(label, 'utf8')) : undefined,
-    via: ticket ? 'recovery' : (signup ? 'signup' : 'site'),
-    ticket: ticket || undefined,
-  })));
+    via: recovery ? 'recovery' : (signup ? 'signup' : 'site'),
+    ticket: recovery ? ticket : undefined,
+  }))), 'fp');
   return { fp: f.fp, idempotent: f.idempotent === '1' };
 }
 
@@ -296,10 +315,10 @@ export async function enroll(authd, { user, handle, pk, label, ticket, signup })
 /** Generate `count` (1..16) fresh recovery codes, invalidating any previous
  *  generation. Returns the plaintext codes -- THE ONLY TIME THEY EXIST. */
 export async function recoveryIssue(authd, user, count = 10) {
-  const f = fields(ensureOk(await authd.request('RECOVERY-ISSUE', {
+  const f = need(fields(ensureOk(await authd.request('RECOVERY-ISSUE', {
     user: hex(Buffer.from(user, 'utf8')),
     count: String(count),
-  })));
+  }))), 'codes');
   return f.codes.split(',');
 }
 
@@ -307,11 +326,11 @@ export async function recoveryIssue(authd, user, count = 10) {
  *  revokes every existing device of that user and closes their live sessions
  *  -- the right choice when the device was stolen rather than mislaid. */
 export async function recoveryUse(authd, user, code, { revoke = 'none' } = {}) {
-  const f = fields(ensureOk(await authd.request('RECOVERY-USE', {
+  const f = need(fields(ensureOk(await authd.request('RECOVERY-USE', {
     user: hex(Buffer.from(user, 'utf8')),
     code,                                   // base32 text, passed through as typed
     revoke,
-  })));
+  }))), 'ticket');
   return { ticket: f.ticket, expires: Number(f.expires) };
 }
 

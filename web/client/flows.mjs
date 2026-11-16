@@ -216,16 +216,23 @@ export async function login(client, store, params, events) {
 //              A login with it settles the question (login() confirms it).
 export async function enroll(client, store, { serverId, serverPub, passphrase }, submit) {
   const id = client.newIdentity(passphrase);            // refused inside wasm if the policy says no
-  await store.create({ handle: id.handle, serverId, serverPub, envelope: id.envelope, unconfirmed: true });
-  let answer;
-  try {
-    answer = await submit({ handle: id.handle, publicImage: id.publicImage });
-  } catch (e) {
-    if (e instanceof EnrollRefused) { await store.remove(id.handle); throw e; }
-    throw new EnrollUnconfirmed(id.handle, e);
-  }
-  await store.confirm(id.handle);
-  return { handle: id.handle, answer };
+  // The identity's lock is held from before the record exists until the
+  // site's answer has been acted on (F303). forgetUnconfirmed checks and
+  // removes under this lock, and until enroll took it too that protected
+  // nothing here: another tab could forget the key while the site was
+  // enrolling it, and the account's only key was gone.
+  return store.exclusive(id.handle, async () => {
+    await store.create({ handle: id.handle, serverId, serverPub, envelope: id.envelope, unconfirmed: true });
+    let answer;
+    try {
+      answer = await submit({ handle: id.handle, publicImage: id.publicImage });
+    } catch (e) {
+      if (e instanceof EnrollRefused) { await store.remove(id.handle); throw e; }
+      throw new EnrollUnconfirmed(id.handle, e);
+    }
+    await store.confirm(id.handle);
+    return { handle: id.handle, answer };
+  });
 }
 
 // Rotates to a fresh key under the same passphrase (spec 10.2).

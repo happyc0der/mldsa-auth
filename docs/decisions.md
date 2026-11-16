@@ -17610,3 +17610,48 @@ Left, and why:
 
 Counts: 592 mutations, 104 campaigns, 636 anchors; 300 findings (F273 and
 F288 open); spec v1.63, 105 errata.
+
+## V4-221: the site and the pages take only their peer's own answer (F301 to F304, erratum 106)
+
+The sixteenth review read the reference site and the browser client's
+JavaScript. Seven candidates; four are fixed here, all Low, all in JavaScript,
+so there is no campaign: each fix was reverted by hand, its test seen red, and
+the file restored byte for byte (eight reverts, eight reds).
+
+- **F301.** `authd.mjs` required nothing of a reply but the letters `OK`.
+  It now requires the form and the fields. The `via` choice is the part that
+  mattered: a recovery with no ticket became `via=site`.
+- **F302.** `post()` throws on a 2xx that is not a JSON object, with no
+  status on the error, so the enroll page's "4xx is a refusal, anything else
+  is no answer" rule keeps the key, unconfirmed.
+- **F303.** `enroll` runs inside `store.exclusive`. A login for that handle
+  in another tab now waits for the enrollment's answer; the site's own
+  timeout bounds that at about 10 s.
+- **F304.** The ticket's expiry is compared with the site's clock, which is
+  the daemon's on one machine; where they differ the daemon's refusal
+  (`ticket-invalid`) still clears it.
+
+Left from that review:
+
+- **For the owner: a browser rotation applies the new-passphrase policy to an
+  existing passphrase.** `rotateHeld` seals the new key with
+  `ccw_seal_new_identity`, which runs the policy check, before the passphrase
+  has met the current key. An identity whose passphrase predates a policy
+  change (erratum 69 raised the floor) can never rotate in the browser, and a
+  mistyped passphrase is reported as a policy refusal. The CLI's rotate does
+  not check, and says why. Fixing it needs a new wasm entry point, and §14
+  promises a page cannot seal around the policy. Recommendation: an entry
+  that seals a new key only under a passphrase it has first used to open the
+  identity's current envelope; that keeps the promise and costs one more key
+  derivation per rotation (about 0.1 s on a desktop, 0.4 s on the phone
+  measured in V4-25, 2.3 s in Safari).
+- Inbound WebSocket frames are copied into the module with no size bound and
+  an unchecked `_malloc`; `ccw_recv_max` is exported and unused. The sender is
+  the site's own relay. Next step.
+- "Rotate key" and "New recovery codes" can run side by side on the account
+  page; a second tab's `/api/session` replaces the state a first tab's login
+  is bound to (already with the owner as "one login state per session"); a
+  frame sent on a socket that had closed is counted as sent.
+
+Counts: 592 mutations, 104 campaigns, 636 anchors (unchanged); 304 findings
+(F273 and F288 open); spec v1.64, 106 errata.

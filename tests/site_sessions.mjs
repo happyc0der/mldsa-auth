@@ -774,6 +774,41 @@ try {
       child.kill('SIGKILL');
     }
   }
+  // F304: a ticket the daemon no longer honours does not stay in the session.
+  {
+    const ts = await start({ recoverBurst: 10, recoverRefillMs: 60 * 60 * 1000 });
+    const tb = `http://127.0.0.1:${ts.port}`;
+    const tpost = (path, obj, sid) => fetch(`${tb}${path}`, {
+      method: 'POST', body: JSON.stringify(obj),
+      headers: { ...(sid ? { Cookie: `sid=${sid}` } : {}), Origin: tb, 'Content-Type': 'application/json' } });
+    const tsess = async (sid) => (await fetch(`${tb}/api/session`, { headers: { Cookie: `sid=${sid}` } })).json();
+    const issue = async () => /codes=([^ ]+)/.exec(await siteLine(`RECOVERY-ISSUE user=${hex(enc(user))} count=2`))?.[1].split(',') ?? [];
+    const codes = await issue();
+    const rv = await tpost('/api/recover', { user, code: codes[0] ?? '' });
+    const sid = idOf(rv);
+    check(rv.status === 200 && (await tsess(sid)).recovering === true, 'ticket: a recovery leaves the session holding a ticket (the canary)');
+    await issue();                                   // new codes: the daemon spends the outstanding ticket
+    const nid = client.newIdentity('a replacement passphrase, long enough');
+    const en = await tpost('/api/enroll', { handle: nid.handle, pub: hex(nid.publicImage) }, sid);
+    const eb = await en.json();
+    const after = await tsess(sid);
+    check(en.status === 403 && eb.error === 'ticket-invalid' && after.recovering === false && after.recoveringUser === undefined,
+          `ticket: one the daemon refuses as spent is dropped from the session (${en.status} ${eb.error}; recovering=${after.recovering}) (F304)`);
+    // Expiry, by the site's own clock: the table startSite returns gives the
+    // session a ticket whose time has passed.
+    const codes2 = await issue();
+    const rv2 = await tpost('/api/recover', { user, code: codes2[0] ?? '' });
+    const sid2 = idOf(rv2);
+    const held = ts.sessions.get(sid2);
+    const exp = held && held.ticket ? held.ticket.expires : NaN;
+    const nowS = Date.now() / 1000;
+    check(rv2.status === 200 && exp > nowS + 500 && exp < nowS + 700,
+          `ticket: the session records the daemon's expiry, ten minutes on (${Math.round(exp - nowS)} s) (F304)`);
+    if (held && held.ticket) { held.ticket.expires = Math.floor(nowS) - 1; }
+    const late = await tsess(sid2);
+    check(late.recovering === false && held && held.ticket === null,
+          `ticket: one past its expiry is no longer held (recovering=${late.recovering}) (F304)`);
+  }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
