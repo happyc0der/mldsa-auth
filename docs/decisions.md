@@ -17863,3 +17863,24 @@ Left from that review, and why:
 
 Counts: 600 mutations, 107 campaigns, 644 anchors; 314 findings (F273, F288
 and F309 open); spec v1.68, 110 errata.
+
+## V4-228: cleanup after V4-225 to V4-227 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `e6e5694`, now main: CI
+  43879057651 (16/16), nightly 43879062314 (122/122, 107 campaigns).
+- Before it: `12c8b14` (V4-225 and V4-226, landed together) had CI
+  43873025852 (16/16) and nightly 43873030660 (121/121); `4666e62` (V4-224)
+  had main's push CI 43861802969 (16/16).
+- A session restart on 2026-11-16 stopped the two waiters and the twentieth
+  review; the runs themselves were unaffected and were read by run ID.
+- Open for the owner, unchanged: F273, F288, F309, the reference site's one
+  login state per session, what the audit chain should record, whether the
+  symbolic model should cover long-term key compromise, pull request 1,
+  `user_id` "opaque" in §3.2 against printable ASCII in the daemon, and the
+  browser rotation applying the new-passphrase policy to an existing
+  passphrase. Each entry carries a recommendation.
+
+Counts: 600 mutations, 107 campaigns, 644 anchors; 314 findings (F273, F288
+and F309 open); spec v1.68, 110 errata (all unchanged by this step).
