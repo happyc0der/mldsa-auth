@@ -273,7 +273,7 @@ static authd_slot_t *take_slot(evloop_t *ev, slot_kind_t kind)
 
 static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
 {
-    for (;;) {
+    for (unsigned taken = 0; taken < EVLOOP_ACCEPT_BURST; taken++) {   /* F306 */
         if (ev->stopping) {
             return;
         }
@@ -331,6 +331,7 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
                                  : (ev->listen_ws[li] ? CONN_IO_MODE_WS : CONN_IO_MODE_FRAME));
         conn_io_set_proxy(&s->io, ev->listen_proxy[li]);
         s->fd = cfd;
+        ev->last_accept_li = li;   /* F307 */
         s->addr_settled = 0;
         s->addr_admitted = 0;
         s->kind = kind;
@@ -590,7 +591,13 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
 
     int activity = 0;
 
-    for (size_t i = 0; i < listener_count; i++) {
+    /* F307: in turn, starting after the listener that accepted last. They
+     * were always served in registration order, site before admin, and both
+     * draw on the local pool: with the pool full and the site's queue never
+     * empty, every freed slot went to the site and authd_admin waited in its
+     * queue for as long as the site was busy. */
+    for (size_t k = 0; k < listener_count; k++) {
+        const size_t i = (ev->last_accept_li + 1u + k) % listener_count;
         if ((all[i].revents & POLLIN) != 0) {
             accept_ready(ev, i, now_ms);
             activity++;
@@ -634,7 +641,13 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             evloop_close_slot(ev, s);
             closed = 1;
         }
-        if (!closed && (re & POLLHUP) != 0 && conn_io_pending(&s->io) == 0u) {
+        /* F308: not while there was input to read this turn. A hang-up
+         * arrives together with whatever the peer sent first, and one turn
+         * reads one chunk: a request longer than that, from a peer that
+         * wrote it and closed, was dropped with its tail unread, where a
+         * shorter one was served. The read that finds nothing left returns
+         * end-of-file and closes the slot then. */
+        if (!closed && (re & POLLHUP) != 0 && (re & POLLIN) == 0 && conn_io_pending(&s->io) == 0u) {
             evloop_close_slot(ev, s);
         }
     }

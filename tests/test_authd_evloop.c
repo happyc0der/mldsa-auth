@@ -1301,6 +1301,172 @@ static void test_slot_cap(void)
     (void)close(lfd);
 }
 
+/* ------------------------------ one turn's accepts are bounded (F306) */
+
+static void test_accept_burst(void)
+{
+    enum { NSLOTS = 40, NCLI = 40 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1, c[NCLI];
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 64, &lfd, &port) == LISTENER_OK, "burst: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 5000u, 20000u, on_frame, on_close, &h) == 0, "burst: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "burst: listener registered");
+    int all_ok = 1;
+    for (int i = 0; i < NCLI; i++) {
+        c[i] = dial(port);
+        if (c[i] < 0) { all_ok = 0; }
+    }
+    CHECK(all_ok, "burst: forty clients are connected and waiting in the listen queue");
+    (void)evloop_run_once(&ev, 100, 1000u);
+    CHECK(evloop_active(&ev) == (size_t)EVLOOP_ACCEPT_BURST,
+          "burst: one turn of the loop accepts EVLOOP_ACCEPT_BURST connections and no more (F306)");
+    (void)evloop_run_once(&ev, 100, 1000u);
+    CHECK(evloop_active(&ev) == 2u * (size_t)EVLOOP_ACCEPT_BURST,
+          "burst: the next turn takes the next EVLOOP_ACCEPT_BURST (F306)");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == (size_t)NCLI);
+    CHECK(evloop_active(&ev) == (size_t)NCLI && ev.refused_no_slot == 0u,
+          "burst: and every one of the forty is accepted in the end");
+    for (int i = 0; i < NCLI; i++) { if (c[i] >= 0) { (void)close(c[i]); } }
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
+/* ------------------- the admin listener is not starved by the site (F307) */
+
+static int g_f308_lines = 0;
+static size_t g_f308_len = 0;
+static ev_action_t f308_on_line(void *user, authd_slot_t *slot, const uint8_t *line, size_t len)
+{
+    (void)user; (void)line;
+    g_f308_lines++;
+    g_f308_len = len;
+    static const char reply[] = "OK\n";
+    (void)conn_io_queue(&slot->io, (const uint8_t *)reply, sizeof reply - 1u);
+    return EV_ACTION_CONTINUE;
+}
+
+static int dial_unix_plain(const char *path)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { return -1; }
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    (void)snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
+    if (connect(fd, (const struct sockaddr *)&a, sizeof a) != 0) { (void)close(fd); return -1; }
+    return fd;
+}
+
+static size_t admin_slots(const authd_slot_t *local, size_t n)
+{
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (local[i].state != SLOT_FREE && local[i].is_admin) { k++; }
+    }
+    return k;
+}
+
+static void test_listener_turns(void)
+{
+    enum { NLOCAL = 2 };
+    static authd_slot_t proto[1];
+    static authd_slot_t local[NLOCAL];
+    evloop_t ev;
+    int sfd = -1, afd = -1;
+    char dir[] = "/tmp/authd-evl-XXXXXX", spath[64], apath[64];
+    CHECK(mkdtemp(dir) != NULL, "turns: a scratch directory for the sockets");
+    (void)snprintf(spath, sizeof spath, "%s/site.sock", dir);
+    (void)snprintf(apath, sizeof apath, "%s/admin.sock", dir);
+    const uid_t me[1] = { geteuid() };
+    CHECK(listener_open_unix(spath, 8, LISTENER_MODE_PRIVATE, &sfd) == LISTENER_OK &&
+          listener_open_unix(apath, 8, LISTENER_MODE_PRIVATE, &afd) == LISTENER_OK, "turns: site and admin listeners");
+    CHECK(evloop_init(&ev, proto, 1u, 5000u, 20000u, on_frame, f219_on_close, NULL) == 0, "turns: init");
+    CHECK(evloop_set_local(&ev, local, NLOCAL, f308_on_line) == 0, "turns: a local pool of two");
+    /* Registered as the daemon registers them: site first, then admin. */
+    CHECK(evloop_add_local_listener(&ev, sfd, me, 1u, 0) == 0 &&
+          evloop_add_local_listener(&ev, afd, me, 1u, 1) == 0, "turns: both registered, site first");
+
+    const int s1 = dial_unix_plain(spath), s2 = dial_unix_plain(spath);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 2u);
+    CHECK(s1 >= 0 && s2 >= 0 && evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 0u,
+          "turns: two site connections fill the local pool");
+    /* Waiting in the queues: two more from the site, two from the admin tool. */
+    const int s3 = dial_unix_plain(spath), s4 = dial_unix_plain(spath);
+    const int a1 = dial_unix_plain(apath), a2 = dial_unix_plain(apath);
+    CHECK(s3 >= 0 && s4 >= 0 && a1 >= 0 && a2 >= 0, "turns: two site connections and two admin connections wait");
+    for (int i = 0; i < 5; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 0u,
+          "turns: none of them is accepted while the pool is full (the canary)");
+
+    /* One slot is freed. The site accepted last, so the admin listener is first. */
+    (void)close(s1);
+    (void)PUMP_UNTIL(&ev, 1000, admin_slots(local, NLOCAL) == 1u || evloop_local_active(&ev) == 2u);
+    for (int i = 0; i < 5; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 1u,
+          "turns: the freed slot goes to the admin connection, not to the site's next one (F307)");
+    /* The next freed slot is the site's turn again, though an admin
+     * connection is still waiting: neither listener keeps the front. */
+    (void)close(s2);
+    for (int i = 0; i < 20; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 1u,
+          "turns: and the one after it goes to the site (F307)");
+
+    (void)close(s3); (void)close(s4); (void)close(a1); (void)close(a2);
+    evloop_close_all(&ev);
+    listener_close(&sfd, spath);
+    listener_close(&afd, apath);
+    (void)rmdir(dir);
+}
+
+/* --------------- a long request from a peer that then hangs up (F308) */
+
+static void test_hangup_long_request(void)
+{
+    static authd_slot_t proto[1];
+    static authd_slot_t local[1];
+    static char line[6001];
+    evloop_t ev;
+    CHECK(evloop_init(&ev, proto, 1u, 5000u, 20000u, on_frame, f219_on_close, NULL) == 0, "hangup: init");
+    CHECK(evloop_set_local(&ev, local, 1u, f308_on_line) == 0, "hangup: local pool registered");
+    for (int pass = 0; pass < 2; pass++) {
+        /* pass 0: 100 bytes, served before this fix too (the canary).
+         * pass 1: 6,000 bytes, more than one read. */
+        const size_t n = (pass == 0) ? 100u : 6000u;
+        int sp[2] = { -1, -1 };
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0, "hangup: a socketpair");
+        (void)fcntl(sp[0], F_SETFL, fcntl(sp[0], F_GETFL) | O_NONBLOCK);
+        memset(&local[0], 0, sizeof local[0]);
+        conn_io_reset(&local[0].io);
+        conn_io_set_mode(&local[0].io, CONN_IO_MODE_LINE);
+        local[0].fd = sp[0];
+        local[0].kind = SLOT_KIND_LOCAL;
+        local[0].state = SLOT_ACTIVE;
+        local[0].deadline_ms = 1000u * 1000u;
+        ev.local_in_use = 1u;
+        memset(line, 'a', n - 1u);
+        memcpy(line, "PING x=", 7u);
+        line[n - 1u] = '\n';
+        g_f308_lines = 0;
+        g_f308_len = 0;
+        /* The whole request is written, and the peer is gone, before the loop turns. */
+        CHECK(write(sp[1], line, n) == (ssize_t)n && close(sp[1]) == 0, "hangup: the peer writes its request and closes");
+        for (int i = 0; i < 20 && evloop_local_active(&ev) > 0u; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+        if (pass == 0) {
+            CHECK(g_f308_lines == 1 && g_f308_len == n - 1u,
+                  "hangup: a short request from a peer that then closed is served (the canary)");
+        } else {
+            CHECK(g_f308_lines == 1 && g_f308_len == n - 1u,
+                  "hangup: a request longer than one read from a peer that then closed is served too (F308)");
+        }
+        CHECK(evloop_local_active(&ev) == 0u, "hangup: and the slot is then released");
+    }
+    evloop_close_all(&ev);
+}
+
 /* ------------------------------------------- the clock after poll() (F224) */
 
 typedef struct {
@@ -1677,6 +1843,9 @@ int main(void)
     test_evloop();
     test_pipelined();
     test_ws_close();
+    test_accept_burst();
+    test_listener_turns();
+    test_hangup_long_request();
     test_backpressure();
     test_log_hygiene();
     test_poll_fairness();

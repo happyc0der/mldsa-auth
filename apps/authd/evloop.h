@@ -116,6 +116,13 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 #define AUTHD_MAX_LISTENERS 4u
 /* F205: how long a listener whose accept() failed is left unpolled. */
 #define EVLOOP_ACCEPT_RETRY_MS 100u
+/* F306: connections taken from ONE listener in one turn of the loop, accepted
+ * or refused. The loop used to accept until the queue was empty; a peer that
+ * refilled it as fast as it was emptied (refusals at a full pool cost it
+ * nothing) kept the loop there, serving no slot, firing no deadline and
+ * feeding no watchdog. The listener stays readable, so what is left is taken
+ * on the next turn. Under the smallest listen backlog the daemon uses (64). */
+#define EVLOOP_ACCEPT_BURST 16u
 
 /* Upper bound on slots the loop polls in one iteration. The two pools share
  * ONE poll set, so this is their SUM -- not the protocol pool's maximum.
@@ -188,6 +195,10 @@ typedef struct {
      * run is logged once) and when it is next polled. */
     int      accept_failing[AUTHD_MAX_LISTENERS];
     uint64_t accept_retry_ms[AUTHD_MAX_LISTENERS];
+    /* F307: the listener a connection was last accepted on. The next turn
+     * starts with the one after it, so a listener whose queue is never empty
+     * cannot take every freed slot ahead of the others. */
+    size_t   last_accept_li;
 } evloop_t;
 
 /* `slots` must have room for `n_slots` and outlive the loop. */

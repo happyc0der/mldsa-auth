@@ -17699,3 +17699,47 @@ the upgrade and send one binary frame.
 
 Counts: 592 mutations, 104 campaigns, 636 anchors (unchanged); 305 findings
 (F273 and F288 open); spec v1.65, 107 errata.
+
+## V4-224: the loop's turns are bounded and shared (F306 to F308, erratum 108; F309 open)
+
+The seventeenth review read the event loop, the connection buffers, the
+WebSocket upgrade and the daemon's start and stop. It found no memory-safety
+or parser defect. Three of its candidates are fixed here, all Low.
+
+- **F306, sixteen accepts a turn.** The bound counts refusals too, since a
+  refusal is what a peer at a full pool gets for nothing. Sixteen is under
+  every listen backlog the daemon uses (64 and 128), so a queue is emptied in
+  a few turns and a turn's worst case is sixteen accepts per listener.
+- **F307, the listener after the last one that accepted goes first.** A
+  rotating start would have done for two listeners; remembering the last
+  accept is deterministic, which is what lets the test say which connection
+  gets which slot. The order of the protocol listeners changes with it; they
+  share nothing that the order decides.
+- **F308, a hang-up waits for the input.** One condition: the slot is closed
+  on `POLLHUP` only when `POLLIN` was not set in the same turn. A peer that
+  has gone still ends the slot, one turn later, at the read that returns
+  end-of-file; a reply to it fails at the write, as before.
+
+**F309 is recorded open, Medium, for the owner**: the operator's loopback
+listener is outside the rate limiter. It is a question about the threat
+model (is an unprivileged local user an adversary?) before it is a change,
+and each fix has a cost to operators. The audit row gives three choices and
+a recommendation.
+
+Left from that review, and why:
+
+- A data reply can follow the server's Close echo when a message and a Close
+  arrive in one read. Serving nothing after a Close would also drop a ROTATE
+  that arrived just ahead of it, which today commits; the order of two
+  buffers inside `conn_io` is the other fix. Neither is worth it for a peer
+  that has already said it is leaving.
+- On macOS the stale-socket probe may read a full listen queue as a dead
+  socket (`ECONNREFUSED`). Linux, the platform deployed on, answers `EAGAIN`.
+  Not run.
+- Two allocation failures at start exit 1 without a message; the poll
+  timeout is not shortened to the nearest deadline, so an idle daemon closes
+  a silent connection up to a second late; signal handlers are installed
+  after the sockets are open; `authd_main.c`'s header comment is stale.
+
+Counts: 596 mutations, 105 campaigns, 640 anchors; 309 findings (F273, F288
+and F309 open); spec v1.66, 108 errata.

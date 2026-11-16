@@ -1,0 +1,4 @@
+AB1|^test_authd_evloop$|burst: one turn of the loop accepts EVLOOP_ACCEPT_BURST connections and no more (F306)
+LT1|^test_authd_evloop$|turns: the freed slot goes to the admin connection, not to the site's next one (F307)
+LT2|^test_authd_evloop$|turns: and the one after it goes to the site (F307)
+HU1|^test_authd_evloop$|hangup: a request longer than one read from a peer that then closed is served too (F308)

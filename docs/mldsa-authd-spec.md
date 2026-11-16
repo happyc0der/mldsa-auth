@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.65, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223)
+# mldsa-authd — deployment specification (v1.66, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1473,6 +1473,17 @@ therefore set `max_local_slots` to the number of requests it expects to
 have in flight while the daemon is busy for a tenth of a second (one
 recovery computation), not leave it at 8.
 
+**Listeners are served in turn, a bounded number of connections each**
+(erratum 108). One turn of the loop takes at most 16 connections from a
+listener, accepted or refused, and leaves the rest queued for the next turn,
+so a peer that refills a queue as fast as it is emptied cannot keep the
+daemon from its connections, its deadlines or its watchdog. A turn starts
+with the listener after the one that accepted last: the site and the
+operator share the local slots, and a site whose queue is never empty does
+not take every freed slot ahead of `authd_admin`. And a peer that sends a
+request and closes is served whatever the request's length: a hang-up
+closes a connection only once there is nothing left to read from it.
+
 If the process runs out of descriptors all the same, `accept()` fails on
 **every** listener, the admin socket included, since the limit is the
 process's and not a listener's. The daemon
@@ -2090,3 +2101,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 107 | 14 | The browser client refuses a WebSocket message longer than the module's frame buffer as a frame error, without copying it into the module, and a refused allocation is an error rather than a write at address 0 | Every inbound message was copied into the module's memory whatever its size before the core looked at it; that memory grows and never shrinks, and a failed allocation's result was not checked (audit F305) |
+
+### Revision v1.66 (V4-224)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 108 | 16 | One turn of the loop takes at most 16 connections from a listener and leaves the rest queued; a turn starts with the listener after the one that accepted last; a hang-up closes a connection only when there was nothing to read from it that turn | The accept loop ran until the queue was empty, so arrivals that outpaced it (refusals at a full pool are cheap for the peer) held the loop off every slot, deadline and watchdog message. Listeners were served in registration order, site before admin, on a shared pool: a busy site took every freed slot and the admin tool waited without bound. A request longer than one 4,096-byte read from a peer that wrote it and closed was dropped unread, where a shorter one was served (audit F306–F308) |
