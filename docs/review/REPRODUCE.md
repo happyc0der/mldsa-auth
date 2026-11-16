@@ -12,10 +12,14 @@ last section), which is where a reviewer without a Mac should look first.
 - CMake ≥ 3.20, a C11 compiler, Python 3, `curl`. Everything else — liboqs,
   libsodium, SQLite — is fetched by the build and checked against the hashes
   in `cmake/Dependencies.cmake`.
-- **libsodium is built under `$TMPDIR`**, because its libtool cannot build
-  under a path with spaces. macOS cleans its default `$TMPDIR` on its own
-  schedule and takes the installed library with it, so configure with a
-  durable one (no spaces):
+- **libsodium is built inside the build tree** (`_deps/libsodium-1.0.22-*`)
+  when the tree's path has no whitespace. Its libtool cannot build under a
+  path with whitespace, so such a tree builds it under `$TMPDIR` instead, or
+  under `~/.cache/mldsa-auth` when `TMPDIR` is not set; never under `/tmp`
+  by default (V4-229). macOS cleans its default `$TMPDIR` on its own
+  schedule and takes the installed library with it, so for a tree under a
+  path with whitespace configure with a durable one (no spaces, and
+  writable only by you):
 
   ```bash
   export TMPDIR="$HOME/.cache/mldsa-tmp" && mkdir -p "$TMPDIR"
@@ -28,10 +32,11 @@ cmake -S . -B build && cmake --build build -j8
 tools/check_build_current.sh build && ctest --test-dir build
 ```
 
-`OK: build is current`, then `100% tests passed out of 58` (61 with
-`-DMLDSA_WASM_DIR` pointing at a wasm tree, 63 with a Chromium-family browser
+`OK: build is current`, then `100% tests passed out of 59` (62 with
+`-DMLDSA_WASM_DIR` pointing at a wasm tree, 64 with a Chromium-family browser
 found as well; V4-38's run printed two fewer of each, before V4-39 added
-`backend_symbols` and V4-41 `doc_test_counts`); `ubsan_aborts` and
+`backend_symbols` and V4-41 `doc_test_counts`, and one fewer before V4-229
+added `dependency_gates`); `ubsan_aborts` and
 `fuzz_libfuzzer` report *Skipped* outside the trees they are for.
 
 ```bash
@@ -43,7 +48,7 @@ tools/check_build_current.sh build-ubsan && tools/check_sanitizer_link.sh build-
 
 Each prints `OK: … is current`, `OK: asan|ubsan instrumentation present in all
 … executable(s)` -- 43 in the ASan tree, 44 in the UBSan tree, which also
-builds `ubsan_canary` -- and `100% tests passed out of 58`, or 63 when
+builds `ubsan_canary` -- and `100% tests passed out of 59`, or 64 when
 configured as this packet's trees were, with `-DMLDSA_WASM_DIR` and a browser
 found (the browser section below). Since V4-14c the UBSan build aborts on
 undefined behaviour (audit F94); before it, a UB report printed and the test
@@ -63,7 +68,7 @@ A gcc 16 Release tree (the configuration no CI job uses):
 
 ```bash
 cmake -S . -B build-gcc16 -DCMAKE_C_COMPILER=gcc-16 -DCMAKE_BUILD_TYPE=Release && cmake --build build-gcc16 -j8
-ctest --test-dir build-gcc16                                           # 100% tests passed out of 58
+ctest --test-dir build-gcc16                                           # 100% tests passed out of 59
 ```
 
 ## The browser client

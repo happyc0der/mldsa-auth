@@ -55,4 +55,29 @@ if(NOT _actual_sha STREQUAL EXPECTED_SHA)
     "Refusing to build an unverified dependency (cmake/Dependencies.cmake).")
 endif()
 
+# The commit names what was fetched, not what is on disk now: an edit to a
+# tracked file leaves HEAD where it was (V4-229, F316; this file's header and
+# cmake/Dependencies.cmake both said such a tree was caught, and it was
+# not). `git status --porcelain` lists modified, deleted and added files;
+# liboqs is built out of tree, so a clean checkout prints nothing.
+execute_process(
+  COMMAND "${GIT_EXECUTABLE}" -C "${SOURCE_DIR}" status --porcelain --untracked-files=all
+  OUTPUT_VARIABLE _dirty
+  ERROR_VARIABLE _git_err
+  RESULT_VARIABLE _git_rc
+)
+if(NOT _git_rc EQUAL 0)
+  message(FATAL_ERROR
+    "liboqs commit pin: cannot read the state of '${SOURCE_DIR}' (git exit ${_git_rc}): ${_git_err}\n"
+    "Refusing to build an unverified dependency.")
+endif()
+string(STRIP "${_dirty}" _dirty)
+if(NOT _dirty STREQUAL "")
+  message(FATAL_ERROR
+    "liboqs source tree MODIFIED: HEAD is the pinned commit, but these files differ from it:\n"
+    "${_dirty}\n"
+    "Refusing to build an unverified dependency (cmake/Dependencies.cmake). "
+    "Delete '${SOURCE_DIR}' and configure again to fetch it afresh.")
+endif()
+
 message(STATUS "liboqs commit verified: ${_actual_sha}")

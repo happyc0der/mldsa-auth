@@ -542,7 +542,7 @@ add_test(NAME authd_e2e
           ${CMAKE_CURRENT_SOURCE_DIR}/e2e_site.mjs
           ${CMAKE_CURRENT_SOURCE_DIR}/e2e_recovery.mjs
 )
-set_tests_properties(authd_e2e PROPERTIES TIMEOUT 600)
+set_tests_properties(authd_e2e PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
 
 # Step 6 exit criterion, automated: the real executables as two processes.
 add_test(NAME demo_e2e
@@ -556,6 +556,15 @@ add_test(NAME session_no_alloc_scan
     -DSESSION_C=${PROJECT_SOURCE_DIR}/src/protocol/session.c
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_session_no_alloc.cmake
 )
+
+# V4-229 (audit F315, F316): which dependency bytes reach the linker. Where
+# libsodium is built and installed -- a pure function of the build path,
+# TMPDIR and HOME, asked about hosts this one is not: the runbook's Linux
+# build with no TMPDIR must keep it inside the tree -- and the liboqs pin
+# check against a stand-in repository, clean, at another commit, and edited.
+add_test(NAME dependency_gates
+         COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/dependency_gates.sh ${PROJECT_SOURCE_DIR} ${CMAKE_COMMAND})
+set_tests_properties(dependency_gates PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL: ")
 
 # V4-41 (audit F107, F116, F120): the test counts README.md, REPRODUCE.md and
 # the review packet state, checked in the tree they describe. Each optional

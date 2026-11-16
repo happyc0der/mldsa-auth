@@ -27,7 +27,7 @@
 // and it measures Argon2id and a login IN the browser, next to V4-2 S6.
 import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
@@ -571,10 +571,12 @@ try {
   {
     const LAUNCH_CONTROL_WAITS = [1500, 5000, 15000];
     const scratch = mkdtempSync(join(tmpdir(), 'mldsa-fake-browser-'));
-    const fake = join(scratch, 'fake-browser.sh'), pidFile = join(scratch, 'pid');
-    writeFileSync(fake, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 120\n`, { mode: 0o755 });
-    const profiles = () => readdirSync(tmpdir()).filter((n) => n.startsWith('mldsa-cdp-')).length;
-    const before = profiles();
+    const fake = join(scratch, 'fake-browser.sh'), pidFile = join(scratch, 'pid'), argFile = join(scratch, 'args');
+    // The stand-in writes down its arguments, so the check below looks at
+    // THE profile this launch made. It used to count every `mldsa-cdp-*` in
+    // the temp directory before and after, and another browser test running
+    // beside this one made one in between: "1 left" (V4-229, F318).
+    writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argFile}'\necho $$ > '${pidFile}'\nexec sleep 120\n`, { mode: 0o755 });
     // V4-217, F294: the control is "a process existed", and 1.5 s was not
     // always enough for the stand-in to write its pid on a loaded machine
     // (once in about 75 runs of the whole suite: "refused, pid 0"). An
@@ -583,7 +585,7 @@ try {
     // judged as before.
     let outcome = 'launched', pid = 0;
     for (const timeoutMs of LAUNCH_CONTROL_WAITS) {
-      rmSync(pidFile, { force: true });
+      rmSync(pidFile, { force: true }); rmSync(argFile, { force: true });
       try { const fb = await Browser.launch(fake, [], { timeoutMs }); await fb.close(); outcome = 'launched'; }
       catch (e) { outcome = /DevTools port/.test(String(e.message)) ? 'refused' : `threw ${e.message}`; }
       pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : 0;
@@ -595,7 +597,10 @@ try {
     }
     check(outcome === 'refused' && pid > 0, `launch: a browser that never offers its DevTools port is given up on (${outcome}, pid ${pid}) (the control)`);
     check(!alive, 'launch: and its process is not left running (F285)');
-    check(profiles() === before, `launch: nor its profile directory (${profiles() - before} left) (F285)`);
+    const profile = existsSync(argFile)
+      ? (/^--user-data-dir=(.+)$/m.exec(readFileSync(argFile, 'utf8'))?.[1] ?? '') : '';
+    check(profile.includes('mldsa-cdp-') && !existsSync(profile),
+          `launch: nor its profile directory (${profile === '' ? 'the stand-in was given none' : existsSync(profile) ? 'left: ' + profile : 'removed'}) (F285)`);
     if (alive) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     rmSync(scratch, { recursive: true, force: true });
   }

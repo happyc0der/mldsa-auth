@@ -198,29 +198,28 @@ include(ExternalProject)
 # `libtool --mode=install`'s own argument quoting break if any path involved
 # — source dir, build dir, or --prefix — contains whitespace.
 #
-# STANDING CONSTRAINT: this project's own path must never contain spaces
-# (CMAKE_BINARY_DIR included) — e.g. don't build under a directory named
-# "PQ Authentication protocol". This isn't a one-off issue Step 1 patched
-# around; it's an Autotools/libtool limitation that will resurface for any
-# future Autotools-based dependency, not just libsodium.
-#
-# Workaround for *this* dependency: libsodium's source, build, AND install
-# locations are placed under the system temp dir instead of CMAKE_BINARY_DIR
-# (only libsodium needs this — liboqs's build is pure CMake and unaffected).
-# The subdirectory name is suffixed with a hash of this build tree's own
-# path so concurrent builds from different build directories (e.g. `build/`
-# and `build-asan/`, or parallel CI workers) never share — and race on — the
-# same libsodium build/install tree.
-if(DEFINED ENV{TMPDIR})
-  set(_mldsa_tmp "$ENV{TMPDIR}")
-else()
-  set(_mldsa_tmp "/tmp")
-endif()
+# So libsodium's source, build and install directories are chosen by
+# cmake/SodiumDirs.cmake: inside this build tree when its path has no
+# whitespace, and otherwise under TMPDIR, or the user's own cache when
+# TMPDIR is not set. Never /tmp by default (V4-229, F315); the rule and its
+# reason are in that file, and tests/check_sodium_dirs.cmake holds it.
+# (Only libsodium needs this: liboqs's build is pure CMake.)
+include(${CMAKE_CURRENT_LIST_DIR}/SodiumDirs.cmake)
 get_filename_component(_mldsa_build_abs "${CMAKE_BINARY_DIR}" ABSOLUTE)
-string(MD5 _mldsa_build_hash "${_mldsa_build_abs}")
-string(SUBSTRING "${_mldsa_build_hash}" 0 10 _mldsa_build_hash)
-set(LIBSODIUM_BUILD_DIR "${_mldsa_tmp}/mldsa-auth-libsodium-1.0.22-${_mldsa_build_hash}-build")
-set(LIBSODIUM_PREFIX "${_mldsa_tmp}/mldsa-auth-libsodium-1.0.22-${_mldsa_build_hash}-install")
+set(_mldsa_env_tmp "")
+if(DEFINED ENV{TMPDIR})
+  set(_mldsa_env_tmp "$ENV{TMPDIR}")
+endif()
+set(_mldsa_env_home "")
+if(DEFINED ENV{HOME})
+  set(_mldsa_env_home "$ENV{HOME}")
+endif()
+mldsa_sodium_dirs("${_mldsa_build_abs}" "${_mldsa_env_tmp}" "${_mldsa_env_home}"
+                  LIBSODIUM_BUILD_DIR LIBSODIUM_PREFIX _mldsa_sodium_err)
+if(NOT _mldsa_sodium_err STREQUAL "")
+  message(FATAL_ERROR "${_mldsa_sodium_err}")
+endif()
+message(STATUS "libsodium is built and installed under: ${LIBSODIUM_PREFIX}")
 set(LIBSODIUM_INCLUDE_DIR ${LIBSODIUM_PREFIX}/include)
 set(LIBSODIUM_LIBRARY ${LIBSODIUM_PREFIX}/lib/libsodium.a)
 

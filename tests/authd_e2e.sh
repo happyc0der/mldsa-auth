@@ -30,7 +30,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/authd-e2e.XXXXXX")
 if [ "${#TMP}" -gt 80 ]; then
     echo "SKIP: E2E: \$TMPDIR is ${#TMP} bytes, leaving no room for a Unix socket path"
     rm -rf "$TMP"
-    exit 0
+    exit 77                              # CTest: Skipped, not Passed (V4-229, F317)
 fi
 
 DPID=""

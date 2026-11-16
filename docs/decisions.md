@@ -17884,3 +17884,73 @@ No code.
 
 Counts: 600 mutations, 107 campaigns, 644 anchors; 314 findings (F273, F288
 and F309 open); spec v1.68, 110 errata (all unchanged by this step).
+
+## V4-229: the dependencies' bytes stay where the build can vouch for them (F315 to F318)
+
+The twentieth review read the three workflows, the dependency and build
+scripts, and the gate scripts not read before. The workflows came out sound:
+read-only token, every action pinned by commit, every job with a timeout, no
+untrusted input in a shell line, Node, Chrome, Caddy and ProVerif checked by
+SHA-256 before use. Three candidates are fixed here.
+
+- **F315, Medium: libsodium is built inside the build tree.** The workaround
+  for libtool's whitespace bug had moved libsodium out to the temp directory
+  for every tree, and the bug only concerns trees whose path has whitespace.
+  So the rule now starts from the build tree and leaves it only when it has
+  to. When it has to, `TMPDIR` is honoured as before (this is how the
+  owner's trees under "PQ Authentication protocol" are built, and their
+  directories keep their names, so nothing here was rebuilt), then the
+  user's own cache, then a refusal that names the two ways out. Considered
+  and not done: checking the owner and mode of a directory under `/tmp`
+  (CMake has no portable way to ask, and a check that runs at configure says
+  nothing about the link an hour later); hashing `libsodium.a` into the
+  build tree and re-checking it at every build (it would close the same
+  hole from the other side, at the price of a custom command on every
+  link; inside the build tree there is no hole to close). A caller who sets
+  `TMPDIR=/tmp` for a tree under a path with whitespace still gets the old
+  behaviour, by their own choice; REPRODUCE says the directory must be
+  writable only by them.
+- **F316: the pin check looks at the tree, not only its name.** It refuses
+  anything `git status` reports, untracked files included, since a file
+  added under `src/` is compiled by a glob as surely as an edited one.
+  liboqs builds out of tree and leaves its checkout clean; the local trees
+  showed 0 lines after weeks of builds.
+- **F317: a skip is a skip.** Exit 77 and `SKIP_RETURN_CODE`.
+- **F318, found by this step's own run.** `browser_e2e` failed once in the
+  plain tree's parallel run: "nor its profile directory (1 left)". The check
+  counted every `mldsa-cdp-*` in the temp directory, so a neighbour's
+  profile was charged to this launch. It now asks about the one directory
+  this launch was given, read from the stand-in's own arguments, and was
+  shown red with the cleanup removed.
+
+No C changed, so there is no campaign. Each check was shown red: the
+directory rule against the old rule (four of seven checks, printing
+`/tmp/mldsa-auth-libsodium-1.0.22-c57c77fcd4-install` for the runbook's
+tree), the pin check against the old script (two of five), the skip by
+running the test with a long `TMPDIR` before and after. One new test,
+`dependency_gates`: 59 native, 62 with a wasm tree, 64 with a browser.
+
+The substitution F315 describes was not carried out. What was shown is the
+predictable path and that nothing verified it; the rest is how
+ExternalProject's stamps work.
+
+Left from that review, for the next step or as stated limits:
+
+- `tests/deploy_checks.sh` compares the unit's directive names with §16, not
+  their values; `tools/check_store_fault_hook.sh` counts an unreadable file
+  as "symbol absent" where its comment says otherwise; §16 says
+  `check_hardening.sh --require` gates the named CPU target and it does not
+  look at one. Three gates that claim more than they check; next step.
+- The `deploy` CI job downloads the three dependencies again though the
+  verified cache is already restored in the same job, and three downloads
+  have no retry (Node, Chrome, ProVerif).
+- Not verified: whether an offline liboqs cache with its `shallow` file
+  removed is re-hashed on clone; whether `-D_FORTIFY_SOURCE=2` lowers
+  Ubuntu gcc's default of 3; `emsdk install` fetches compiler binaries with
+  no checksum of ours; a spec file of comments only runs zero mutations and
+  exits 0; a named dependency cache that lacks a file falls back to the
+  network without saying so; `check_build_flags.cmake` looks for the stack
+  protector in two of the nine archives.
+
+Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 318 findings
+(F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 64 tests.
