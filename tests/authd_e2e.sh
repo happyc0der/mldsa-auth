@@ -980,6 +980,26 @@ rc=$(cat "$TMP/login-closed.rc")
     || fail "a login with its standard output closed exited $rc, expected 1 and a reason (F272): $(cat "$TMP/login-closed.err")"
 echo "PASS: E2E: a login whose code cannot be written to standard output exits 1 and says so (F272)"
 
+# V4-218, F295: the same for every other command whose result is what it
+# prints. The admin tool wrote the daemon's answer with an unchecked fwrite
+# and exited 0; keygen printed the new handle the same way.
+( trap '' PIPE
+  rc=0
+  "$ADMIN" list-users --socket "$TMP/a.sock" 2> "$TMP/lu-closed.err" || rc=$?
+  echo "$rc" > "$TMP/lu-closed.rc" ) | true
+rc=$(cat "$TMP/lu-closed.rc")
+[ "$rc" -eq 1 ] && grep -q 'its output could not be written' "$TMP/lu-closed.err" \
+    || fail "list-users with its standard output gone exited $rc, expected 1 and a reason (F295): $(cat "$TMP/lu-closed.err")"
+mkdir "$TMP/kg-closed"
+( trap '' PIPE
+  rc=0
+  "$CLIENT" keygen --dir "$TMP/kg-closed" --passphrase-file "$TMP/opass" 2> "$TMP/kg-closed.err" || rc=$?
+  echo "$rc" > "$TMP/kg-closed.rc" ) | true
+rc=$(cat "$TMP/kg-closed.rc")
+[ "$rc" -eq 1 ] && grep -q 'its output could not be written' "$TMP/kg-closed.err" \
+    || fail "keygen with its standard output gone exited $rc, expected 1 and a reason (F295): $(cat "$TMP/kg-closed.err")"
+echo "PASS: E2E: list-users and keygen exit 1 when what they print cannot be written (F295)"
+
 # V4-201, F280: a CLI started with standard output CLOSED. The next descriptor
 # it opened took the number 1: on Linux that was its connection to the daemon,
 # the login code was printed INTO the connection, and the command exited 0

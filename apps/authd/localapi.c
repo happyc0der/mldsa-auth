@@ -976,7 +976,7 @@ static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *r
     if (!keys_are_known(req, allowed, 1u)) {
         return send_err(slot, "malformed");
     }
-    uint8_t path[512];
+    uint8_t path[AUTHD_BACKUP_PATH_MAX + 1u];
     size_t path_len = 0;
     if (get_hex(req, "path", path, sizeof path - 1u, &path_len, 1u) != 0) {
         return send_err(slot, "malformed");

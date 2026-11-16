@@ -1115,9 +1115,16 @@ static void client_usage(const char *prog)
             prog, prog, prog);
 }
 
+static int client_dispatch(int argc, char **argv, const char *prog);
+
 int authd_cli_client(int argc, char **argv)
 {
     const char *prog = (argc > 0 && argv[0] != NULL) ? argv[0] : "authd_client";
+    return cli_finish_stdout(prog, client_dispatch(argc, argv, prog));
+}
+
+static int client_dispatch(int argc, char **argv, const char *prog)
+{
     if (argc < 2) {
         client_usage(prog);
         return EX_USAGE;

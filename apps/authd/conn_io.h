@@ -45,6 +45,10 @@
  * error, exactly as an over-long frame is. */
 #define AUTHD_LINE_MAX 8192u
 
+/* BACKUP's destination, decoded (spec 8): what the daemon holds it in, and so
+ * the bound the admin tool names instead of sending a longer one (F296). */
+#define AUTHD_BACKUP_PATH_MAX 511u
+
 #define AUTHD_FRAME_HEADER 4u
 #define AUTHD_IN_BUF_BYTES  (AUTHD_FRAME_HEADER + AUTHD_FRAME_MAX)
 /* The out buffer carries a WebSocket header too when the slot is in WS mode:

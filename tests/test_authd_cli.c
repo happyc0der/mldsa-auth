@@ -1380,6 +1380,31 @@ static int any_name_contains(const char *dir, const char *part)
  * device's and the daemon's directories is searched for it: after an
  * acknowledged rotation, after the login that completes an interrupted one,
  * and after a rotation attempted from a key the daemon has superseded. */
+/* V4-218, F296: a backup destination longer than the daemon holds is refused
+ * by the tool, with the bound, before anything is sent. It used to go out and
+ * come back as `refused: malformed`. No daemon is needed: the socket named
+ * here does not exist, and the check comes first. */
+static void test_backup_path_bound(void)
+{
+    static char longp[AUTHD_BACKUP_PATH_MAX + 2u], okp[AUTHD_BACKUP_PATH_MAX + 1u], err[1024];
+    memset(longp, 'a', sizeof longp - 1u);
+    longp[0] = '/';
+    longp[sizeof longp - 1u] = '\0';
+    memset(okp, 'a', sizeof okp - 1u);
+    okp[0] = '/';
+    okp[sizeof okp - 1u] = '\0';
+    char sock[256];
+    (void)snprintf(sock, sizeof sock, "%s/no-such.sock", g_dir);
+    int rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", longp, NULL },
+                               err, sizeof err);
+    CHECK(rc == 2 && strstr(err, "--path is at most 511 bytes") != NULL,
+          "backup: a destination of 512 bytes is refused as usage, with the bound named (F296)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", okp, NULL },
+                           err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "at most") == NULL,
+          "backup: one of 511 bytes passes the check and fails only at the socket that is not there");
+}
+
 static void test_rotate_on_disk(void)
 {
     static const uint8_t RU[] = { 'r', 'u' };
@@ -1977,6 +2002,7 @@ int main(void)
     test_localcli_split_list();
     test_localcli_robustness();
     test_key_plan();
+    test_backup_path_bound();
     test_rotate_on_disk();
     test_rotate_reply_refused_or_lost();
     test_passphrase_custody();

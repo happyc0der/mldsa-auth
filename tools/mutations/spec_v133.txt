@@ -1,0 +1,4 @@
+SO1|^authd_e2e$|list-users with its standard output gone exited
+SO2|^authd_e2e$|keygen with its standard output gone exited
+SO3|^authd_e2e$|list-users with its standard output gone exited
+BP1|^test_authd_cli$|backup: a destination of 512 bytes is refused as usage, with the bound named (F296)

@@ -720,6 +720,13 @@ static int cmd_backup(int argc, char **argv, const char *prog)
     }
     char args[AUTHD_LINE_MAX];
     const size_t plen = strlen(path);
+    /* V4-218, F296: the daemon holds the path in AUTHD_BACKUP_PATH_MAX bytes
+     * and answers a longer one `malformed`, which names nothing. */
+    if (plen > AUTHD_BACKUP_PATH_MAX) {
+        fprintf(stderr, "%s backup: --path is at most %u bytes\n", prog,
+                (unsigned)AUTHD_BACKUP_PATH_MAX);
+        return EX_USAGE;
+    }
     if (2u * plen + 8u >= sizeof args) {
         return failed(prog, "backup", path, "request-too-long");
     }
@@ -1012,9 +1019,16 @@ static void admin_usage(const char *prog)
             prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
+static int admin_dispatch(int argc, char **argv, const char *prog);
+
 int authd_cli_admin(int argc, char **argv)
 {
     const char *prog = (argc > 0 && argv[0] != NULL) ? argv[0] : "authd_admin";
+    return cli_finish_stdout(prog, admin_dispatch(argc, argv, prog));
+}
+
+static int admin_dispatch(int argc, char **argv, const char *prog)
+{
     if (argc < 2) {
         admin_usage(prog);
         return EX_USAGE;

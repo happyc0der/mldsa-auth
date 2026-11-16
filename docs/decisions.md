@@ -17488,3 +17488,29 @@ backup path, the key file and passphrase readers, three local handlers).
 
 Counts: 577 mutations, 102 campaigns, 621 anchors; 294 findings (F273 and
 F288 open); spec v1.62, 104 errata.
+
+## V4-218: a command that could not print its result has not succeeded (F295, F296)
+
+Two of the fourteenth review's small leftovers.
+
+- **F295.** One function, `cli_finish_stdout`, at the single exit of each
+  tool, not a check beside every `printf`: a new subcommand cannot forget
+  it. It acts only on a status of 0, so a failure keeps its own status and
+  message. The message says the command completed, because it did: a
+  rotation whose last line could not be printed has rotated the key, and
+  saying "failed" would send the operator to undo something that is done.
+  The status is 1 all the same; a caller reading the output has nothing.
+  `login` keeps its own earlier check (F272) and its more specific message.
+- **F296.** The bound lives in one constant that sizes the daemon's buffer
+  and is the tool's check, so the two cannot drift. The daemon's answer to a
+  longer path sent by something else is unchanged (`malformed`).
+- **No erratum.** Spec 13's exit statuses already say 1 is "operation
+  failed"; 511 is an implementation bound the spec does not state, and the
+  daemon's behaviour did not change.
+- **Left, still:** the daemon accepts `count=01` and `n=0005`; the recovery
+  store functions do not repeat the user's status in their transactions; a
+  killed rotation leaves `.newpub.<pid>`; the admin tool takes any first line
+  that is not `ERR` as success.
+
+Counts: 581 mutations, 103 campaigns, 625 anchors; 296 findings (F273 and
+F288 open); spec v1.62, 104 errata.

@@ -46,6 +46,26 @@ static inline int path_exists(const char *path)
     return lstat(path, &st) == 0;
 }
 
+/* V4-218, F295: a command whose result is what it prints has not succeeded
+ * if the printing failed. stdout is buffered, so a write to a full disk or to
+ * a pipe whose reader has gone fails at the flush -- which used to be the one
+ * at exit, after the status was already 0. Both tools pass every command's
+ * status through here. The message says what is true: the command itself
+ * completed. */
+static inline int cli_finish_stdout(const char *prog, int rc)
+{
+    if (rc != EX_OK) {
+        return rc;
+    }
+    if (fflush(stdout) != 0 || ferror(stdout)) {
+        clearerr(stdout);
+        fprintf(stderr, "%s: the command completed but its output could not be written to "
+                        "standard output\n", prog);
+        return EX_FAIL;
+    }
+    return EX_OK;
+}
+
 /* One place that says "this option needs a value and did not get one", so the
  * message is identical for every subcommand of both binaries. */
 static inline int unexpected(const char *prog, const char *sub, const char *arg)
