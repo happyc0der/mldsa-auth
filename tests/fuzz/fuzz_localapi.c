@@ -47,10 +47,19 @@
  * so there it is NOT run, and its handler stays outside this target (its
  * arguments are parsed by the same get_* helpers every other handler uses).
  *
+ * EVERY STORE HOLDS CREDENTIALS THE SEEDS KNOW (V4-236, audit F332): a login
+ * code and a token with fixed plaintext, and the first of the two recovery
+ * codes, which is the same every time because the randomness restarts for
+ * every run. Until then no input could name a credential that existed, so
+ * the success paths of EXCHANGE, VERIFY, LOGOUT and RECOVERY-USE were never
+ * run here: every one of those requests ended at `unknown` or `invalid`.
+ * The seed builder runs each of the four genuine seeds and requires `OK`.
+ *
  * A fixture that cannot be built is fatal. It used to return 0, and a run in
  * which the store never opened counted every input as executed.
  */
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "fuzz_common.h"
@@ -84,6 +93,21 @@ static store_t *g_store;            /* this input's store: made and closed in ru
 static mldsa_keypair_t g_server_kp;
 static mldsa_keypair_t g_device_kp;
 
+/* The planted credentials. Fixed bytes: these are test values in a store that
+ * lives for one input. */
+static const uint8_t PLANT_CODE[32]  = { 0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1, 0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,
+                                         0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1, 0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1,0xC1 };
+static const uint8_t PLANT_TOKEN[32] = { 0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2, 0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,
+                                         0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2, 0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2,0xD2 };
+static const uint8_t PLANT_STATE[2]  = { 'a', 'b' };          /* state=6162 */
+static const uint8_t PLANT_HSID[STORE_HSID_BYTES] = { 0x5A,0x5A,0x5A,0x5A,0x5A,0x5A,0x5A,0x5A,
+                                                      0x5A,0x5A,0x5A,0x5A,0x5A,0x5A,0x5A,0x5A };
+#define PLANT_NOW INT64_C(1700000000)
+/* The first recovery code the fixture issued in the latest run, as text. */
+static char g_recovery_code[64];
+/* The first line of the latest run's reply, for the seed builder's canary. */
+static char g_last_reply[64];
+
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
     (void)argc; (void)argv;
@@ -106,6 +130,16 @@ static void fresh_store(void)
     FUZZ_ASSERT(store_enroll_device(g_store, HANDLE1, sizeof HANDLE1, USER1, sizeof USER1,
                                     g_device_kp.public_key, "fuzz", "fuzz", NULL, 0) == STORE_OK,
                 "fixture: the device could not be enrolled");
+    uint8_t h[STORE_HASH_BYTES], sh[STORE_HASH_BYTES];
+    crypto_hash_sha256(h, PLANT_CODE, sizeof PLANT_CODE);
+    crypto_hash_sha256(sh, PLANT_STATE, sizeof PLANT_STATE);
+    FUZZ_ASSERT(store_add_login_code(g_store, h, USER1, sizeof USER1, HANDLE1, sizeof HANDLE1,
+                                     PLANT_HSID, sizeof PLANT_HSID, sh, PLANT_NOW, PLANT_NOW + 60) == STORE_OK,
+                "fixture: the login code could not be planted");
+    crypto_hash_sha256(h, PLANT_TOKEN, sizeof PLANT_TOKEN);
+    FUZZ_ASSERT(store_add_token(g_store, h, USER1, sizeof USER1, HANDLE1, sizeof HANDLE1,
+                                PLANT_HSID, sizeof PLANT_HSID, PLANT_NOW, PLANT_NOW + 3600, PLANT_NOW + 900) == STORE_OK,
+                "fixture: the token could not be planted");
 }
 
 /* Reads everything the handler queued into `out`. The response lives in the
@@ -199,6 +233,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 static void run_once(const uint8_t *line, size_t len, int is_admin)
 {
+    fuzz_rng_reset();                 /* the same recovery codes, the same tokens, every run */
     fresh_store();
     static authd_conn_t conns[2];
     static authd_slot_t slots[2];
@@ -232,7 +267,7 @@ static void run_once(const uint8_t *line, size_t len, int is_admin)
     app.ticket_ttl_s = RECOVERY_TICKET_TTL_S;
 
     app.now_ms = FUZZ_CLOCK_T0;
-    app.now_unix = 1700000000;
+    app.now_unix = PLANT_NOW;
     app.started_ms = FUZZ_CLOCK_T0;
 
     FUZZ_ASSERT(handshake_pending_store_init(&pending, 2u, 10000u, authd_app_clock, &app) == PENDING_OK,
@@ -263,6 +298,10 @@ static void run_once(const uint8_t *line, size_t len, int is_admin)
         (void)localapi_on_line(&app, slot, (const uint8_t *)issue, sizeof issue - 1u);
         (void)drain(slot, resp, sizeof resp);
         FUZZ_ASSERT(strncmp(resp, "OK codes=", 9) == 0, "fixture: two recovery codes could not be issued");
+        const size_t cl = strcspn(resp + 9, ",\n");
+        FUZZ_ASSERT(cl > 0u && cl < sizeof g_recovery_code, "fixture: the first recovery code could not be read");
+        memcpy(g_recovery_code, resp + 9, cl);
+        g_recovery_code[cl] = '\0';
         sodium_memzero(resp, sizeof resp);
     }
 
@@ -272,6 +311,9 @@ static void run_once(const uint8_t *line, size_t len, int is_admin)
     (void)localapi_on_line(&app, slot, line, len);
 
     const size_t rn = drain(slot, resp, sizeof resp);
+
+    { const size_t k = (rn < sizeof g_last_reply - 1u) ? rn : sizeof g_last_reply - 1u;
+      memcpy(g_last_reply, resp, k); g_last_reply[k] = '\0'; }
 
     /* 1. exactly one well-formed response */
     FUZZ_ASSERT(rn > 0u, "the local API produced NO response to a request");
@@ -360,9 +402,48 @@ static void emit_enroll(fuzz_emit_fn emit, void *ctx, const char *name,
     if (n > 0) { emit(ctx, name, (const uint8_t *)line, (size_t)n); }
 }
 
+/* A seed that names a planted credential, and the proof that it is one: the
+ * line is run on the site socket here and must be answered `want`. */
+static void emit_genuine(fuzz_emit_fn emit, void *ctx, const char *name, const char *line, const char *want)
+{
+    run_once((const uint8_t *)line, strlen(line), 0);
+    FUZZ_ASSERT(strncmp(g_last_reply, want, strlen(want)) == 0,
+                "fixture: a seed naming a planted credential was not answered as one -- the success paths are not being fuzzed");
+    emit_str(emit, ctx, name, line);
+}
+
+static void hex_of(char *out, const uint8_t *in, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        out[2u * i] = "0123456789abcdef"[in[i] >> 4];
+        out[2u * i + 1u] = "0123456789abcdef"[in[i] & 15u];
+    }
+    out[2u * n] = '\0';
+}
+
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
 {
     emit(ctx, "empty", fuzz_empty, 0);
+    {
+        static char line[256], hx[65];
+        hex_of(hx, PLANT_CODE, sizeof PLANT_CODE);
+        (void)snprintf(line, sizeof line, "EXCHANGE code=%s state=6162", hx);
+        emit_genuine(emit, ctx, "exchange-genuine", line, "OK token=");
+        (void)snprintf(line, sizeof line, "EXCHANGE code=%s state=6163", hx);
+        emit_genuine(emit, ctx, "exchange-genuine-other-state", line, "ERR code=state-mismatch");
+        hex_of(hx, PLANT_TOKEN, sizeof PLANT_TOKEN);
+        (void)snprintf(line, sizeof line, "VERIFY token=%s", hx);
+        emit_genuine(emit, ctx, "verify-genuine", line, "OK user=");
+        (void)snprintf(line, sizeof line, "LOGOUT token=%s", hx);
+        emit_genuine(emit, ctx, "logout-genuine", line, "OK deleted=1");
+        /* g_recovery_code is the same in every run: the randomness restarts. */
+        run_once((const uint8_t *)"PING", 4u, 0);
+        static char code[64];
+        (void)snprintf(code, sizeof code, "%s", g_recovery_code);
+        (void)snprintf(line, sizeof line, "RECOVERY-USE user=7531 code=%s", code);
+        emit_genuine(emit, ctx, "recovery-use-genuine", line, "OK ticket=");
+        emit_genuine(emit, ctx, "revoke-tokens-one", "REVOKE-TOKENS user=7531", "OK count=1");
+    }
     emit_str(emit, ctx, "ping", "PING");
     emit_str(emit, ctx, "unknown-command", "NOSUCHCOMMAND");
     emit_str(emit, ctx, "admin-on-site", "LIST-USERS");           /* refused on site, answered on admin */

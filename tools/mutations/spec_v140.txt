@@ -1,0 +1,3 @@
+SP1|^fuzz_replay_localapi$|a single-line response contains an embedded newline
+SP2|^fuzz_replay_localapi$|a response is neither OK nor ERR code=
+SP3|^fuzz_replay_localapi$|the same refused line was answered differently the second time

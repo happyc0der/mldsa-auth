@@ -18204,3 +18204,30 @@ client's reading of a server's bytes, and the line reassembler.
 
 Counts: 605 mutations, 109 campaigns, 649 anchors; 331 findings (F273, F288
 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
+
+## V4-236: the local-API fuzz target holds credentials it knows (F332)
+
+Left by V4-233. With a store per input the fix is small: plant a login
+code and a token with fixed plaintext when the store is made, and restart
+the randomness for every run so that the recovery codes the fixture issues
+are the same each time. The seed builder reads the first of them from the
+fixture's own reply; nothing about the code format is restated.
+
+Six seeds, each run by the seed builder against the reply it must get. The
+one success path still outside is a ticketed `ENROLL`: the ticket comes out
+of a `RECOVERY-USE`, and an input is one request. Chaining two lines in an
+input would change the input format and every committed regression with
+it; not done for one path the unit tests and the end-to-end test both run.
+
+The oracles held on the success paths as they stood: no reply was
+malformed, no refusal moved the audit chain, every refusal repeated.
+
+Campaign v140: SP1 `EXCHANGE`'s reply split over two lines, SP2 `VERIFY`'s
+reply without `OK`, SP3 `LOGOUT` deleting the token and answering ERR
+(caught by V4-233's repeat check: the second `LOGOUT` finds nothing to
+delete and answers `OK deleted=0`). By name, by hand before the run.
+A 60 s coverage-guided run before the push: 32,196 runs, edge coverage 760
+where V4-233's run had 700, no crash.
+
+Counts: 608 mutations, 110 campaigns, 652 anchors; 332 findings (F273, F288
+and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.

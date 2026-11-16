@@ -15,8 +15,8 @@ list (V4-233).
 
 Not reached by any target, and stated here so that it is not assumed: the
 WebSocket client's reading of a server's bytes (`ws_client_*`), the daemon's
-line reassembler in `conn_io` (covered by `test_authd_evloop`), a successful token or
-login-code operation on the local socket, and `keyfile_open_buf` past its header (the KDF's
+line reassembler in `conn_io` (covered by `test_authd_evloop`), a ticketed `ENROLL` on the local socket (a ticket is minted inside the
+request before it, and an input is one request), and `keyfile_open_buf` past its header (the KDF's
 cost; deliberate).
 
 
