@@ -17995,3 +17995,37 @@ listed under V4-229.
 
 Counts: 600 mutations, 107 campaigns, 644 anchors (unchanged); 321 findings
 (F273, F288 and F309 open); spec v1.68, 110 errata (unchanged); 65 tests.
+
+## V4-231: cleanup after V4-228 and V4-229 landed; V4-230's first run
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `f6c8bc1`, now main: CI
+  43896214175 (16/16), nightly 43896220499 (122/122, 107 campaigns). That
+  CI was the first Linux run of libsodium built inside the tree and of the
+  pin check's look at a freshly built liboqs checkout; both were clean.
+- Before it: `e6e5694` (V4-227) had main's push CI 43892043547 (16/16), and
+  `12c8b14` main's push CI 43891927129.
+- **V4-230's first runs failed, on the test it added.** CI 43897798986 was
+  10/16 and nightly 43897803459 16/122 on `9c3b9f1`: `gate_claims` failed on
+  every Linux job, and each campaign stopped at "clean suite fails" because
+  the clean suite includes it. The stand-in for "an executable nm cannot
+  read" was the first 20,000 bytes of the daemon. That is still an
+  executable to `file` on macOS; on Linux half an ELF has lost the dynamic
+  section `file` tells a PIE executable from a shared object by, the
+  fault-hook check opens only executables, and so it never opened the
+  stand-in. The check was right and the stand-in was wrong. `5472bbb` makes
+  the ELF stand-in the whole file with its section-header offset pointed
+  past the end, and the test now first proves the stand-in is an executable
+  that nm cannot read. It was run in an Ubuntu container against the real
+  scripts before the second push, which is what should have happened before
+  the first.
+- Open for the owner, unchanged: F273, F288, F309, the reference site's one
+  login state per session, what the audit chain should record, whether the
+  symbolic model should cover long-term key compromise, pull request 1,
+  `user_id` "opaque" in §3.2 against printable ASCII in the daemon, and the
+  browser rotation applying the new-passphrase policy to an existing
+  passphrase. Each entry carries a recommendation.
+
+Counts: 600 mutations, 107 campaigns, 644 anchors; 321 findings (F273, F288
+and F309 open); spec v1.68, 110 errata; 65 tests (unchanged by this step).
