@@ -26,9 +26,15 @@ M = {
     # (Re-anchored in V4-213: F291 made the comparison unsigned and added
     # v == 0. The mutants are the same.)
     "SD2": [(ST, "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-                 "        if (v == 0u || (v > (uint64_t)STORE_SCHEMA_VERSION && 0)) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD2: later schemas open */\n")],
+                 "        if (v == 0u || (v > (uint64_t)STORE_SCHEMA_VERSION && 0)) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD2: later schemas open */\n"),
+            # V4-244 (F347): the same rule is asked once more, before the
+            # store is touched; a mutant of the rule changes both.
+            (ST, "                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) {\n",
+                 "                if (pvlen != 8u || have == 0u || (have > (uint64_t)STORE_SCHEMA_VERSION && 0)) { /* MUTATION SD2 */\n")],
     "SD3": [(ST, "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-                 "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION + 1u) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD3: off by one */\n")],
+                 "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION + 1u) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION SD3: off by one */\n"),
+            (ST, "                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) {\n",
+                 "                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION + 1u) { /* MUTATION SD3 */\n")],
     "SD4": [(ST, "    } else if (n != sizeof s->store_id) {\n",
                  "    } else if (n != sizeof s->store_id && 0) { /* MUTATION SD4: any store_id length */\n")],
     "SD5": [(ST, "    } else if (n != sizeof s->decoy_pk) {\n",

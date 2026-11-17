@@ -122,7 +122,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (675 anchors checked; 631 mutations across 115 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (677 anchors checked; 631 mutations across 115 campaigns)
 ```
 
 ## The formal model

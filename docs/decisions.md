@@ -18586,5 +18586,17 @@ written in place; there is no server-key rotation and the runbook says so.
 
 Campaign v145, one mutant, tried by hand first.
 
-Counts: 631 mutations, 115 campaigns, 675 anchors; 350 findings (F273,
+**Corrected after the first nightly (run 44007461981, 129 of 130).** CI was
+16 of 16: the rehearsal ran the new restore blocks on both Ubuntus, and the
+crash drill found the old store kept aside. One older campaign went red,
+v77 SD2 and SD3. Both weaken the version rule at the place it has always
+been, and the check they name opens the store as the daemon does; with the
+rule now asked once more ahead of it, that open was refused there and the
+mutants lived. The fix made them equivalent, which no gate here sees (the
+anchors were intact). The two mutants now change the rule in both places,
+and by hand each fails the check its spec line names. The rule is written
+twice in `open_impl`; folding it into one function would have moved the
+anchors of v77 and v130 together, and is left for a step of its own.
+
+Counts: 631 mutations, 115 campaigns, 677 anchors; 350 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
