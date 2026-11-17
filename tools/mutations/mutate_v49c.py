@@ -96,8 +96,8 @@ M = {
  "W9": (CN, [("    if (c->rotated) {\n        return fail_with_error(slot, c, AUTHMSG_ERR_NOT_PERMITTED, \"rotate-already-done\");\n    }",
               "    /* MUTATION W9: unlimited rotations per session */")]),
  # "that key is already enrolled" gets its own code, and becomes an oracle
- "W11": (CN, [("            why = (rs == STORE_ERR_DB) ? \"rotate-store-error\" : \"rotate-store-refused\";\n            if (rs == STORE_ERR_DB) { code = AUTHMSG_ERR_INTERNAL; }",
-               "            why = \"rotate-store-refused\";\n            code = (rs == STORE_ERR_CONFLICT) ? AUTHMSG_ERR_RATE_LIMITED : AUTHMSG_ERR_REJECTED; /* MUTATION W11 */")]),
+ "W11": (CN, [("            why = declined ? \"rotate-store-refused\" : \"rotate-store-error\";\n",
+               "            why = declined ? \"rotate-store-refused\" : \"rotate-store-error\";\n            if (rs == STORE_ERR_CONFLICT) { code = AUTHMSG_ERR_RATE_LIMITED; } /* MUTATION W11 */\n")]),
  # the login code reaches the journal through the fingerprint sink. Since
  # V4-21 (F41) the sink takes an authd_fp_t, so the leak needs an explicit
  # cast -- the only shape left to write it, and the log scan still kills it.

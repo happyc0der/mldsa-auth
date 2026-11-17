@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 
 #include <sodium.h>
+#include <sqlite3.h>
 
 #include "authd_conn.h"
 #include "authd_log.h"
@@ -73,6 +74,21 @@ typedef struct {
     uint16_t                  port;
     size_t                    nslots;
 } daemon_t;
+
+/* One statement run by a second connection to the store's file (V4-260). */
+static int raw_sql(const char *db, const char *sql)
+{
+    sqlite3 *h = NULL;
+    if (sqlite3_open_v2(db, &h, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        if (h) { sqlite3_close(h); }
+        return -1;
+    }
+    char *err = NULL;
+    const int rc = sqlite3_exec(h, sql, NULL, NULL, &err);
+    if (err) { sqlite3_free(err); }
+    sqlite3_close(h);
+    return rc == SQLITE_OK ? 0 : -1;
+}
 
 static int daemon_start(daemon_t *d, size_t nslots, const char *dbname)
 {
@@ -1320,6 +1336,65 @@ static void test_rotate(void)
             mldsa_keypair_free(&yet);
         }
         client_close(&stale);
+    }
+
+    /* V4-260 (F389, erratum 117): a store that FAILS is not a store that
+     * refuses. The audit chain's head is damaged from a second connection
+     * (its MAC cut to 31 bytes), so the rotation's own audit row cannot be
+     * chained: store_rotate_key answers STORE_ERR_CORRUPT, which is not one
+     * of its three verdicts on the request. A correctly signed ROTATE must
+     * then be told "internal", and the journal must say so at ERROR; it was
+     * told "rejected", with one INFO line. The head is put back afterwards
+     * and the same ROTATE, on a new session, is acknowledged. */
+    {
+        char dbp[512], lpath[512];
+        snprintf(dbp, sizeof dbp, "%s/rotate.sqlite3", g_dir);
+        snprintf(lpath, sizeof lpath, "%s/rotate_damaged.log", g_dir);
+        FILE *lf = fopen(lpath, "w+");
+        CHECK(lf != NULL, "rotate: damaged-store capture file");
+        mldsa_keypair_t fresh;
+        client_t dc;
+        CHECK(mldsa_keypair_generate(&fresh) == 0, "rotate: a key for the damaged-store attempt");
+        CHECK(rotate_session(&d, &dc, &spare_kp) == 0, "rotate: session (damaged store)");
+        CHECK(raw_sql(dbp, "CREATE TABLE zz_head AS SELECT seq, mac FROM audit ORDER BY seq DESC LIMIT 1;"
+                           "UPDATE audit SET mac = substr(mac, 1, 31) WHERE seq = (SELECT seq FROM zz_head);") == 0,
+              "rotate: the audit head is damaged from a second connection");
+        if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+        rl = build_rotate(rot, sizeof rot, dc.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                          &spare_kp, &fresh, &fresh, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        pl = exchange_record(&d, &dc, rot, rl, pt, sizeof pt);
+        authd_log_init(stderr, AUTHD_LOG_ERROR);
+        CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_INTERNAL,
+              "rotate: a correctly signed ROTATE against a damaged store is answered internal, not rejected (F389)");
+        client_close(&dc);
+        char *lb = NULL;
+        long sz = 0;
+        if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+            fseek(lf, 0, SEEK_SET) == 0) {
+            lb = (char *)calloc((size_t)sz + 1u, 1u);
+            if (lb != NULL && fread(lb, 1, (size_t)sz, lf) != (size_t)sz) { free(lb); lb = NULL; }
+        }
+        CHECK(lb != NULL && strstr(lb, "error event=rotate-store-failed") != NULL &&
+                  strstr(lb, "detail=audit-chain-corrupt") != NULL,
+              "rotate: ...and the journal says rotate-store-failed at ERROR, with the store's status (F389)");
+        CHECK(lb != NULL && strstr(lb, "rotate-store-refused") == NULL,
+              "rotate: ...and does not call it a refusal (F389)");
+        free(lb);
+        if (lf != NULL) { (void)fclose(lf); }
+        CHECK(raw_sql(dbp, "UPDATE audit SET mac = (SELECT mac FROM zz_head) WHERE seq = (SELECT seq FROM zz_head);"
+                           "DROP TABLE zz_head;") == 0,
+              "rotate: the audit head is put back");
+        /* The three verdicts are still refusals: a key that is already
+         * enrolled (other_kp), correctly signed, is REJECTED and not logged
+         * as a failure of the store. */
+        CHECK(rotate_session(&d, &dc, &spare_kp) == 0, "rotate: session (in-use key)");
+        rl = build_rotate(rot, sizeof rot, dc.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1,
+                          &spare_kp, &other_kp, &other_kp, AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+        pl = exchange_record(&d, &dc, rot, rl, pt, sizeof pt);
+        CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED,
+              "rotate: a key that is already enrolled is still REJECTED, a verdict and not a failure (F389)");
+        client_close(&dc);
+        mldsa_keypair_free(&fresh);
     }
 
     /* And the old key no longer authenticates at all: there is no overlap

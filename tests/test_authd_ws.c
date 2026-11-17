@@ -130,6 +130,12 @@ static void test_upgrade(void)
         "GET /a HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: c2hvcnQ=\r\nSec-WebSocket-Version: 13\r\n\r\n" },
       { "upgrade: a state longer than 64 bytes is refused (7.1)",
         "GET /a?state=012345678901234567890123456789012345678901234567890123456789012345 HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+      { "upgrade: a second state is refused, whatever it holds (F390)",
+        "GET /a?state=ab&state=cd HTTP/1.1" "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+      { "upgrade: an empty state followed by another is refused, not skipped (F390)",
+        "GET /a?state=&state=EVIL HTTP/1.1" "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+      { "upgrade: a second state that is too long is refused though the first was taken (F390)",
+        "GET /a?state=ok&x=1&state=012345678901234567890123456789012345678901234567890123456789012345 HTTP/1.1" "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
       { "upgrade: a state with a non-printable byte is refused",
         "GET /a?state=ab\x01" "cd HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
     };
@@ -141,6 +147,14 @@ static void test_upgrade(void)
                      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
                      &w) == WS_OK && w.state_len == 0u,
           "upgrade: no query means the EMPTY state, not a refusal");
+    CHECK(upgrade_of("GET /authd/v1?a=1&state=&b=2 HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                     &w) == WS_OK && w.state_len == 0u,
+          "upgrade: one empty state among other parameters is the empty state (F390)");
+    CHECK(upgrade_of("GET /authd/v1?xstate=no&state=yes&states=no HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                     &w) == WS_OK && w.state_len == 3u && memcmp(w.state, "yes", 3) == 0,
+          "upgrade: a parameter whose name only contains `state` is not it (F390)");
 }
 
 /* ------------------------------------------------------- the frame codec */

@@ -1,0 +1,5 @@
+RS1|^test_authd_conn$|rotate: a correctly signed ROTATE against a damaged store is answered internal, not rejected (F389)
+RS2|^test_authd_conn$|rotate: ...and the journal says rotate-store-failed at ERROR, with the store's status (F389)
+RS3|^test_authd_conn$|rotate: a key that is already enrolled is still REJECTED, a verdict and not a failure (F389)
+US1|^test_authd_ws$|upgrade: a second state is refused, whatever it holds (F390)
+US2|^test_authd_ws$|upgrade: an empty state followed by another is refused, not skipped (F390)

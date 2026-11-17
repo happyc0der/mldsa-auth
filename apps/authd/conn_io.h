@@ -29,8 +29,8 @@
 
 /* The daemon tightens spec-v2 §6.5.1's 65561-byte record maximum, because it
  * never needs 65 KiB records and a smaller cap means smaller fixed per-slot
- * buffers (spec mldsa-authd §6.1). The largest application message is ROTATE
- * at 8612 bytes of content. */
+ * buffers (spec mldsa-authd §6.1). The largest application message is ROTATE:
+ * 8612 bytes of content with a 34-byte handle, 8642 with a 64-byte one. */
 #define AUTHD_MAX_CONTENT 9216u
 #define AUTHD_MAX_RECORD  SESSION_RECORD_LEN(AUTHD_MAX_CONTENT, SESSION_PAD_BUCKET_MAX)
 

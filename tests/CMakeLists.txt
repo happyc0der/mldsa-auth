@@ -312,7 +312,7 @@ add_test(NAME test_authd_evloop COMMAND test_authd_evloop)
 # V4-8b: the connection state machine, driven with the daemon in-process so the
 # test owns its clock and can read its counters and slot state directly.
 add_executable(test_authd_conn test_authd_conn.c)
-target_link_libraries(test_authd_conn PRIVATE mldsa_authd)
+target_link_libraries(test_authd_conn PRIVATE mldsa_authd sqlite3)   # sqlite3: V4-260 damages a row from a second connection
 target_compile_options(test_authd_conn PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
 target_compile_definitions(test_authd_conn PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
 target_link_options(test_authd_conn PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})

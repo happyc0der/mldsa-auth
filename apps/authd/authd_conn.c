@@ -635,8 +635,20 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
                                                    sizeof c->handshake_id, drop,
                                                    app->now_unix, &rotated_at, &dropped);
         if (rs != STORE_OK) {
-            why = (rs == STORE_ERR_DB) ? "rotate-store-error" : "rotate-store-refused";
-            if (rs == STORE_ERR_DB) { code = AUTHMSG_ERR_INTERNAL; }
+            /* F389: a refusal is one of the three answers the store gives
+             * about THIS request -- the handle is gone, the session's key is
+             * no longer the active one, the new key is already enrolled.
+             * Every other status is the store failing (a damaged key row, a
+             * broken audit head, sqlite, the MAC), and only STORE_ERR_DB
+             * used to be told apart: a correctly signed ROTATE against a
+             * damaged store was answered "rejected" and journalled at INFO
+             * as a refusal, with nothing at ERROR. */
+            const int declined = (rs == STORE_ERR_NOT_FOUND || rs == STORE_ERR_STATE || rs == STORE_ERR_CONFLICT);
+            why = declined ? "rotate-store-refused" : "rotate-store-error";
+            if (!declined) {
+                code = AUTHMSG_ERR_INTERNAL;
+                authd_log_slot_detail(AUTHD_LOG_ERROR, "rotate-store-failed", slot->index, store_status_name(rs));
+            }
             goto reject;
         }
     }

@@ -19150,3 +19150,39 @@ Spec v1.74, erratum 116.
 
 Counts: 663 mutations, 119 campaigns, 707 anchors; 388 findings (F273,
 F288, F309 and F338 open); spec v1.74, 116 errata; 65 tests.
+
+## V4-260 — a store that fails during ROTATE is not a refusal; one `state` in the upgrade URL (F389 to F391)
+
+The thirty-seventh review was a second pass over the protocol core against
+both specifications, clause by clause: the handshake, the key schedule,
+the record layer, the application messages, the limiter, and the code and
+token lifetimes. It found them consistent, recomputed the KDF vector
+independently, and reported one Low divergence and four notes.
+
+- **F389.** The three verdicts are named, and everything else is a
+  failure, so a status added to the store later is a failure until
+  someone decides otherwise. The other shape, naming the failures, is
+  what let three of them through. The new event is in spec 15's list;
+  `record-refused detail=rotate-store-error` is still written after it,
+  because every refused record has that line.
+- **F390.** Refusing a second `state` rather than taking the last or
+  the first silently: the browser client and `authd_client` each send
+  exactly one, so nothing correct is affected, and an ambiguous URL is
+  refused where it is first seen.
+- **F391.** The reader's single bound is stated, not changed. Passing
+  the stage's maximum into the reader would close a difference no peer
+  can use (the buffer is fixed, the deadline absolute, the close the
+  same) at the cost of a state-dependent reader in three transports.
+- **Not changed, recorded:** PROXY v2's transport nibble is not read
+  (already noted in V4-242); `ratelimit.h` says nothing has changed on
+  a DENY where an entry may have been inserted and refilled; the
+  header comment in `handshake.h` says the X25519 secret exists only in
+  secure memory where `kex.c` holds wiped stack copies (V4-24, P2);
+  there is no literal-byte vector for the ROTATE digest, which
+  `test_authd_conn` checks against a hand-built one (F278).
+
+Campaign v150, five mutants, each tried with `tools/hand_control.py`,
+with v49c W11, whose anchor was the rewritten line.
+
+Counts: 668 mutations, 120 campaigns, 712 anchors; 391 findings (F273,
+F288, F309 and F338 open); spec v1.75, 117 errata; 65 tests.

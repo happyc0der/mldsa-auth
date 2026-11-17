@@ -95,13 +95,23 @@ static ws_status_t take_state(ws_t *w, const uint8_t *target, size_t n)
     if (q == NULL) {
         return WS_OK;                       /* no query: the empty state */
     }
+    /* F390: the FIRST `state`, empty or not, and no second one. An empty
+     * `state=` used to be skipped and a later one bound, and anything after
+     * the one that was taken was never looked at: `?state=&state=X` bound X,
+     * where a front end reading the same URL from the left reads "". One
+     * URL must not have two readings. */
+    int taken = 0;
     size_t i = (size_t)(q - target) + 1u;
     while (i < n) {
         size_t s = i;
         while (i < n && target[i] != '&') { i++; }
         size_t e = i;
         if (i < n) { i++; }
-        if (e - s > 6u && memcmp(target + s, "state=", 6) == 0) {
+        if (e - s >= 6u && memcmp(target + s, "state=", 6) == 0) {
+            if (taken) {
+                return WS_ERR_PROTOCOL;     /* a second `state` */
+            }
+            taken = 1;
             const uint8_t *v = target + s + 6u;
             const size_t vn = (e - s) - 6u;
             if (vn > WS_STATE_MAX) {
@@ -114,7 +124,6 @@ static ws_status_t take_state(ws_t *w, const uint8_t *target, size_t n)
             }
             memcpy(w->state, v, vn);
             w->state_len = vn;
-            return WS_OK;
         }
     }
     return WS_OK;

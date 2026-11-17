@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.74, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259)
+# mldsa-authd — deployment specification (v1.75, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -231,11 +231,19 @@ AUTHD_MAX_CONTENT = 9216 bytes
 AUTHD_MAX_RECORD  = SESSION_RECORD_LEN(9216, 4096) = 12313 bytes
 ```
 
-The largest message is `ROTATE` at **8612** bytes of content (§6.3), so the cap
-has ~600 bytes of headroom. A receiver MUST size its plaintext buffer from
+The largest message is `ROTATE`: **8612** bytes of content with a 34-byte
+handle (§6.3) and 8642 with the longest handle the daemon accepts, 64 bytes
+(erratum 117), so the cap has at least 574 bytes of headroom. A receiver MUST size its plaintext buffer from
 `AUTHD_MAX_RECORD`, never from expected content (spec-v2 §6.4's `pt_cap` rule,
 and the mistake V2-6 made). A record larger than `AUTHD_MAX_RECORD` is refused
 before any AEAD work.
+
+The daemon's reader applies one frame bound in every state (erratum 117):
+1 to 12313 bytes, the larger of `AUTHD_MAX_RECORD` and the largest handshake
+message. It does not apply spec-v2 §6.5.1's per-state table on the 4 header
+bytes; a frame that is the wrong size for its state is refused by that
+state's decoder, with the same close. The buffer is the slot's fixed one and
+the handshake deadline is absolute, so the larger bound buys a peer nothing.
 
 ### 6.2 `LOGIN_CODE` (0x10)
 
@@ -307,7 +315,12 @@ this session authenticated with, `pk_new` ≠ `pk_old`, `pk_new` unused by any
 device in any state.
 
 Both signatures come **before** anything is asked of the store about
-`pk_new`. Every refusal answers the same `ERROR(0x03)`; with the store asked
+`pk_new`. Every refusal answers the same `ERROR(0x03)`. A refusal is one of
+the store's three verdicts on the request: the handle is gone, the session's
+key is no longer its active key, `pk_new` is already enrolled. A store that
+fails instead (erratum 117) is answered `ERROR(0x05)` and logged
+`rotate-store-failed` at ERROR with the store's status in `detail=`: it is
+not a verdict on what was presented. With the store asked
 first, how long a refusal took told an authenticated peer whether a key it
 named was enrolled somewhere. In this order that question is reached only
 with a valid `sig_new`, which only the holder of `pk_new`'s private half can
@@ -354,6 +367,10 @@ The login URL carries an opaque `state` value the site placed in its pre-login
 session: `wss://site.example/authd/v1?state=…`, ≤ 64 bytes. The daemon binds
 `SHA-256(state)` into the login code (§6.2) and `EXCHANGE` must present the
 same value (Req 5). This is what prevents a login-CSRF at the exchange step.
+
+The query holds at most one `state` (erratum 117). The daemon takes the first
+parameter of that name, empty or not, and refuses the upgrade if there is a
+second: one URL must not read as two values to two parsers.
 
 ### 7.2 Client address
 
@@ -1305,7 +1322,7 @@ record-refused record-rejected bye
 Rotation (§6.3, §10.2):
 
 ```
-rotate rotate-fp-old rotate-fp-new rotate-tokens-dropped
+rotate rotate-fp-old rotate-fp-new rotate-tokens-dropped rotate-store-failed
 ```
 
 The local API and the lifecycle (§8, §10):
@@ -2196,3 +2213,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 116 | 14 | The login page ignores a second "forget" press within 800 ms of the first and removes the key its warning named; the enroll page checks the passphrase policy before it signs anyone up | Erratum 95's two presses were one gesture: the second click of a double click removed an unconfirmed key, possibly the account's only one, before the warning could be read. The enroll page signed up first, so a passphrase the policy refused left the session signed up and the invitation field empty, and the retry with a good passphrase was answered "signup refused" (audit F385, F386) |
+
+### Revision v1.75 (V4-260)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 117 | 6.1, 6.3, 7.1, 15 | A store that fails during `ROTATE` is answered `ERROR(0x05)` and logged `rotate-store-failed` at ERROR; the upgrade URL holds one `state`, the first, and a second is refused; `ROTATE` is 8642 bytes with a 64-byte handle; the daemon's reader uses one frame bound in every state | Only a database error was told apart from a refusal: a correctly signed `ROTATE` against a store with a damaged key row or audit head was answered "rejected" and journalled at INFO as a refusal, the class errata 96 and 99 closed elsewhere. An empty `state=` was skipped and a later one bound, and nothing after the one taken was examined. §6.1 quoted the 34-byte figure as the maximum, and said nothing of the reader's bound, which has never been spec-v2's per-state table (audit F389, F390) |
