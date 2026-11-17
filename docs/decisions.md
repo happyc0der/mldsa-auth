@@ -18373,5 +18373,16 @@ systemd with the encrypted credential, which the runbook rehearsal runs.
 The custody rule for a credential (root-owned, in `$CREDENTIALS_DIRECTORY`)
 is the reader's own, called by the probe.
 
+**Corrected after the first nightly (run 43976806641, 125 of 127).** CI was
+16 of 16 and the rehearsal passed, so the pre-start check works under
+systemd. Two older campaigns went red: v81 SU1 and v86 DG1, both mutants of
+the START's refusal of a passphrase file. The new end-to-end leg started
+the daemon on the symlinked passphrase file, 200 lines before the checks
+those two campaigns name, so the test failed there first, with other words.
+Caught, and reported uncaught. That start now sits after the two named
+refusals, as a third `su_refused`; by hand, SU1 and DG1 fail the test with
+their own lines again. Only the campaigns of this step had been run
+locally; the nightly is what runs the rest, and it did.
+
 Counts: 620 mutations, 112 campaigns, 664 anchors; 339 findings (F273,
 F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests.

@@ -250,9 +250,6 @@ sed "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/d/pass.lnk|" "$TMP/a
 rc=0; "$DAEMON" --config "$TMP/lnk.conf" --check-config > "$TMP/cc.out" 2>&1 || rc=$?
 { [ "$rc" -eq 3 ] && grep -q "pass.lnk: cannot-open" "$TMP/cc.out"; } \
     || fail "--check-config on a symlinked passphrase file: exit $rc, said: $(cat "$TMP/cc.out")"
-rc=0; "$DAEMON" --config "$TMP/lnk.conf" > "$TMP/cc.out" 2>&1 || rc=$?
-{ [ "$rc" -eq 3 ] && grep -q "pass.lnk: cannot-open" "$TMP/cc.out"; } \
-    || fail "the start on the same configuration: exit $rc, said: $(cat "$TMP/cc.out")"
 rm -f "$TMP/d/pass.lnk" "$TMP/lnk.conf" "$TMP/cc.out"
 "$DAEMON" --config "$TMP/authd.conf" --check-config > /dev/null 2>&1 || fail "--check-config no longer accepts the good configuration"
 echo "PASS: E2E: --check-config refuses a group-readable key and a symlinked passphrase file as the start does, exit 3"
@@ -455,6 +452,13 @@ su_refused "passphrase file $TMP/su/pass: unsafe-permissions" "a group-readable 
 chmod 0600 "$TMP/su/pass"; chmod 0644 "$TMP/su/server.ek"
 su_refused "$TMP/su/server.ek: unsafe-permissions" "a group-readable server key" 3
 chmod 0600 "$TMP/su/server.ek"
+# The start on the configuration --check-config refused above (F337). Here,
+# after the two refusals above, so that a start which ignores a refused
+# passphrase file fails at THEIR named checks first (campaigns v81, v86).
+ln -s "$TMP/su/pass" "$TMP/su/pass.lnk"
+su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass.lnk"
+su_refused "passphrase file $TMP/su/pass.lnk: cannot-open" "a symlinked passphrase file" 3
+rm -f "$TMP/su/pass.lnk"
 printf 'not the passphrase\n' > "$TMP/su/wrongpass" && chmod 0600 "$TMP/su/wrongpass"
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/wrongpass"
 su_refused "$TMP/su/server.ek: decryption-failed" "the wrong passphrase" 3
