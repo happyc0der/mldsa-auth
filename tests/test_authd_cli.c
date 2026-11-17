@@ -1276,6 +1276,15 @@ static void test_localcli_robustness(void)
 
 static void test_key_plan(void)
 {
+    /* V4-263 (F402): which failed login is the daemon refusing the key. */
+    CHECK(client_failure_is_refusal(1, 1000u, 20000u) == 1,
+          "refusal: a failure after ClientAuth and before the deadline is the daemon's answer");
+    CHECK(client_failure_is_refusal(1, 20000u, 20000u) == 0 && client_failure_is_refusal(1, 20001u, 20000u) == 0,
+          "refusal: a wait that ran to the deadline is a daemon that did not answer, not a refusal (F402)");
+    CHECK(client_failure_is_refusal(0, 1000u, 20000u) == 0,
+          "refusal: a failure before ClientAuth was sent is never one");
+    CHECK(client_failure_is_refusal(1, UINT64_MAX, 20000u) == 0,
+          "refusal: with a clock that cannot be read nothing is called a refusal");
     CHECK(client_key_plan(1, 0, 0) == KEY_PLAN_USE_EK,
           "key-plan: no .ek.next and .ek works -- use it");
     CHECK(client_key_plan(1, 1, 0) == KEY_PLAN_USE_EK,
@@ -2035,8 +2044,10 @@ static void test_passphrase_custody(void)
       CHECK(all, "passphrase probe: the good file, a symlink, a missing file, a directory and each unsafe mode are answered as the read answers them");
       CHECK(pc_write(f, "", 0u, 0600) == 0 && authd_secret_probe(f) == AUTHD_SECRET_ERR_SIZE,
             "passphrase probe: an empty file is refused as empty-or-too-large");
-      CHECK(authd_secret_probe(nl) == AUTHD_SECRET_OK,
-            "passphrase probe: a file holding only a newline is in range for the probe (the read refuses it)");
+      CHECK(authd_secret_probe(nl) == AUTHD_SECRET_ERR_SIZE && refused_as(nl, AUTHD_SECRET_ERR_SIZE),
+            "passphrase probe: a file holding only a newline is refused by the probe as the read refuses it (F400)");
+      CHECK(pc_write(f, "x", 1u, 0600) == 0 && authd_secret_probe(f) == AUTHD_SECRET_OK,
+            "passphrase probe: a file of one byte that is not a newline is in range (the control)");
       CHECK(pc_write(f, "correct horse\n", 14u, 0600) == 0, "passphrase probe: the file is put back"); }
     { static uint8_t b[AUTHD_PASSPHRASE_MAX + 1u];
       memset(b, 'x', sizeof b);

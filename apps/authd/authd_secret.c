@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <sodium.h>
+
 #include "authd_config.h"
 #include "secure_mem.h"
 
@@ -96,6 +98,16 @@ authd_secret_status_t authd_secret_probe(const char *path)
                                          geteuid(), getenv("CREDENTIALS_DIRECTORY"))) == AUTHD_SECRET_OK &&
                (st.st_size <= 0 || (uintmax_t)st.st_size > (uintmax_t)AUTHD_PASSPHRASE_MAX)) {
         r = AUTHD_SECRET_ERR_SIZE;
+    }
+    /* F400: a file that is one newline is an empty passphrase to the read,
+     * which strips it. The size said "in range", so --check-config passed a
+     * file the start then refused. One byte is read, of a one-byte file. */
+    if (r == AUTHD_SECRET_OK && st.st_size == 1) {
+        char only = '\0';
+        if (pread(probe_fd, &only, 1, 0) == 1 && only == '\n') {
+            r = AUTHD_SECRET_ERR_SIZE;
+        }
+        sodium_memzero(&only, sizeof only);
     }
     (void)close(probe_fd);
     return r;

@@ -324,7 +324,16 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
     if (cs_send(cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) { goto fail_io; }
     io_stage = "login-code";
     g_open_judged = 1;   /* the daemon has the key now; a failure is its answer */
-    if (cs_recv_for_core(cs, rx, &m) != 0) { goto fail_io; }
+    if (cs_recv_for_core(cs, rx, &m) != 0) {
+        /* F402: unless it never answered. A daemon that stalled after
+         * ClientAuth ran both recovery probes to their deadline, and the
+         * client then said "neither key authenticates ... an administrator
+         * must re-enrol this device" of two keys nobody had refused. */
+        if (!client_failure_is_refusal(1, net_now_ms(), cs->deadline)) {
+            open_failed_before_key("the daemon did not answer by the deadline at", io_stage);
+        }
+        goto fail_io;
+    }
     if (cc_login_on_record(cs->cc, rx, m, &cs->code) != CC_OK) {
         goto fail_core;
     }
@@ -1093,16 +1102,24 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
                             "NOT promoting %s\n", prog, next_path);
             goto out;
         }
-        if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
-            (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
-            goto out;
-        }
         /* Replace the device's own .pub so it does not go on naming a key the
          * server no longer accepts. Public data, so a plain rename: the
-         * custody rules keyfile_promote enforces are about secrets. */
+         * custody rules keyfile_promote enforces are about secrets.
+         *
+         * F401: BEFORE the key is promoted. The ACK is verified, so the new
+         * key is the live one whatever happens next. In the other order a
+         * process killed between the two renames left .ek new and .pub old
+         * with no .ek.next, and no later run compares them: the .pub, which
+         * is what an administrator enrols from, named a dead key for good.
+         * In this order the same death leaves .ek.next, and the recovery
+         * that promotes it republishes the .pub too (F227). */
         if (rename(pub_tmp, pub_path) != 0) {
             fprintf(stderr, "%s rotate: the key rotated but %s could not be updated; "
                             "it still names the OLD key\n", prog, pub_path);
+        }
+        if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
+            (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
+            goto out;
         }
         printf("%s\n", a.key_path);
         fprintf(stderr, "%s rotate: %s now holds the new key; the old one no longer "

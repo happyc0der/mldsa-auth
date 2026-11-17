@@ -615,6 +615,11 @@ key_plan_t client_key_plan(int ek_ok, int next_present, int next_ok)
     return KEY_PLAN_REFUSE;
 }
 
+int client_failure_is_refusal(int client_auth_sent, uint64_t now_ms, uint64_t deadline_ms)
+{
+    return client_auth_sent && now_ms < deadline_ms;
+}
+
 /* ---- randomness --------------------------------------------------------- */
 
 static void cc_oqs_rng(uint8_t *buf, size_t n)

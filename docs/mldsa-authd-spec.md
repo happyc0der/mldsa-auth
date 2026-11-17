@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.76, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262)
+# mldsa-authd — deployment specification (v1.77, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -733,7 +733,11 @@ handle belongs to; any other user naming it, on either `via`, is refused as
 
 Specified in §6.3. The client writes the sealed new key to `<handle>.ek.next`
 **before** sending `ROTATE`, and renames it over the current file on
-`ROTATE_ACK`.
+`ROTATE_ACK`. The device's `.pub` is replaced first and the key second
+(erratum 119): a client stopped between the two then leaves `.ek.next`, which
+the recovery below promotes, replacing the `.pub` again. In the other order
+it left the new key under a `.pub` that named the old one, and nothing
+compares the two.
 
 **Recovering an interrupted rotation.** If `.ek.next` exists at startup the
 client probes with `<handle>.ek` first, and the rule is stated in the only
@@ -750,6 +754,12 @@ unknown key from a revoked one from a bad signature, so "if it is unknown, the
 server never committed" asks the client to branch on a distinction Req 6
 exists to destroy. Never deleting on ambiguity costs one confusing file; the
 other way costs a permanently unusable identity.
+
+A probe is the daemon's refusal of a key only if it failed after `ClientAuth`
+was sent and before the client's deadline (erratum 119). The daemon closes at
+once on a `ClientAuth` it does not accept (§7.3), so a probe that waited out
+its deadline was not answered, and the client says that the daemon could not
+be asked, not that the device must be enrolled again.
 
 **In a browser** (erratum 33) there are no files and no rename, but there are
 transactions that commit whole or not at all, and the same rule holds with
@@ -1409,7 +1419,10 @@ optionally.
 **Socket paths must fit `sun_path`** — 104 bytes on macOS, 108 on Linux — which
 is shorter than the 255 bytes the configuration parser otherwise allows. A path
 that passes every byte-level check and no kernel can bind is refused by
-`--check-config` rather than at start-up.
+`--check-config` rather than at start-up. So is a socket path at which
+something that is not a socket already is, a regular file or a directory,
+which the start refuses to bind over; and a passphrase file that holds one
+newline and nothing else, which the start reads as empty (erratum 119).
 
 **A socket path that something is listening on is refused at start-up**, with
 status `in-use`, and left as it is: it belongs to a running daemon. A socket
@@ -1470,7 +1483,9 @@ positive decimal number of microseconds, `$NOTIFY_SOCKET` set, and
 `$WATCHDOG_PID` either unset or equal to its own process ID sends
 `WATCHDOG=1` to `$NOTIFY_SOCKET` **from its event loop**, at a quarter of
 that interval and never more than 1 s apart, and its loop wakes for each one
-when it has nothing else to do. A daemon given no watchdog sends none. A
+when it has nothing else to do. A signal ends the loop's wait (erratum 119):
+the wait is not begun again with its whole timeout, so a termination signal
+is acted on when it arrives and a ping is not delayed by one. A daemon given no watchdog sends none. A
 daemon whose loop stops turning therefore stops pinging; systemd kills it
 when the interval passes and `Restart=on-failure` starts it again. The
 watchdog begins when the daemon has said `READY=1`, so the unseal at start is
@@ -2240,3 +2255,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 118 | 8, 13, 15 | A different key for a known handle is logged as Req 7 even when the request is refused for its user; every refused `RECOVERY-USE` writes a `recovery-use` line; an operator on `site.sock` is `not-permitted` whatever its status; numbers have one spelling, `EXCHANGE state=` is at most 64 bytes, an `AUDIT` item's `detail=` is one word; `authd_admin revoke-device` | The user's refusals returned before the handle was looked at, so a new key presented for the handle of one's own disabled account left nothing in the journal, where §15 says every Req 7 rejection is logged. An unknown user, a disabled one, an operator on the site socket and a request past the budget were refused without the `recovery-use` line §15 promises for success or failure. A disabled operator was answered `user-disabled` on the site socket. `n=0024` was read as 24, a 256-byte `state` was compared instead of refused, and `detail=issued 5` put a bare token in an `AUDIT` item. And since erratum 80's neighbour, V4-82, an operator's device can be revoked only on the administrative socket, for which no tool sent `REVOKE-DEVICE` (audit F392 to F397) |
+
+### Revision v1.77 (V4-263)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 119 | 10.2, 16 | A signal ends the event loop's wait; `--check-config` refuses a socket path that holds something other than a socket and a passphrase file of one newline; a rotation replaces the `.pub` before it promotes the key; a recovery probe that ran to its deadline is not a refusal | The loop called `poll` again with its whole timeout after a signal, so `SIGTERM` was acted on up to a second late, pings could be two seconds apart, and erratum 90's sentence was untrue under signals. `--check-config` said "is valid" of two configurations the start then refused, one of them every two seconds under systemd. A client killed between its two renames left a `.pub` naming a dead key with nothing to repair it. And a daemon that stalled after `ClientAuth` made the client say "an administrator must re-enrol this device" of keys nobody had refused (audit F399 to F402) |

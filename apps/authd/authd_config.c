@@ -573,6 +573,23 @@ static authd_config_status_t check_sock(const char *key, const char *path, char 
     return AUTHD_CFG_OK;
 }
 
+/* F400: nothing that is not a socket may already be at a socket path. The
+ * listener replaces a stale SOCKET and refuses anything else, so a path
+ * naming a regular file or a directory (the store, mistyped into
+ * site_socket) was "is valid" to --check-config and "path" at the start,
+ * exit 1, every two seconds. Not followed: a symlink is not a socket either.
+ * Asked by --check-config alone, like the store's shape below: the start
+ * keeps its own refusal, which names the listener. */
+static authd_config_status_t sock_is_free(const char *key, const char *path, char *detail, size_t cap)
+{
+    struct stat there;
+    if (path[0] != '\0' && lstat(path, &there) == 0 && !S_ISSOCK(there.st_mode)) {
+        detail_set(detail, cap, key, path, "something that is not a socket is already there");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    return AUTHD_CFG_OK;
+}
+
 static authd_config_status_t check_regular(const char *key, const char *path, char *detail, size_t cap)
 {
     struct stat st;
@@ -603,6 +620,12 @@ authd_config_status_t authd_config_check_store(const authd_config_t *cfg, char *
 {
     if (cfg == NULL) {
         return AUTHD_CFG_ERR_VALUE;
+    }
+    authd_config_status_t socks;
+    if ((socks = sock_is_free(K_UNIX, cfg->listen_unix, detail, cap)) != AUTHD_CFG_OK ||
+        (socks = sock_is_free(K_SITE_SOCK, cfg->site_socket, detail, cap)) != AUTHD_CFG_OK ||
+        (socks = sock_is_free(K_ADMIN_SOCK, cfg->admin_socket, detail, cap)) != AUTHD_CFG_OK) {
+        return socks;
     }
     const char *path = cfg->store_path;
     static const char magic[16] = "SQLite format 3";      /* with its NUL: 16 bytes */

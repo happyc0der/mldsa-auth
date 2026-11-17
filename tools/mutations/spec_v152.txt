@@ -1,0 +1,7 @@
+EI1|^test_authd_evloop$|signal: a signal 200 ms into a 3000 ms wait ends the turn then, not 3000 ms later (F399)
+EI2|^test_authd_evloop$|signal: a wait ended by a signal is a turn with nothing served, not an error (F399)
+SK1|^test_authd_evloop$|cfg: a socket path that names an existing regular file is refused by --check-config's check, by key (F400)
+SK2|^authd_e2e$|--check-config on a socket path holding a regular file exited 0, expected 3 (F400)
+PN1|^test_authd_cli$|passphrase probe: a file holding only a newline is refused by the probe as the read refuses it (F400)
+RF1|^test_authd_cli$|refusal: a wait that ran to the deadline is a daemon that did not answer, not a refusal (F402)
+RF2|^test_authd_cli$|refusal: a failure before ClientAuth was sent is never one

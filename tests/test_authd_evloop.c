@@ -91,7 +91,20 @@ static void test_config(void)
       CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
                       "server_id = sid\nlisten_unix = /no-such-dir-zz/p.sock\nproxy_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
             authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE,
-            "cfg: a socket in a directory that is not there is still refused (the canary)"); }
+            "cfg: a socket in a directory that is not there is still refused (the canary)");
+      /* F400: a socket path where something that is not a socket already is. */
+      CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
+                      "server_id = sid\nlisten_port = 9\nsite_socket = /bin/sh\nsite_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
+            authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_OK &&
+            authd_config_check_store(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE &&
+            strstr(detail, "site_socket") != NULL && strstr(detail, "not a socket is already there") != NULL,
+            "cfg: a socket path that names an existing regular file is refused by --check-config's check, by key (F400)");
+      CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
+                      "server_id = sid\nlisten_unix = /usr\nproxy_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
+            authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_OK &&
+            authd_config_check_store(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE &&
+            strstr(detail, "not a socket is already there") != NULL,
+            "cfg: a socket path that names an existing directory is refused by --check-config's check (F400)"); }
 
     /* V4-251, F362 and F363: what the path checks said "is valid" of and the
      * start then could not use. A scratch directory holds a directory, an
@@ -1635,6 +1648,46 @@ static void test_clock_after_poll(void)
     (void)close(lfd);
 }
 
+/* V4-263 (F399): a signal that arrives during the wait ends the turn; the
+ * wait is not begun again with its whole timeout. */
+static volatile sig_atomic_t g_f399_signals;
+static void f399_handler(int sig) { (void)sig; g_f399_signals++; }
+
+static void test_signal_ends_the_wait(void)
+{
+    enum { NSLOTS = 2 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK, "signal: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 300u, 20000u, on_frame, on_close, &h) == 0, "signal: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "signal: listener registered");
+
+    struct sigaction sa, old;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = f399_handler;       /* no SA_RESTART: poll() is never restarted anyway */
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGALRM, &sa, &old) == 0, "signal: handler installed");
+    g_f399_signals = 0;
+    const struct itimerval once = { { 0, 0 }, { 0, 200000 } };   /* one SIGALRM, 200 ms from now */
+    struct timeval t0, t1;
+    (void)gettimeofday(&t0, NULL);
+    CHECK(setitimer(ITIMER_REAL, &once, NULL) == 0, "signal: timer armed");
+    const int rc = evloop_run_once(&ev, 3000, 1000u);
+    (void)gettimeofday(&t1, NULL);
+    const long ms = (long)(t1.tv_sec - t0.tv_sec) * 1000L + (long)(t1.tv_usec - t0.tv_usec) / 1000L;
+    CHECK(g_f399_signals == 1, "signal: the signal arrived during the wait (the canary)");
+    CHECK(rc == 0, "signal: a wait ended by a signal is a turn with nothing served, not an error (F399)");
+    CHECK(ms >= 150L && ms < 1500L,
+          "signal: a signal 200 ms into a 3000 ms wait ends the turn then, not 3000 ms later (F399)");
+    (void)sigaction(SIGALRM, &old, NULL);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 /* ------------------------------------------------------- descriptors (F205) */
 
 static void test_fdlimit(void)
@@ -2094,6 +2147,7 @@ int main(void)
     test_slot_cap();
     test_accept_failure();
     test_clock_after_poll();
+    test_signal_ends_the_wait();
 
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);
     return g_fail ? 1 : 0;

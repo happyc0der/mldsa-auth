@@ -592,9 +592,17 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
     const size_t total = npfd + nspfd;
     int rc = 0;
     if (total > 0u) {
-        do {
-            rc = poll(all, (nfds_t)total, poll_timeout_ms);
-        } while (rc < 0 && errno == EINTR);
+        rc = poll(all, (nfds_t)total, poll_timeout_ms);
+        if (rc < 0 && errno == EINTR) {
+            /* F399: a signal ends this turn. poll() was called again with the
+             * WHOLE timeout, so a SIGTERM 300 ms into a one-second wait was
+             * acted on a second later, a watchdog ping due at the end of the
+             * interrupted wait went out a period late, and signals arriving
+             * faster than the timeout kept an idle loop in here. The caller
+             * reads its flags and works out the next wait; nothing was read
+             * from `all`, so there is nothing to serve. */
+            return 0;
+        }
         if (rc < 0) {
             return -1;
         }

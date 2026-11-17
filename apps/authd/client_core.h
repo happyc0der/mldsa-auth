@@ -249,6 +249,15 @@ typedef enum {
 
 key_plan_t client_key_plan(int ek_ok, int next_present, int next_ok);
 
+/* Whether a login that failed is the daemon's REFUSAL of the key (F402). Only
+ * a failure after ClientAuth was sent can be one, and only if it came before
+ * the session's deadline: the daemon answers a ClientAuth it does not accept
+ * by closing at once (spec 7.3), so a wait that ran to the deadline is a
+ * daemon that did not answer, and says nothing about the key. Pure, for the
+ * reason client_key_plan is. A clock that cannot be read (UINT64_MAX) is past
+ * every deadline: not a refusal. */
+int client_failure_is_refusal(int client_auth_sent, uint64_t now_ms, uint64_t deadline_ms);
+
 /* ---- randomness --------------------------------------------------------- */
 
 /* Routes liboqs's randomness (ML-DSA keygen and hedged signing, ML-KEM) to

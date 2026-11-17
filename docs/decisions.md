@@ -19262,3 +19262,41 @@ Campaign v151, ten mutants, each tried with `tools/hand_control.py`.
 
 Counts: 678 mutations, 121 campaigns, 722 anchors; 398 findings (F273,
 F288, F309, F338 and F398 open); spec v1.76, 118 errata; 65 tests.
+
+## V4-263 — a signal ends the loop's wait; `--check-config` and the start agree; the `.pub` before the key; silence is not a refusal (F399 to F403)
+
+The thirty-ninth review was a second pass over the daemon's I/O and
+process side and over the client, against spec 7, 10.2, 12, 13 and 16.
+Slot and descriptor accounting, the deadlines, all 24 configuration
+keys, custody (every secret file opened without following links and
+checked on the descriptor), the watchdog and the `.ek.next` rule at
+every crash point were consistent. Six Low findings; four fixed here.
+
+- **F399.** V4-121's entry said of a signal that "`poll` returns
+  `EINTR` when the handler runs, so in practice it is immediate". The
+  loop retried inside `evloop_run_once`, so it was not. That sentence
+  was a belief, not a measurement; the test now measures it.
+- **F400.** Asked by `--check-config` only, as F362's store check is:
+  put in the shared path check, it pre-empted the start's own refusal,
+  which names the listener and exits 1, and `authd_e2e` holds the start
+  to that.
+- **F401.** The one fix here with no test of its own: it is a change
+  to the order of two renames, and the defect needs a process stopped
+  between them.
+- **F402.** The rule is a pure function, tested as one. Staging the
+  stall would cost forty seconds a run for a daemon that answers
+  ServerHello and then nothing.
+- **F403 (open).** Recorded, with a recommendation; see the audit row.
+- **Not changed, recorded:** `keyfile.c` ignores a failed fsync of the
+  key's directory after publishing it, so `ROTATE` can be sent for a
+  key whose directory entry is not yet durable. Making it an error
+  needs fault injection to test, and a filesystem that does not
+  support fsync on a directory would then refuse every key. Erratum
+  114's "a start that created the store and then fails removes it"
+  holds on the listener path; the earlier exits that leave the store
+  are reachable only when an allocation fails.
+
+Campaign v152, seven mutants, each tried with `tools/hand_control.py`.
+
+Counts: 685 mutations, 122 campaigns, 729 anchors; 403 findings (F273,
+F288, F309, F338, F398 and F403 open); spec v1.77, 119 errata; 65 tests.
