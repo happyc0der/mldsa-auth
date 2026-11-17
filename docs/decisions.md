@@ -19438,3 +19438,28 @@ No campaign: no compiled code changed.
 Counts: 687 mutations, 123 campaigns, 731 anchors; 416 findings (F148,
 F156, F273, F288, F309, F338, F398 and F403 open); spec v1.79, 121
 errata; 65 tests.
+
+## V4-268: cleanup after V4-263 to V4-267 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `9df64ad` (V4-267), now
+  main: CI 44150846266 (16/16), nightly 44150851797 (138/138, 123
+  campaigns).
+- V4-263 to V4-267 landed together, on V4-267's runs. The three steps
+  under it each had CI 16/16 and a nightly red in the one job F415
+  explains, campaign v147, and in nothing else: `64aadf5` (V4-263) CI
+  44133954685, nightly 44133961149 (136 of 137); `0816417` (V4-265) CI
+  44141440427, nightly 44141448858 (137 of 138); `45a0246` (V4-266) CI
+  44149612607, nightly 44149617335 (137 of 138). `fb0f8c3` (V4-264) had
+  CI 44141284543 (16/16). V4-265's nightly was the first run of the
+  changed ProVerif model outside this machine, and of campaign v153;
+  both passed there.
+- `08adeea` (V4-262) had main's push CI 44139366727 (16/16).
+- Open for the owner: F148, F156, F273, F288, F309, F338, F398 and
+  F403, each with a row on the review page since V4-267, and the
+  questions listed in V4-246's entry.
+
+Counts: 687 mutations, 123 campaigns, 731 anchors; 416 findings (F148,
+F156, F273, F288, F309, F338, F398 and F403 open); spec v1.79, 121
+errata; 65 tests (unchanged by this step).
