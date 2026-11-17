@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.71, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242)
+# mldsa-authd — deployment specification (v1.72, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1387,6 +1387,12 @@ symbolic link, a file that is not the service user's alone, an empty or
 oversized passphrase file, or a key file of a size no envelope has is
 refused there, exit 3, in the start's words. `authd_admin --check-config`,
 which an operator runs as themselves, checks only that the two files exist.
+Both forms also refuse (erratum 114), exit 3, a `store_path` that names
+something other than a regular file, or a file that is neither empty nor
+begins as an SQLite database does, and two socket paths that are one file
+under two spellings (`socket-paths-collide`: the same directory, by device
+and inode, and the same name). The start does not ask about the store: it
+opens it and reports what it finds, exit 1.
 
 **Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
 **To drain** (erratum 93) is to accept no further connection, on any socket;
@@ -1520,6 +1526,12 @@ its store there does neither. After the first start that line means the
 configuration names the wrong file. Whoever creates the store — the daemon
 or `init` — creates it mode 0600 whatever the umask is; an existing store
 keeps the mode it has.
+
+**A start that creates the store and then fails removes it again** (erratum
+114), and says so on standard error. Otherwise the next start would find
+the file, take it for its store and say nothing: the warning above would
+have gone to a start that never served. A store that was already there is
+never removed.
 
 The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 -Wl,-z,noexecstack` and a named CPU target (never `-march=native`), and
@@ -2153,3 +2165,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 113 | 8 | `REVOKE-DEVICE`'s `reason=` and the `label=` of `ENROLL` and `ENROLL-OPERATOR` are written as optional | §8 listed them as required, and says a missing required key is `malformed`. The daemon has always taken a request without either: the test of the local protocol enrolls with no `label=`, and the reference site sends none it does not have. Erratum 80 said so of `DISABLE-USER` alone. The text changes; the daemon does not, and a check now pins a `REVOKE-DEVICE` with no `reason=` |
+
+### Revision v1.72 (V4-251)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 114 | 16 | A start that created the store and then failed removes it; `--check-config` refuses a `store_path` that is not a regular file or not a database, and socket paths that name one file under two spellings | A start that created its store and then could not open a listener left the store behind, and the next start, the one that served, found it there and gave no `store-created` warning: a mistyped `store_path` met by one transient failure was served in silence, which is what erratum 81 was written to prevent. `--check-config` said "is valid" of a `store_path` naming a directory or another file, and of `d/p.sock` beside `./d/p.sock`; the unit's `ExecStartPre` passed and `ExecStart` failed, every two seconds. Audit F361, F362, F363 |

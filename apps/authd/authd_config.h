@@ -174,4 +174,10 @@ const char *authd_config_status_name(authd_config_status_t st);
 #define AUTHD_CONFIG_DETAIL_MAX (AUTHD_PATH_MAX + 64u)
 authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *detail, size_t detail_cap);
 
+/* --check-config's look at the store (F362): a store_path that names
+ * something there must name a regular file that begins as an SQLite database
+ * does, or is empty. Absent is fine (the first start creates it), and so is
+ * a file the caller cannot read. Not called by the start. */
+authd_config_status_t authd_config_check_store(const authd_config_t *cfg, char *detail, size_t detail_cap);
+
 #endif /* MLDSA_AUTHD_CONFIG_H */

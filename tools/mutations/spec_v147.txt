@@ -1,0 +1,13 @@
+FS1|^authd_e2e$|a start that failed after creating its store left
+FS2|^authd_e2e$|a failed start removed a store it had not created
+FS3|^authd_e2e$|the failed start removed the store it created without saying so (F361)
+ST1|^test_authd_evloop$|cfg: a store_path that names a directory is refused by --check-config's store check (F362)
+ST2|^test_authd_evloop$|cfg: a store_path that names a file which is not a database is refused by the store check (F362)
+ST3|^test_authd_evloop$|cfg: an empty file, a file with a database's first bytes and no file at all pass the store check (the controls)
+ST4|^authd_e2e$|the daemon's --check-config on a store_path that
+ST5|^authd_e2e$|authd_admin --check-config on a store_path that
+SK1|^test_authd_evloop$|cfg: one socket under two spellings (d/p.sock, d/./p.sock) is a collision at the path check (F363)
+SK2|^test_authd_evloop$|cfg: the same name in two directories, and two names in one, are three sockets (the control)
+SK3|^test_authd_evloop$|cfg: one socket reached through a symlinked directory is a collision too (F363)
+SK4|^test_authd_evloop$|cfg: and the admin socket against the protocol socket (F363)
+SK5|^test_authd_evloop$|cfg: the same name in two directories, and two names in one, are three sockets (the control)

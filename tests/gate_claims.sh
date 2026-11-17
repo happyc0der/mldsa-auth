@@ -97,6 +97,22 @@ case "$(uname -s)" in
   *) echo "note: NXSTACK: GNU_STACK is an ELF header; this case runs on Linux" ;;
 esac
 
+# --- REGISTERED (V4-251, audit F364) -----------------------------------------
+# Two tests exist only where CMake found a tool: backend_symbols (nm, file)
+# and site_node_handler (node). CI's suite step must assert each is
+# registered, on a line that is not a comment; a runner image without the
+# tool would otherwise run a smaller suite and stay green.
+CI="$REPO/.github/workflows/ci.yml"
+asserted() { grep -v '^[[:space:]]*#' "$1" | grep -cF -- "-N -R '^$2\$' | grep -q 'Total Tests: 1'"; }
+for t in backend_symbols site_node_handler; do
+    if [ "$(asserted "$CI" "$t")" -ge 1 ]; then ok "REGISTERED: ci.yml asserts that $t is registered before the suite runs"
+    else bad "REGISTERED: ci.yml does not assert that $t is registered (F364)"; fi
+    sed "s|^\\([[:space:]]*\\)\\(ctest .*-N -R '^$t\\\$'\\)|\\1# \\2|" "$CI" > "$D/ci-off.yml"
+    if cmp -s "$CI" "$D/ci-off.yml"; then bad "REGISTERED: the edit that comments out $t's assert changed nothing"
+    elif [ "$(asserted "$D/ci-off.yml" "$t")" -eq 0 ]; then ok "REGISTERED: with that line commented out, $t counts as not asserted"
+    else bad "REGISTERED: $t's assert, commented out, still counts as present (F364)"; fi
+done
+
 # --- HOOK -------------------------------------------------------------------
 H="$D/hook"
 mkdir -p "$H/apps/authd" "$H/tests" && cp "$LIB" "$H/apps/authd/" && cp "$DAEMON" "$H/apps/authd/" &&

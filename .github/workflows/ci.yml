@@ -120,10 +120,14 @@ jobs:
       # backend_symbols registers only where nm and file exist, so here it is
       # asserted (V4-39): a gate that can pass by not having the test is not a
       # gate.
+      # The same for node (V4-251, F364): site_node_handler registers only
+      # where CMake found it, and authd_e2e skips its site legs without it.
       - name: Standing rule 3 + suite
         run: |
           ctest --test-dir "$BUILD_DIR" -N -R '^backend_symbols$' | grep -q 'Total Tests: 1' || \
             { echo "::error::backend_symbols is not registered"; exit 1; }
+          ctest --test-dir "$BUILD_DIR" -N -R '^site_node_handler$' | grep -q 'Total Tests: 1' || \
+            { echo "::error::site_node_handler is not registered: no node on this runner, so the handler test and the node legs of authd_e2e would not run"; exit 1; }
           tools/check_build_current.sh "$BUILD_DIR" && ctest --test-dir "$BUILD_DIR" --output-on-failure
 
       - name: Environment block (records the CPU these results came from)

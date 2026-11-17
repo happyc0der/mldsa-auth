@@ -465,6 +465,19 @@ su_refused "$TMP/su/server.ek: decryption-failed" "the wrong passphrase" 3
 printf 'this file is not a database, whatever its name says\n' > "$TMP/su/garbage.sqlite3"
 su_conf "$TMP/su/garbage.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
 su_refused "$TMP/su/garbage.sqlite3: database-error" "a store file that is not a database" 1
+# V4-251 (F362): and --check-config, which said "is valid" of that file and
+# of a directory, says so first, in both binaries, exit 3. The start above
+# still reports the store itself, exit 1.
+for what in "$TMP/su/garbage.sqlite3|is not a store (not an SQLite database)" "$TMP/su|is not a regular file"; do
+    su_conf "${what%%|*}" "$TMP/su/server.ek" "$TMP/su/pass"
+    rc=0; "$DAEMON" --config "$TMP/su.conf" --check-config > "$TMP/sucheck.out" 2>&1 || rc=$?
+    [ "$rc" -eq 3 ] && grep -qF "store_path = ${what%%|*}: ${what##*|}" "$TMP/sucheck.out" \
+        || fail "the daemon's --check-config on a store_path that ${what##*|}: exit $rc, said: $(cat "$TMP/sucheck.out") (F362)"
+    rc=0; "$ADMIN" --check-config --config "$TMP/su.conf" > "$TMP/sucheck.out" 2>&1 || rc=$?
+    [ "$rc" -eq 3 ] && grep -qF "store_path = ${what%%|*}: ${what##*|}" "$TMP/sucheck.out" \
+        || fail "authd_admin --check-config on a store_path that ${what##*|}: exit $rc, said: $(cat "$TMP/sucheck.out") (F362)"
+done
+echo "PASS: E2E: --check-config refuses a store_path that names a directory or a file that is not a database, exit 3 (F362)"
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
 su_umask=$(umask); umask 022   # F200: the store this start creates must not take this
 "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok.log" 2>&1 &
@@ -504,6 +517,58 @@ kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
 if grep -q 'store-created\|created a new, empty store' "$TMP/su-ok2.log"; then
     fail "the second start on the same store said it created it again (F199)"
 fi
+# V4-251 (F361): a listener that cannot be opened, on a start that CREATED
+# its store (the leg far above has the same failure on a store that
+# existed). The
+# store used to stay, and the next start found it and said nothing: the one
+# warning that store_path may name the wrong file (F199) had gone to a start
+# that never served. The store goes with the failed start, and the start
+# that does serve creates it and says so.
+mkdir -p "$TMP/fs" || fail "could not set up the failed-start directory"
+cat > "$TMP/fs.conf" <<EOF
+store_path = $TMP/fs/new.sqlite3
+key_path = $TMP/su/server.ek
+key_passphrase_file = $TMP/su/pass
+server_id = authd
+listen_unix = $TMP/fsp.sock
+site_socket = $TMP/fss.sock
+admin_socket = $TMP/fsa.sock
+site_uids = $(id -u)
+admin_uids = $(id -u)
+EOF
+printf 'not a socket\n' > "$TMP/fsa.sock"
+rc=0
+"$DAEMON" --config "$TMP/fs.conf" > "$TMP/fs1.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || fail "a start that could not open its admin socket exited $rc, expected 1: $(cat "$TMP/fs1.log")"
+grep -qF "$TMP/fs/new.sqlite3: created a new, empty store (no store was there)" "$TMP/fs1.log" \
+    || fail "the failed start did not create its store, so this leg shows nothing: $(cat "$TMP/fs1.log")"
+for f in "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"; do
+    [ ! -e "$f" ] || fail "a start that failed after creating its store left $f behind (F361)"
+done
+grep -qF "$TMP/fs/new.sqlite3: this start created the store and did not get as far as serving it" "$TMP/fs1.log" \
+    || fail "the failed start removed the store it created without saying so (F361): $(cat "$TMP/fs1.log")"
+rm -f "$TMP/fsa.sock"
+"$DAEMON" --config "$TMP/fs.conf" > "$TMP/fs2.log" 2>&1 &
+SUPID=$!
+i=0
+while ! grep -q 'event=started' "$TMP/fs2.log" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -gt 400 ] || kill -0 "$SUPID" 2>/dev/null || fail "the start after the failed one did not come up: $(cat "$TMP/fs2.log")"
+    [ "$i" -gt 400 ] && fail "the start after the failed one never logged event=started"
+    sleep 0.05
+done
+kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
+grep -q '^warn event=store-created$' "$TMP/fs2.log" \
+    || fail "the first start to serve a store the daemon created did not log event=store-created: an earlier, failed start had used the warning up (F361): $(cat "$TMP/fs2.log")"
+# The control: a store that was already there is not the daemon's to remove.
+printf 'not a socket\n' > "$TMP/fsa.sock"
+rc=0
+"$DAEMON" --config "$TMP/fs.conf" > "$TMP/fs3.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && [ -s "$TMP/fs/new.sqlite3" ] \
+    || fail "a failed start removed a store it had not created (exit $rc) (F361)"
+if grep -q 'removed again' "$TMP/fs3.log"; then fail "a failed start on an existing store said it removed it (F361)"; fi
+rm -f "$TMP/fsa.sock"
+echo "PASS: E2E: a start that fails after creating its store takes the store with it, and the start that serves says it created one (F361)"
 # V4-113: the line the runbook's step 9 and the rehearsal read. A daemon whose
 # RLIMIT_MEMLOCK is below what its slots need must log memlock-limit at WARN,
 # in exactly the form `warn event=memlock-limit need=<bytes>`, and say why on

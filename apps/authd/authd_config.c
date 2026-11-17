@@ -587,6 +587,72 @@ static authd_config_status_t check_regular(const char *key, const char *path, ch
     return AUTHD_CFG_OK;
 }
 
+/* F362: a store that is there must be one the start can open. Only its
+ * directory was looked at, so `--check-config` said "is valid" of a
+ * store_path that named a directory, or the key file, and the start then
+ * failed with `io` or `database-error`: ExecStartPre passed and ExecStart did
+ * not, every two seconds. A file that cannot be read by whoever runs the
+ * check is left to the start (authd_admin shares this function, and an
+ * operator need not be able to read the store); an empty file is what SQLite
+ * takes for a new database.
+ *
+ * For --check-config only, in both binaries. The start does not ask: it
+ * opens the store and reports what the store says (`io`, `database-error`),
+ * exit 1, as spec 13 has it (F126). */
+authd_config_status_t authd_config_check_store(const authd_config_t *cfg, char *detail, size_t cap)
+{
+    if (cfg == NULL) {
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    const char *path = cfg->store_path;
+    static const char magic[16] = "SQLite format 3";      /* with its NUL: 16 bytes */
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return AUTHD_CFG_OK;                              /* absent: store_open creates it */
+    }
+    if (!S_ISREG(st.st_mode)) {
+        detail_set(detail, cap, K_STORE, path, "is not a regular file");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return AUTHD_CFG_OK;
+    }
+    char head[sizeof magic];
+    const ssize_t n = read(fd, head, sizeof head);
+    (void)close(fd);
+    if (n != 0 && (n != (ssize_t)sizeof head || memcmp(head, magic, sizeof magic) != 0)) {
+        detail_set(detail, cap, K_STORE, path, "is not a store (not an SQLite database)");
+        return AUTHD_CFG_ERR_VALUE;
+    }
+    return AUTHD_CFG_OK;
+}
+
+/* F363: two socket paths that are one file under two spellings. The parser
+ * compares the strings (F236); `d/p.sock` and `./d/p.sock`, or a path through
+ * a symlinked directory, passed it, and the daemon then found "a daemon"
+ * listening on its second socket -- itself. Same directory (by device and
+ * inode) and same last component is the same file. */
+static int same_socket(const char *a, const char *b)
+{
+    if (a[0] == '\0' || b[0] == '\0') {
+        return 0;
+    }
+    char da[AUTHD_PATH_MAX + 1u], db[AUTHD_PATH_MAX + 1u];
+    (void)snprintf(da, sizeof da, "%s", a);
+    (void)snprintf(db, sizeof db, "%s", b);
+    char *sa = strrchr(da, '/'), *sb = strrchr(db, '/');
+    const char *na = (sa != NULL) ? a + (sa - da) + 1 : a;
+    const char *nb = (sb != NULL) ? b + (sb - db) + 1 : b;
+    if (strcmp(na, nb) != 0) {
+        return 0;
+    }
+    if (sa != NULL) { dir_of(da, sa); } else { (void)snprintf(da, sizeof da, "."); }
+    if (sb != NULL) { dir_of(db, sb); } else { (void)snprintf(db, sizeof db, "."); }
+    struct stat ta, tb;
+    return stat(da, &ta) == 0 && stat(db, &tb) == 0 && ta.st_dev == tb.st_dev && ta.st_ino == tb.st_ino;
+}
+
 authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *detail, size_t detail_cap)
 {
     if (cfg == NULL) {
@@ -620,6 +686,18 @@ authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *
         (st = check_sock(K_SITE_SOCK, cfg->site_socket, detail, detail_cap)) != AUTHD_CFG_OK ||
         (st = check_sock(K_ADMIN_SOCK, cfg->admin_socket, detail, detail_cap)) != AUTHD_CFG_OK) {
         return st;
+    }
+    if (same_socket(cfg->listen_unix, cfg->site_socket)) {
+        detail_set(detail, detail_cap, K_SITE_SOCK, cfg->site_socket, "is the same socket as listen_unix");
+        return AUTHD_CFG_ERR_PATH_CLASH;
+    }
+    if (same_socket(cfg->listen_unix, cfg->admin_socket)) {
+        detail_set(detail, detail_cap, K_ADMIN_SOCK, cfg->admin_socket, "is the same socket as listen_unix");
+        return AUTHD_CFG_ERR_PATH_CLASH;
+    }
+    if (same_socket(cfg->site_socket, cfg->admin_socket)) {
+        detail_set(detail, detail_cap, K_ADMIN_SOCK, cfg->admin_socket, "is the same socket as site_socket");
+        return AUTHD_CFG_ERR_PATH_CLASH;
     }
     return AUTHD_CFG_OK;
 }

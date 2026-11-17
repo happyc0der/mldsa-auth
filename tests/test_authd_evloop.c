@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -91,6 +92,76 @@ static void test_config(void)
                       "server_id = sid\nlisten_unix = /no-such-dir-zz/p.sock\nproxy_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
             authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE,
             "cfg: a socket in a directory that is not there is still refused (the canary)"); }
+
+    /* V4-251, F362 and F363: what the path checks said "is valid" of and the
+     * start then could not use. A scratch directory holds a directory, an
+     * empty file, a file that begins as an SQLite database does, and a
+     * symlink to itself. */
+    { char detail[AUTHD_CONFIG_DETAIL_MAX], d[128], text[1024];
+      (void)snprintf(d, sizeof d, "/tmp/authd-cfgpaths-XXXXXX");
+      const int have = (mkdtemp(d) != NULL);
+      CHECK(have, "cfg: scratch directory for the path checks");
+      if (have) {
+          char sub[160], empty[160], db[160], link[160];
+          (void)snprintf(sub, sizeof sub, "%s/adir", d);
+          (void)snprintf(empty, sizeof empty, "%s/empty.sqlite3", d);
+          (void)snprintf(db, sizeof db, "%s/real.sqlite3", d);
+          (void)snprintf(link, sizeof link, "%s/alias", d);
+          int made = (mkdir(sub, 0700) == 0) && (symlink(d, link) == 0);
+          FILE *f = fopen(empty, "w");
+          made = made && f != NULL && fclose(f) == 0;
+          f = fopen(db, "w");
+          made = made && f != NULL && fwrite("SQLite format 3\0rest of a header", 1u, 32u, f) == 32u && fclose(f) == 0;
+          CHECK(made, "cfg: the scratch files are made");
+#define PATHS(store, extra) \
+          ((void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n" \
+                          "server_id = sid\n" extra, store), \
+           parse_str(text, &cfg, &line) == AUTHD_CFG_OK ? authd_config_check_paths(&cfg, detail, sizeof detail) \
+                                                        : AUTHD_CFG_ERR_SYNTAX)
+#define STORE_CHECK(store) \
+          (PATHS(store, "listen_port = 9\n") == AUTHD_CFG_OK ? authd_config_check_store(&cfg, detail, sizeof detail) \
+                                                             : AUTHD_CFG_ERR_SYNTAX)
+          CHECK(STORE_CHECK(sub) == AUTHD_CFG_ERR_VALUE && strstr(detail, "is not a regular file") != NULL,
+                "cfg: a store_path that names a directory is refused by --check-config's store check (F362)");
+          CHECK(STORE_CHECK("/bin/sh") == AUTHD_CFG_ERR_VALUE &&
+                    strstr(detail, "is not a store (not an SQLite database)") != NULL,
+                "cfg: a store_path that names a file which is not a database is refused by the store check (F362)");
+          const int empty_ok = STORE_CHECK(empty) == AUTHD_CFG_OK;
+          char absent[160];
+          (void)snprintf(absent, sizeof absent, "%s/not-there.sqlite3", d);
+          CHECK(empty_ok && STORE_CHECK(db) == AUTHD_CFG_OK && STORE_CHECK(absent) == AUTHD_CFG_OK,
+                "cfg: an empty file, a file with a database's first bytes and no file at all pass the store check (the controls)");
+          CHECK(PATHS("/bin/sh", "listen_port = 9\n") == AUTHD_CFG_OK,
+                "cfg: and the path check the start runs does not ask it: the start reports its store itself, exit 1 (F126)");
+#undef STORE_CHECK
+
+          char two[512];
+          (void)snprintf(two, sizeof two, "listen_unix = %s/p.sock\nproxy_uids = 1\nsite_socket = %s/./p.sock\nsite_uids = 1\n", d, d);
+          (void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\nserver_id = sid\n%s", db, two);
+          CHECK(parse_str(text, &cfg, &line) == AUTHD_CFG_OK &&
+                    authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_PATH_CLASH &&
+                    strstr(detail, "is the same socket as listen_unix") != NULL,
+                "cfg: one socket under two spellings (d/p.sock, d/./p.sock) is a collision at the path check (F363)");
+          (void)snprintf(two, sizeof two, "site_socket = %s/s.sock\nsite_uids = 1\nadmin_socket = %s/s.sock\nlisten_port = 9\n", d, link);
+          (void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\nserver_id = sid\n%s", db, two);
+          CHECK(parse_str(text, &cfg, &line) == AUTHD_CFG_OK &&
+                    authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_PATH_CLASH &&
+                    strstr(detail, "is the same socket as site_socket") != NULL,
+                "cfg: one socket reached through a symlinked directory is a collision too (F363)");
+          (void)snprintf(two, sizeof two, "listen_unix = %s/p.sock\nproxy_uids = 1\nadmin_socket = %s/./p.sock\n", d, d);
+          (void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\nserver_id = sid\n%s", db, two);
+          CHECK(parse_str(text, &cfg, &line) == AUTHD_CFG_OK &&
+                    authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_PATH_CLASH &&
+                    strstr(detail, "admin_socket") != NULL && strstr(detail, "is the same socket as listen_unix") != NULL,
+                "cfg: and the admin socket against the protocol socket (F363)");
+          (void)snprintf(two, sizeof two, "listen_unix = %s/p.sock\nproxy_uids = 1\nsite_socket = %s/p.sock\nsite_uids = 1\nadmin_socket = %s/a.sock\n", d, sub, d);
+          (void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\nserver_id = sid\n%s", db, two);
+          CHECK(parse_str(text, &cfg, &line) == AUTHD_CFG_OK &&
+                    authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_OK,
+                "cfg: the same name in two directories, and two names in one, are three sockets (the control)");
+#undef PATHS
+          (void)unlink(empty); (void)unlink(db); (void)unlink(link); (void)rmdir(sub); (void)rmdir(d);
+      } }
 
     /* strictness */
     CHECK(parse_str("listen_port = 9\n", &cfg, &line) == AUTHD_CFG_ERR_MISSING,

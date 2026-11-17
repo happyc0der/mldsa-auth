@@ -18832,3 +18832,55 @@ if one reports a leak, that is a finding, not a flake.
 No product code; no campaign. Counts: 641 mutations, 116 campaigns, 685
 anchors; 360 findings (F273, F288, F309 and F338 open); spec v1.71, 113
 errata; 65 tests.
+
+## V4-251 — a failed start takes the store it created with it; `--check-config` looks at the store and at socket aliases (F361 to F364)
+
+The thirty-first review read the start and the stop of the daemon, and ran
+it against a scratch directory with each thing that can be wrong at a
+start.
+
+- **F361.** Three ways to fix it were on the table: open the listeners
+  before the store, remove the store a failed start created, or warn
+  whenever the store has no user in it. The first moves a great deal of
+  code for one message. The third changes what the warning means: a store
+  `init` made is empty too, and a daemon that warned on every start until
+  the first enrollment would teach its operator to ignore the line. So the
+  second. It deletes a file, and the conditions are narrow on purpose:
+  this process created it (the open that wrote its `store_id`), and this
+  process never served it. The four early returns between the store's
+  opening and the first listener (ledger, pools, loop callbacks) are
+  allocation and wiring failures that no input reaches; they are left as
+  they were rather than given lines no test can run.
+- **F362.** First written into the path check both binaries share, which
+  the start runs as well. The end-to-end test that pins "a store that is
+  not a database is exit 1, in the store's word" (F126, spec §13) failed
+  at once, rightly: that is the start's own report and the specification
+  says so. The check is `--check-config`'s alone.
+- **F363.** By directory identity, not by resolving paths: the sockets
+  need not exist yet, their directories must.
+- **F364.** One line in the suite step, and a check that the line is
+  there.
+
+Measured by the review and already on record as left, unmeasured (V4-224's
+entry):
+on macOS a second daemon started on the configuration of a first that is
+stopped or stalled with its accept queues full takes the sockets over
+(`ECONNREFUSED` reads as stale there; Linux answers `EAGAIN`). And a
+SIGTERM in the first 350 ms of a start, before the handlers are in, ends
+the process by the signal (status 143) with nothing left on disk, where
+the specification's drain would exit 0. Neither is changed here.
+
+Read and found sound: every refusal at a start exits with the code §13
+gives it and leaves nothing behind; a second instance does not touch the
+first's sockets; sockets are bound under a umask of 0177 and widened
+afterwards, so none is ever wider than intended; `--check-config` creates
+nothing; two SIGTERMs in the loop drain once and exit 0; the parser on
+CRLF, a missing final newline, duplicate and unknown keys, signs, hex,
+2^32, a NUL byte, an inline `#`.
+
+Campaign v147, thirteen mutants, each tried by hand first. The new
+end-to-end leg sits after the `store-created` checks that older campaigns
+name (v90), not before them.
+
+Counts: 654 mutations, 117 campaigns, 698 anchors; 364 findings (F273,
+F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests.

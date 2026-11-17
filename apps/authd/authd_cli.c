@@ -1046,6 +1046,10 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
         fprintf(stderr, "%s: %s: %s\n", prog, path, detail);
         return EX_CONFIG;
     }
+    if (authd_config_check_store(&cfg, detail, sizeof detail) != AUTHD_CFG_OK) {
+        fprintf(stderr, "%s: %s: %s\n", prog, path, detail);
+        return EX_CONFIG;
+    }
     printf("%s: %s is valid (max_slots=%u handshake_timeout_ms=%u idle_timeout_ms=%u "
            "pad_bucket=%u log_identities=%s log_client_ip=%s)\n", prog, path, cfg.max_slots,
            cfg.handshake_timeout_ms, cfg.idle_timeout_ms, cfg.pad_bucket,

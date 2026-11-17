@@ -109,6 +109,23 @@ static void usage(const char *prog)
             prog);
 }
 
+/* Removes a store this process created and never served, with the two files
+ * SQLite may have left beside it. Said on stderr: a file that was there a
+ * moment ago and is gone should not be a puzzle. */
+static void remove_created_store(const char *path)
+{
+    static const char *const suffix[] = { "", "-wal", "-shm" };
+    char name[AUTHD_PATH_MAX + 8u];
+    for (size_t i = 0; i < sizeof suffix / sizeof suffix[0]; i++) {
+        const int n = snprintf(name, sizeof name, "%s%s", path, suffix[i]);
+        if (n > 0 && (size_t)n < sizeof name) {
+            (void)unlink(name);
+        }
+    }
+    fprintf(stderr, "mldsa-authd: %s: this start created the store and did not get as far as serving it, "
+                    "so it is removed again; the next start will create it and say so\n", path);
+}
+
 int main(int argc, char **argv)
 {
     /* V4-201, F280: before anything is opened. Started with standard error
@@ -188,6 +205,15 @@ int main(int argc, char **argv)
          * readers themselves; and not in authd_config_check_paths, which
          * authd_admin shares: an operator runs that as whoever they are, and
          * these checks are about who the daemon is. */
+        /* F362: and the store, if one is there. Here and not above, because
+         * the start itself reports a store it cannot open with exit 1. */
+        {
+            char detail[AUTHD_CONFIG_DETAIL_MAX];
+            if (authd_config_check_store(&cfg, detail, sizeof detail) != AUTHD_CFG_OK) {
+                fprintf(stderr, "mldsa-authd: %s: %s\n", cfg_path, detail);
+                return 3;
+            }
+        }
         const authd_secret_status_t probe_pass = authd_secret_probe(cfg.key_passphrase_file);
         if (probe_pass != AUTHD_SECRET_OK) {
             fprintf(stderr, "mldsa-authd: passphrase file %s: %s\n", cfg.key_passphrase_file,
@@ -654,6 +680,16 @@ listener_failed:
     listener_close(&unix_fd, unix_path);
     handshake_pending_store_wipe(&pending);
     store_close(store);
+    /* F361: a store THIS start created goes with the start that failed. Left
+     * behind, it was found by the next start, which then had nothing to say:
+     * the one warning that store_path may name the wrong file (F199) had
+     * been spent on a start that never served, and a unit that restarts on
+     * failure came up two seconds later on an empty store with a clean
+     * journal. Nothing can be in it: it did not exist when this process
+     * opened it, and this process never served it. */
+    if (store_created) {
+        remove_created_store(cfg.store_path);
+    }
     mldsa_keypair_free(&server_kp);
     free(conns); free(slots); free(local_slots);
     return 1;
