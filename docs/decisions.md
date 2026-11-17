@@ -18984,3 +18984,23 @@ whose anchor held one of the renamed strings.
 
 Counts: 661 mutations, 118 campaigns, 705 anchors; 369 findings (F273,
 F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests.
+
+## V4-255: cleanup after V4-253 and V4-254 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `2a146b1` (V4-254), now
+  main: CI 44067883580 (16/16), nightly 44067887650 (133/133, 118
+  campaigns).
+- Before it: `be19851` (V4-253) had CI 44064256224 (16/16), nightly
+  44064260718 (132/132) and main's push CI 44077265579 (16/16); `2e94c62`
+  (V4-252) had CI 44062389455 (16/16) and main's push CI 44064300172
+  (16/16).
+- Open for the owner, unchanged since V4-252: F273, F288, F309, F338 and
+  the questions listed in V4-246's entry. V4-254 added one case to the
+  question about C0 control characters in a passphrase: a passphrase file
+  with a CRLF line ending against the same passphrase typed at a prompt.
+
+Counts: 661 mutations, 118 campaigns, 705 anchors; 369 findings (F273,
+F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
+this step).
