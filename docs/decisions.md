@@ -18515,3 +18515,18 @@ Campaign v144, six mutants, each tried by hand against its one test first.
 
 Counts: 630 mutations, 114 campaigns, 674 anchors; 345 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
+
+## V4-243: cleanup after V4-240 and V4-241 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `1d17d12`, now main: CI
+  43995526639 (16/16), nightly 43995530721 (128/128, 113 campaigns).
+- Before it: `50dd237` (V4-239) had CI 43986387454 (16/16), nightly
+  43986391642 (127/127) and main's push CI 43994372670 (16/16).
+- Open for the owner, unchanged since V4-240: F273, F288, F309, F338, and
+  the questions listed there.
+
+Counts: 630 mutations, 114 campaigns, 674 anchors; 345 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests (unchanged by
+this step).
