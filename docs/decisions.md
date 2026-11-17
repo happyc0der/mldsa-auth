@@ -18884,3 +18884,23 @@ name (v90), not before them.
 
 Counts: 654 mutations, 117 campaigns, 698 anchors; 364 findings (F273,
 F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests.
+
+## V4-252: cleanup after V4-246 to V4-250 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `eb1c65b`, now main: CI
+  44039654149 (16/16), nightly 44039657595 (131/131, 116 campaigns). That
+  nightly is the first whose twelve 600-second fuzz runs looked for leaks
+  (V4-250); none was reported.
+- Before it: `7e69a9a` (V4-246 to V4-248) had CI 44037755503 (16/16),
+  nightly 44037758703 (131/131) and main's push CI 44050819131 (16/16);
+  `49cf1e4` (V4-245) had main's push CI 44037779703 (16/16). V4-248's
+  first runs, CI 44032330377 and nightly 44032334735, were red on Linux
+  and are described in its entry.
+- Open for the owner, unchanged since V4-246: F273, F288, F309, F338 and
+  the questions listed there.
+
+Counts: 654 mutations, 117 campaigns, 698 anchors; 364 findings (F273,
+F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests (unchanged by
+this step).
