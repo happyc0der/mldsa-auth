@@ -18686,3 +18686,39 @@ No code.
 Counts: 641 mutations, 116 campaigns, 685 anchors; 352 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests (unchanged by
 this step).
+
+## V4-247 — the browser's key store asks for writes that are on disk; a frame that never left is not counted (F353, F354)
+
+The twenty-eighth review read the boundary between the WebAssembly client
+and the page: the exported C functions, the JS that calls them, the
+IndexedDB store, the WebSocket session.
+
+- **F353.** The store promised that a staged key is durable before ROTATE
+  leaves, and took the transaction's `complete` event as the proof. Under
+  the default, relaxed, durability that event does not wait for the disk.
+  Every write now asks for `strict`. This is a request: what the browser
+  and the disk do with it is not something a test here can see, and the
+  test checks what is asked. The cost is a slower commit, a few times a
+  session at most (enroll, rotate, confirm).
+- **F354.** `Session.send()` now refuses a socket that is not open. A
+  login that meets it fails with that message; a rotation that meets it
+  keeps its staged key, as it does for any failure after staging, which
+  is the safe side.
+
+No C changed and no campaign: JS is outside the mutation runner. Each
+check was seen red against the code before the fix, and `browser_e2e`
+passed in Chromium with the stricter transactions.
+
+Read and found sound: no export keeps a static buffer; every export checks
+its pointers and capacities; every failure wipes and is final; calls in the
+wrong order (receive before start, a second login on a handle, rotate in
+the wrong state) are refused with the state unchanged, confirmed by a
+probe against the built module; heap views are re-read at every use, so
+none goes stale when Argon2id grows the memory; passphrase copies, the
+login code and frame buffers are zeroed before they are freed; text,
+oversized and empty frames are refused; every flow closes its session and
+every lock body is bounded. The review also noted that `common.mjs`
+`session()` does check `r.ok` now; that item in the older lists is stale.
+
+Counts: 641 mutations, 116 campaigns, 685 anchors; 354 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.

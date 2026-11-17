@@ -60,8 +60,8 @@ const enroll = (handle, img) => site(`ENROLL user=${hex(new TextEncoder().encode
 
 try {
   const { default: createMldsaClient } = await import(pathToFileURL(modulePath).href);
-  const { AuthdClient } = await import(pathToFileURL(`${clientDir}/authd-client.mjs`).href);
-  const { MemoryStore } = await import(pathToFileURL(`${clientDir}/store.mjs`).href);
+  const { AuthdClient, Session } = await import(pathToFileURL(`${clientDir}/authd-client.mjs`).href);
+  const { MemoryStore, IdentityStore } = await import(pathToFileURL(`${clientDir}/store.mjs`).href);
   const flows = await import(pathToFileURL(`${clientDir}/flows.mjs`).href);
   const client = await AuthdClient.load(createMldsaClient);
   const url = `ws://127.0.0.1:${info.ws_port}/authd/v1`;
@@ -600,6 +600,59 @@ try {
           'rotate: a refused clock is reported, and the passphrase was not in the module beforehand (the control)');
     check(after === -1, `rotate: no copy of the passphrase is left in the module's memory after a refused clock (found at ${after}) (F266)`);
     s.destroy(); }
+
+  // V4-247, F353: every write of the IndexedDB store asks for a commit that
+  // is on disk when `complete` fires. Browsers default to "relaxed": complete
+  // fires when the write is handed to the operating system, and a power loss
+  // just after could take back a staged key the daemon had already been sent.
+  // A fake database stands in here; what is checked is what the store asks.
+  { let rec = null;
+    const calls = [];
+    const db = { name: 't', transaction(_store, mode, opts) {
+      calls.push({ mode, opts });
+      const tx = { abort() { queueMicrotask(() => tx.onabort?.()); },
+                   objectStore() { return {
+                     add(v) { rec = { ...v }; }, put(v) { rec = { ...v }; }, delete() { rec = null; },
+                     get() { const q = {}; queueMicrotask(() => { q.result = rec ? { ...rec } : undefined; q.onsuccess?.(); }); return q; },
+                   }; } };
+      if (mode === 'readwrite') { setTimeout(() => tx.oncomplete?.(), 0); }
+      return tx; } };
+    const st = new IdentityStore(db);
+    const env = new Uint8Array([1, 2, 3]), next = new Uint8Array([4, 5, 6]);
+    await st.create({ handle: 'd1', serverId: 's', serverPub: new Uint8Array(1), envelope: env, unconfirmed: true });
+    await st.confirm('d1');
+    await st.stagePending('d1', next);
+    await st.promote('d1', next);
+    await st.stagePending('d1', env);
+    await st.discardPending('d1');
+    const got = await st.get('d1');
+    await st.remove('d1');
+    const writes = calls.filter((c) => c.mode === 'readwrite');
+    check(writes.length === 7 && got?.pending === null && hex(got.envelope) === hex(next),
+          `durable: the fake database carried create, confirm, stage, promote, stage, discard and remove (${writes.length} writes; not vacuous)`);
+    check(writes.length === 7 && writes.every((c) => c.opts?.durability === 'strict'),
+          `durable: every write of the identity store asks for strict durability, so "committed" means on disk (${writes.filter((c) => c.opts?.durability === 'strict').length} of ${writes.length}) (F353)`); }
+
+  // V4-247, F354: a frame handed to a socket that has closed is not a frame
+  // sent. WebSocket.send() on a closing or closed socket drops the data and
+  // does not throw; the session counted it, and a probe whose ClientAuth
+  // never left was reported as a key the daemon refused.
+  { const stub = (readyState) => {
+      const ws = { readyState, n: 0, send() { this.n += 1; } };
+      const s = new Session({ M: { HEAPU8: new Uint8Array(16) }, u32: () => 4 }, 0, 0, 16, 0, () => {}, 1000);
+      s.ws = ws;
+      return { s, ws };
+    };
+    const open = stub(1);
+    open.s.send();
+    check(open.s.sent === 1 && open.ws.n === 1, 'send: on an open socket the frame goes and is counted (the control)');
+    for (const state of [2, 3]) {
+      const shut = stub(state);
+      let threw = null;
+      try { shut.s.send(); } catch (e) { threw = e; }
+      check(threw !== null && threw.name !== 'AuthdError' && shut.s.sent === 0 && shut.ws.n === 0,
+            `send: on a socket that is ${state === 2 ? 'closing' : 'closed'} nothing is counted as sent, and the caller is told (sent ${shut.s.sent}) (F354)`);
+    } }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

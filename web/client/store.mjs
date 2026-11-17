@@ -13,7 +13,8 @@
 // that commit whole or not at all:
 //   stagePending   writes `pending` in its own transaction, and RESOLVES ONLY
 //                  WHEN IT HAS COMMITTED, so ROTATE is never sent before the
-//                  new key is durable;
+//                  new key is durable (every write asks for strict
+//                  durability, F353);
 //   promote        moves `pending` into `envelope` and clears `pending` in ONE
 //                  transaction: there is no moment with two current keys, or none;
 //   discardPending clears `pending`, and is called only once the CURRENT key
@@ -74,6 +75,14 @@ class PageLocks {
   }
 }
 
+// F353: what every write asks for. Browsers default to "relaxed" durability:
+// `complete` fires once the write has been handed to the operating system,
+// not once it is on disk. stagePending's promise -- the new key is durable
+// before ROTATE is sent -- needs the second, as the CLI's fsync of the key
+// file and its directory gives it. A browser that does not know the option
+// ignores it.
+const DURABLE = { durability: 'strict' };
+
 const committed = (tx) => new Promise((resolve, reject) => {
   tx.oncomplete = () => resolve();
   tx.onerror = () => reject(tx.error);
@@ -116,7 +125,7 @@ export class IdentityStore {
   // A newly enrolled identity. Refuses to overwrite one: an existing record
   // may hold the only copy of a key the daemon accepts.
   async create({ handle, serverId, serverPub, envelope, unconfirmed = false }) {
-    const tx = this.db.transaction(STORE, 'readwrite');
+    const tx = this.db.transaction(STORE, 'readwrite', DURABLE);
     const os = tx.objectStore(STORE);
     os.add({ handle, serverId, serverPub, envelope, pending: null, unconfirmed: unconfirmed === true,
              createdAt: Date.now(), rotatedAt: null });
@@ -149,14 +158,14 @@ export class IdentityStore {
   }
 
   async remove(handle) {
-    const tx = this.db.transaction(STORE, 'readwrite');
+    const tx = this.db.transaction(STORE, 'readwrite', DURABLE);
     tx.objectStore(STORE).delete(handle);
     await committed(tx);
   }
 
   // Read-modify-write inside ONE readwrite transaction; resolves on commit.
   async #update(handle, change) {
-    const tx = this.db.transaction(STORE, 'readwrite');
+    const tx = this.db.transaction(STORE, 'readwrite', DURABLE);
     const os = tx.objectStore(STORE);
     const r = await done(os.get(handle));
     if (!r) { tx.abort(); throw new Error(`no identity for ${handle}`); }

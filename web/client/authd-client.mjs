@@ -222,6 +222,10 @@ export class Session {
   // Sends the frame the core just wrote (its length is in outLen).
   send() {
     this.live();
+    // F354: send() on a closing or closed socket drops the data and does not
+    // throw. Counting it made a probe whose ClientAuth never left look like
+    // a key the daemon had refused (flows.mjs reads `sent`).
+    if (this.ws?.readyState !== 1) { throw new Error('the connection closed before the frame could be sent'); }
     const M = this.client.M;
     const n = this.client.u32(this.outLen);
     this.ws.send(M.HEAPU8.slice(this.frame, this.frame + n));
