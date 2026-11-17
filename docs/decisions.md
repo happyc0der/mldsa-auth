@@ -18768,6 +18768,19 @@ nightly's twelve fuzz jobs are the twelve targets), the replay driver, and
 six harness bodies read through (oracles use an assert that is not
 compiled out; state is reset per input).
 
+**Corrected after the first runs (CI 44032330377, 9 of 16; nightly
+44032334735, 15 of 131).** Every Linux job that runs the spec-constants
+gate was red, and the macOS ones green. The new matcher was given its text
+in an environment variable; the specification is 144,297 bytes, and Linux
+allows one environment string 131,072. python3 could not be started for
+the checks that search the whole document, and each was reported as not
+found. macOS has no such limit, and the two things I tried in an Ubuntu
+container before pushing were the other two scripts, not this one. The
+text goes in on standard input now, and the gate and its test were run in
+that container before this commit: 47 lines ok, 27 cases passed. The
+nightly's campaigns failed as one, because the gate's test is in the clean
+suite each of them runs first.
+
 No C changed; no campaign. Counts: 641 mutations, 116 campaigns, 685
 anchors; 358 findings (F273, F288, F309 and F338 open); spec v1.71, 113
 errata; 65 tests.

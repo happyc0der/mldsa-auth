@@ -45,10 +45,15 @@ req() { # variable names
 # needle that begins or ends with a digit must not have a digit (or a digit
 # group: "1,234", "1.5") beside it; and each needle now carries the words of
 # the one row or sentence it belongs to.
+# The text goes in on standard input: the whole specification is larger than
+# Linux allows one environment string or argument to be (128 KiB), and the
+# first version of this, which passed it in the environment, could not start
+# python3 there and reported every whole-document check as not found.
 has() { # text, needle
-  HAS_TEXT=$1 HAS_NEEDLE=$2 python3 -c '
+  printf '%s' "$1" | HAS_NEEDLE=$2 python3 -c '
 import os, re, sys
-t, n = os.environ["HAS_TEXT"], os.environ["HAS_NEEDLE"]
+t = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+n = os.environ["HAS_NEEDLE"].encode("utf-8", "surrogateescape").decode("utf-8", "surrogateescape")
 pre = r"(?<![0-9])(?<![0-9][.,])" if n[:1].isdigit() else ""
 post = r"(?![0-9])(?![.,][0-9])" if n[-1:].isdigit() else ""
 sys.exit(0 if n and re.search(pre + re.escape(n) + post, t) else 1)'
