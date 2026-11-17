@@ -1418,6 +1418,15 @@ static void test_backup_path_bound(void)
                            err, sizeof err);
     CHECK(rc == 1 && strstr(err, "at most") == NULL,
           "backup: one of 511 bytes passes the check and fails only at the socket that is not there");
+    /* F345: the daemon refuses a path with a byte outside printable ASCII,
+     * and answered it `malformed`, naming nothing. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/backups/caf\xc3\xa9.db", NULL },
+                           err, sizeof err);
+    const int utf8_ok = (rc == 2 && strstr(err, "--path is printable ASCII only") != NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/backups/a\tb", NULL },
+                           err, sizeof err);
+    CHECK(utf8_ok && rc == 2 && strstr(err, "--path is printable ASCII only") != NULL,
+          "backup: a destination with a byte outside printable ASCII is usage, and says so (F345)");
 }
 
 /* F297: a FIFO where a file is expected. open() without O_NONBLOCK waits for a
@@ -1538,6 +1547,25 @@ static void test_online_bounds(void)
     }
     CHECK(all, "bounds: --user of 65 bytes, of none, or with a byte outside printable ASCII is usage, "
                "with the bound named (F300)");
+    /* F344: enroll-operator reads its own arguments, and checked the length
+     * alone. Refused before the .pub is opened: the file named here is not
+     * there, and is never asked for. */
+    int op = 1;
+    {
+        static const char *bad_users[2];
+        bad_users[0] = ""; bad_users[1] = "jos\xc3\xa9";
+        for (size_t k = 0; k < 2u; k++) {
+            const int rc2 = run_admin_capture((char *[]){ "authd_admin", "enroll-operator", "--socket", sock,
+                                                          "--user", (char *)bad_users[k], "--handle", "h1",
+                                                          "--pub", "/no/such/h1.pub", NULL }, err, sizeof err);
+            if (rc2 != 2 || strstr(err, "--user is 1 to 64 bytes of printable ASCII") == NULL) {
+                printf("  enroll-operator user case %zu: rc %d, stderr: %s\n", k, rc2, err);
+                op = 0;
+            }
+        }
+    }
+    CHECK(op, "bounds: enroll-operator --user of none, or with a byte outside printable ASCII, is usage, "
+              "with the bound named (F344)");
     int rc = run_admin_capture((char *[]){ "authd_admin", "enable-user", "--socket", sock, "--user", u64, NULL },
                                err, sizeof err);
     CHECK(rc == 1 && strstr(err, "--user is") == NULL,

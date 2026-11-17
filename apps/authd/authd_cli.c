@@ -679,6 +679,18 @@ static int online(int argc, char **argv, const char *prog, const char *sub,
     return local_call(prog, sub, sock, cmd, args);
 }
 
+/* The daemon's id_valid: 1 to 64 bytes, each printable ASCII. */
+static int cli_id_in_bounds(const char *v)
+{
+    size_t n = 0;
+    for (; v[n] != '\0'; n++) {
+        if ((unsigned char)v[n] < 0x20u || (unsigned char)v[n] > 0x7eu) {
+            return 0;
+        }
+    }
+    return n >= 1u && n <= AUTHD_CLI_ID_MAX;
+}
+
 static int cmd_enroll_operator(int argc, char **argv, const char *prog)
 {
     const char *sock = NULL, *user = NULL, *handle = NULL, *pubpath = NULL, *label = NULL;
@@ -694,6 +706,14 @@ static int cmd_enroll_operator(int argc, char **argv, const char *prog)
     if (sock == NULL || user == NULL || handle == NULL || pubpath == NULL) {
         return need(prog, "enroll-operator",
                     "--socket PATH --user ID --handle H --pub H.pub [--label TEXT]");
+    }
+    /* F344: this subcommand reads its own arguments, and F300's bounds
+     * never reached it: an empty user, or one with a byte the daemon
+     * refuses, was sent and answered `malformed`. */
+    if (!cli_id_in_bounds(user)) {
+        fprintf(stderr, "%s enroll-operator: --user is 1 to %u bytes of printable ASCII\n", prog,
+                (unsigned)AUTHD_CLI_ID_MAX);
+        return EX_USAGE;
     }
     const uint8_t *hid = NULL;
     size_t hid_len = 0;
@@ -767,6 +787,14 @@ static int cmd_backup(int argc, char **argv, const char *prog)
         fprintf(stderr, "%s backup: --path is at most %u bytes\n", prog,
                 (unsigned)AUTHD_BACKUP_PATH_MAX);
         return EX_USAGE;
+    }
+    /* F345: nor any byte outside printable ASCII, for which it has the
+     * same one word. */
+    for (size_t i = 0; i < plen; i++) {
+        if ((unsigned char)path[i] < 0x20u || (unsigned char)path[i] > 0x7eu) {
+            fprintf(stderr, "%s backup: --path is printable ASCII only: the daemon refuses any other byte\n", prog);
+            return EX_USAGE;
+        }
     }
     if (2u * plen + 8u >= sizeof args) {
         return failed(prog, "backup", path, "request-too-long");

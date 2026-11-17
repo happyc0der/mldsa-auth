@@ -233,10 +233,11 @@ void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
     if (!enabled(lvl)) {
         return;
     }
-    /* The command name is matched against a fixed table before it reaches
-     * here, so it is one of a closed set of literals -- but it is escaped
-     * anyway, because a malformed request reports "?" and the day someone
-     * passes the raw token through, this should still not inject a line. */
+    /* The command name is the PEER's token: the request is logged before
+     * the name is looked up, so that a command nobody knows is on record
+     * too. It is at most 23 printable bytes by then, and it is escaped
+     * here all the same, so it cannot add a field or a line. (This said the
+     * name came from a fixed table; it never did. Corrected in V4-242.) */
     char safe[32];
     size_t j = 0;
     for (size_t i = 0; cmd != NULL && cmd[i] != '\0' && j + 1u < sizeof safe; i++) {

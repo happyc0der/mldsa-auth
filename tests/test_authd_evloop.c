@@ -1856,7 +1856,8 @@ static void test_ws_close(void)
     CHECK(evloop_init(&ev, slots, WSC_SLOTS, 600000u, 600000u, on_frame, on_close, &h) == 0, "wsclose: init");
     CHECK(evloop_add_ws_listener(&ev, lfd, NULL, 0, 0) == 0, "wsclose: WebSocket listener registered");
 
-    for (int variant = 0; variant < 2; variant++) {
+    for (int variant = 0; variant < 3; variant++) {
+        h.echo = (variant == 2);
         int c = dial(port);
         CHECK(c >= 0, "wsclose: client connects");
         (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
@@ -1873,12 +1874,15 @@ static void test_ws_close(void)
         }
         CHECK(got > 12u && memcmp(back, "HTTP/1.1 101", 12) == 0 && evloop_active(&ev) == 1u,
               "wsclose: the upgrade is answered 101 and the slot is held (the canary)");
-        /* variant 0: a Close. variant 1: a Ping and a Close in one write. */
+        /* variant 0: a Close. variant 1: a Ping and a Close in one write.
+         * variant 2 (F343): a request and a Close in one write. */
         static const uint8_t PING[]  = { 0x89u, 0x81u, 0, 0, 0, 0, 'A' };
         static const uint8_t CLOSE[] = { 0x88u, 0x82u, 0, 0, 0, 0, 0x03u, 0xe8u };
-        uint8_t msg[sizeof PING + sizeof CLOSE];
+        static const uint8_t DATA[]  = { 0x82u, 0x89u, 0, 0, 0, 0, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A' };
+        uint8_t msg[sizeof DATA + sizeof CLOSE];
         size_t ml = 0;
         if (variant == 1) { memcpy(msg, PING, sizeof PING); ml = sizeof PING; }
+        if (variant == 2) { memcpy(msg, DATA, sizeof DATA); ml = sizeof DATA; }
         memcpy(msg + ml, CLOSE, sizeof CLOSE); ml += sizeof CLOSE;
         CHECK(write(c, msg, ml) == (ssize_t)ml, "wsclose: client sends its Close");
         /* 300 turns of 10 ms: far inside the ten-minute deadlines above, so
@@ -1889,7 +1893,8 @@ static void test_ws_close(void)
             released = evloop_active(&ev) == 0u;
         }
         CHECK(released, variant == 0 ? "wsclose: after a Close the slot is released (F261)"
-                                     : "wsclose: after a Ping and a Close in one write the slot is released (F261)");
+                        : variant == 1 ? "wsclose: after a Ping and a Close in one write the slot is released (F261)"
+                                       : "wsclose: after a request and a Close in one write the slot is released");
         uint8_t tail[64];
         size_t tn = 0;
         int eof = 0;
@@ -1905,10 +1910,20 @@ static void test_ws_close(void)
         if (variant == 0) {
             CHECK(eof && tn == sizeof ECHO && memcmp(tail, ECHO, sizeof ECHO) == 0,
                   "wsclose: the client reads the Close echo and then the end of the connection (F261)");
-        } else {
+        } else if (variant == 1) {
             CHECK(eof && tn == sizeof PONG + sizeof ECHO && memcmp(tail, PONG, sizeof PONG) == 0 &&
                       memcmp(tail + sizeof PONG, ECHO, sizeof ECHO) == 0,
                   "wsclose: the client reads the Pong, the Close echo and then the end of the connection (F261, F262)");
+        } else {
+            /* The reply to the request, THEN the echo: RFC 6455 5.5.1 has
+             * nothing follow a Close, and a browser drops what does -- the
+             * answer to the last thing it asked. */
+            static const uint8_t REPLY[] = { 0x82u, 0x09u, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A' };
+            CHECK(h.frames >= 1 && eof && tn == sizeof REPLY + sizeof ECHO,
+                  "wsclose: a request sent with a Close is served, and its reply and the echo both arrive (not vacuous)");
+            CHECK(tn == sizeof REPLY + sizeof ECHO && memcmp(tail, REPLY, sizeof REPLY) == 0 &&
+                      memcmp(tail + sizeof REPLY, ECHO, sizeof ECHO) == 0,
+                  "wsclose: the reply to a request sent with a Close is written before the Close echo, not after it (F343)");
         }
         (void)close(c);
         if (!released) { evloop_stop(&ev); break; }

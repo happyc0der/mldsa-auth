@@ -542,6 +542,13 @@ static void test_revocation_closes_sessions(void)
     snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=00", hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
           "revoke: revoking again is still OK (idempotent at the API)");
+    /* Erratum 113: reason= may be left out, and is still checked when given. */
+    snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s", hh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "revoke: REVOKE-DEVICE with no reason= is taken, as one with an empty reason (erratum 113)");
+    snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=zz", hh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "revoke: a reason= that is not hex is malformed, though the key is optional");
 
     (void)close(fd);
     h_client_close(&c);

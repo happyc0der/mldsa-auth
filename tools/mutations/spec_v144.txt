@@ -1,0 +1,6 @@
+WQ1|^test_authd_evloop$|wsclose: the reply to a request sent with a Close is written before the Close echo, not after it (F343)
+CB1|^test_authd_cli$|bounds: enroll-operator --user of none, or with a byte outside printable ASCII, is usage, with the bound named (F344)
+CB2|^test_authd_cli$|bounds: enroll-operator --user of none, or with a byte outside printable ASCII, is usage, with the bound named (F344)
+CB3|^test_authd_cli$|backup: a destination with a byte outside printable ASCII is usage, and says so (F345)
+CB4|^test_authd_cli$|backup: a destination with a byte outside printable ASCII is usage, and says so (F345)
+RR1|^test_authd_localapi$|revoke: REVOKE-DEVICE with no reason= is taken, as one with an empty reason (erratum 113)

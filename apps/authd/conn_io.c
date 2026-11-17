@@ -452,7 +452,20 @@ conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len)
  * Pong as "there is something to send". */
 static int ws_reply_pending(const conn_io_t *c)
 {
-    return c->mode == CONN_IO_MODE_WS && c->ws.reply_len > c->ws.reply_sent;
+    if (c->mode != CONN_IO_MODE_WS || c->ws.reply_len <= c->ws.reply_sent) {
+        return 0;
+    }
+    /* F343: with one exception. Once the peer's Close has been read, what
+     * is in `ws.reply` ends with its echo, and nothing may follow a Close
+     * (RFC 6455 5.5.1): a browser drops it. A request that arrived in the
+     * same read as the Close is served after the echo was queued, so its
+     * reply goes out FIRST. Only while none of the control bytes have been
+     * sent, so the two are never interleaved; a reply already being written
+     * keeps this true until it is done. */
+    if (c->ws.stage == WS_STAGE_CLOSED && c->ws.reply_sent == 0u && c->out_len > c->out_sent) {
+        return 0;
+    }
+    return 1;
 }
 
 size_t conn_io_in_room(const conn_io_t *c)

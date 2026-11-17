@@ -18465,3 +18465,53 @@ Left as they are:
 
 Counts: 624 mutations, 113 campaigns, 668 anchors; 342 findings (F273,
 F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests.
+
+## V4-242 — a reply before the Close echo; two more of authd_admin's bounds; REVOKE-DEVICE without a reason (F343, F344, F345, erratum 113)
+
+The twenty-fifth review read what the twenty-fourth had not: `ws.c` and the
+WebSocket half of `conn_io.c`, `proxy_v2.c`, and the bodies of the local
+API's handlers. Nothing above Low.
+
+- **F343.** Control replies went ahead of the data reply, always. Right for
+  a Pong; wrong once the peer's Close is among them, because the echo of a
+  Close is the last thing a WebSocket peer will read. A request and a Close
+  in one write had the echo written first and the reply after it, where a
+  browser drops it. The reply now goes first, but only while no control
+  byte has been written, so the two are never interleaved. Two requests
+  and a Close in one write still lose the second request: the loop is
+  half-duplex, serves one, and closes when the reply and the echo are out.
+  No client here sends that; said, not changed.
+- **F344, F345.** Two places where `authd_admin` still sent what the daemon
+  answers with a bare `malformed`: `enroll-operator --user` (its own
+  argument loop, missed by F300) and `backup --path` with a byte outside
+  printable ASCII (F296 bounded the length only).
+- **Erratum 113, spec v1.71.** §8 listed `REVOKE-DEVICE`'s `reason=` and
+  `ENROLL`'s `label=` as required. The daemon has never required either;
+  its own test enrolls without a label and the reference site sends none
+  when it has none. As erratum 80 did for `DISABLE-USER`, the text is
+  brought to the daemon. A check now pins `REVOKE-DEVICE` with no
+  `reason=`, and that a `reason=` which is not hex is still `malformed`.
+- A comment in `authd_log.c` said the command name it logs came from a
+  fixed table. It is the peer's token, logged before the lookup, at most
+  23 printable bytes and escaped. The comment now says that.
+
+Left as they are, each for a reason:
+- `proxy_v2` reads the address family and ignores the transport nibble, so
+  a preamble marked UNSPEC or DGRAM with an IPv4 address is taken as that
+  address; an unknown family is `no-client-address` where the PROXY
+  specification says to reject. Only the allowlisted proxy can send a
+  preamble, and both answers to an unknown family close the connection.
+- A Close with a one-byte payload is echoed empty; RFC 6455 allows none or
+  at least two.
+
+Read and found sound: the upgrade parser and the frame checks (RSV, mask
+direction, minimal lengths, control-frame rules, continuation state); the
+room reserved for a 101, a Pong and a Close echo together; the PROXY
+preamble's lengths and TLVs; which socket may issue which command; every
+path that holds a secret wipes it; no list reply can be truncated into
+something that looks whole.
+
+Campaign v144, six mutants, each tried by hand against its one test first.
+
+Counts: 630 mutations, 114 campaigns, 674 anchors; 345 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
