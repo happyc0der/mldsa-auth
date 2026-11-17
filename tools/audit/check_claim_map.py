@@ -90,6 +90,32 @@ def packet_counts():
            "page says %s; \u00a720 holds %d row(s)" % (m.group(1) if m else "nothing", len(errata)))
 
 
+def open_findings():
+    """The packet's front page says "The open ones are listed below". From
+    V4-82 to V4-266 the list was not touched while six findings were recorded
+    open, two of them Medium (audit F414): a reader of the page was told of
+    none. Every row the register marks OPEN must have a row of its own in
+    one of the page's tables. The sentence must be FOUND, so rewording it
+    fails here rather than retiring the check. At least one open row must
+    exist too: a pattern that stopped matching the register would otherwise
+    find nothing to check and pass."""
+    audit = open("docs/v4/audit.md", encoding="utf-8").read()
+    page = open("docs/review/README.md", encoding="utf-8").read()
+    still = []
+    for line in audit.splitlines():
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) >= 8 and re.fullmatch(r'\*{0,2}F\d+\*{0,2}', cells[1]) and cells[6].startswith("**OPEN"):
+            still.append(cells[1].strip("*"))
+    listed = set(re.findall(r'^\| (F\d+) \|', page, re.M))
+    missing = [f for f in still if f not in listed]
+    said = "The open ones are listed below" in page
+    report("every open finding is listed on the packet's front page", bool(still) and said and not missing,
+           ("the register marks no row OPEN: the pattern no longer matches it" if not still else
+            "the page no longer says its open findings are listed below" if not said else
+            "open in the register and in no table of docs/review/README.md: " + ", ".join(missing)) if (not still or not said or missing)
+           else "%d open in the register (%s), each with a row" % (len(still), ", ".join(still)))
+
+
 def inventory_counts():
     """Two gates pin a list of sites, and the documents say how many: the
     constant-time comparisons (tests/constant_time_sites.txt) and the
@@ -225,6 +251,7 @@ def main(repo):
     print("  ---   " + ", ".join("%d %s" % (v, k) for k, v in counts.items()))
 
     packet_counts()
+    open_findings()
     inventory_counts()
     if ok:
         print("OK: every requirement is mapped, and everything the map cites exists")

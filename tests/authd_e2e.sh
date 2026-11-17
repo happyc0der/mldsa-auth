@@ -400,20 +400,7 @@ grep -q 'admin socket' "$TMP/bind.log" || fail "the daemon did not name the admi
 # F130: ...and the file it refused to bind over is NOT the daemon's to delete.
 [ "$(cat "$TMP/ba.sock" 2>/dev/null)" = "not a socket" ] \
     || fail "the daemon deleted the file at the admin socket path that it refused to bind over (F130)"
-# V4-263 (F400): and --check-config, in both its forms, says so first. It
-# called this configuration valid, and the start above then could not use it.
-for form in daemon admin; do
-    rc=0
-    if [ "$form" = admin ]; then "$ADMIN" --check-config --config "$TMP/bind.conf" > "$TMP/bindcc.out" 2>&1 || rc=$?
-    else "$DAEMON" --config "$TMP/bind.conf" --check-config > "$TMP/bindcc.out" 2>&1 || rc=$?; fi
-    [ "$rc" -eq 3 ] || fail "$form --check-config on a socket path holding a regular file exited $rc, expected 3 (F400)"
-    grep -q 'admin_socket' "$TMP/bindcc.out" && grep -q 'not a socket is already there' "$TMP/bindcc.out" \
-        || fail "$form --check-config did not name the socket path that holds a regular file (F400): $(cat "$TMP/bindcc.out")"
-done
 rm -f "$TMP/ba.sock"
-rc=0; "$DAEMON" --config "$TMP/bind.conf" --check-config > "$TMP/bindcc.out" 2>&1 || rc=$?
-[ "$rc" -eq 0 ] || fail "--check-config refuses the same configuration with nothing at the socket path (the control): $(cat "$TMP/bindcc.out")"
-echo "PASS: E2E: --check-config refuses a socket path that holds something other than a socket, as the start does (F400)"
 echo "PASS: E2E: a listener failure runs the cleanup epilogue that wipes the server key"
 
 # V4-51: the daemon refuses to START on a file it cannot trust, and says why.
@@ -491,6 +478,25 @@ for what in "$TMP/su/garbage.sqlite3|is not a store (not an SQLite database)" "$
         || fail "authd_admin --check-config on a store_path that ${what##*|}: exit $rc, said: $(cat "$TMP/sucheck.out") (F362)"
 done
 echo "PASS: E2E: --check-config refuses a store_path that names a directory or a file that is not a database, exit 3 (F362)"
+# V4-263 (F400): --check-config, in both its forms, refuses a socket path that
+# holds something other than a socket. It called bind.conf valid, and the
+# start further up then could not use it. (V4-267: this stood beside that
+# start, AHEAD of the F362 checks above. A mutant that drops --check-config's
+# extra checks then stopped here first, and campaign v147's ST4 and ST5,
+# which name those checks, were reported as survivors in the nightly.)
+printf 'not a socket\n' > "$TMP/ba.sock"
+for form in daemon admin; do
+    rc=0
+    if [ "$form" = admin ]; then "$ADMIN" --check-config --config "$TMP/bind.conf" > "$TMP/bindcc.out" 2>&1 || rc=$?
+    else "$DAEMON" --config "$TMP/bind.conf" --check-config > "$TMP/bindcc.out" 2>&1 || rc=$?; fi
+    [ "$rc" -eq 3 ] || fail "$form --check-config on a socket path holding a regular file exited $rc, expected 3 (F400)"
+    grep -q 'admin_socket' "$TMP/bindcc.out" && grep -q 'not a socket is already there' "$TMP/bindcc.out" \
+        || fail "$form --check-config did not name the socket path that holds a regular file (F400): $(cat "$TMP/bindcc.out")"
+done
+rm -f "$TMP/ba.sock"
+rc=0; "$DAEMON" --config "$TMP/bind.conf" --check-config > "$TMP/bindcc.out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "--check-config refuses the same configuration with nothing at the socket path (the control): $(cat "$TMP/bindcc.out")"
+echo "PASS: E2E: --check-config refuses a socket path that holds something other than a socket, as the start does (F400)"
 su_conf "$TMP/su/store.sqlite3" "$TMP/su/server.ek" "$TMP/su/pass"
 su_umask=$(umask); umask 022   # F200: the store this start creates must not take this
 "$DAEMON" --config "$TMP/su.conf" > "$TMP/su-ok.log" 2>&1 &

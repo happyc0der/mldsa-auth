@@ -19408,3 +19408,33 @@ Spec v1.79, erratum 121.
 
 Counts: 687 mutations, 123 campaigns, 731 anchors; 414 findings (F273,
 F288, F309, F338, F398 and F403 open); spec v1.79, 121 errata; 65 tests.
+
+## V4-267 — a nightly red by this loop's own hand: a new check ahead of older named checks; every open finding listed, and gated (F415, F416)
+
+V4-263's nightly was 136 of 137: campaign v147's ST4 and ST5 survived.
+V4-265 and V4-266 are stacked on V4-263 and their nightlies will show the
+same two until this commit, which is on top of all three; none of the
+three lands on its own nightly.
+
+- **F415.** The lesson is in this loop's notes three times over: before
+  adding a check to a shared end-to-end script, look for committed
+  mutants whose named check covers the same code path, and put the new
+  check after it. The pre-check that was done for V4-263 tried the new
+  campaign's seven mutants and not the older ones that touch
+  `authd_config_check_store`. The three suites cannot see this: the
+  clean tree passes wherever the block stands. What would have: running
+  every campaign whose mutants touch a function the step changes, which
+  is a grep of `tools/mutations/` for the function's name.
+- **F416.** F414's fix was done by hand from the review's list of six;
+  listing every OPEN row mechanically found two more. The gate reads
+  the disposition column, so a finding recorded open in other words
+  (F5, F15, F17 and F91, which the page lists by its own account) is
+  outside it.
+- **Step numbering.** V4-267 was to be the cleanup; it is this
+  correction, and the cleanup follows as V4-268.
+
+No campaign: no compiled code changed.
+
+Counts: 687 mutations, 123 campaigns, 731 anchors; 416 findings (F148,
+F156, F273, F288, F309, F338, F398 and F403 open); spec v1.79, 121
+errata; 65 tests.
