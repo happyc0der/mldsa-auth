@@ -18658,3 +18658,31 @@ re-anchored ones and v144 WQ1.
 
 Counts: 641 mutations, 116 campaigns, 685 anchors; 352 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
+
+## V4-246: cleanup after V4-242 to V4-244 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `868769b`, now main: CI
+  44017946331 (16/16), nightly 44017949713 (130/130, 115 campaigns).
+- Before it: `fd42e28` (V4-242, V4-243) had CI 44004439904 (16/16),
+  nightly 44004443465 (129/129) and main's push CI 44013712770 (16/16);
+  `1d17d12` had main's push CI 44003391317 (16/16). V4-244's first nightly,
+  44007461981, was 129 of 130 and is described in its entry.
+- Open for the owner: F273 (the unit's restart policy), F288 (the 10 us
+  pin floor), F309 (the loopback listener outside the rate limiter;
+  recommended: its own connection cap, default 8), F338 (the limiter
+  table's size; recommended: from the configuration). Added by V4-244: a
+  daemon-side guard against starting on a store older than a recorded
+  mark (F348), and codes of their own for refused backups (F349). Still
+  open from earlier entries: one login state per site session; what the
+  audit chain records; long-term-key compromise in the ProVerif model;
+  `user_id` opaque or printable; the passphrase policy on a browser
+  rotation; wall-clock lifetimes when the clock is stepped; uppercase hex
+  where section 8 says lowercase; C0 control characters in a passphrase;
+  raising the descriptor limit to the hard limit; PR 1, which is the
+  owner's to merge.
+
+Counts: 641 mutations, 116 campaigns, 685 anchors; 352 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests (unchanged by
+this step).
