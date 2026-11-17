@@ -18386,3 +18386,32 @@ locally; the nightly is what runs the rest, and it did.
 
 Counts: 620 mutations, 112 campaigns, 664 anchors; 339 findings (F273,
 F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests.
+
+## V4-240: cleanup after V4-234 to V4-239 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `50dd237`, now main: CI
+  43986387454 (16/16), nightly 43986391642 (127/127, 112 campaigns).
+- Before it: `2467c37` (V4-237 and V4-238) had CI 43945772373 (16/16),
+  nightly 43945777305 (126/126) and main's push CI 43961736866 (16/16);
+  `4208596` (V4-236) had CI 43933809752 and nightly 43933814724 (125/125);
+  `877322f` (V4-234 and V4-235) had CI 43928780089 and nightly 43928785861
+  (124/124).
+- V4-239's first nightly, 43976806641 on `97d8065`, was 125 of 127; its
+  entry says why, and what moved.
+- Open for the owner: F273, F288, F309, and now F338 (the limiter's table
+  of 1,024 addresses fills before its rates bind at some accepted
+  settings; recommended: size it from the configuration at start). Also,
+  unchanged: the reference site's one login state per session, what the
+  audit chain should record, whether the symbolic model should cover
+  long-term key compromise, pull request 1, `user_id` "opaque" in §3.2
+  against printable ASCII in the daemon, the browser rotation applying the
+  new-passphrase policy to an existing passphrase, lifetimes on the wall
+  clock when the clock is stepped, uppercase hex accepted where §8 says
+  lowercase, whether C0 control characters belong in a passphrase, and a
+  hard descriptor limit below what is needed leaving the soft limit alone.
+
+Counts: 620 mutations, 112 campaigns, 664 anchors; 339 findings (F273,
+F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests (unchanged by
+this step).
