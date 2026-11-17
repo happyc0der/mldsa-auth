@@ -80,6 +80,31 @@ try {
     spawnSync('pkill', ['-f', 'authd_wasm_fixture 496.2']);
     await new Promise((r) => squat.close(r)); }
 
+  // 1c. V4-256, F374: a number that is not one is refused before anything is
+  // started. `--minutes abc` used to start the fixture with "NaN" and end at
+  // once with "time is up"; `--count abc` could never be reached.
+  for (const [opt, val] of [['--minutes', 'abc'], ['--minutes', '0'], ['--count', 'abc'], ['--count', '1.5'], ['--port', '70000']]) {
+    const t = runTool(['--out', join(work, 'bad.jsonl'), opt, val]);
+    const code = await t.exited;
+    check(code === 2 && t.out.includes(`phone_timing: ${opt} ${val}:`) && !/time is up|open on the phone/.test(t.out),
+          `${opt} ${val} is refused by name, exit 2, with nothing started (exit ${code})`);
+  }
+  // ...and an IPv6 host is printed as a URL: http://::1:8099/ is not one.
+  { const { createServer } = await import('node:net');
+    const probe = createServer();
+    const v6 = await new Promise((r) => { probe.once('error', () => r(false)); probe.listen(0, '::1', () => probe.close(() => r(true))); });
+    if (!v6) {
+      console.log('SKIP: no IPv6 loopback here; the bracketed URL is not checked');
+    } else {
+      const t = runTool(['--host', '::1', '--count', '1', '--minutes', '0.05', '--out', join(work, 'v6.jsonl')]);
+      await t.exited;
+      const u = (/^open on the phone:\s+(\S+)$/m.exec(t.out) ?? [])[1] ?? '';
+      let parsed = null;
+      try { parsed = new URL(u); } catch { /* not a URL */ }
+      check(parsed !== null && parsed.hostname === '[::1]' && /^\d+$/.test(parsed.port),
+            `for --host ::1 the tool prints a URL a browser can open (${u || t.out.trim().split('\n').pop()})`);
+    } }
+
   // 2. The real run: two results, one per origin.
   const rows = join(work, 'rows.jsonl');
   // timing.test is mapped to 127.0.0.1 below, so the site must be told the

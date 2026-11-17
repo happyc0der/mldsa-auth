@@ -80,6 +80,18 @@ if [ "$rc" -eq 3 ] && grep -q 'names no mutation' "$TMP/out" && kept; then
 else
     bad "a spec of comments only was not refused (F322): exit $rc, output: $(cat "$TMP/out")"
 fi
+# F373: an expectation list with an empty element names nothing: the runner's
+# grep for "" matches every FAIL line.
+for shape in ';' 'a check;;another' ' ' 'a check; '; do
+    printf 'X1|^t$|some check\nX2|^t$|%s\n' "$shape" > "$TMP/blank.txt"
+    plant
+    run "$TMP/blank.txt"; rc=$?
+    if [ "$rc" -eq 3 ] && grep -q 'no expected check: X2 $' "$TMP/out" && kept; then
+        ok "an expectation list '$shape' with an empty element is refused, by mutation (F373)"
+    else
+        bad "an expectation list '$shape' was not refused (F373): exit $rc, output: $(cat "$TMP/out")"
+    fi
+done
 run "$TMP/absent.txt"; rc=$?
 if [ "$rc" -eq 3 ] && kept; then ok "a spec that is not there is refused"
 else bad "a missing spec: exit $rc, output: $(cat "$TMP/out")"; fi

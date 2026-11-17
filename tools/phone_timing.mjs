@@ -56,6 +56,14 @@ if (!args.fixture || !args['module-dir'] || !args.host) {
 }
 const count = Number(args.count ?? 1);
 const minutes = Number(args.minutes ?? 15);
+const port = Number(args.port ?? 8099);
+// F374: `--minutes abc` was NaN -- the fixture was started with "NaN" and the
+// timer below fired at once ("time is up", exit 1); `--count abc` could never
+// be reached. Refused here, before anything is started.
+const badNumber = !Number.isInteger(count) || count < 1 ? `--count ${args.count}: a whole number, 1 or more`
+  : !(Number.isFinite(minutes) && minutes > 0 && minutes <= 1440) ? `--minutes ${args.minutes}: a number above 0, at most 1440`
+    : !Number.isInteger(port) || port < 0 || port > 65535 ? `--port ${args.port}: a whole number, 0 to 65535` : null;
+if (badNumber) { console.log(`phone_timing: ${badNumber}`); process.exit(2); }
 const outFile = resolve(args.out ?? 'phone-timings.json');
 
 const fx = spawn(resolve(args.fixture), [String(minutes * 60 + 30)], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -83,7 +91,7 @@ const { startSite } = await import(pathToFileURL(resolve(REPO, 'examples/site-no
 const site = await startSite({
   authdSite: info.site, authdWs: `127.0.0.1:${info.ws_port}`, serverId: info.server_id,
   serverPub: Buffer.from(info.server_pub, 'hex'), moduleDir: args['module-dir'], invite,
-  host: args.host, port: Number(args.port ?? 8099),
+  host: args.host, port,
   // The site serves a DNS name only when it is --host or named here (V4-88,
   // F177): a name that resolves to --host but is neither is a rebound page.
   hostNames: typeof args['host-name'] === 'string' ? [args['host-name']] : [],
@@ -104,7 +112,9 @@ if (!loopback) {
   console.log(`note: http://${args.host} is not a secure context. Safari on a Mac runs such a page without its ` +
               'JIT (F119; iPhones, also WebKit, are unmeasured). For a browser on this machine use --host 127.0.0.1.');
 }
-console.log(`open on the phone:  http://${args.host}:${site.port}/timing.html#invite=${invite}${args.auto ? '&auto=1' : ''}`);
+// An IPv6 literal goes in brackets in a URL: http://::1:8099/ is not one (F374).
+const urlHost = args.host.includes(':') && !args.host.startsWith('[') ? `[${args.host}]` : args.host;
+console.log(`open on the phone:  http://${urlHost}:${site.port}/timing.html#invite=${invite}${args.auto ? '&auto=1' : ''}`);
 console.log(`then tap Measure. Results go to ${outFile}; stopping after ${count} result(s) or ${minutes} min.`);
 const timer = setTimeout(() => { console.log('time is up'); finish(); }, minutes * 60 * 1000);
 await done;

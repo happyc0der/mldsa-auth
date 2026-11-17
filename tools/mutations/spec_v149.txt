@@ -1,0 +1,2 @@
+CB1|^fuzz_replay_authd_config$|TOO_LARGE is not exactly a config over AUTHD_CONFIG_MAX_BYTES
+CB2|^fuzz_replay_authd_config$|TOO_LARGE is not exactly a config over AUTHD_CONFIG_MAX_BYTES

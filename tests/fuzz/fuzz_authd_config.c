@@ -34,7 +34,11 @@
 #include "session.h"
 
 const char *const fuzz_target_name = "authd_config";
-const size_t fuzz_target_max_len = 4096;
+/* F372: above AUTHD_CONFIG_MAX_BYTES (65536), not below it. At 4096 the
+ * harness returned before parsing anything longer -- deploy/authd.conf.example
+ * is 6175 bytes and was never parsed here -- and the TOO_LARGE answer could
+ * not be reached at all. */
+const size_t fuzz_target_max_len = 66560;
 
 int fuzz_target_command(int argc, char **argv) {
     (void)argc; (void)argv;
@@ -67,6 +71,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     authd_config_t cfg;
     size_t line = 0;
     const authd_config_status_t st = authd_config_parse(in, size, &cfg, &line);
+
+    /* F372: the size limit is exactly AUTHD_CONFIG_MAX_BYTES, in both directions */
+    FUZZ_ASSERT((st == AUTHD_CFG_ERR_TOO_LARGE) == (size > AUTHD_CONFIG_MAX_BYTES),
+                "TOO_LARGE is not exactly a config over AUTHD_CONFIG_MAX_BYTES");
 
     /* determinism: the same bytes must give the same answer and the same struct */
     {
@@ -155,8 +163,29 @@ static void emit_str(fuzz_emit_fn emit, void *ctx, const char *name, const char 
     emit(ctx, name, (const uint8_t *)s, strlen(s));
 }
 
+/* F372: a valid config padded with comment lines to exactly `total` bytes. */
+static size_t padded_config(uint8_t *out, size_t total) {
+    static const char head[] =
+        "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n";
+    size_t n = sizeof head - 1u;
+    memcpy(out, head, n);
+    while (n < total) {
+        const size_t line = (total - n) > 64u ? 64u : (total - n);   /* '#', filler, '\n' */
+        if (line > 1u) { out[n++] = (uint8_t)'#'; }
+        for (size_t i = 2; i < line; i++) { out[n++] = (uint8_t)'x'; }
+        out[n++] = (uint8_t)'\n';
+    }
+    return n;
+}
+
 void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
     emit(ctx, "empty", fuzz_empty, 0);
+    {
+        static uint8_t big[AUTHD_CONFIG_MAX_BYTES + 1u];
+        emit(ctx, "example-sized", big, padded_config(big, 6175u));
+        emit(ctx, "max-bytes", big, padded_config(big, AUTHD_CONFIG_MAX_BYTES));
+        emit(ctx, "one-over-max-bytes", big, padded_config(big, AUTHD_CONFIG_MAX_BYTES + 1u));
+    }
     emit_str(emit, ctx, "minimal-valid",
              "store_path = /var/lib/mldsa-authd/store.sqlite3\n"
              "key_path = /var/lib/mldsa-authd/server.ek\n"

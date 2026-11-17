@@ -49,7 +49,13 @@ cd "$REPO" || exit 2
 # F258.)
 
 # ---- every kill must be named (F90) --------------------------------------
-unnamed=$(awk -F'|' '$1 != "" && $1 !~ /^#/ && $3 == "" { print $1 }' "$SPEC" | tr '\n' ' ')
+# F373: every ELEMENT of the list, not only the list. `ID|regex|;` was one
+# empty expectation, and the grep below finds "" in any FAIL line: a kill by
+# an unrelated check was reported as the named one.
+unnamed=$(awk -F'|' '$1 != "" && $1 !~ /^#/ {
+    n = split($3, e, ";"); blank = (n == 0)
+    for (i = 1; i <= n; i++) if (e[i] ~ /^[ \t]*$/) blank = 1
+    if (blank) print $1 }' "$SPEC" | tr '\n' ' ')
 [ -z "$unnamed" ] || { echo "FATAL: spec $SPEC has mutation(s) with no expected check: $unnamed"; exit 3; }
 # ---- every line must be read (V4-182, F259) -------------------------------
 # `read` answers false on a last line that has no newline, so the loop below
@@ -123,9 +129,9 @@ restore() {
 
 # ---- forced build: delete EVERY project artifact, then rebuild ----------
 forced_build() {
-  objects     | xargs -r rm -f 2>/dev/null || objects     | xargs rm -f 2>/dev/null
-  archives    | xargs -r rm -f 2>/dev/null || archives    | xargs rm -f 2>/dev/null
-  executables | xargs -r rm -f 2>/dev/null || executables | xargs rm -f 2>/dev/null
+  # One path a line, as find printed it: xargs split a build directory whose
+  # path holds a space, and nothing was deleted (F375).
+  { objects; archives; executables; } | while IFS= read -r f; do rm -f "$f"; done
   cmake --build "$BUILD" -j8 > "$1" 2>&1
 }
 
@@ -134,7 +140,7 @@ h()  { sha256 "$1" | cut -c1-16; }
 ht() { textdump "$1" | sha256 /dev/stdin | cut -c1-16; }
 fp() {
   { while IFS= read -r o; do echo "obj $o $(h "$o")"; done < <(objects)
-    while IFS= read -r e; do echo "bin $e $(ht "$e")"; done < <(executables); } | shasum -a 256 | cut -c1-16
+    while IFS= read -r e; do echo "bin $e $(ht "$e")"; done < <(executables); } | sha256 /dev/stdin | cut -c1-16
 }
 fp_counts() { echo "$(objects | wc -l | tr -d ' ') objects, $(executables | wc -l | tr -d ' ') executables"; }
 
@@ -148,6 +154,9 @@ restore || exit 3
 # and the "restored=clean" fingerprint comparison against CLEAN proves it.
 CCACHE_DISABLE=1 forced_build "$LOG/preflight1.build" || { echo "FATAL: clean tree does not build"; exit 3; }
 CLEAN=$(fp)
+# F375: with no hashing tool every fingerprint is "", and "" = "" passed for
+# "deterministic" and for every "restored=clean".
+[ "${#CLEAN}" -eq 16 ] || { echo "FATAL: no fingerprint (is the sha256 tool installed?): '$CLEAN'"; exit 3; }
 CCACHE_DISABLE=1 forced_build "$LOG/preflight2.build" || exit 3
 [ "$(fp)" = "$CLEAN" ] || { echo "FATAL: build is not deterministic"; exit 3; }
 # --output-on-failure on both whole-suite runs (audit finding F85): without it

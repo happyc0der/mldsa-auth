@@ -74,7 +74,9 @@ for spec in specs:
     # refuses such a spec too, but only when a campaign runs; this is CI's.
     for l in lines:
         f = l.split("|")
-        if len(f) != 3 or not f[2].strip():
+        # F373: and every element of the list -- `ID|regex|;` is one empty
+        # expectation, which the runner's grep finds in any FAIL line.
+        if len(f) != 3 or not all(e.strip() for e in f[2].split(";")):
             print(f"UNNAMED {ver} {f[0]}: no expected check (ID|ctest-regex|expectations)"); bad += 1
     sc = repo/"tools/mutations"/f"mutate_{ver}.py"
     tree = ast.parse(sc.read_text()); env = {}; entries = []

@@ -19004,3 +19004,44 @@ No code.
 Counts: 661 mutations, 118 campaigns, 705 anchors; 369 findings (F273,
 F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
 this step).
+
+## V4-256 — the tools that prove a kill: hand controls, the runner's gates, a fuzz bound, the phone tool (F370 to F376)
+
+The thirty-fourth review read the fuzz harness bodies, `bench/`, the phone
+timing tool and the drivers under `tools/`. The harness bodies (apart
+from one bound), the benchmarks and their statistics, `check_claim_map.py`
+and the sanitizer and fault-hook checks were sound.
+
+- **F370, F371 (Medium), F376.** `tools/hand_control.py` is how a mutant
+  is tried before a campaign is pushed, and the memory of V4-33 is why it
+  exists. Medium because a run could exit 0 with a mutated header, or a
+  mutant object, left in the working tree; landed without asking because
+  they are plain defects in a development tool, each with a test that the
+  old tool fails on macOS and in an Ubuntu container. No verdict in the
+  record depends on the flaws: every committed mutation is killed by the
+  campaign runner in the nightly, which snapshots the whole source tree
+  and hashes objects. F376 was not in the review; the fixed tool, tried on
+  v127 LB1 to show F371 closed, answered VOID.
+- **F372.** 66,560 rather than 65,537: room above the limit for the
+  mutator to grow an input past it. The three seeds are built at run
+  time, a valid configuration padded with comment lines.
+- **F373.** The awk gate is stricter than bash's own splitting, which
+  drops a trailing `;`: `a check;` is refused too. No committed spec ends
+  that way.
+- **F375.** The runner's change is exercised for real only by a campaign:
+  the gate test stops before the build. The first nightly on this commit
+  is that test, on Linux, 119 times.
+- **Not changed, recorded:** the `rotate-siglen-overrun` seed in
+  `fuzz_authmsg.c` is refused by the range check, not the bounds check
+  its name describes; `fuzz_authd_conn` cannot hold a login followed by a
+  maximum-size record (16,917 bytes against 16,384) and nothing checks
+  that its login-then-rotate seed is accepted; `rehearse_runbook.py` does
+  not skip a non-bash fence (the runbook has none that matters);
+  `envelope_key_scan.c` reads a short `fread` as a shrunken file without
+  asking `ferror`.
+
+Campaign v149, two mutants of the size limit, each tried with the fixed
+tool.
+
+Counts: 663 mutations, 119 campaigns, 707 anchors; 376 findings (F273,
+F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests.

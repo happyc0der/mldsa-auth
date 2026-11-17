@@ -37,7 +37,7 @@ def check(ok, what):
 
 CMAKE = """cmake_minimum_required(VERSION 3.20)
 project(hcprobe C)
-add_library(plib STATIC plib.c)
+add_library(plib STATIC plib.c src/inner/deep.c)
 add_executable(probe probe.c)
 target_link_libraries(probe PRIVATE plib)
 add_executable(probe_bin probe.c)
@@ -61,11 +61,32 @@ print("PASS: the interpreted answer is 42")
 PLIB = """/* the probe library */
 int answer(void) { return 42; }
 int unused(void) { return 7; }
+const char *label(void) { return "probe/v1/label"; }
+"""
+# V4-256: a source in a subdirectory of its target's directory, and a header.
+DEEP_C = """#include "deep.h"
+int deep(void) { return DEEP; }
+"""
+DEEP_H = """#define DEEP 5
+"""
+MUTATE_V1 = """import pathlib, sys
+p = pathlib.Path(sys.argv[1]) / "src/inner/deep.h"
+t = p.read_text()
+assert sys.argv[2] == "H1" and t.count("#define DEEP 5") == 1
+p.write_text(t.replace("#define DEEP 5", "#define DEEP 6"))
+"""
+MUTATE_V2 = """import sys
+sys.exit(0)
 """
 PROBE = """#include <stdio.h>
+#include <string.h>
 int answer(void);
+int deep(void);
+const char *label(void);
 int main(void)
 {
+    if (strlen(label()) != 14 || label()[13] != 'l') { printf("FAIL: the label ends in l\\n"); return 1; }
+    if (deep() != 5) { printf("FAIL: deep is 5\\n"); return 1; }
     if (answer() != 42) { printf("FAIL: the answer is 42\\n"); return 1; }
     printf("PASS: the answer is 42\\n");
     return 0;
@@ -78,6 +99,12 @@ with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     (d / "iprobe.py").write_text(IPROBE)
     (d / "plib.c").write_text(PLIB)
     (d / "probe.c").write_text(PROBE)
+    (d / "src" / "inner").mkdir(parents=True)
+    (d / "src" / "inner" / "deep.c").write_text(DEEP_C)
+    (d / "src" / "inner" / "deep.h").write_text(DEEP_H)
+    (d / "tools" / "mutations").mkdir(parents=True)
+    (d / "tools" / "mutations" / "mutate_v1.py").write_text(MUTATE_V1)
+    (d / "tools" / "mutations" / "mutate_v2.py").write_text(MUTATE_V2)
     b = d / "b"
     cfg = subprocess.run(["cmake", "-S", str(d), "-B", str(b)], capture_output=True, text=True)
     check(cfg.returncode == 0, "the probe project configures")
@@ -152,6 +179,49 @@ with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     print("  " + r.stdout.strip().replace("\n", "\n  "))
     check(r.returncode == 0 and ": KILLED |" in r.stdout,
           "a target whose OUTPUT_NAME differs, named with --binary, is built, hashed and KILLED")
+
+    # V4-256 (F370): a source in a subdirectory is compiled one level below
+    # its <target>.dir. Its object is dated ahead, so make will not recompile
+    # it on its own: only a tool that finds and deletes it links the mutant.
+    def deep_objects():
+        return [pathlib.Path(r, "deep.c.o") for r, _d, f in os.walk(b) if "deep.c.o" in f]
+    objs = deep_objects()
+    check(len(objs) == 1 and not objs[0].parent.name.endswith(".dir"),
+          "the subdirectory source's object sits below its <target>.dir, not in it")
+    for o in objs:
+        os.utime(o, (future, future))
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--target", "probe",
+                        "--ctest", "^probe$", "--expect", "deep is 5", "--mutation", "src/inner/deep.c",
+                        "--old", "return DEEP;", "--new", "return DEEP + 1;"], capture_output=True, text=True)
+    print("  " + r.stdout.strip().replace("\n", "\n  "))
+    check(r.returncode == 0 and ": KILLED |" in r.stdout and "rebuilt=ok" in r.stdout,
+          "a subdirectory source with its object dated ahead: the tool deletes the object, links the mutant, KILLED")
+
+    # V4-256 (F376): a mutation that changes only data. The text section is
+    # byte-identical (the string is the same length), and a fingerprint of the
+    # code alone called the mutant VOID.
+    rc, out = hc('"probe/v1/label"', '"probe/v1/labem"', expect="the label ends in l")
+    check(rc == 0 and ": KILLED |" in out,
+          "a mutation that changes one byte of a string, and no code, is KILLED -- not VOID")
+
+    # V4-256 (F371): a campaign that mutates a header. The header is backed up
+    # and restored, and the objects that include it are found by their
+    # dependency files (dated ahead again, so nothing else would rebuild them).
+    for o in deep_objects():
+        os.utime(o, (future, future))
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--target", "probe",
+                        "--ctest", "^probe$", "--expect", "deep is 5", "--campaign", "v1", "--id", "H1"],
+                       capture_output=True, text=True)
+    print("  " + (r.stdout.strip() or r.stderr.strip()).replace("\n", "\n  "))
+    check(r.returncode == 0 and ": KILLED |" in r.stdout and "restored=byte-exact" in r.stdout,
+          "a campaign that mutates a header, its dependents dated ahead: the mutant is linked and KILLED")
+    check((d / "src" / "inner" / "deep.h").read_text() == DEEP_H,
+          "a campaign that mutates a header: the header is restored byte-exactly")
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--target", "probe",
+                        "--ctest", "^probe$", "--expect", "deep is 5", "--campaign", "v2", "--id", "X1"],
+                       capture_output=True, text=True)
+    check(r.returncode != 0 and "names no C source or header" in (r.stdout + r.stderr),
+          "a campaign script that names no source is refused: nothing to back up, nothing tested")
 
     after = subprocess.run(["ctest", "--test-dir", str(b), "-R", "^probe$"], capture_output=True, text=True)
     check((d / "plib.c").read_text() == PLIB and after.returncode == 0,

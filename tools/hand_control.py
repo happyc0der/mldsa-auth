@@ -86,21 +86,43 @@ def code_fingerprint(exe):
     return sha(exe)
 
 
+def _target_dir(path):
+    """The <target>.dir a CMake object lives under. A source in a subdirectory
+    of its target's directory is compiled one level deeper
+    (<target>.dir/protocol/handshake.c.o), so every ancestor is asked (F370)."""
+    for anc in pathlib.Path(path).parents:
+        if anc.name.endswith(".dir"):
+            return anc
+    return None
+
+
+def _with_library(obj):
+    tdir = _target_dir(obj)
+    target = tdir.name[:-len(".dir")]
+    # <bindir>/CMakeFiles/<target>.dir -> <bindir>/lib<target>.a
+    lib = tdir.parent.parent / ("lib" + target + ".a")
+    return (obj, str(lib) if lib.exists() else None)
+
+
 def objects_of(build, src):
-    """Every object compiled from `src`, as CMake names it (<file>.o under a
-    <target>.dir), with the static library that object belongs to."""
+    """Every object compiled from `src`, as CMake names it (<file>.o somewhere
+    under a <target>.dir), with the static library that object belongs to. For
+    a header: every object whose compiler dependency file names it (F371)."""
+    header = src.endswith(".h")
     name = os.path.basename(src) + ".o"
+    needle = re.compile(r"(?:^|[/\s])" + re.escape(src) + r"(?:\s|\\|$)", re.M)
     found = []
     for root, _dirs, files in os.walk(build):
-        if "_deps" in pathlib.Path(root).parts:
+        if "_deps" in pathlib.Path(root).parts or _target_dir(os.path.join(root, "x")) is None:
             continue
-        if name in files and root.endswith(".dir"):
-            obj = os.path.join(root, name)
-            tdir = pathlib.Path(root)
-            target = tdir.name[:-len(".dir")]
-            # <bindir>/CMakeFiles/<target>.dir -> <bindir>/lib<target>.a
-            lib = tdir.parent.parent / ("lib" + target + ".a")
-            found.append((obj, str(lib) if lib.exists() else None))
+        if header:
+            for f in files:
+                if not f.endswith(".o.d"):
+                    continue
+                if needle.search(pathlib.Path(root, f).read_text(errors="replace")):
+                    found.append(_with_library(os.path.join(root, f[:-2])))
+        elif name in files:
+            found.append(_with_library(os.path.join(root, name)))
     return found
 
 
@@ -131,7 +153,19 @@ def build(args, sources):
     r = subprocess.run(["cmake", "--build", args.build, "--target", args.target, "-j6"],
                        capture_output=True, text=True)
     exe = target_binary(args.build, args.binary or args.target)
-    return r.returncode, (code_fingerprint(exe) if (r.returncode == 0 and exe) else None)
+    if r.returncode != 0 or not exe:
+        return r.returncode, None
+    # The executable's code AND the objects compiled from the touched files
+    # (F376): a mutation that changes only data -- a label string, a table --
+    # leaves the text section byte-identical and was reported VOID. An object
+    # holds its data too, and is reproducible (the campaign runner's
+    # determinism check stands on that). One this target does not rebuild is
+    # absent in every build alike.
+    h = hashlib.sha256(code_fingerprint(exe).encode())
+    for s in sources:
+        for obj, _lib in sorted(objects_of(args.build, s)):
+            h.update(obj.encode() + b"=" + (sha(obj) if os.path.exists(obj) else "absent").encode() + b"\n")
+    return 0, h.hexdigest()
 
 
 def main():
@@ -164,7 +198,10 @@ def main():
         script = repo / "tools" / "mutations" / f"mutate_{args.campaign}.py"
         text = script.read_text()
         # The touched files are the campaign's: every path literal it names.
-        sources = sorted({m for m in re.findall(r'"((?:apps|src|tests|web|bench|examples)/[^"]+\.c)"', text)})
+        # Headers too: a campaign that mutates one was neither backed up nor restored (F371).
+        sources = sorted({m for m in re.findall(r'"((?:apps|src|tests|web|bench|examples)/[^"]+\.[ch])"', text)})
+        if not sources:
+            sys.exit(f"{script.name} names no C source or header -- nothing to back up, nothing tested")
     else:
         if args.old is None or args.new is None:
             sys.exit("--mutation needs --old and --new")
@@ -219,13 +256,15 @@ def main():
         back = "n/a"
     else:
         rc2, back = build(args, sources)
-    kind = "(file)" if args.interpreted else "(text)"
-    rebuilt = "n/a (interpreted)" if args.interpreted else ("ok" if back else "FAILED")
+    kind = "(file)" if args.interpreted else "(code+objects)"
+    # "ok" is the clean code again, not merely a binary that linked (F370).
+    rebuilt = "n/a (interpreted)" if args.interpreted else (
+        "ok" if back == clean else ("FAILED" if back is None else "NOT THE CLEAN CODE"))
     print(f"{label}: {verdict} | clean={clean[:12]} mutant={(mutant or 'none')[:12]} {kind} "
           f"| restored={'byte-exact' if restored else 'MISMATCH'} | rebuilt={rebuilt}")
     for f in fails:
         print(f"    FAIL: {f[:200]}")
-    ok = verdict.split()[0] == args.expect_verdict and restored and back is not None
+    ok = verdict.split()[0] == args.expect_verdict and restored and (args.interpreted or back == clean)
     sys.exit(0 if ok else 1)
 
 

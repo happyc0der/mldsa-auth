@@ -128,7 +128,7 @@ rm -f "$log"
 after=$(snapshot)
 
 if [ "$before" = "$after" ]; then
-  fp=$(echo "$after" | shasum -a 256 | cut -c1-16)
+  fp=$(echo "$after" | sha256 /dev/stdin | cut -c1-16)
   echo "OK: $BUILD is current with the working tree ($nobj object(s), $nbin executable(s); a from-scratch rebuild reproduced every one; fingerprint $fp) [$MLDSA_PLATFORM, text via $MLDSA_TEXTTOOL]"
   exit 0
 fi
