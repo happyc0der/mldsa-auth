@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.77, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263)
+# mldsa-authd — deployment specification (v1.78, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -999,7 +999,9 @@ self-test. The passphrase and derived key are wiped immediately.
 A path that is not a regular file is refused **without waiting on it**
 (erratum 105): a sealed key, a passphrase file and the configuration file are
 opened without blocking, so a FIFO with no writer is `not-a-regular-file` (or
-the key file's I/O refusal) at once, not a tool that never exits.
+the key file's I/O refusal) at once, not a tool that never exits. So are a
+public-key file (`--server-pub`, `--pub`) and the plaintext secret key
+`migrate-key` reads (erratum 120).
 
 **Server passphrase delivery** on a headless host: 32 random bytes from
 `authd_admin init`, delivered by systemd `LoadCredentialEncrypted`
@@ -2261,3 +2263,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 119 | 10.2, 16 | A signal ends the event loop's wait; `--check-config` refuses a socket path that holds something other than a socket and a passphrase file of one newline; a rotation replaces the `.pub` before it promotes the key; a recovery probe that ran to its deadline is not a refusal | The loop called `poll` again with its whole timeout after a signal, so `SIGTERM` was acted on up to a second late, pings could be two seconds apart, and erratum 90's sentence was untrue under signals. `--check-config` said "is valid" of two configurations the start then refused, one of them every two seconds under systemd. A client killed between its two renames left a `.pub` naming a dead key with nothing to repair it. And a daemon that stalled after `ClientAuth` made the client say "an administrator must re-enrol this device" of keys nobody had refused (audit F399 to F402) |
+
+### Revision v1.78 (V4-265)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 120 | 12 | A public-key file and the plaintext secret key `migrate-key` reads are opened without blocking too | Erratum 105 named the sealed key, the passphrase file and the configuration file. The two older readers, which `authd_client login` and `rotate`, `authd_admin enroll-operator` and `migrate-key` use, still waited on a FIFO with no writer: `--server-pub` naming one was a tool that never exited (audit F407) |

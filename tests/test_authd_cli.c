@@ -1516,6 +1516,13 @@ static int fifo_child(int which, const char *p)
             char to[600];
             (void)snprintf(to, sizeof to, "%s.to", p);
             out = (int)keyfile_promote(p, to);
+        } else if (which == 4) {        /* V4-265, F407: a public key, as --server-pub and --pub read one */
+            uint8_t pk[MLDSA_PUBLIC_KEY_BYTES];
+            out = (int)demo_keys_load_public(p, (const uint8_t *)"h", 1u, pk);
+        } else if (which == 5) {        /* ...and a plaintext secret key, as migrate-key --in reads one */
+            mldsa_keypair_t kp;
+            memset(&kp, 0, sizeof kp);
+            out = (int)demo_keys_load_identity(p, (const uint8_t *)"h", 1u, &kp);
         } else {
             static authd_config_t cfg;
             size_t line = 0;
@@ -1548,6 +1555,10 @@ static void test_fifo_refused(void)
           "fifo: a key to promote that is a FIFO is refused, not waited on (F297)");
     CHECK(fifo_child(3, p) == (int)AUTHD_CFG_ERR_IO,
           "fifo: a configuration path that is a FIFO is refused, not waited on (F297)");
+    CHECK(fifo_child(4, p) == (int)DEMO_KEYS_ERR_IO,
+          "fifo: a public-key path that is a FIFO is refused, not waited on (F407)");
+    CHECK(fifo_child(5, p) == (int)DEMO_KEYS_ERR_IO,
+          "fifo: a plaintext secret-key path that is a FIFO is refused, not waited on (F407)");
     (void)unlink(p);
 }
 

@@ -74,6 +74,10 @@ const info = await new Promise((res, rej) => {
   setTimeout(() => rej(new Error('fixture never became ready')), 20000);
 });
 
+// Said once, so a reader of this output (a person, or tests/phone_timing_tool.mjs)
+// knows a daemon was started and which process it is.
+console.log(`fixture ready (pid ${fx.pid})`);
+
 // Stopped from outside (a test's SIGTERM, or kill): take the fixture along,
 // rather than leave it serving for --minutes more.
 for (const sig of ['SIGTERM', 'SIGINT']) { process.on(sig, () => { fx.kill('SIGTERM'); process.exit(1); }); }

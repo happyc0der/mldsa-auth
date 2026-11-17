@@ -19323,3 +19323,45 @@ No code.
 Counts: 685 mutations, 122 campaigns, 729 anchors; 403 findings (F273,
 F288, F309, F338, F398 and F403 open); spec v1.77, 119 errata; 65 tests
 (unchanged by this step).
+
+## V4-265 — the formal model: the code the site accepts is the code issued, every control exhibits its attack, the results are counted; a FIFO at a public-key path (F404 to F408)
+
+The fortieth review read the ProVerif model against the protocol
+specification and the handshake code, term by term, and the key
+envelope against spec 12. The model's messages, signatures, transcript
+and key schedule match the specification and the initiator's code; no
+document claims of ProVerif what it does not show. The envelope was
+sound: the whole header is associated data, the KDF's bounds are
+checked before it runs, salts and nonces are fresh, nothing is taken
+from the header before the AEAD opens, every exit frees its secrets.
+
+ProVerif had not been run on this machine since V4-204. The pinned
+2.05 tarball the nightly builds was built in an Ubuntu container and
+the whole of `formal/run.sh` runs there in sixteen seconds, so the
+model was changed against the tool, not against an argument.
+
+- **F404.** A second site process reads the code from the public
+  channel: a web attacker can post anything to the site. With that and
+  the code in the event, the comparison is load-bearing, and its control
+  shows it.
+- **F406.** The review suspected the cause and named a cheap test; the
+  test confirmed it. The README's explanation ("a hard case for
+  ProVerif's resolution") was a guess recorded as a finding of V4-4, and
+  the script's acceptance of "cannot be proved" was built on it. A
+  control now has to exhibit its attack.
+- **What the model still does not show, stated in its README:** what
+  the incoming key's signature buys (needs a dishonest enrolled device);
+  forward secrecy, key-compromise impersonation and long-term-key
+  compromise, which remain the owner's open question.
+- **F407.** `demo_keys_migrate_legacy` got the same flag though only the
+  demo reaches it.
+
+- **F408.** A check written in V4-259 to make another check
+  non-vacuous was itself a matter of timing, and landed. It was found
+  because this step's suites ran three trees at once. The rule it
+  broke is an old one here: observe an event, do not sample for it.
+
+Campaign v153, two mutants, each tried with `tools/hand_control.py`.
+
+Counts: 687 mutations, 123 campaigns, 731 anchors; 408 findings (F273,
+F288, F309, F338, F398 and F403 open); spec v1.78, 120 errata; 65 tests.

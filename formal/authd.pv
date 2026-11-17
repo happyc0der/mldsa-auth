@@ -65,7 +65,7 @@ event respEstablished(id, id, nonce, nonce, key).
 event initConfirmed(id, id, nonce, nonce, key).
 event codeIssued(id, bitstring, bitstring).     (* device, state, code *)
 event loginStart(id, bitstring).                (* device began a login carrying state *)
-event siteLoggedIn(id, bitstring).              (* site accepted an EXCHANGE under state *)
+event siteLoggedIn(id, bitstring, bitstring).   (* site accepted an EXCHANGE of this code under state *)
 event rotateRequested(id, pkey, pkey, bitstring).
 event rotated(id, pkey, pkey, bitstring).
 
@@ -83,8 +83,14 @@ query a: id, b: id, s: nonce, nb: nonce, k: key;
    was begun by that device with that state (kills login-CSRF at EXCHANGE) *)
 query d: id, st: bitstring, cd: bitstring;
   event(codeIssued(d,st,cd)) && attacker(cd) ==> false.
-query d: id, st: bitstring;
-  event(siteLoggedIn(d,st)) ==> event(loginStart(d,st)).
+query d: id, st: bitstring, cd: bitstring;
+  event(siteLoggedIn(d,st,cd)) ==> event(loginStart(d,st)).
+(* P4b (V4-265, F404): ...and the code it accepted is the one the daemon
+   issued to that device under that state. Until V4-265 the site's event did
+   not carry the code and only the page that held it could post one, so the
+   comparison `excode = code` could be deleted with every query unchanged. *)
+query d: id, st: bitstring, cd: bitstring;
+  event(siteLoggedIn(d,st,cd)) ==> event(codeIssued(d,st,cd)).
 (* P5: a committed rotation was requested in that session *)
 query d: id, po: pkey, pn: pkey, h: bitstring;
   inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)).
@@ -93,10 +99,11 @@ query d: id, po: pkey, pn: pkey, h: bitstring;
    protocol cannot run proves every correspondence vacuously -- which is what
    the site's login was until V4-204 (F281). ProVerif answers "not event(..)
    is false" when it finds a run. *)
-query d: id, st: bitstring; event(siteLoggedIn(d,st)).
+query d: id, st: bitstring, cd: bitstring; event(siteLoggedIn(d,st,cd)).
 query d: id, st: bitstring, cd: bitstring; event(codeIssued(d,st,cd)).
 query a: id, b: id, s: nonce, nb: nonce, k: key; event(initEstablished(a,b,s,nb,k)).
 query a: id, b: id, s: nonce, nb: nonce, k: key; event(respEstablished(a,b,s,nb,k)).
+query d: id, po: pkey, pn: pkey, h: bitstring; event(rotated(d,po,pn,h)).   (* V4-265: a rotation completes *)
 
 let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   new sid: nonce; new nA: nonce; new x: exponent; new dk: kemsk;
@@ -122,11 +129,11 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   in(c, rec: bitstring);
   let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in                  (* CONTROL:conf *)
   event initConfirmed(A, B, sid, nB, kc2s);
-  out(form, code);
+  ( out(form, code) |                                        (* the page posts the code; asynchronous, as above *)
   new skNew: skey; let pkNew = pk(skNew) in
   let mrot = (hsid, A, pk2b(pk(skA)), pk2b(pkNew)) in
   event rotateRequested(A, pk(skA), pkNew, hsid);
-  out(c, senc((opROTATE, A, pkNew, sign(hash((rotold,mrot)),skA), sign(hash((rotnew,mrot)),skNew)), kc2s)).
+  out(c, senc((opROTATE, A, pkNew, sign(hash((rotold,mrot)),skA), sign(hash((rotnew,mrot)),skNew)), kc2s)) ).
 
 (* daemon, client-facing session: handshake -> issue code -> accept ROTATE.
    ROTATE is gated on the handshake only, never on the site's EXCHANGE. *)
@@ -151,7 +158,13 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
   event respEstablished(A, B, sid, nB, kc2s);
   new code: bitstring;
   event codeIssued(A, state, code);
-  out(ls, (code, A, state));                                 (* daemon records the binding *)
+  (* V4-265 (F406): the two sends on private channels are ASYNCHRONOUS, in
+     parallel with what follows them. As sequential outputs they made every
+     trace that goes on past them wait for a receiver, and ProVerif, which
+     proves with them abstracted away, could then not rebuild such a trace:
+     three controls answered "cannot be proved" and a completed rotation was
+     never exhibited. *)
+  ( out(ls, (code, A, state)) |                              (* daemon records the binding *)
   out(c, senc((opLOGIN, code), ks2c));                       (* CONTROL:codeplain *)
   in(c, rrec: bitstring);
   let (=opROTATE, =A, pkNew: pkey, sigOld: bitstring, sigNew: bitstring) = sdec(rrec, kc2s) in
@@ -160,17 +173,17 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
   if mo = hash((rotold, mrot)) then                          (* CONTROL:sigold *)
   let mn = checksign(sigNew, pkNew) in
   if mn = hash((rotnew, mrot)) then
-  event rotated(A, pkA, pkNew, hsid).
+  event rotated(A, pkA, pkNew, hsid) ).
 
 (* the site's EXCHANGE(code, state) over the local socket: the daemon holds the
    binding (code -> the state it was issued under); EXCHANGE must present it. *)
-let site() =
+let site(post: channel) =
   in(ls, (code: bitstring, dev: id, boundstate: bitstring));  (* daemon's stored binding *)
-  in(form, excode: bitstring);                                (* the code, posted by the page that holds it *)
+  in(post, excode: bitstring);                                (* the code: from the page that holds it, or (V4-265) from anyone *)
   in(c, exstate: bitstring);                                  (* the session it lands in: the web attacker's choice (login-CSRF) *)
-  if excode = code then
+  if excode = code then                                       (* CONTROL:code *)
   if exstate = boundstate then                                (* CONTROL:state *)
-  event siteLoggedIn(dev, exstate).
+  event siteLoggedIn(dev, exstate, excode).
 
 process
   new skA: skey; new skB: skey; new skC: skey; new A: id; new B: id; new C: id;
@@ -179,4 +192,5 @@ process
   ( !(new st: bitstring; out(c, st); initiator(A, skA, B, pk(skB), st))
   | !responder(B, skB, A, pk(skA))
   | !responder(C, skC, A, pk(skA))
-  | !site() )
+  | !site(form)       (* the honest page posts the code it was given *)
+  | !site(c) )        (* V4-265: and anyone may post a code of their choosing *)

@@ -73,17 +73,24 @@ try {
     // another build tree was counted here, and killed below.
     const mine = `${resolve(fixturePath)} 496.2`;
     const fixtures = () => spawnSync('pgrep', ['-f', mine], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).length;
-    let seen = 0;
     const busy = runTool(['--count', '1', '--minutes', '7.77', '--port', String(port), '--out', join(work, 'busy.jsonl')]);
-    // ...and one must have been there to be left: "none left" was also true
-    // of a tool that never started a fixture at all.
-    const watching = setInterval(() => { seen = Math.max(seen, fixtures()); }, 20);
     const code = await Promise.race([busy.exited, new Promise((r) => setTimeout(() => r('still running'), 30000))]);
-    clearInterval(watching);
     await new Promise((r) => setTimeout(r, 500));
     const left = fixtures();
     check(code !== 0 && code !== 'still running', `with its port taken, the tool exits non-zero (exit ${code}) (the control)`);
-    check(seen >= 1, `the tool had started this tree's fixture when its site failed to start (${seen} seen) (F387)`);
+    // ...and one must have been there to be left: "none left" was also true
+    // of a tool that never started a fixture at all. The tool says so itself,
+    // after the fixture's own ready line. (V4-259 looked for the process with
+    // pgrep every 20 ms while the tool ran; a fixture that lived for less
+    // than one look was missed, and the check failed in two of three trees
+    // under load. V4-265.)
+    const started = /^fixture ready \(pid (\d+)\)$/m.exec(busy.out);
+    check(started !== null, `the tool had started its fixture when its site failed to start (${started ? 'pid ' + started[1] : busy.out.trim()}) (F387)`);
+    if (started) {
+      let alive = true;
+      try { process.kill(Number(started[1]), 0); } catch { alive = false; }
+      check(!alive, `and that process is gone (pid ${started[1]}) (F289)`);
+    }
     check(left === 0, `and the fixture it had started is not left running (${left} left) (F289)`);
     if (code === 'still running') { busy.p.kill('SIGKILL'); }
     spawnSync('pkill', ['-f', mine]);

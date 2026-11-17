@@ -487,7 +487,9 @@ demo_keys_status_t demo_keys_load_identity(const char *sk_path, const uint8_t *e
     }
 
     /* Custody: no symlinks; a regular file owned by us, no group/other access. */
-    const int fd = open(sk_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* O_NONBLOCK (F407): a FIFO with no writer is opened at once and refused
+     * below as not a regular file, where open() would wait for ever. */
+    const int fd = open(sk_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         return DEMO_KEYS_ERR_IO;
     }
@@ -573,7 +575,7 @@ demo_keys_status_t demo_keys_migrate_legacy(const char *in_path, const char *out
 
     /* 1. Same custody rules as the loader: no symlink, regular file, ours,
      *    no group/other access. Migration must not launder a leaked secret. */
-    fd = open(in_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    fd = open(in_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);   /* F407 */
     if (fd < 0) {
         return DEMO_KEYS_ERR_IO;
     }
@@ -700,7 +702,7 @@ demo_keys_status_t demo_keys_load_public(const char *pub_path, const uint8_t *ex
     /* Custody here (no symlinks, a regular file, a size worth reading); every
      * rule about the CONTENT is demo_keys_parse_public's, shared with callers
      * that hold the bytes in memory. */
-    const int fd = open(pub_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    const int fd = open(pub_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);   /* F407: as above */
     if (fd < 0) {
         return DEMO_KEYS_ERR_IO;
     }

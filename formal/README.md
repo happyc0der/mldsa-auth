@@ -13,16 +13,23 @@ carries a comment citing the specification line it mirrors.
 - **Session-key secrecy.**
 - **Login-code secrecy**, and that a site login under a `state` was begun by
   that device with that `state`.
+- **The code the site accepts is the code the daemon issued** to that device
+  under that `state` (V4-265). The site's event carries the code, and anyone
+  may post a code of their choosing to the site as well as the page that
+  holds the real one. Before V4-265 only that page could post, and the
+  site's comparison of the two codes could be deleted from the model with
+  every result unchanged (audit F404).
 - **That it runs** (V4-204): ProVerif exhibits a run that reaches the site's
   login, which passes through the daemon establishing the session, issuing
   the code, and the device confirming it. Until V4-204 the site's login could
   not occur in the model at all, and the `state` property above was true of
   a protocol that logged nobody in (audit F281).
-- **Rotation binding**: a committed rotation was requested in that session.
+- **Rotation binding**: a committed rotation was requested in that session;
+  and (V4-265) ProVerif exhibits a run in which a rotation is committed.
 
 ## Why the controls exist
 
-A proof that cannot fail proves nothing. `gen_controls.py` derives thirteen
+A proof that cannot fail proves nothing. `gen_controls.py` derives fourteen
 variants from `authd.pv` by exact string replacement, each asserting the edit
 changed the file:
 
@@ -43,17 +50,25 @@ changed the file:
   daemon's first record without decrypting it (key confirmation breaks); the
   login code is also sent in the clear (it is no longer secret); the site
   does not compare the `state` (a login can land in a session that never
-  began it). Every query now has a control.
+  began it). Since V4-265: the site does not compare the code it is given
+  with the code that was issued (any posted value logs the device in).
+  Every query has a control, and one check in the model has none: see
+  Limits, on the incoming key's signature.
 
-The base *proves* each property "true"; a control makes the same query "false"
-or "cannot be proved". Either regression means the guarantee is gone, which is
-what the control demonstrates — so `run.sh` accepts anything but "is true" for
-a control, and requires "is true" for the base and resilience runs. Two
-rotation controls land on "cannot be proved" rather than "false": injective
-agreement with a leaked key is a hard case for ProVerif's resolution (the
-P5′ risk V4-4 named), and the honest reading is that the check under test is
-exactly what moved the property from provable to unprovable. The login-code
-control lands there too.
+The base *proves* each property "true"; a control must make the same query
+**"false"**, which is ProVerif exhibiting the attack. `run.sh` requires
+"is true" for the base and resilience runs and "is false" for every control,
+and it counts the base model's results, thirteen, so that a query nobody
+named cannot be answered "false" unnoticed (V4-265, audit F405).
+
+Until V4-265 three controls, the two for rotation and the one for the login
+code, answered "cannot be proved", and `run.sh` accepted that. The cause was
+not, as this page said, that injective agreement under a leaked key is hard
+for ProVerif. The model sent on its two private channels with sequential
+outputs, so everything after such a send waited for a receiver; ProVerif
+proves with that abstracted away and then could not rebuild a run that goes
+past one. The sends are now in parallel with what follows them, which is
+what sending is, and all eleven controls give a run (audit F406).
 
 ## Limits
 
@@ -76,11 +91,14 @@ What the model leaves out, so that nothing is read into it:
   no BYE, no `ROTATE_ACK`; a completed rotation does not change the key the
   daemon expects next. Replay protection and "the old key is refused
   afterwards" rest on tests, not on this model.
-- **A completed rotation is not exhibited.** ProVerif proves that a rotation
-  the daemon commits was requested in that session, and its two controls
-  bite; asked to exhibit a run that reaches a committed rotation, it
-  answers "cannot be proved" either way. That the honest rotation completes
-  is shown by the tests.
+- **The incoming key's signature has no control.** Spec Req 8 wants a
+  rotation signed by the outgoing key and by the incoming one. The model
+  checks both, and the rotation query would hold without the second: the
+  outgoing key's signature already covers the new public key, and the one
+  honest device always holds the new secret key. Showing what `sig_new`
+  buys needs a dishonest enrolled device, which this model does not have
+  (the first limit above). The check itself is pinned in the code by tests
+  and by mutations `v49c W3` and `v126 RO1`.
 - **Secrecy and agreement name the client-to-server key.** The other
   direction's key has the same inputs and protects the login code, whose
   secrecy is its own query.

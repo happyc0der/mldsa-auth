@@ -1,0 +1,2 @@
+FK1|^test_authd_cli$|fifo: a public-key path that is a FIFO is refused, not waited on (F407)
+FK2|^test_authd_cli$|fifo: a plaintext secret-key path that is a FIFO is refused, not waited on (F407)

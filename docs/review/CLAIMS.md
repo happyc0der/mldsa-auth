@@ -14,7 +14,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | Kind | Meaning |
 |---|---|
 | `check T "…"` | a named assertion in CTest `T`; the quoted text is what it prints |
-| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 685 |
+| `mutation vNN ID` | a committed mutation (`tools/mutations/`) that this evidence kills; the nightly runs all 687 |
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove; since V4-204 every query has a control that must make it fail, and the run must exhibit a login reaching the site |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
@@ -289,7 +289,8 @@ the most important thing on this page.
 - mutation `v48b C3` — the code's lifetime becomes 3600 s
 - mutation `v47 S7` — a consumed code is never marked used, so it replays
 - mutation `v48b C4` — the state hash taken over zero bytes (killed only since V4-14a's WebSocket state test)
-- proverif "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1)) is true"
+- proverif "event(siteLoggedIn(d,st_1,cd)) ==> event(loginStart(d,st_1)) is true"
+- proverif "event(siteLoggedIn(d,st_1,cd)) ==> event(codeIssued(d,st_1,cd)) is true" — the code the site accepts is the one issued to that device under that state; the control `ctl_code` (the comparison removed) makes it false (V4-265)
 - check `test_authd_localapi` "expiry: at exactly 60 s the login code is refused at EXCHANGE as expired (Req 5)"
 - check `test_authd_localapi` "expiry: one second earlier the same code exchanges -- the expired attempt did not spend it"
 - mutation `v58 GA1` — the store's boundary moves from `now >= expires_at` to `now >`
@@ -355,7 +356,7 @@ the most important thing on this page.
 - mutation `v127 LB1` — the rotate-new label is another string, which every check but its literal vector accepts
 - check `test_authd_conn` "rotate: ...for its signature: the journal says rotate-sig-new (erratum 102)"
 - mutation `v126 RO1` — sig_new is not verified before the store is asked about pk_new
-- proverif "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true" — proven in `base` and under a leaked record key; the controls `ctl_rot_hsid` (handshake_id out of the signed tuple) and `ctl_rot_sigold` (sig_old unchecked) each make it unprovable. Nightly job `formal`.
+- proverif "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true" — proven in `base` and under a leaked record key; the controls `ctl_rot_hsid` (handshake_id out of the signed tuple) and `ctl_rot_sigold` (sig_old unchecked) each make it false. The model has no control for `sig_new`: with one honest device the outgoing key's signature already fixes the new key, so this supports the outgoing-key half of D8 and the mutations below the other (V4-265). Nightly job `formal`.
 - mutation `v49c W3` — sig_new verified against pk_old: no proof of possession of the incoming key
 - mutation `v49c W5` — handshake_id dropped from the rotate digest: a captured ROTATE replays on another session
 - mutation `v49c W2` — the domain label replaced by "x": the two signatures stop being separated

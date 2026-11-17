@@ -103,7 +103,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-685 committed mutations in 122 campaigns, each a defect the tests must catch
+687 committed mutations in 123 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -122,7 +122,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (729 anchors checked; 685 mutations across 122 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (731 anchors checked; 687 mutations across 123 campaigns)
 ```
 
 ## The formal model
@@ -136,14 +136,16 @@ formal/run.sh path/to/proverif
 
 It runs in the nightly job `ProVerif model + controls`. Since V4-204 it has
 also been run on the machine that wrote this page, in a container holding
-the same pinned ProVerif 2.05 tarball the nightly builds (2026-11-14). Its
-output, and the nightly job's in run 43673543681 on `f4235c4`, line for line
-the same: `ok base`, `ok reachable`, `ok leak_kem`, `ok leak_dh`, `ok
-leak_c2s`, and `no longer provable` for each of ten controls: `ctl_sigb`,
-`ctl_peerid`, `ctl_kdf_nodh`, `ctl_kdf_nokem`, `ctl_siga`, `ctl_conf`,
-`ctl_codeplain`, `ctl_state`, `ctl_rot_hsid` and `ctl_rot_sigold`. (Before
-V4-204 the model had six controls for seven queries and no reachability
-check; audit F281.)
+the same pinned ProVerif 2.05 tarball the nightly builds (2026-11-14, and
+again for V4-265 on 2026-11-17). Its output: `ok the base model gives 13
+results, each named below`, `ok base`, `ok reachable`, `ok leak_kem`, `ok
+leak_dh`, `ok leak_c2s`, and `no longer provable (is false)` for each of
+eleven controls: `ctl_sigb`, `ctl_peerid`, `ctl_kdf_nodh`, `ctl_kdf_nokem`,
+`ctl_siga`, `ctl_conf`, `ctl_codeplain`, `ctl_state`, `ctl_code`,
+`ctl_rot_hsid` and `ctl_rot_sigold`. (Before V4-204 the model had six
+controls for seven queries and no reachability check, audit F281; before
+V4-265 three controls answered "cannot be proved" and the script accepted
+it, audit F406.)
 
 ## The documents, checked against the tree
 

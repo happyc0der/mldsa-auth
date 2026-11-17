@@ -71,6 +71,13 @@ make("codeplain",
 make("state",
      ("  if exstate = boundstate then                                (* CONTROL:state *)\n", ""))
 
+# V4-265 (F404): the site must compare the code it is given with the code the
+# daemon issued. Without the comparison any posted value logs the device in
+# under the state the daemon bound; "the code accepted is the code issued"
+# must break.
+make("code",
+     ("  if excode = code then                                       (* CONTROL:code *)\n", ""))
+
 # Resilience (these must still PROVE): leak one KEX half, key stays secret.
 make("leak_kem", ("(* LEAK:kem *)", "out(c, ssk);"))
 make("leak_dh",  ("(* LEAK:dh *)",  "out(c, ssx);"))

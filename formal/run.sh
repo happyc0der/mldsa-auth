@@ -18,6 +18,15 @@ expect() { # label, file, "substring => is true|false", ...
   else printf '  FAIL  %-14s missing: %s\n' "$label" "$MISS"; sed 's/^/          /' <<<"$r"; fail=1; fi
 }
 echo "formal/run.sh: $($PV -help 2>&1 | head -1)"
+# V4-265 (F405): every result the base model gives is one of the thirteen named
+# below. `expect` looks for the results it names; a query added to authd.pv
+# and answered "false" or "cannot be proved" was looked for by nobody, and
+# this script still printed OK.
+BASE_RESULTS=13
+n=$(res authd.pv | grep -vc "even event")
+if [ "$n" -ne "$BASE_RESULTS" ]; then
+  printf '  FAIL  the base model gives %s results; this script names %s\n' "$n" "$BASE_RESULTS"; fail=1
+else printf '  ok    the base model gives %s results, each named below\n' "$n"; fi
 echo "-- base: all properties hold --"
 expect base authd.pv \
   "inj-event(respEstablished(a,b,s,nb,k)) ==> inj-event(initEstablished(a,b,s,nb,k)) is true" \
@@ -25,7 +34,8 @@ expect base authd.pv \
   "inj-event(initConfirmed(a,b,s,nb,k)) ==> inj-event(respEstablished(a,b,s,nb,k)) is true" \
   "event(initEstablished(a,b,s,nb,k)) && attacker(k)) is true" \
   "event(codeIssued(d,st_1,cd)) && attacker(cd)) is true" \
-  "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1)) is true" \
+  "event(siteLoggedIn(d,st_1,cd)) ==> event(loginStart(d,st_1)) is true" \
+  "event(siteLoggedIn(d,st_1,cd)) ==> event(codeIssued(d,st_1,cd)) is true" \
   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true"
 # V4-204 (F281): the events the properties speak of can OCCUR. "not event(X)
 # is false" is ProVerif exhibiting a run that reaches X. Until V4-204 the
@@ -35,23 +45,27 @@ expect base authd.pv \
 # confirming it, so this one run covers the whole login path.
 echo "-- reachability: the honest protocol runs --"
 expect reachable authd.pv \
-  "not event(siteLoggedIn(d,st_1)) is false" \
+  "not event(siteLoggedIn(d,st_1,cd)) is false" \
   "not event(codeIssued(d,st_1,cd)) is false" \
   "not event(initEstablished(a,b,s,nb,k)) is false" \
-  "not event(respEstablished(a,b,s,nb,k)) is false"
+  "not event(respEstablished(a,b,s,nb,k)) is false" \
+  "not event(rotated(d,po,pn,h)) is false"
 echo "-- resilience: one KEX half or the record key leaks, guarantee holds --"
 expect leak_kem controls/leak_kem.pv "event(initEstablished(a,b,s,nb,k)) && attacker(k)) is true"
 expect leak_dh  controls/leak_dh.pv  "event(initEstablished(a,b,s,nb,k)) && attacker(k)) is true"
 expect leak_c2s controls/leak_c2s.pv "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h)) is true"
-# A control succeeds when its target query is no longer PROVABLE: the base
-# proves it "is true", the broken variant yields "is false" or "cannot be
-# proved". Either way the guarantee is gone, which is what the control shows.
+# A control succeeds when its target query is FALSE: ProVerif exhibits the
+# attack. Until V4-265 "cannot be proved" was accepted too, which three
+# controls gave (F406): that says ProVerif found a derivation and could not
+# turn it into a run, which is weaker evidence than a run. Every control
+# now gives a run, and anything else fails.
 broken() { # label, file, query-substring
   local label="$1" file="$2" q="$3"
   local line; line=$($TO "$PV" -in pitype "$file" 2>&1 | grep -E "^RESULT" | grep -F "$q" | grep -v "even event" | head -1)
   if [ -z "$line" ]; then printf '  FAIL  %-16s query not found\n' "$label"; fail=1
   elif grep -q "is true\." <<<"$line"; then printf '  FAIL  %-16s still proves: %s\n' "$label" "$line"; fail=1
-  else printf '  ok    %-16s no longer provable (%s)\n' "$label" "$(grep -oE 'is false|cannot be proved' <<<"$line")"; fi
+  elif ! grep -q "is false\." <<<"$line"; then printf '  FAIL  %-16s no attack exhibited: %s\n' "$label" "$line"; fail=1
+  else printf '  ok    %-16s no longer provable (is false)\n' "$label"; fi
 }
 echo "-- controls: each MUST make its target property unprovable --"
 broken ctl_sigb        controls/sigb.pv       "inj-event(initEstablished(a,b,s,nb,k)) ==> inj-event(respSentServerHello(a,b,s,nb))"
@@ -61,7 +75,8 @@ broken ctl_kdf_nokem   controls/kdf_nokem.pv  "event(initEstablished(a,b,s,nb,k)
 broken ctl_siga        controls/siga.pv       "inj-event(respEstablished(a,b,s,nb,k)) ==> inj-event(initEstablished(a,b,s,nb,k))"
 broken ctl_conf        controls/conf.pv       "inj-event(initConfirmed(a,b,s,nb,k)) ==> inj-event(respEstablished(a,b,s,nb,k))"
 broken ctl_codeplain   controls/codeplain.pv  "event(codeIssued(d,st_1,cd)) && attacker(cd))"
-broken ctl_state       controls/state.pv      "event(siteLoggedIn(d,st_1)) ==> event(loginStart(d,st_1))"
+broken ctl_state       controls/state.pv      "event(siteLoggedIn(d,st_1,cd)) ==> event(loginStart(d,st_1))"
+broken ctl_code        controls/code.pv       "event(siteLoggedIn(d,st_1,cd)) ==> event(codeIssued(d,st_1,cd))"
 broken ctl_rot_hsid    controls/rot_hsid.pv   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
 broken ctl_rot_sigold  controls/rot_sigold.pv "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
 echo "---"
