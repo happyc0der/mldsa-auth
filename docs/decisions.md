@@ -19083,3 +19083,30 @@ Ubuntu 24.04's `sh` and `awk`.
 Counts: 663 mutations, 119 campaigns, 707 anchors; 381 findings (F273,
 F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
 this step).
+
+## V4-258: cleanup after V4-255 to V4-257 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `7e74c83` (V4-257), now
+  main: CI 44088773102 (16/16), nightly 44088777746 (134/134, 119
+  campaigns).
+- Before it: `f2a39af` (V4-256) had CI 44085438139 (16/16) and nightly
+  44085443667, 133 of 134: the `v49a` campaign's job ended with "the
+  hosted runner lost communication with the server" an hour in, with no
+  verdict and no log kept. V4-256 was landed with V4-257, whose nightly
+  ran all 134 jobs green on a tree that contains every line of V4-256,
+  the campaign runner's change among them; that nightly is also the
+  first real run of that change (F375), 119 campaigns on Linux. The lost
+  job was started again and its result is recorded in the next cleanup.
+  `f9a8cf4` (V4-255) had CI 44081723867 (16/16) and main's push CI
+  44084862775 (16/16); `2a146b1` (V4-254) had main's push CI 44081671062
+  (16/16).
+- V4-257's custody canary (F381), which cannot be run on a Mac, passed
+  in CI's privileged Linux job on its first run.
+- Open for the owner, unchanged since V4-255: F273, F288, F309, F338 and
+  the questions listed in V4-246's entry.
+
+Counts: 663 mutations, 119 campaigns, 707 anchors; 381 findings (F273,
+F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
+this step).
