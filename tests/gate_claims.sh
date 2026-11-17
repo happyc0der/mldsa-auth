@@ -77,6 +77,26 @@ target_case "MLDSA_OQS_OPT_TARGET:STRING=auto" refused "CPU target: auto"
 target_case "CMAKE_BUILD_TYPE:STRING=Release" refused "does not record one"
 target_case "" unchecked "not a build tree"
 
+# --- NXSTACK (V4-248, audit F358) --------------------------------------------
+# check_hardening.sh read "no GNU_STACK header" as a non-executable stack.
+# ELF only. A stand-in readelf that leaves the header's line out shows the
+# same executable with and without it; no linker that omits it is needed.
+T="$D/tree"
+nx_of() { awk '$1 == "mldsa-authd" { print $5 }' "$1"; }
+case "$(uname -s)" in
+  Linux)
+    printf '#!/bin/sh\nreadelf "$@" | grep -v GNU_STACK\n' > "$D/readelf-nostack" && chmod +x "$D/readelf-nostack"
+    bash "$REPO/tools/audit/check_hardening.sh" "$T" > "$D/nx.out" 2>&1
+    with=$(nx_of "$D/nx.out")
+    MLDSA_HARDENING_READELF="$D/readelf-nostack" bash "$REPO/tools/audit/check_hardening.sh" "$T" > "$D/nx0.out" 2>&1
+    without=$(nx_of "$D/nx0.out")
+    if [ "$with" = "yes" ]; then ok "NXSTACK: the daemon's stack is reported non-executable (the control)"
+    else bad "NXSTACK: the control reports NX-STACK='$with': $(grep mldsa-authd "$D/nx.out")"; fi
+    if [ "$without" = "no" ]; then ok "NXSTACK: with no GNU_STACK header the stack is not reported non-executable (F358)"
+    else bad "NXSTACK: with no GNU_STACK header NX-STACK is '$without', wanted 'no' (F358)"; fi ;;
+  *) echo "note: NXSTACK: GNU_STACK is an ELF header; this case runs on Linux" ;;
+esac
+
 # --- HOOK -------------------------------------------------------------------
 H="$D/hook"
 mkdir -p "$H/apps/authd" "$H/tests" && cp "$LIB" "$H/apps/authd/" && cp "$DAEMON" "$H/apps/authd/" &&

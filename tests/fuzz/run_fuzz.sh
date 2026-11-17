@@ -39,7 +39,6 @@ if [ -z "$(printf '%s' "$TARGETS" | tr -d '[:space:]')" ]; then
     echo "FAIL: could not determine the fuzz target list from $HERE/CMakeLists.txt"
     exit 2
 fi
-BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "SKIP: build directory not found"; exit 0; }
 
 # The per-target bound is SINGLE-SOURCED from CMakeLists.txt's FUZZ_MAXLEN_<t>,
 # for exactly the reason the target list above is -- and this function is the
@@ -66,6 +65,10 @@ maxlen() {
         "$HERE/CMakeLists.txt"
 }
 
+harness_maxlen() {
+    sed -n 's/^const size_t fuzz_target_max_len = \([0-9]\{1,\}\);.*/\1/p' "$HERE/fuzz_$1.c" 2>/dev/null
+}
+
 # Every target must have one, checked BEFORE any run starts so a missing bound
 # cannot be discovered halfway through a 50-minute sweep.
 check_bounds() {
@@ -80,9 +83,29 @@ check_bounds() {
         echo "      (an empty -max_len silently caps libFuzzer at 4096 -- see F49)"
         return 1
     fi
+    # F356: and it must be the harness's own bound. F49 made CMake the one
+    # source for -max_len and left `wire` at 4096 there against 8192 in
+    # fuzz_wire.c: libFuzzer cuts longer seeds short when it loads them and
+    # writes nothing longer, so no ServerHello of full size (4545 bytes) was
+    # ever run under it. Below the harness's bound part of its input space is
+    # never tried; above it the extra is thrown away by the harness.
+    differ=""
+    for t in $1; do
+        h=$(harness_maxlen "$t")
+        if [ -z "$h" ] || [ "$h" != "$(maxlen "$t")" ]; then
+            differ="$differ $t(FUZZ_MAXLEN_$t=$(maxlen "$t"),fuzz_target_max_len=${h:-none})"
+        fi
+    done
+    if [ -n "$differ" ]; then
+        echo "FAIL: FUZZ_MAXLEN_<t> in $HERE/CMakeLists.txt is not fuzz_<t>.c's fuzz_target_max_len for:$differ"
+        return 1
+    fi
     return 0
 }
 check_bounds "$TARGETS" || exit 2
+# After the bounds, so a wrong bound is reported whether or not there is a
+# fuzz build to run (tests/fuzz_log_gate.sh relies on it).
+BUILD=$(cd "$BUILD" 2>/dev/null && pwd) || { echo "SKIP: build directory not found"; exit 0; }
 
 for t in $TARGETS; do
     if [ ! -x "$BUILD/tests/fuzz/fuzz_$t" ]; then

@@ -100,4 +100,25 @@ for wf in ci.yml nightly.yml; do
     fi
 done
 
+# V4-248 (F356): the bound libFuzzer is given is the harness's own. The
+# runner checks it before it looks for a build, so a copy of the fuzz
+# directory and a build directory that is not there are enough to ask it.
+mkdir -p "$TMP/fz" && cp "$REPO/tests/fuzz/run_fuzz.sh" "$REPO/tests/fuzz/CMakeLists.txt" "$REPO"/tests/fuzz/fuzz_*.c "$TMP/fz/"
+/bin/sh "$TMP/fz/run_fuzz.sh" smoke "$TMP/no-build" > "$TMP/out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && grep -q '^SKIP: build directory not found' "$TMP/out"; then
+    ok "every target's -max_len is its harness's bound (the canary: the runner gets as far as looking for a build)"
+else cat "$TMP/out"; bad "the runner refused the tree's own bounds (exit $rc)"; fi
+sed 's/^set(FUZZ_MAXLEN_wire [0-9]*)/set(FUZZ_MAXLEN_wire 4096)/' "$REPO/tests/fuzz/CMakeLists.txt" > "$TMP/fz/CMakeLists.txt"
+cmp -s "$TMP/fz/CMakeLists.txt" "$REPO/tests/fuzz/CMakeLists.txt" && bad "the edit to the wire bound changed nothing, so its case tests nothing"
+/bin/sh "$TMP/fz/run_fuzz.sh" smoke "$TMP/no-build" > "$TMP/out" 2>&1; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'wire(FUZZ_MAXLEN_wire=4096,fuzz_target_max_len=8192)' "$TMP/out"; then
+    ok "a -max_len below the harness's bound stops the runner, with both numbers named (F356)"
+else cat "$TMP/out"; bad "a -max_len of 4096 for a harness that takes 8192 was accepted (exit $rc) (F356)"; fi
+cp "$REPO/tests/fuzz/CMakeLists.txt" "$TMP/fz/CMakeLists.txt"
+sed 's/^const size_t fuzz_target_max_len = [0-9]*;/const size_t fuzz_target_max_len = sizeof(buf);/' "$REPO/tests/fuzz/fuzz_ws.c" > "$TMP/fz/fuzz_ws.c"
+/bin/sh "$TMP/fz/run_fuzz.sh" smoke "$TMP/no-build" > "$TMP/out" 2>&1; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'ws(FUZZ_MAXLEN_ws=16384,fuzz_target_max_len=none)' "$TMP/out"; then
+    ok "a harness whose bound cannot be read stops the runner too (F356)"
+else cat "$TMP/out"; bad "a harness bound that could not be read was accepted (exit $rc) (F356)"; fi
+
 [ "$fail" -eq 0 ] && echo "PASS: FUZZ-GATE: all" || { echo "FAIL: FUZZ-GATE"; exit 1; }

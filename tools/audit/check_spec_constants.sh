@@ -37,9 +37,26 @@ req() { # variable names
     esac
   done
 }
+# F355: "found" means found as a whole number. Every check below used to ask
+# whether the needle was a SUBSTRING of its text: "1 h" is in "1 h", and also
+# in "12 h"; "default 5" is in "default 50"; "192 B" in "8192 B". A constant
+# changed to a prefix or a suffix of the number the document states, or to a
+# number another row states, still passed -- eighteen such changes did. A
+# needle that begins or ends with a digit must not have a digit (or a digit
+# group: "1,234", "1.5") beside it; and each needle now carries the words of
+# the one row or sentence it belongs to.
+has() { # text, needle
+  HAS_TEXT=$1 HAS_NEEDLE=$2 python3 -c '
+import os, re, sys
+t, n = os.environ["HAS_TEXT"], os.environ["HAS_NEEDLE"]
+pre = r"(?<![0-9])(?<![0-9][.,])" if n[:1].isdigit() else ""
+post = r"(?![0-9])(?![.,][0-9])" if n[-1:].isdigit() else ""
+sys.exit(0 if n and re.search(pre + re.escape(n) + post, t) else 1)'
+}
+SPEC_TEXT=$(cat "$SPEC")
 check() { # name, derived value, regex-quoted context that must contain it
   if [ -z "$2" ]; then printf '  FAIL  %-34s nothing was derived to look for\n' "$1"; fail=1
-  elif grep -qF -- "$2" "$SPEC"; then printf '  ok    %-34s %s\n' "$1" "$2"
+  elif has "$SPEC_TEXT" "$2"; then printf '  ok    %-34s %s\n' "$1" "$2"
   else printf '  FAIL  %-34s derived %s, not found in the spec\n' "$1" "$2"; fail=1; fi
 }
 req PK SK SIG IDMAX HSID OVH
@@ -55,9 +72,16 @@ ROT_BODY=$((1+1+1+HANDLE + PK + 2+SIG + 2+SIG))
 ROT_CONTENT=$((ROT_BODY+1))
 check "ROTATE body"            "$ROT_BODY"
 check "ROTATE content"         "$ROT_CONTENT"
-REC_MAX=$(rec 9216 4096); REC_CODE=$(rec 43 256)
+# F355: the two sizes behind AUTHD_MAX_RECORD come from the tree. They were
+# this script's own numbers, so the content limit could change, with its row
+# in section 17, and the record size beside it stay as it was.
+MAX_CONTENT=$(hdr AUTHD_MAX_CONTENT apps/authd/conn_io.h)
+PAD_MAX=$(hdr SESSION_PAD_BUCKET_MAX src/protocol/session.h)
+PAD_DEF=$(hdr SESSION_PAD_BUCKET_DEFAULT src/protocol/session.h)
+req MAX_CONTENT PAD_MAX PAD_DEF
+REC_MAX=$(rec "${MAX_CONTENT:-0}" "${PAD_MAX:-1}"); REC_CODE=$(rec 43 "${PAD_DEF:-1}")
 req REC_MAX REC_CODE
-check "AUTHD_MAX_RECORD"       "$REC_MAX"
+check "AUTHD_MAX_RECORD"       "| \`AUTHD_MAX_RECORD\` | $REC_MAX B |"
 check "LOGIN_CODE record @256" "$REC_CODE"
 # F247: these two, the envelope header and the handshake id below were looked
 # for as bare numbers anywhere in the document, where "34", "64", "67" and
@@ -89,8 +113,8 @@ check "handshake_id in digest"   "handshake_id ($HSID)"
 # operator DEFAULTS rather than protocol constants, which is why the check is
 # that §17 quotes the default the code ships, not that the number is fixed.
 SEC17=$(awk '/^## 17\. /{f=1} f{print} /^## 18\. /{if(f) exit}' "$SPEC")
-in17() { case "$SEC17" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
-                          *) printf '  FAIL  %-34s derived %s, not in §17\n' "$1" "$2"; fail=1;; esac; }
+in17() { if has "$SEC17" "$2"; then printf '  ok    %-34s %s\n' "$1" "$2"
+                          else printf '  FAIL  %-34s derived %s, not in §17\n' "$1" "$2"; fail=1; fi; }
 
 TOK=apps/authd/tokens.h
 hrs() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 3600u\)" $TOK | grep -oE '\(([0-9]+)u' | tr -d '(u'; }
@@ -98,26 +122,23 @@ mins() { grep -oE "#define $1[[:space:]]+\(([0-9]+)u \* 60u\)" $TOK | grep -oE '
 T_USER=$(hrs TOKEN_TTL_USER_S); T_OPER=$(hrs TOKEN_TTL_OPERATOR_S)
 T_IDLE_USER=$(hrs TOKEN_IDLE_TTL_USER_S); T_IDLE_OPER=$(mins TOKEN_IDLE_TTL_OPERATOR_S)
 req T_USER T_OPER T_IDLE_USER T_IDLE_OPER
-in17 "token lifetime, user"       "$T_USER h"
-in17 "token lifetime, operator"   "$T_OPER h"
-in17 "token idle, user"           "$T_IDLE_USER h"
-in17 "token idle, operator"       "$T_IDLE_OPER min"
+in17 "token lifetime, user / operator" "| Token lifetime, user / operator | $T_USER h / $T_OPER h absolute |"
+in17 "token idle, user / operator"     "| Token idle window, user / operator | $T_IDLE_USER h / $T_IDLE_OPER min |"
 
 RL=apps/authd/ratelimit.h
 RL_MIN=$(hdr RATELIMIT_PER_MIN_DEFAULT $RL); RL_BURST=$(hdr RATELIMIT_BURST_DEFAULT $RL)
 RL_GLOBAL=$(hdr RATELIMIT_GLOBAL_PER_SEC_DEF $RL); RL_CONNS=$(hdr RATELIMIT_MAX_CONNS_DEFAULT $RL)
 req RL_MIN RL_BURST RL_GLOBAL RL_CONNS
-in17 "rate_per_min default"       "\`rate_per_min\` $RL_MIN"
-in17 "rate_burst default"         "\`rate_burst\` $RL_BURST"
-in17 "rate_global_per_sec default" "default $RL_GLOBAL"
-in17 "max_conns_per_addr default" "default $RL_CONNS"
+in17 "rate_per_min, rate_burst defaults" "| Handshakes per address | \`rate_per_min\` $RL_MIN, \`rate_burst\` $RL_BURST;"
+in17 "rate_global_per_sec default" "| Handshakes daemon-wide | \`rate_global_per_sec\`, default $RL_GLOBAL |"
+in17 "max_conns_per_addr default" "| Connections per client address | \`max_conns_per_addr\`, default $RL_CONNS |"
 
 ROT_DAYS=$(grep -oE '#define AUTHD_ROTATION_AGE_DEFAULT[[:space:]]+\(([0-9]+)u' apps/authd/authd_config.h | grep -oE '\(([0-9]+)u' | tr -d '(u')
-LINE_MAX=$(hdr AUTHD_LINE_MAX apps/authd/conn_io.h); MAX_CONTENT=$(hdr AUTHD_MAX_CONTENT apps/authd/conn_io.h)
-req ROT_DAYS LINE_MAX MAX_CONTENT
-in17 "rotation cadence default"   "default $ROT_DAYS days"
-in17 "local-socket line limit"    "$LINE_MAX B"
-in17 "AUTHD_MAX_CONTENT"          "$MAX_CONTENT B"
+LINE_MAX=$(hdr AUTHD_LINE_MAX apps/authd/conn_io.h)
+req ROT_DAYS LINE_MAX
+in17 "rotation cadence default"   "| Key rotation cadence | \`rotation_due_age_s\`, default $ROT_DAYS days,"
+in17 "local-socket line limit"    "| Local-socket request line | ≤ $LINE_MAX B |"
+in17 "AUTHD_MAX_CONTENT"          "| \`AUTHD_MAX_CONTENT\` | $MAX_CONTENT B |"
 
 # --- recovery codes and tickets (V4-9d, spec §10.3) ----------------------
 #
@@ -145,17 +166,30 @@ R_MEM_MIB=$(grep -oE 'RECOVERY_MEM_SPEC[[:space:]]+\(([0-9]+)u \* 1024u \* 1024u
 req R_OPS R_CODES R_THRESH R_LOCK R_TTL R_BYTES R_CHARS R_MEM_MIB
 
 # The §10.3 recovery paragraph only.
-SEC=$(awk '/^### 10.3 /{f=1} f{print} /presents to .ENROLL/{if(f) exit}' "$SPEC")
-in_sec() { case "$SEC" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
-                          *) printf '  FAIL  %-34s derived %s, not in §10.3\n' "$1" "$2"; fail=1;; esac; }
+# The whole of 10.3, on one line: its sentences break across lines.
+SEC=$(awk '/^### 10.3 /{f=1} /^## 11\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
+in_sec() { if has "$SEC" "$2"; then printf '  ok    %-34s %s\n' "$1" "$2"
+                          else printf '  FAIL  %-34s derived %s, not in §10.3\n' "$1" "$2"; fail=1; fi; }
+# A lifetime the document gives in minutes or hours has to BE whole minutes
+# or hours: 659 s is "10 minutes" by integer division, and is not.
+whole() { # name, value, unit in seconds
+  [ $(( ${2:-1} % $3 )) -eq 0 ] || { printf '  FAIL  %-34s %s s is not a whole number of %s s units\n' "$1" "$2" "$3"; fail=1; }
+}
+whole "recovery: ticket lifetime" "$R_TTL" 60
+whole "recovery: lock time" "$R_LOCK" 3600
+NUM_WORD() { case "$1" in 1) echo one;; 2) echo two;; 3) echo three;; 4) echo four;; 5) echo five;; 6) echo six;;
+             7) echo seven;; 8) echo eight;; 9) echo nine;; 10) echo ten;; *) echo "$1";; esac; }
+THRESH_W=$(NUM_WORD "$R_THRESH"); LOCK_H=$((R_LOCK / 3600)); LOCK_W=$(NUM_WORD "$LOCK_H")
+THRESH_CAP=$(printf '%s' "$THRESH_W" | python3 -c 'import sys; print(sys.stdin.read().capitalize())')
 
-in_sec "recovery: max codes"      "1..$R_CODES"
-in_sec "recovery: code bytes"     "$R_BYTES random bytes"
-in_sec "recovery: code characters" "$R_CHARS base32 characters"
-in_sec "recovery: entropy bits"   "$((R_BYTES * 8)) bits"
-in_sec "recovery: Argon2id ops"   "ops $R_OPS"
-in_sec "recovery: Argon2id memory" "memory $R_MEM_MIB MiB"
-in_sec "recovery: ticket lifetime" "$((R_TTL / 60)) minutes"
+in_sec "recovery: codes, bytes, characters" "generates 1..$R_CODES codes of $R_BYTES random bytes rendered as $R_CHARS base32 characters ($((R_BYTES * 8)) bits)"
+in_sec "recovery: Argon2id ops, memory" "(ops $R_OPS, memory $R_MEM_MIB MiB "
+in_sec "recovery: ticket lifetime" "valid $((R_TTL / 60)) minutes,"
+# F355: the lockout was derived and never looked for.
+in_sec "recovery: lockout"         "$THRESH_CAP failures lock recovery for $LOCK_W hour,"
+in17 "recovery: codes per issue"   "| Recovery codes per issue | 1..$R_CODES |"
+in17 "recovery: ticket lifetime"   "| Enrollment ticket lifetime | $((R_TTL / 60)) minutes |"
+in17 "recovery: lockout"           "| Recovery lockout | $R_THRESH failures → $LOCK_H hour |"
 
 # libsodium's own names for the same parameters, so a future bump that changes
 # what INTERACTIVE means cannot silently change what the daemon uses.
@@ -194,8 +228,8 @@ B_OPS=$(hdr CC_KDF_OPS_BROWSER apps/authd/client_core.h)
 B_MEM=$(mib CC_KDF_MEM_BROWSER apps/authd/client_core.h)
 req S_OPS O_OPS CLI_MEM B_OPS B_MEM
 ROLES=$(grep -A3 -F '**Parameters by role:**' "$SPEC" | tr '\n' ' ' | tr -s ' ')
-in_roles() { case "$ROLES" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
-                              *) printf '  FAIL  %-34s derived %s, not in §12 by role\n' "$1" "$2"; fail=1;; esac; }
+in_roles() { if has "$ROLES" "$2"; then printf '  ok    %-34s %s\n' "$1" "$2"
+                              else printf '  FAIL  %-34s derived %s, not in §12 by role\n' "$1" "$2"; fail=1; fi; }
 in_roles "KDF by role: server"   "server \`ops=$S_OPS, mem=$CLI_MEM MiB\`"
 in_roles "KDF by role: operator" "operator \`ops=$O_OPS, mem=$CLI_MEM MiB\`"
 in_roles "KDF by role: browser"  "browser \`ops=$B_OPS, mem=$B_MEM MiB\`"
@@ -206,8 +240,8 @@ in_roles "KDF by role: browser"  "browser \`ops=$B_OPS, mem=$B_MEM MiB\`"
 EMV=$(grep -oE 'set\(MLDSA_EMSCRIPTEN_VERSION "[0-9.]+"\)' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 req EMV
 S14=$(awk '/^## 14\. /{f=1} /^## 15\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
-case "$S14" in *"Emscripten $EMV"*) printf '  ok    %-34s %s\n' "browser module: Emscripten pin" "$EMV";;
-               *) printf '  FAIL  %-34s CMakeLists pins %s, §14 does not say so\n' "browser module: Emscripten pin" "${EMV:-<none>}"; fail=1;; esac
+if has "$S14" "Emscripten $EMV"; then printf '  ok    %-34s %s\n' "browser module: Emscripten pin" "$EMV"
+else printf '  FAIL  %-34s CMakeLists pins %s, §14 does not say so\n' "browser module: Emscripten pin" "${EMV:-<none>}"; fail=1; fi
 # --- the passphrase policy, §14 (V4-13c) ------------------------------------
 # Its numbers live in passphrase.h and the generated list; §14 states them.
 PPH=apps/authd/passphrase.h
@@ -216,8 +250,8 @@ PP_BITS=$(hdr PP_MIN_BITS $PPH)
 PP_N=$(grep -oE 'pp_common_count = [0-9]+u' apps/authd/passphrase_common.c | grep -oE '[0-9]+')
 req PP_CP PP_BITS PP_N
 PP_N_FMT=$(printf "%'d" "$PP_N" 2>/dev/null | tr -d ' '); case "$PP_N_FMT" in *,*) ;; *) PP_N_FMT=$(echo "$PP_N" | sed -E 's/([0-9])([0-9]{3})$/\1,\2/');; esac
-in_s14() { case "$S14" in *"$2"*) printf '  ok    %-34s %s\n' "$1" "$2";;
-                        *) printf '  FAIL  %-34s derived %s, not in §14\n' "$1" "$2"; fail=1;; esac; }
+in_s14() { if has "$S14" "$2"; then printf '  ok    %-34s %s\n' "$1" "$2"
+                        else printf '  FAIL  %-34s derived %s, not in §14\n' "$1" "$2"; fail=1; fi; }
 in_s14 "passphrase: minimum length"   "at least $PP_CP characters"
 in_s14 "passphrase: estimate floor"   "at least $PP_BITS bits"
 in_s14 "passphrase: common list size" "$PP_N_FMT entries"
@@ -227,11 +261,12 @@ in_s14 "passphrase: common list size" "$PP_N_FMT entries"
 FLOOR_NS=$(hdr AUTHD_PIN_FLOOR_NS apps/authd/authd_conn.h)
 req FLOOR_NS
 [ -n "$FLOOR_NS" ] || FLOOR_NS=0      # already reported; keeps the arithmetic below from aborting the script
+whole "pin floor" "$FLOOR_NS" 1000     # the document gives it in whole microseconds
 FLOOR_US=$((FLOOR_NS / 1000))
 S73=$(awk '/^### 7\.3 /{f=1} /^## 8\. /{f=0} f' "$SPEC" | tr '\n' ' ' | tr -s ' ')
-case "$S73" in *"**$FLOOR_US µs**"*) printf '  ok    %-34s %s\n' "pin floor: §7.3" "$FLOOR_US µs";;
-                *) printf '  FAIL  %-34s derived %s µs, not in §7.3\n' "pin floor: §7.3" "$FLOOR_US"; fail=1;; esac
-check "pin floor: §17's table" "| The pin's time floor | $FLOOR_US µs"
+if has "$S73" "**$FLOOR_US µs**"; then printf '  ok    %-34s %s\n' "pin floor: §7.3" "$FLOOR_US µs"
+else printf '  FAIL  %-34s derived %s µs, not in §7.3\n' "pin floor: §7.3" "$FLOOR_US"; fail=1; fi
+check "pin floor: §17's table" "| The pin's time floor | $FLOOR_US µs from"
 echo "  ---"
 [ "$fail" -eq 0 ] && echo "OK: every derived size appears in the specification" \
                  || echo "FAIL: the specification disagrees with the tree"

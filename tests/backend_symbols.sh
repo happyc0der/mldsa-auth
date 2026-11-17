@@ -68,6 +68,15 @@ plant "$T/split" x86_only    X86_64
 plant "$T/none"  no_backend
 plant "$T/c"     c_only      C
 mkdir -p "$T/empty"
+# V4-248 (F357): a stripped executable beside a good one. It links the
+# portable-C family, which must fail; stripped, it used to drop out of the
+# count and the directory passed.
+plant "$T/strip" arm_only    AARCH64
+plant "$T/strip" c_stripped  C
+strip "$T/strip/c_stripped" > "$T/strip.log" 2>&1 || fail "the planted executable c_stripped can be stripped: $(head -1 "$T/strip.log")"
+if nm "$T/strip/c_stripped" 2>/dev/null | grep -q "${DSA}C_planted"; then
+    fail "strip left the planted symbols in c_stripped, so its case shows nothing"
+fi
 
 expect "an aarch64 executable passes when aarch64 is expected" 0 \
        "OK: exactly one backend (aarch64) is linked in all 1 executable(s)" -- --expect aarch64 "$T/arm"
@@ -81,6 +90,10 @@ expect "an executable with no backend at all proves nothing" 1 \
        "no executable linked an ML-DSA/ML-KEM backend" -- --expect aarch64 "$T/none"
 expect "a directory with no executables proves nothing" 1 \
        "no executables found" -- --expect aarch64 "$T/empty"
+expect "a stripped executable is a failure, named, when a family is expected (F357)" 1 \
+       "FAIL c_stripped: its symbol table does not name main" -- --expect aarch64 "$T/strip"
+expect "a stripped executable is a failure, named, without --expect too (F357)" 1 \
+       "FAIL c_stripped: its symbol table does not name main" -- "$T/strip"
 expect "a portable-C executable passes when c is expected (x86_64 generic)" 0 \
        "OK: exactly one backend (c) is linked in all 1 executable(s)" -- --expect c "$T/c"
 expect "without --expect, portable C fails" 1 \

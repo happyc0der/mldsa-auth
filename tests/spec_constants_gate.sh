@@ -66,4 +66,44 @@ copy code
 edit code apps/authd/base32.h 's/^\(#define BASE32_CODE_BYTES[[:space:]]*\)[0-9][0-9]*u*/\1(5u + 5u)/'
 refused code "a recovery-code size the gate can no longer derive (it is used in arithmetic)"
 
+# V4-248 (F355): a number that is a prefix or a suffix of the one the
+# specification states, or that another row states, or that rounds to it.
+# The gate looked for each as a substring ("1 h" is in "12 h") and passed
+# every one of these. `whole <name> <file> <define> <old> <new> <what>`.
+whole_number() {
+    copy "$1"
+    edit "$1" "$2" "s/^\(#define $3[[:space:]]*\)$4/\1$5/"
+    if gate "$1"; then tail -3 "$TMP/$1.out"; bad "$6 PASSED the gate (F355)"
+    else ok "$6 fails the gate (F355)"; fi
+    rm -rf "$TMP/$1"
+}
+T=apps/authd/tokens.h; RL=apps/authd/ratelimit.h; RC=apps/authd/recovery.h; CI=apps/authd/conn_io.h
+whole_number w01 $T TOKEN_TTL_USER_S '(12u' '(1u' "a user token lifetime of 1 h where the specification says 12 h (a prefix)"
+whole_number w02 $T TOKEN_TTL_USER_S '(12u' '(8u' "a user token lifetime of 8 h, which is the operator's"
+whole_number w03 $T TOKEN_TTL_OPERATOR_S '(8u' '(12u' "an operator token lifetime of 12 h, which is the user's"
+whole_number w04 $T TOKEN_IDLE_TTL_USER_S '(1u' '(12u' "a user idle window of 12 h where the specification says 1 h"
+whole_number w05 $T TOKEN_IDLE_TTL_OPERATOR_S '(30u' '(0u' "an operator idle window of 0 min where the specification says 30 (a suffix)"
+whole_number w06 $RL RATELIMIT_BURST_DEFAULT '10u' '1u' "a burst of 1 where the specification says 10"
+whole_number w07 $RL RATELIMIT_GLOBAL_PER_SEC_DEF '50u' '5u' "a daemon-wide rate of 5 where the specification says 50"
+whole_number w08 $RL RATELIMIT_GLOBAL_PER_SEC_DEF '50u' '180u' "a daemon-wide rate of 180, the rotation row's number"
+whole_number w09 $RL RATELIMIT_MAX_CONNS_DEFAULT '8u' '50u' "a connection limit of 50, the daemon-wide rate's number"
+whole_number w10 $RC RECOVERY_CODES_MAX '16u' '1u' "a limit of 1 recovery code where the specification says 16"
+whole_number w11 $RC RECOVERY_TICKET_TTL_S '600' '30' "a ticket lifetime of 30 s where the specification says 10 minutes"
+whole_number w12 $RC RECOVERY_TICKET_TTL_S '600' '659' "a ticket lifetime of 659 s, which is not 10 minutes"
+whole_number w13 $RC RECOVERY_LOCK_THRESHOLD '5' '99' "a lockout after 99 failures where the specification says five"
+whole_number w14 $RC RECOVERY_LOCK_SECONDS '3600' '7200' "a lockout of two hours where the specification says one"
+whole_number w15 apps/authd/base32.h BASE32_CODE_CHARS '16u' '6u' "a recovery code of 6 characters where the specification says 16"
+whole_number w16 apps/authd/authd_conn.h AUTHD_PIN_FLOOR_NS '10000u' '10999u' "a pin floor of 10.999 us where the specification says 10"
+whole_number w17 $CI AUTHD_LINE_MAX '8192u' '192u' "a line limit of 192 B where the specification says 8192"
+# The record size follows the content limit: with the limit and its own row
+# changed together, the row beside it is wrong and used to pass.
+copy w18
+edit w18 $CI 's/^\(#define AUTHD_MAX_CONTENT[[:space:]]*\)9216u/\112288u/'
+edit w18 docs/mldsa-authd-spec.md 's/| `AUTHD_MAX_CONTENT` | 9216 B |/| `AUTHD_MAX_CONTENT` | 12288 B |/'
+if gate w18; then tail -3 "$TMP/w18.out"; bad "a content limit raised with its own row, the record size left as it was, PASSED the gate (F355)"
+else ok "a content limit raised with its own row, the record size left as it was, fails the gate (F355)"; fi
+grep -q 'AUTHD_MAX_RECORD' "$TMP/w18.out" && grep 'AUTHD_MAX_RECORD' "$TMP/w18.out" | grep -q FAIL \
+    && ok "and the row it names is AUTHD_MAX_RECORD (F355)" || bad "the refusal does not name AUTHD_MAX_RECORD (F355)"
+rm -rf "$TMP/w18"
+
 [ "$fail" -eq 0 ] && echo "PASS: SPEC-GATE: all" || { echo "FAIL: SPEC-GATE"; exit 1; }

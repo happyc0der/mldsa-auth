@@ -75,7 +75,8 @@ that `fuzz_session`'s inner mode consumes directly.
 
 **`fuzz_target_max_len` must exceed the largest message the target can
 see** (`fuzz_wire`: 8192, above the 4545-byte v2 `ServerHello`), and
-`run_fuzz.sh`'s `-max_len` matches it. The replay driver **fails** on a
+`run_fuzz.sh`'s `-max_len` is that number: the runner compares the two
+for every target before it starts and stops if they differ (F356). The replay driver **fails** on a
 seed larger than that maximum instead of truncating it, so a stale limit
 left behind after a message grows is a loud error rather than a silently
 shrunken corpus.

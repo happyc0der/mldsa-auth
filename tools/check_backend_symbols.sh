@@ -60,10 +60,20 @@ ARM='PQCP_MLDSA_NATIVE_MLDSA65_AARCH64_|PQCP_MLKEM_NATIVE_MLKEM768_AARCH64_'
 X86='PQCP_MLDSA_NATIVE_MLDSA65_X86_64_|PQCP_MLKEM_NATIVE_MLKEM768_X86_64_'
 
 echo "check_backend_symbols: $BUILD [$MLDSA_PLATFORM, $(uname -m)]${EXPECT:+ expecting $EXPECT}"
-fail=0; checked=0; linked=0; arm_total=0; x86_total=0; ref_total=0
+fail=0; checked=0; linked=0; unread=0; arm_total=0; x86_total=0; ref_total=0
 while IFS= read -r f; do
   is_exe "$f" || continue
   checked=$((checked + 1))
+  # F357: an executable whose symbols cannot be read says nothing about its
+  # backend, and that is a failure, not "links none". A stripped one beside
+  # a good one used to drop out of the count, whatever it linked. `main` is
+  # the test: nm still prints a few imported names for a stripped Mach-O, so
+  # "printed something" would not do.
+  if ! nm "$f" 2>/dev/null | grep -qE ' [Tt] _?main$'; then
+    echo "  FAIL $(basename "$f"): its symbol table does not name main (stripped, or unreadable), so its backend cannot be told"
+    fail=1; unread=$((unread + 1))
+    continue
+  fi
   nref=$(nm "$f" 2>/dev/null | grep -cE "$REF")
   narm=$(nm "$f" 2>/dev/null | grep -cE "$ARM")
   nx86=$(nm "$f" 2>/dev/null | grep -cE "$X86")

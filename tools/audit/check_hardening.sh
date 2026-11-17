@@ -38,14 +38,19 @@ case "$(uname -s)" in
     } ;;
   Linux) PLATFORM="Linux"
     is_exe() { case "$(file -b "$1" 2>/dev/null)" in (*ELF*executable*|*ELF*pie*executable*) return 0;; esac; return 1; }
+    # tests/gate_claims.sh puts a stand-in here to show a header that is not
+    # there; a linker that leaves GNU_STACK out is not something to install.
+    READELF="${MLDSA_HARDENING_READELF:-readelf}"
     probe() {
       local f="$1" hdr ph dyn
-      hdr=$(readelf -h "$f" 2>/dev/null); ph=$(readelf -lW "$f" 2>/dev/null); dyn=$(readelf -dW "$f" 2>/dev/null)
+      hdr=$($READELF -h "$f" 2>/dev/null); ph=$($READELF -lW "$f" 2>/dev/null); dyn=$($READELF -dW "$f" 2>/dev/null)
       case "$hdr" in (*"DYN (Position-Independent Executable"*|*"DYN (Shared object"*) P=yes;; (*) P=no;; esac
       case "$ph"  in (*GNU_RELRO*) R=yes;; (*) R=no;; esac
       case "$dyn" in (*BIND_NOW*|*"NOW"*) N=yes;; (*) N=no;; esac
-      case "$ph"  in (*"GNU_STACK"*RWE*) X=no;; (*) X=yes;; esac
-      if readelf -sW "$f" 2>/dev/null | grep -q "__stack_chk_fail"; then C=yes; else C=no; fi
+      # F358: no GNU_STACK header at all is not "non-executable": on x86_64
+      # the kernel then makes the stack executable. It read as yes.
+      case "$ph"  in (*"GNU_STACK"*RWE*) X=no;; (*"GNU_STACK"*) X=yes;; (*) X=no;; esac
+      if $READELF -sW "$f" 2>/dev/null | grep -q "__stack_chk_fail"; then C=yes; else C=no; fi
     } ;;
   *) echo "FAIL: unsupported platform $(uname -s)"; exit 2 ;;
 esac

@@ -18722,3 +18722,52 @@ every lock body is bounded. The review also noted that `common.mjs`
 
 Counts: 641 mutations, 116 campaigns, 685 anchors; 354 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
+
+## V4-248 — four gates that passed what they should refuse (F355 to F358)
+
+The twenty-ninth review read the verification apparatus for checks that
+cannot fail: the workflows, the fuzz harnesses and how they are run, and
+the audit scripts.
+
+- **F355 (Medium).** The spec-constants gate is the reason the
+  specification's numbers can be trusted, and for four of its sections it
+  asked a substring question. F247 found the same weakness for four bare
+  numbers and fixed those four; the rows of §17 and the sentence of §10.3
+  were left asking it. Nothing in the tree was wrong: every constant
+  matches the document today. What was missing is the refusal the day one
+  stops matching. Each needle now names its row, and both numbers of a
+  two-number row are in one needle, so one cannot stand in for the other.
+- **F356.** The second time this bound has been wrong for `fuzz_wire`.
+  The fix that lasts is the comparison, not the number.
+- **F357, F358.** Two scripts that read "nothing found" as "fine".
+
+Medium, landed without asking, by the standing instruction: it is a fix
+to a test gate with its own red test, changes no product code, and no
+constant or spec text moved.
+
+**Left, with reasons.**
+- Every libFuzzer run sets `detect_leaks=0`, and nothing says why. A leak
+  on a path only coverage-guided inputs reach would not fail the smoke or
+  the nightly; the replay tests in the Linux ASan suite do see leaks. On
+  macOS LeakSanitizer is not available, which is probably where the flag
+  came from. Turning it on for the Linux fuzz jobs is a change whose first
+  run may well be red for reasons that are the harnesses' own (state kept
+  across inputs on purpose); it wants a step to itself.
+- `site_node_handler` and the node leg of `authd_e2e` run only where the
+  runner has `node`; the suite job does not assert that it does.
+- Three mutations sit in tables and in no spec file (v25 N7; v49c W6, a
+  documented survivor; v35 U1, documented as applied by hand). The anchor
+  gate does not report a mutation without a spec line.
+- `HANDLE=34` in the spec-constants gate is the script's own number; it is
+  the size of a handle as §5 writes one, not a `#define`.
+
+Read and found sound: the nightly's anchor gate and campaign-matrix check,
+pipefail on both fuzz steps, the registration asserts and SKIP/PASS greps
+of CI, the dependency cache key, `check_fuzz_log.sh` and its test (the
+nightly's twelve fuzz jobs are the twelve targets), the replay driver, and
+six harness bodies read through (oracles use an assert that is not
+compiled out; state is reset per input).
+
+No C changed; no campaign. Counts: 641 mutations, 116 campaigns, 685
+anchors; 358 findings (F273, F288, F309 and F338 open); spec v1.71, 113
+errata; 65 tests.
