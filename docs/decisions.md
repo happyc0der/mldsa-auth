@@ -19186,3 +19186,26 @@ with v49c W11, whose anchor was the rewritten line.
 
 Counts: 668 mutations, 120 campaigns, 712 anchors; 391 findings (F273,
 F288, F309 and F338 open); spec v1.75, 117 errata; 65 tests.
+
+## V4-261: cleanup after V4-258 and V4-259 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `daad7a2` (V4-259), now
+  main: CI 44106471483 (16/16), nightly 44106476472 (134/134, 119
+  campaigns). V4-260's campaign v150 is in this tree and not yet in a
+  landed nightly; the counts REPRODUCE states for the tree (668, 120)
+  are the tree's, the cited nightly is main's.
+- Before it: `252a192` (V4-258) had CI 44106457885 (16/16); `7e74c83`
+  (V4-257) had main's push CI 44106354714 (16/16).
+- The job V4-258 recorded as lost: the `v49a` campaign of nightly
+  44085443667 on `f2a39af` (V4-256) was run again and passed. The run
+  is "success" on its second attempt; GitHub's job listing for it
+  answered 502 on each attempt to count the jobs, so 134/134 is the
+  run's conclusion, not a tally made here.
+- Open for the owner, unchanged since V4-258: F273, F288, F309, F338 and
+  the questions listed in V4-246's entry.
+
+Counts: 668 mutations, 120 campaigns, 712 anchors; 391 findings (F273,
+F288, F309 and F338 open); spec v1.75, 117 errata; 65 tests (unchanged by
+this step).
