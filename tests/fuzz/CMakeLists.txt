@@ -27,6 +27,14 @@ set(FUZZ_ITER_ws 5000)
 # handshake and authd_conn do, so its budget is theirs.
 set(FUZZ_ITER_client 300)
 
+# Leak detection in the libFuzzer smoke tests: on for Linux, off elsewhere
+# (F360; run_fuzz.sh says why macOS cannot have it).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(FUZZ_DETECT_LEAKS 1)
+else()
+  set(FUZZ_DETECT_LEAKS 0)
+endif()
+
 # libFuzzer -max_len per target (the harnesses enforce the same bound).
 set(FUZZ_MAXLEN_envelope 8192)
 set(FUZZ_MAXLEN_authmsg 9216)
@@ -91,7 +99,7 @@ foreach(t IN LISTS FUZZ_TARGETS)
                          LABELS fuzz)
     set_tests_properties(fuzz_libfuzzer_smoke_${t} PROPERTIES FIXTURES_REQUIRED "fuzzdirs_${t};fuzzseeds_${t}"
                          LABELS fuzz
-                         ENVIRONMENT "ASAN_OPTIONS=abort_on_error=1:detect_leaks=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+                         ENVIRONMENT "ASAN_OPTIONS=abort_on_error=1:detect_leaks=${FUZZ_DETECT_LEAKS};UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
   endif()
 endforeach()
 

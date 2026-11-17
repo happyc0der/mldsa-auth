@@ -22,17 +22,17 @@ fail=0
 ok()   { echo "PASS: FUZZ-GATE: $1"; }
 bad()  { echo "FAIL: FUZZ-GATE: $1"; fail=1; }
 
-good() { printf 'fuzz_wire: 60 s, max_len 4096, log x\nfuzz_ws: 60 s, max_len 4096, log y\n---\nfuzz_wire: runs=120034 cov=311 ft=900 corpus=40/2Kb crashes=0 artifacts=0\nfuzz_ws: runs=98211 cov=205 ft=610 corpus=31/1Kb crashes=0 artifacts=0\n'; }
+good() { printf 'leak detection: on (Linux)\nfuzz_wire: 60 s, max_len 4096, log x\nfuzz_ws: 60 s, max_len 4096, log y\n---\nfuzz_wire: runs=120034 cov=311 ft=900 corpus=40/2Kb crashes=0 artifacts=0\nfuzz_ws: runs=98211 cov=205 ft=610 corpus=31/1Kb crashes=0 artifacts=0\n'; }
 
 good > "$TMP/good.log"
 if /bin/sh "$GATE" "$TMP/good.log" wire ws > "$TMP/out" 2>&1; then ok "a log with one clean summary line per target passes (the canary)"
 else cat "$TMP/out"; bad "a clean log was refused (the canary)"; fi
 
-refused() {   # refused <file> <what>
+refused() {   # refused <file> <what> [finding, F245 unless given]
     if /bin/sh "$GATE" "$1" wire ws > "$TMP/out" 2>&1; then
-        cat "$1"; bad "$2 PASSED the gate (F245)"
+        cat "$1"; bad "$2 PASSED the gate (${3:-F245})"
     else
-        ok "$2 fails the gate (F245)"
+        ok "$2 fails the gate (${3:-F245})"
     fi
 }
 printf 'FAIL: no FUZZ_MAXLEN_<t> in tests/fuzz/CMakeLists.txt for: ws\n' > "$TMP/nostart.log"
@@ -53,6 +53,18 @@ good | sed 's/crashes=0 artifacts=0$/crashes=1 artifacts=0/' > "$TMP/crash.log"
 refused "$TMP/crash.log" "a log that reports a crash"
 good | sed 's/crashes=0 artifacts=0$/crashes=0 artifacts=2/' > "$TMP/art.log"
 refused "$TMP/art.log" "a log that reports an artifact"
+# V4-250 (F360): leaks are looked for, and the log says so.
+good | sed 's/^leak detection: on (Linux)$/leak detection: off (Darwin)/' > "$TMP/mac.log"
+if /bin/sh "$GATE" "$TMP/mac.log" wire ws > "$TMP/out" 2>&1; then ok "a log that says leak detection is off on macOS passes (it cannot be on there)"
+else cat "$TMP/out"; bad "a macOS log with leak detection off was refused (F360)"; fi
+good | sed 's/^leak detection: on (Linux)$/leak detection: off (Linux)/' > "$TMP/leakoff.log"
+refused "$TMP/leakoff.log" "a Linux run with leak detection off" F360
+good | grep -v '^leak detection: ' > "$TMP/noleakline.log"
+refused "$TMP/noleakline.log" "a log that does not say whether leaks were looked for" F360
+{ good; echo "leak detection: off (Linux)"; } > "$TMP/twoleak.log"
+refused "$TMP/twoleak.log" "a log with two leak-detection lines, one of them off," F360
+good | sed 's/^leak detection: on (Linux)$/leak detection: off/' > "$TMP/offbare.log"
+refused "$TMP/offbare.log" "a log with leak detection off and no platform named" F360
 if /bin/sh "$GATE" "$TMP/does-not-exist.log" wire > /dev/null 2>&1; then bad "a missing log PASSED the gate (F245)"
 else ok "a missing log fails the gate (F245)"; fi
 

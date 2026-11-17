@@ -18803,3 +18803,32 @@ errata; 65 tests.
 
 No code. Counts: 641 mutations, 116 campaigns, 685 anchors; 359 findings
 (F273, F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
+
+## V4-250 — fuzz runs on Linux look for leaks (F360)
+
+V4-248 left this with a guess about why `detect_leaks=0` was on every
+libFuzzer run. Measured instead, in an Ubuntu container and here:
+
+- **Linux, the targets as they are, detection on.** All twelve at once
+  starved the container (two did not report a run count, one input of
+  `fuzz_localapi` took over ten seconds); no log held a LeakSanitizer
+  report. Four at a time, the three that had trouble and `fuzz_frame`:
+  12.6 million, 177 thousand, 27 thousand and 6.7 million inputs, no
+  crash, no artifact, gate passed.
+- **A planted leak** (7 bytes per input in `fuzz_frame`). Detection on:
+  stopped at the third input, `leak-…` artifact, gate failed. Detection
+  off, as every run has been: 8,066,065 inputs, gate passed.
+- **macOS, detection on.** Every run ends with a report of 56 bytes in
+  two allocations from `fuzzer::StartRssThread`: libFuzzer's own thread,
+  in Homebrew's LLVM. That is the reason the flag was off, written down
+  nowhere until now.
+
+So it is on for Linux, where CI and the nightly fuzz, and off elsewhere
+with the reason beside the flag. The runner says which in its log and the
+log gate requires it, so the setting cannot go back to off without a red
+run. The 600-second nightly runs are longer than anything measured here:
+if one reports a leak, that is a finding, not a flake.
+
+No product code; no campaign. Counts: 641 mutations, 116 campaigns, 685
+anchors; 360 findings (F273, F288, F309 and F338 open); spec v1.71, 113
+errata; 65 tests.

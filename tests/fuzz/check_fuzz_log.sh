@@ -14,7 +14,8 @@
 #
 # This asks for the positive: for EVERY expected target, exactly one summary
 # line with a run count that is a number above zero and `crashes=0
-# artifacts=0`; and no FAIL: or SKIP: line anywhere.
+# artifacts=0`; no FAIL: or SKIP: line anywhere; and, since V4-250 (F360), one
+# line saying leak detection was on, or off on a platform that is not Linux.
 set -u
 LOG="${1:-}"
 [ -n "$LOG" ] && [ -f "$LOG" ] || { echo "FAIL: FUZZ-LOG: no log at '${LOG}'"; exit 1; }
@@ -29,6 +30,19 @@ fi
 bad=0
 if grep -nE '^(FAIL|SKIP):' "$LOG"; then
     echo "FAIL: FUZZ-LOG: the run printed a FAIL: or SKIP: line (above)"
+    bad=1
+fi
+# F360: the run says whether leaks were looked for, and on Linux they must
+# have been. One line, so a log stitched from two runs is not accepted on
+# the strength of the one that had it on.
+nl=$(grep -cE '^leak detection: ' "$LOG")
+if [ "$nl" -ne 1 ]; then
+    echo "FAIL: FUZZ-LOG: $nl 'leak detection:' lines, expected exactly 1 (the run does not say whether leaks were looked for)"
+    bad=1
+elif grep -qE '^leak detection: on \([A-Za-z0-9_]+\)$' "$LOG"; then
+    :
+elif grep -qE '^leak detection: off \(Linux\)$' "$LOG" || ! grep -qE '^leak detection: off \([A-Za-z0-9_]+\)$' "$LOG"; then
+    echo "FAIL: FUZZ-LOG: leak detection was not on: $(grep -E '^leak detection: ' "$LOG") (it may be off only where the platform cannot do it, and Linux can)"
     bad=1
 fi
 for t in "$@"; do
@@ -50,4 +64,4 @@ for t in "$@"; do
     esac
 done
 [ "$bad" -eq 0 ] || exit 1
-echo "PASS: FUZZ-LOG: $# target(s), each with one summary line, a run count above zero, no crash and no artifact"
+echo "PASS: FUZZ-LOG: $# target(s), each with one summary line, a run count above zero, no crash and no artifact; $(grep -E '^leak detection: ' "$LOG")"

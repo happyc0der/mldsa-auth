@@ -190,3 +190,13 @@ A crash counts as **fixed only when all of these hold:**
 - **Ledger time behavior:** TTL, capacity and cancel (test_handshake). F2 uses a fixed clock.
 - **Key-file permissions:** ownership and symlinks (test_net T14).
 - **Concurrency:** none (single-threaded by design).
+
+## Leaks
+
+On Linux every libFuzzer run has LeakSanitizer on (`detect_leaks=1`), so a
+leak on a path only a generated input reaches fails the run with a `leak-`
+artifact. On macOS it is off: libFuzzer's own RSS-watching thread is
+reported as leaked when the process ends, in every target, and that is not
+this project's to fix. `run_fuzz.sh` prints which it is, and
+`check_fuzz_log.sh` refuses a Linux log that does not say `on` (V4-250,
+audit F360).

@@ -114,7 +114,22 @@ for t in $TARGETS; do
     fi
 done
 
-export ASAN_OPTIONS=abort_on_error=1:detect_leaks=0
+# F360: leak detection is ON where it works. It was off everywhere from the
+# first fuzz commit, with no reason given: a leak on a path only
+# coverage-guided inputs reach could not fail a fuzz run (a harness given a
+# leak of 7 bytes per input ran 8 million inputs "clean"). The reason turns
+# out to be macOS: there libFuzzer's own RSS-watching thread is reported as
+# leaked when the process ends, in every target, so every run would fail on
+# something that is not this project's. On Linux nothing is reported for the
+# twelve targets as they are, and the planted leak stops the run at its
+# third input. The line below goes into the log, and check_fuzz_log.sh
+# refuses a log from Linux that does not say "on".
+OS=$(uname -s)
+case "$OS" in
+    Linux) LEAKS=1; echo "leak detection: on ($OS)" ;;
+    *)     LEAKS=0; echo "leak detection: off ($OS)" ;;
+esac
+export ASAN_OPTIONS=abort_on_error=1:detect_leaks=$LEAKS
 export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 LOGS="$BUILD/fuzz-logs"
 mkdir -p "$LOGS"
@@ -147,7 +162,7 @@ for t in $TARGETS; do
     ft=$(grep -E '#[0-9]+.*(DONE|pulse|NEW|REDUCE).*ft:' "$L" | tail -1 | sed -E 's/.*ft: ([0-9]+).*/\1/')
     corp=$(grep -E '#[0-9]+.*(DONE|pulse|NEW|REDUCE).*corp:' "$L" | tail -1 | sed -E 's/.*corp: ([0-9]+\/[0-9A-Za-z]+).*/\1/')
     arts=$(find "$BUILD/fuzz-artifacts/$t" -type f | wc -l | tr -d ' ')
-    crash=$(grep -cE 'ERROR: (libFuzzer|AddressSanitizer|UndefinedBehaviorSanitizer)|FUZZ ORACLE FAILURE|runtime error' "$L")
+    crash=$(grep -cE 'ERROR: (libFuzzer|AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer)|FUZZ ORACLE FAILURE|runtime error' "$L")
     echo "fuzz_$t: runs=${runs:-?} cov=${cov:-?} ft=${ft:-?} corpus=${corp:-?} crashes=$crash artifacts=$arts"
     [ "$crash" -eq 0 ] && [ "$arts" -eq 0 ] || STATUS=1
 done
