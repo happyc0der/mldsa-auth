@@ -519,7 +519,11 @@ if(MLDSA_WASM_DIR)
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     # MLDSA_KEY_SCAN: the profile scan's helper (V4-27). browser_e2e fails,
     # rather than skips, without it.
-    set_tests_properties(browser_e2e PROPERTIES TIMEOUT 600
+    # 1200 s since V4-262: the at-rest scan runs envelope_key_scan once per key
+    # over the whole browser profile, and in a UBSan tree that took the test
+    # to 600 s by itself (an 18 MB Edge profile, about 40 s a scan). The limit
+    # was being met by the scanner's speed, not by anything hanging.
+    set_tests_properties(browser_e2e PROPERTIES TIMEOUT 1200
                          ENVIRONMENT "MLDSA_KEY_SCAN=$<TARGET_FILE:envelope_key_scan>")
     # V4-26 (F119): tools/phone_timing.mjs and web/pages/timing.html, the real
     # tool driven through a secure and a non-secure origin; every row must say

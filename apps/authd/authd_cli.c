@@ -622,7 +622,7 @@ static int online(int argc, char **argv, const char *prog, const char *sub,
             continue;
         }
         const size_t vlen = strlen(opts[k].val);
-        if (strcmp(opts[k].key, "user") == 0) {
+        if (strcmp(opts[k].key, "user") == 0 || strcmp(opts[k].key, "handle") == 0) {
             int printable = 1;
             for (size_t i = 0; i < vlen; i++) {
                 const unsigned char ch = (unsigned char)opts[k].val[i];
@@ -631,8 +631,8 @@ static int online(int argc, char **argv, const char *prog, const char *sub,
                 }
             }
             if (vlen < 1u || vlen > AUTHD_CLI_ID_MAX || !printable) {
-                fprintf(stderr, "%s %s: --user is 1 to %u bytes of printable ASCII\n", prog, sub,
-                        (unsigned)AUTHD_CLI_ID_MAX);
+                fprintf(stderr, "%s %s: %s is 1 to %u bytes of printable ASCII\n", prog, sub,
+                        opts[k].flag, (unsigned)AUTHD_CLI_ID_MAX);
                 return EX_USAGE;
             }
         } else if (strcmp(opts[k].key, "reason") == 0) {
@@ -1071,6 +1071,7 @@ static void admin_usage(const char *prog)
             "  %s enroll-operator --socket S --user ID --handle H --pub H.pub [--label TEXT]\n"
             "  %s disable-user    --socket S --user ID --reason TEXT\n"
             "  %s enable-user     --socket S --user ID\n"
+            "  %s revoke-device   --socket S --handle H --reason TEXT\n"
             "  %s list-users      --socket S\n"
             "  %s list-devices    --socket S --user ID\n"
             "  %s audit-tail      --socket S --n N        (1..24)\n"
@@ -1089,7 +1090,7 @@ static void admin_usage(const char *prog)
             "Passphrases are FILES (mode 0600, owned by you). There is no prompt and no\n"
             "environment variable: argv and the environment are readable by other processes.\n"
             "Exit: 0 ok, 1 operation failed, 2 usage, 3 configuration.\n",
-            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+            prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static int admin_dispatch(int argc, char **argv, const char *prog);
@@ -1126,6 +1127,17 @@ static int admin_dispatch(int argc, char **argv, const char *prog)
     if (strcmp(sub, "enable-user") == 0) {
         opt_t o[] = { { "--user", "user", 1, 1, NULL } };
         return online(argc, argv, prog, sub, "ENABLE-USER", o, 1, "--socket PATH --user ID");
+    }
+    /* F397: an operator's device is revoked from admin.sock only (V4-82), and
+     * no tool could do it: the daemon has had REVOKE-DEVICE on this socket
+     * all along, and the one way to send it was a line written by hand. An
+     * operator's stolen laptop could be answered with disable-user, which
+     * ends every device they have, and enable-user, which re-admits the
+     * stolen one. --reason is required, as it is for disable-user. */
+    if (strcmp(sub, "revoke-device") == 0) {
+        opt_t o[] = { { "--handle", "handle", 1, 1, NULL }, { "--reason", "reason", 1, 1, NULL } };
+        return online(argc, argv, prog, sub, "REVOKE-DEVICE", o, 2,
+                      "--socket PATH --handle H --reason TEXT");
     }
     if (strcmp(sub, "list-users") == 0) {
         return online(argc, argv, prog, sub, "LIST-USERS", NULL, 0, "--socket PATH");

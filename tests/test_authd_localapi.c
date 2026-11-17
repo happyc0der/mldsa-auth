@@ -2673,6 +2673,156 @@ static void test_store_read_failure(void)
     h_stop(&d);
 }
 
+/* V4-262 (F392 to F396): the local API against spec 8, 10 and 15, clause by
+ * clause -- what the thirty-eighth review found. */
+static int audit_lines_are_words(const char *resp)
+{
+    /* Every token of every AUDIT line is key=value. */
+    int lines = 0;
+    for (const char *l = resp; l != NULL && *l != '\0'; ) {
+        const char *e = strchr(l, '\n');
+        const size_t n = (e != NULL) ? (size_t)(e - l) : strlen(l);
+        if (n > 6u && memcmp(l, "AUDIT ", 6) == 0) {
+            lines++;
+            size_t i = 6;
+            while (i < n) {
+                size_t j = i;
+                int eq = 0;
+                while (j < n && l[j] != ' ') { if (l[j] == '=') { eq = 1; } j++; }
+                if (!eq || j == i) { return 0; }
+                i = (j < n) ? j + 1u : j;
+            }
+        }
+        l = (e != NULL) ? e + 1 : NULL;
+    }
+    return lines;
+}
+
+static void test_spec_clauses_v262(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "clauses262.sqlite3", 1) == 0, "clauses: daemon starts");
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "clauses: connect to site.sock and admin.sock");
+    static const uint8_t U3[] = { 'u','3' }, H3[] = { 'd','3','c','c' }, U4[] = { 'u','4' }, H4[] = { 'd','4','d','d' },
+                         H5[] = { 'd','5','e','e' }, OP[] = { 'o','p' }, GHOST[] = { 'n','o','b','o','d','y' };
+    mldsa_keypair_t k3, k4, other;
+    CHECK(mldsa_keypair_generate(&k3) == 0 && mldsa_keypair_generate(&k4) == 0 && mldsa_keypair_generate(&other) == 0,
+          "clauses: keys");
+    CHECK(store_add_user(d.store, U3, sizeof U3, STORE_ROLE_USER) == STORE_OK &&
+          store_enroll_device(d.store, H3, sizeof H3, U3, sizeof U3, k3.public_key, "site", "test", NULL, 0) == STORE_OK &&
+          store_add_user(d.store, U4, sizeof U4, STORE_ROLE_USER) == STORE_OK &&
+          store_enroll_device(d.store, H4, sizeof H4, U4, sizeof U4, k4.public_key, "site", "test", NULL, 0) == STORE_OK &&
+          store_add_user(d.store, OP, sizeof OP, STORE_ROLE_OPERATOR) == STORE_OK &&
+          store_disable_user(d.store, U3, sizeof U3, "two words=x", (const uint8_t *)"r", 1u) == STORE_OK,
+          "clauses: fixture -- u3 (disabled, with a device), u4 (active, with a device), an operator");
+    static char req[8192], resp[16384], pkh[STORE_PK_BYTES * 2u + 1u];
+    char u3h[32], h3h[32], u4h[32], h4h[32], h5h[32], oph[32], gh[32];
+    hx(pkh, sizeof pkh, other.public_key, STORE_PK_BYTES);
+    hx(u3h, sizeof u3h, U3, sizeof U3); hx(h3h, sizeof h3h, H3, sizeof H3);
+    hx(u4h, sizeof u4h, U4, sizeof U4); hx(h4h, sizeof h4h, H4, sizeof H4);
+    hx(h5h, sizeof h5h, H5, sizeof H5); hx(oph, sizeof oph, OP, sizeof OP); hx(gh, sizeof gh, GHOST, sizeof GHOST);
+    uint8_t head[STORE_AUDIT_MAC_BYTES];
+
+    /* F392: Req 7 is logged though the request is refused for its user. */
+    CHECK(store_audit_head_mac(d.store, head) == STORE_OK, "clauses: audit head read");
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", u3h, h3h, pkh);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=user-disabled"),
+            "req7(own disabled user): the answer is still the user's refusal (erratum 118)");
+      CHECK(req7_logged(log, "d3cc", k3.public_key, other.public_key),
+            "req7(own disabled user): a different key for the handle is logged with both fingerprints (F392)");
+      CHECK(head_is(&d, head), "req7(own disabled user): nothing was written to the audit chain");
+      free(log); }
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=signup", u4h, h4h, pkh);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=user-exists") && req7_logged(log, "d4dd", k4.public_key, other.public_key),
+            "req7(signup, known user): user-exists, and the handle's different key is logged (F392)");
+      free(log); }
+    snprintf(req, sizeof req, "ENROLL-OPERATOR user=%s handle=%s pk=%s via=site", u4h, h4h, pkh);
+    { char *log = logged_cmd(&d, adm, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=role-mismatch") && req7_logged(log, "d4dd", k4.public_key, other.public_key),
+            "req7(wrong role): role-mismatch, and the handle's different key is logged (F392)");
+      free(log); }
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=site", u3h, h5h, pkh);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=user-disabled") && log != NULL && strstr(log, "enroll-key-mismatch") == NULL,
+            "req7(own disabled user, a NEW handle): refused, and nothing is logged as Req 7 (the control)");
+      free(log); }
+
+    /* F393: every RECOVERY-USE that fails says so in the journal. F394: an
+     * operator is refused as one, disabled or not. */
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", gh);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=invalid") && log != NULL &&
+            strstr(log, "event=recovery-use slot=") != NULL && strstr(log, "detail=invalid\n") != NULL,
+            "recovery-use: an unknown user's attempt is logged recovery-use detail=invalid (F393)");
+      free(log); }
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", u3h);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=user-disabled") && log != NULL && strstr(log, "event=recovery-use") != NULL &&
+            strstr(log, "detail=user-disabled\n") != NULL,
+            "recovery-use: a disabled user's attempt is logged recovery-use detail=user-disabled (F393)");
+      free(log); }
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", oph);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=not-permitted") && log != NULL && strstr(log, "event=recovery-use") != NULL &&
+            strstr(log, "detail=not-permitted\n") != NULL,
+            "recovery-use: an operator named on site.sock is logged recovery-use detail=not-permitted (F393)");
+      free(log); }
+    CHECK(store_disable_user(d.store, OP, sizeof OP, "test", (const uint8_t *)"x", 1u) == STORE_OK,
+          "clauses: the operator is disabled");
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+          "recovery-use: a DISABLED operator on site.sock is still not-permitted, not user-disabled (F394)");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", oph);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+          "recovery-issue: a DISABLED operator on site.sock is still not-permitted, not user-disabled (F394)");
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=user-disabled"),
+          "recovery-issue: on admin.sock the same operator is user-disabled (the control)");
+    d.app.recovery_use_per_sec = 1u;
+    d.app.recovery_use_burst = 1u;
+    d.app.recovery_budget_live = 0;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", gh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "recovery-use: the one attempt in the budget is served");
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=busy") && log != NULL && strstr(log, "event=recovery-use") != NULL &&
+            strstr(log, "detail=busy\n") != NULL,
+            "recovery-use: an attempt past the budget is logged recovery-use detail=busy (F393)");
+      free(log); }
+
+    /* F395: one spelling of a number; a state no login code can be bound to. */
+    CHECK(h_local_cmd(&d, adm, "AUDIT-TAIL n=01", resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "grammar: AUDIT-TAIL n=01 is malformed, not a second spelling of 1 (F395)");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=02", u4h);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "grammar: RECOVERY-ISSUE count=02 is malformed (F395)");
+    { char st[2u * 65u + 1u];
+      memset(st, 0, sizeof st);
+      memset(st, '6', 2u * 65u);
+      snprintf(req, sizeof req, "EXCHANGE code=%064d state=%s", 0, st);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+            "grammar: EXCHANGE with a 65-byte state is malformed (spec 7.1, F395)");
+      st[2u * 64u] = '\0';
+      snprintf(req, sizeof req, "EXCHANGE code=%064d state=%s", 0, st);
+      CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=") &&
+            !starts(resp, "ERR code=malformed"),
+            "grammar: EXCHANGE with a 64-byte state is well formed (the control)"); }
+
+    /* F396: an AUDIT line is key=value words, whatever the store's detail. */
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", u4h);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "audit: two codes issued");
+    CHECK(h_local_cmd(&d, adm, "AUDIT-TAIL n=1", resp, sizeof resp) == 0 && strstr(resp, " detail=issued-2\n") != NULL,
+          "audit: a recovery issue's detail is one word, issued-2 (F396)");
+    CHECK(h_local_cmd(&d, adm, "AUDIT-TAIL n=20", resp, sizeof resp) == 0 && strstr(resp, " detail=two.words.x\n") != NULL &&
+          audit_lines_are_words(resp) >= 5,
+          "audit: every token of every AUDIT line is key=value, a detail of two words and an '=' included (F396)");
+
+    (void)close(fd); (void)close(adm);
+    mldsa_keypair_free(&k3); mldsa_keypair_free(&k4); mldsa_keypair_free(&other);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2718,6 +2868,7 @@ int main(void)
     test_store_write_failure();
     test_store_read_failure();
     test_enroll_without_continuity();
+    test_spec_clauses_v262();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

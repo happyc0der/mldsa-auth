@@ -2372,7 +2372,7 @@ store_status_t store_recovery_replace(store_t *s, const uint8_t *user_id, size_t
     if (r != STORE_OK) { tx_rollback(s); return r; }
 
     char detail[32];
-    (void)snprintf(detail, sizeof detail, "issued %zu", n);
+    (void)snprintf(detail, sizeof detail, "issued-%zu", n);   /* one word (F396) */
     r = audit_append(s, "recovery-issue", user_id, user_id_len, NULL, 0u, detail, now);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     return tx_commit(s);
@@ -2596,7 +2596,7 @@ store_status_t store_recovery_note_failure(store_t *s, const uint8_t *user_id, s
 
         if (locked_out != NULL)       { *locked_out = 1; }
         if (locked_until_out != NULL) { *locked_until_out = until; }
-        r = audit_append(s, "recovery-locked", user_id, user_id_len, NULL, 0u, "five failures (§10.3)", now);
+        r = audit_append(s, "recovery-locked", user_id, user_id_len, NULL, 0u, "five-failures", now);   /* one word, ASCII (F396) */
     } else {
         r = audit_append(s, "recovery-use", user_id, user_id_len, NULL, 0u, "invalid", now);
     }

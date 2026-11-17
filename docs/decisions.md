@@ -19209,3 +19209,56 @@ No code.
 Counts: 668 mutations, 120 campaigns, 712 anchors; 391 findings (F273,
 F288, F309 and F338 open); spec v1.75, 117 errata; 65 tests (unchanged by
 this step).
+
+## V4-262 — the local API against the specification: Req 7 logged before a user refusal, every refused recovery logged, `authd_admin revoke-device` (F392 to F398)
+
+The thirty-eighth review was a second pass over the part of the daemon
+that holds state: the local API, the store, tokens, recovery and the admin
+tool, against spec 8 to 13 and 15. Expiry comparisons, transactions, what
+each event spends, tickets, secret comparisons and the reply tables were
+consistent. Nothing High.
+
+- **F397 (Medium).** A feature, and added without asking: the daemon
+  has always taken `REVOKE-DEVICE` on the administrative socket, the
+  runbook already tells the operator to revoke a lost device, and since
+  V4-82 nothing shipped could do it for an operator. "No revoke command,
+  by design" was decided when the site socket could revoke anything.
+  `--reason` is required, as erratum 80 made it for `disable-user`. Not
+  added: `recovery-issue` for an operator, which would print recovery
+  codes on a terminal; that is the owner's to decide.
+- **F392.** The answer does not change. Giving `exists-different-key`
+  in place of the user's refusal would tell a signup whether a handle
+  exists, which the comment at that check exists to prevent; the journal
+  is the operator's, and that is where Req 7 belongs. Erratum 118 states
+  the precedence.
+- **F393.** The unknown user is logged with the name that was sent: a
+  spray of usernames is then visible as one, under whatever
+  `log_identities` says. `busy` names no user, because none has been
+  looked up when the budget refuses.
+- **F396.** Sanitised where the item is printed, so a store written by
+  an older build reads correctly, and the two details are changed for
+  new rows. What goes into the chain is still the owner's open
+  question; this changes how a detail is spelt, not what is recorded.
+- **F398 (open).** Two sentences of spec 8 give different answers to a
+  retried signup. Recommended: `idempotent=1` when user, handle and key
+  all match.
+- **Not changed, recorded:** runs of spaces between tokens and a
+  trailing space are accepted by the local parser; the audit MAC is
+  computed over the text and integer readings of a row's columns, so a
+  row rewritten with bytes after an embedded NUL, or a fractional `at`,
+  should still verify (not run against SQLite; the tools show the
+  MAC'd reading).
+
+- **`browser_e2e`'s limit, 600 to 1200 seconds.** In the UBSan tree
+  the test timed out twice during this step's verification and then
+  passed by hand in about ten minutes: every check passed, and the time
+  went to the at-rest scan, which runs the UBSan-built
+  `envelope_key_scan` once per key over an 18 MB Edge profile. Nothing
+  hung. CI's browser job uses a Release tree and is far inside either
+  limit. And the constant-time site list has a thirtieth entry, the
+  comparison in `note_req7_before_refusal`.
+
+Campaign v151, ten mutants, each tried with `tools/hand_control.py`.
+
+Counts: 678 mutations, 121 campaigns, 722 anchors; 398 findings (F273,
+F288, F309, F338 and F398 open); spec v1.76, 118 errata; 65 tests.

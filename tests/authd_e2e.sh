@@ -1696,6 +1696,36 @@ else
     echo "SKIP: E2E: node not found, so the REVOKE-DEVICE leg did not run"
 fi
 
+# V4-262 (F397): `authd_admin revoke-device`. One device of an operator who has
+# two is revoked with the shipped tool; the other still logs in, which is what
+# disable-user followed by enable-user could not do. Before this the only way
+# to send REVOKE-DEVICE to admin.sock was a line written by hand.
+ERIN1=$("$CLIENT" keygen --dir "$TMP/erin1" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+    || fail "keygen for erin's first device exited nonzero"
+ERIN2=$("$CLIENT" keygen --dir "$TMP/erin2" --passphrase-file "$TMP/opass" 2>> "$TMP/keygen.err") \
+    || fail "keygen for erin's second device exited nonzero"
+"$ADMIN" enroll-operator --socket "$TMP/a.sock" --user erin --handle "$ERIN1" \
+    --pub "$TMP/erin1/$ERIN1.pub" > /dev/null || fail "enroll-operator erin (first device) failed"
+"$ADMIN" enroll-operator --socket "$TMP/a.sock" --user erin --handle "$ERIN2" \
+    --pub "$TMP/erin2/$ERIN2.pub" > /dev/null || fail "enroll-operator erin (second device) failed"
+erin_login() {  # $1 = erin1 | erin2, $2 = the handle
+    "$CLIENT" login --handle "$2" --key "$TMP/$1/$2.ek" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err"
+}
+erin_login erin1 "$ERIN1" && erin_login erin2 "$ERIN2" || fail "erin's devices could not log in before the revocation (the canary)"
+rc=0; "$ADMIN" revoke-device --socket "$TMP/a.sock" --handle "$ERIN1" > /dev/null 2> "$TMP/revdev.err" || rc=$?
+[ "$rc" -eq 2 ] || fail "authd_admin revoke-device without --reason exited $rc, expected 2 (usage)"
+"$ADMIN" revoke-device --socket "$TMP/a.sock" --handle "$ERIN1" --reason "stolen laptop" > "$TMP/revdev.txt" 2> "$TMP/revdev.err" \
+    || fail "authd_admin revoke-device failed: $(cat "$TMP/revdev.err")"
+grep -q '^OK' "$TMP/revdev.txt" || fail "authd_admin revoke-device printed no OK: $(cat "$TMP/revdev.txt")"
+rc=0; erin_login erin1 "$ERIN1" || rc=$?
+[ "$rc" -ne 0 ] || fail "a device revoked with authd_admin revoke-device still obtained a login code (F397)"
+erin_login erin2 "$ERIN2" || fail "revoking one of erin's devices ended the other too (F397)"
+rc=0; "$ADMIN" revoke-device --socket "$TMP/a.sock" --handle "no-such-device" --reason "none" > /dev/null 2> "$TMP/revdev.err" || rc=$?
+[ "$rc" -eq 1 ] || fail "authd_admin revoke-device on a handle the store does not hold exited $rc, expected 1"
+echo "PASS: E2E: authd_admin revoke-device revokes one device of an operator and leaves the other (F397)"
+
 # RECOVERY-USE with revoke=all (V4-22a, CLAIMS D9): the stolen-device recovery,
 # spent the way a site spends it. Until V4-22a it ran in-process only. bob has
 # two devices -- the first, which the revoke=none recovery above left active,

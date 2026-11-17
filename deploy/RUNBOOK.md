@@ -814,7 +814,10 @@ sudo authd_admin enable-user --socket /run/mldsa-authd/admin.sock --user you
 The user's devices log in again. If the device itself was lost, enable the
 user only after they have enrolled a new device, or recovered with a recovery
 code, and the lost one has been revoked: enabling a user re-enables every device they
-had.
+had. `authd_admin list-devices` shows the user's handles, and
+`authd_admin revoke-device --socket /run/mldsa-authd/admin.sock --handle HANDLE --reason lost-laptop`
+revokes one of them and leaves the others; for an operator's device it is the
+only way (spec §10.3).
 
 ## 22. Upgrade the daemon
 

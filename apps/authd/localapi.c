@@ -291,6 +291,27 @@ static ev_action_t refuse_conflict(authd_app_t *app, authd_slot_t *slot,
     return send_err(slot, "pk-in-use");
 }
 
+/* F392: Req 7 is logged whenever a known handle is presented with a different
+ * key -- "always", spec 15 -- and that includes a request refused for its USER
+ * first. The three user refusals below (user-exists, role-mismatch,
+ * user-disabled) return before the handle is looked at, so an attempt to put
+ * a new key on the handle of one's own disabled account, or on an operator's,
+ * left nothing in the journal. The answer stays the user's refusal (erratum
+ * 118); this only writes the two fingerprint lines. */
+static void note_req7_before_refusal(authd_app_t *app, authd_slot_t *slot,
+                                     const uint8_t *handle, size_t handle_len,
+                                     const uint8_t pk[STORE_PK_BYTES])
+{
+    uint8_t known[STORE_PK_BYTES];
+    if (store_handle_last_key(app->store, handle, handle_len, known) == STORE_OK &&
+        sodium_memcmp(known, pk, STORE_PK_BYTES) != 0) {
+        authd_fp_t fp_known, fp_given;
+        authd_fp_of_pk(&fp_known, known);
+        authd_fp_of_pk(&fp_given, pk);
+        log_req7(slot, handle, handle_len, &fp_known, &fp_given);
+    }
+}
+
 static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req_t *req,
                                  store_role_t role)
 {
@@ -368,6 +389,9 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
             sodium_memzero(thash, sizeof thash);
             return send_err(slot, "internal");
         }
+        if (existing_role != role || strcmp(ustatus, "active") != 0) {
+            note_req7_before_refusal(app, slot, handle, handle_len, pk);
+        }
         if (existing_role != role) {
             sodium_memzero(thash, sizeof thash);
             return send_err(slot, "role-mismatch");
@@ -438,6 +462,9 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
      * the name is taken, which a signup form tells anyone anyway. The event
      * loop serves one request at a time, so nothing can create the user
      * between this check and the enrollment below. */
+    if (us == STORE_OK && (via_signup || existing != role || strcmp(status, "active") != 0)) {
+        note_req7_before_refusal(app, slot, handle, handle_len, pk);
+    }
     if (via_signup && us == STORE_OK) {
         return send_err(slot, "user-exists");
     }
@@ -552,7 +579,8 @@ static ev_action_t h_exchange(authd_app_t *app, authd_slot_t *slot, const req_t 
         return send_err(slot, "malformed");
     }
     if (kv_get(req, "state") == NULL ||
-        get_hex(req, "state", state, sizeof state, &state_len, 0u) != 0) {
+        get_hex(req, "state", state, sizeof state, &state_len, 0u) != 0 ||
+        state_len > WS_STATE_MAX) {         /* F395: no login code is bound to a longer one (spec 7.1) */
         sodium_memzero(code, sizeof code);   /* F115: a valid code was already decoded */
         return send_err(slot, "malformed");
     }
@@ -890,7 +918,18 @@ static int on_audit(void *ctx, int64_t seq, int64_t at, const char *event,
     resp_hex(c->r, user_id, user_id_len);
     resp_add(c->r, " handle=");
     resp_hex(c->r, handle, handle_len);
-    resp_add(c->r, " detail=%s\n", (detail != NULL) ? detail : "");
+    /* F396: one word, like every other value on this protocol. A detail is
+     * free text in the store ("issued 5", a revocation's reason), and printed
+     * as it was it added tokens to the line. Bytes that are not printable
+     * ASCII, spaces and '=' are shown as '.'. */
+    char word[97];
+    size_t wn = 0;
+    for (const char *d = (detail != NULL) ? detail : ""; *d != '\0' && wn + 1u < sizeof word; d++) {
+        const unsigned char ch = (unsigned char)*d;
+        word[wn++] = (ch > 0x20u && ch <= 0x7eu && ch != '=') ? (char)ch : '.';
+    }
+    word[wn] = '\0';
+    resp_add(c->r, " detail=%s\n", word);
     c->n++;
     return c->r->overflow ? 1 : 0;
 }
@@ -955,7 +994,8 @@ static ev_action_t h_audit_tail(authd_app_t *app, authd_slot_t *slot, const req_
         return send_err(slot, "malformed");
     }
     const kv_t *kv = kv_get(req, "n");
-    if (kv == NULL || kv->val_len == 0u || kv->val_len > 4u) {
+    if (kv == NULL || kv->val_len == 0u || kv->val_len > 4u ||
+        kv->val[0] == '0') {                /* F395: one spelling per number; 0 is refused below anyway */
         return send_err(slot, "malformed");
     }
     size_t n = 0;
@@ -1017,7 +1057,8 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
         return send_err(slot, "malformed");
     }
     const kv_t *kv = kv_get(req, "count");
-    if (kv == NULL || kv->val_len == 0u || kv->val_len > 2u) {
+    if (kv == NULL || kv->val_len == 0u || kv->val_len > 2u ||
+        kv->val[0] == '0') {                /* F395: `count=07` is not a second spelling of 7 */
         return send_err(slot, "malformed");
     }
     size_t count = 0;
@@ -1043,9 +1084,6 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
     if (us != STORE_OK) {
         return send_err(slot, "internal");
     }
-    if (strcmp(status, "active") != 0) {
-        return send_err(slot, "user-disabled");
-    }
     /* Req 11, extended to recovery. RECOVERY-ISSUE and RECOVERY-USE live in
      * the SITE table because the site is what a locked-out user reaches -- but
      * an OPERATOR's recovery is an administrative act. Without this, a
@@ -1058,6 +1096,12 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
      * user's role from ENROLL's role-mismatch. */
     if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
         return send_err(slot, "not-permitted");
+    }
+    /* The role is asked before the status (F394): an operator is not the
+     * site's to recover, disabled or not, as REVOKE-DEVICE has answered
+     * since F172. */
+    if (strcmp(status, "active") != 0) {
+        return send_err(slot, "user-disabled");
     }
 
     /* The plaintext codes live only in `codes`, which is wiped at the single
@@ -1176,6 +1220,9 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
      * about who was named. */
     if (!slot->is_admin && !recovery_budget_take(app)) {
         app->recovery_busy++;
+        /* F393: every use is logged, "success or failure" (spec 15). Only a
+         * locked user, a wrong code and a success used to be. */
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "busy");
         return send_err(slot, "busy");
     }
 
@@ -1193,12 +1240,9 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     if (us == STORE_ERR_NOT_FOUND) {
         recovery_spend_one(app->recovery_ops, app->recovery_mem);
         app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "invalid");
         return send_err(slot, "invalid");
-    }
-    if (strcmp(status, "active") != 0) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
-        app->recovery_kdf_calls++;
-        return send_err(slot, "user-disabled");
     }
     /* Req 11, extended to recovery. RECOVERY-ISSUE and RECOVERY-USE live in
      * the SITE table because the site is what a locked-out user reaches -- but
@@ -1213,7 +1257,17 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
         recovery_spend_one(app->recovery_ops, app->recovery_mem);
         app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "not-permitted");
         return send_err(slot, "not-permitted");
+    }
+    /* After the role (F394), as in RECOVERY-ISSUE. */
+    if (strcmp(status, "active") != 0) {
+        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "user-disabled");
+        return send_err(slot, "user-disabled");
     }
 
     /* THE LOCKOUT IS CHECKED FIRST, before the code is looked at: a locked user

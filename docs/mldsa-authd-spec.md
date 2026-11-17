@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.75, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260)
+# mldsa-authd — deployment specification (v1.76, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -584,7 +584,10 @@ already exists with the other role is `role-mismatch`. On either `via`,
 `exists-different-key` means the handle already exists with a different key
 (Req 7, logged -- including a handle whose device is revoked or whose user is
 disabled), and `pk-in-use` means the key is already enrolled: under another handle, or under this
-handle for another user (erratum 46). `ENROLL-OPERATOR` is
+handle for another user (erratum 46). A request refused for its own user
+first (`user-exists`, `role-mismatch`, `user-disabled`) keeps that answer, and
+a different key for the handle it names is still logged as a Req 7 rejection
+(erratum 118). `ENROLL-OPERATOR` is
 the same request with the same keys, on the administrative socket, creating
 the user with role `operator`; it also takes `via=site` and is audited as
 such, because the administrator running it *is* the enroller.
@@ -610,6 +613,13 @@ socket; `authd_admin disable-user` requires `--reason` (erratum 80). So
 may `REVOKE-DEVICE`'s `reason=` and the `label=` of `ENROLL` and
 `ENROLL-OPERATOR` (erratum 113): a missing one is an empty one, and when
 given it must still be well-formed.
+
+Erratum 118: `AUDIT-TAIL n=` and `RECOVERY-ISSUE count=` are decimal numbers
+in their one spelling, with no leading zero. `EXCHANGE state=` is at most 64
+bytes, as §7.1 bounds it; a longer one is `malformed`. In an `AUDIT` item
+`detail=` is one word, written as §15 writes a log line's. `RECOVERY-ISSUE`
+and `RECOVERY-USE` on `site.sock` answer `not-permitted` for an operator
+whatever the operator's status, as `REVOKE-DEVICE` does.
 `BACKUP`'s `path=` is resolved in the **daemon's**
 working directory, so a caller should give an absolute one.
 
@@ -1018,9 +1028,11 @@ should be destroyed once the new file is verified.
 ## 13. Command-line interfaces
 
 `authd_admin`: `init`, `keygen-server`, `migrate-key`, `rewrap`,
-`enroll-operator`, `disable-user`, `enable-user`, `list-users`,
+`enroll-operator`, `disable-user`, `enable-user`, `revoke-device`, `list-users`,
 `list-devices`, `audit-tail`, `audit-verify`, `pseudonym`, `backup`,
-`--check-config`. `pseudonym` is offline like `audit-verify` and prints the
+`--check-config`. `revoke-device` (erratum 118) sends `REVOKE-DEVICE` to the
+administrative socket, the only one that revokes an operator's device
+(§10.3), and requires `--reason`. `pseudonym` is offline like `audit-verify` and prints the
 `idh=` a daemon with `log_identities = hashed` writes for one identifier (§15).
 
 `audit-verify` is **offline**: it opens the key envelope for the store root key (§12), opens the
@@ -1264,7 +1276,10 @@ word `none`; the `/` appears only under `log_client_ip = prefix`. `detail`
 is one word (erratum 115): the logging function writes any byte outside
 printable ASCII, a space or an `=` as `.`, and cuts it at 64 bytes, so no
 caller can add a token or a key to a line. A `recovery-use` line's detail
-is one of `ok`, `ok-revoke-all`, `invalid`, `invalid-locked`, `locked`.
+is one of `ok`, `ok-revoke-all`, `invalid`, `invalid-locked`, `locked`,
+`user-disabled`, `not-permitted`, `busy` (erratum 118): every refusal of a
+`RECOVERY-USE` that was well formed writes the line, an unknown user's as
+`invalid`.
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
@@ -2219,3 +2234,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 117 | 6.1, 6.3, 7.1, 15 | A store that fails during `ROTATE` is answered `ERROR(0x05)` and logged `rotate-store-failed` at ERROR; the upgrade URL holds one `state`, the first, and a second is refused; `ROTATE` is 8642 bytes with a 64-byte handle; the daemon's reader uses one frame bound in every state | Only a database error was told apart from a refusal: a correctly signed `ROTATE` against a store with a damaged key row or audit head was answered "rejected" and journalled at INFO as a refusal, the class errata 96 and 99 closed elsewhere. An empty `state=` was skipped and a later one bound, and nothing after the one taken was examined. §6.1 quoted the 34-byte figure as the maximum, and said nothing of the reader's bound, which has never been spec-v2's per-state table (audit F389, F390) |
+
+### Revision v1.76 (V4-262)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 118 | 8, 13, 15 | A different key for a known handle is logged as Req 7 even when the request is refused for its user; every refused `RECOVERY-USE` writes a `recovery-use` line; an operator on `site.sock` is `not-permitted` whatever its status; numbers have one spelling, `EXCHANGE state=` is at most 64 bytes, an `AUDIT` item's `detail=` is one word; `authd_admin revoke-device` | The user's refusals returned before the handle was looked at, so a new key presented for the handle of one's own disabled account left nothing in the journal, where §15 says every Req 7 rejection is logged. An unknown user, a disabled one, an operator on the site socket and a request past the budget were refused without the `recovery-use` line §15 promises for success or failure. A disabled operator was answered `user-disabled` on the site socket. `n=0024` was read as 24, a 256-byte `state` was compared instead of refused, and `detail=issued 5` put a bare token in an `AUDIT` item. And since erratum 80's neighbour, V4-82, an operator's device can be revoked only on the administrative socket, for which no tool sent `REVOKE-DEVICE` (audit F392 to F397) |
