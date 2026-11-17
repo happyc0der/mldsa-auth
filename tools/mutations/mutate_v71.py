@@ -41,10 +41,10 @@ M = {
     sodium_memzero(token, sizeof token);      /* the plaintext lives only in the reply now */
 """)],
     "EI5": [(LA, """    authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
-    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok revoke=all" : "ok");
+    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok-revoke-all" : "ok");
 """,
                  """    authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, ticket, sizeof ticket); /* MUTATION EI5 */
-    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok revoke=all" : "ok");
+    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok-revoke-all" : "ok");
 """)],
 }
 

@@ -85,7 +85,10 @@ void authd_log_event(authd_log_level_t lvl, const char *event);
 void authd_log_slot(authd_log_level_t lvl, const char *event, size_t slot);
 
 /* An event about one slot carrying a short status/reason word. `detail` must
- * be a literal or a status_name() result -- never peer-supplied bytes. */
+ * be a literal or a status_name() result -- never peer-supplied bytes. It is
+ * written as ONE word whatever it holds (F369): a byte outside printable
+ * ASCII, a space or an '=' becomes '.', and it is cut at 64 bytes. The same
+ * holds for the detail of authd_log_slot_addr. */
 void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot, const char *detail);
 
 /* An event about one slot and one identifier. `id` is escaped: any byte

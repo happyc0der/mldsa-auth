@@ -18943,3 +18943,44 @@ joined replies; one request in flight at a time.
 JS only: no campaign. Each check was seen red against the site as it
 was. Counts: 654 mutations, 117 campaigns, 698 anchors; 367 findings
 (F273, F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests.
+
+## V4-254 — listed passwords that hold digits; a log detail is one word (F368, F369)
+
+The thirty-third review read the passphrase policy, the terminal prompt,
+the recovery-code encoding and hashing, and the logger.
+
+- **F368.** The policy is the owner's strict one (V4-85). This does not
+  move it: it makes the two rules already written in `passphrase.h` true
+  of the 2,802 entries they were not true of. A passphrase that happens to
+  contain a listed entry with digits now counts that entry as one word,
+  as it already did for an entry of letters; `tr0ub4dor&3-Xq9v` and the
+  like, which contain none, are unchanged. The browser gets the same code
+  with the next module build.
+- **F369.** Renaming the two strings would have fixed today's lines and
+  left the next one to chance. The promise in §15 is about the logging
+  API, so the function keeps it. The end-to-end check on the shape of
+  every line is there because it costs nothing and reads the daemon's real
+  output.
+
+Left, and why: a passphrase FILE that ends in CR LF seals the key under
+a passphrase ending in CR, which the terminal prompt can never produce
+(it strips both). That is one face of the open question about control
+characters in a passphrase, which is the owner's; it is added to that
+question, not answered here.
+
+Read and found sound: the UTF-8 decoder (overlong forms, surrogates,
+above U+10FFFF, truncated sequences all refused); the list (sorted,
+unique, lowercase ASCII) and its search; no overflow in the estimate and
+every temporary wiped; the prompt (echo restored on every exit, an
+over-long line drained and refused, the confirmation compared in constant
+time, both copies in secure memory); base32 (look-alikes folded, wrong
+lengths and stray bytes refused, output zeroed on failure); the recovery
+hash string's parser and its constant-time compare; `id` and `cmd`
+escaping, truncation marked, and every identifier going through the one
+function that hashes it when hashing is on.
+
+Campaign v148, seven mutants, each tried by hand first with v71 EI5,
+whose anchor held one of the renamed strings.
+
+Counts: 661 mutations, 118 campaigns, 705 anchors; 369 findings (F273,
+F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests.

@@ -108,6 +108,27 @@ static int enabled(authd_log_level_t l)
     return (int)l <= (int)g_min;
 }
 
+/* F369: `detail` is one word on the line, whatever the caller passes. It is
+ * a literal or a status name, never a peer's bytes, and it was printed as it
+ * came: two call sites passed "ok revoke=all" and "invalid (now locked)",
+ * which put a `revoke` key the field list does not have, and bare tokens,
+ * on a line a key=value reader takes apart. The same rule as `id`: a byte
+ * outside printable ASCII, a space or an '=' becomes '.'. */
+#define DETAIL_FIELD_MAX 64u
+static const char *detail_word(const char *detail, const char *absent, char word[DETAIL_FIELD_MAX + 1u])
+{
+    if (detail == NULL) {
+        return absent;
+    }
+    size_t j = 0;
+    for (; j < DETAIL_FIELD_MAX && detail[j] != '\0'; j++) {
+        const unsigned char ch = (unsigned char)detail[j];
+        word[j] = (ch > 0x20u && ch <= 0x7eu && ch != '=') ? (char)ch : '.';
+    }
+    word[j] = '\0';
+    return word;
+}
+
 void authd_log_event(authd_log_level_t lvl, const char *event)
 {
     if (!enabled(lvl)) {
@@ -132,9 +153,10 @@ void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
     if (!enabled(lvl)) {
         return;
     }
+    char word[DETAIL_FIELD_MAX + 1u];
     if (g_ip == AUTHD_LOG_IP_OFF) {
         fprintf(out(), "%s event=%s slot=%zu detail=%s\n",
-                level_name(lvl), event ? event : "?", slot, detail ? detail : "-");
+                level_name(lvl), event ? event : "?", slot, detail_word(detail, "-", word));
         fflush(out());
         return;
     }
@@ -159,7 +181,7 @@ void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
     char src[AUTHD_ADDR_STR_MAX];
     authd_addr_str(addr != NULL ? &a : NULL, src, sizeof src);
     fprintf(out(), "%s event=%s slot=%zu src=%s%s detail=%s\n",
-            level_name(lvl), event ? event : "?", slot, src, suffix, detail ? detail : "-");
+            level_name(lvl), event ? event : "?", slot, src, suffix, detail_word(detail, "-", word));
     sodium_memzero(&a, sizeof a);
     fflush(out());
 }
@@ -169,8 +191,9 @@ void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot
     if (!enabled(lvl)) {
         return;
     }
+    char word[DETAIL_FIELD_MAX + 1u];
     fprintf(out(), "%s event=%s slot=%zu detail=%s\n",
-            level_name(lvl), event ? event : "?", slot, detail ? detail : "?");
+            level_name(lvl), event ? event : "?", slot, detail_word(detail, "?", word));
     fflush(out());
 }
 

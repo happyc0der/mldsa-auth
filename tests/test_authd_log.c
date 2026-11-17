@@ -299,6 +299,44 @@ static void test_fp(void)
     free(c.buf);
 }
 
+/* V4-254, F369: `detail` is one word, whatever it is given. */
+static void test_detail_word(void)
+{
+    cap_t c;
+    const char *out;
+    authd_addr_t a4 = v4(203, 0, 113, 77);
+    CHECK(authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL) == 0, "detail: set full");
+    cap_begin(&c);
+    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", 3u, "ok revoke=all");
+    out = cap_end(&c);
+    CHECK(strcmp(out, "warn event=recovery-use slot=3 detail=ok.revoke.all\n") == 0,
+          "detail: a space or an '=' in a detail cannot add a token or a key to the line (F369)");
+    free(c.buf);
+    cap_begin(&c);
+    authd_log_slot_addr(AUTHD_LOG_INFO, "client-address", 5u, &a4, "a b\tc\nd=e");
+    out = cap_end(&c);
+    CHECK(strcmp(out, "info event=client-address slot=5 src=203.0.113.77 detail=a.b.c.d.e\n") == 0,
+          "detail: the same beside an address, with a tab and a newline (F369)");
+    free(c.buf);
+    char longd[200];
+    memset(longd, 'x', sizeof longd - 1u);
+    longd[sizeof longd - 1u] = '\0';
+    cap_begin(&c);
+    authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", 1u, longd);
+    out = cap_end(&c);
+    CHECK(strlen(out) == strlen("warn event=closed-protocol slot=1 detail=") + 64u + 1u,
+          "detail: a detail is cut at 64 bytes (F369)");
+    free(c.buf);
+    cap_begin(&c);
+    authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", 1u, "frame-too-large");
+    authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", 1u, NULL);
+    out = cap_end(&c);
+    CHECK(strcmp(out, "warn event=closed-protocol slot=1 detail=frame-too-large\n"
+                      "warn event=closed-protocol slot=1 detail=?\n") == 0,
+          "detail: a status word is written as it is, and none at all as '?' (the controls)");
+    free(c.buf);
+}
+
 static void test_ip(void)
 {
     cap_t c;
@@ -375,6 +413,7 @@ int main(void)
     test_set_privacy();
     test_ids();
     test_fp();
+    test_detail_word();
     test_ip();
     printf("%d checks\n", g_checks);
     if (g_fail) {

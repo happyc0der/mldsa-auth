@@ -116,6 +116,20 @@ int main(int argc, char **argv)
     CHECK(v("correcthorsebattery", &r) == PP_PREDICTABLE, "predictable: three words run together, under 60 bits");
     CHECK(v("tidal-harbor-quilted-lantern", &r) == PP_OK && r.est_bits >= PP_MIN_BITS,
           "ok: four uncommon words with separators");
+    /* V4-254, F368: entries of the list that hold a digit of their own. The
+     * core was cut at the first trailing digit, so the entry's digits went
+     * with the suffix, and the word estimate undid "substitutions" in a word
+     * that has none: each of these passed, at 62 to 74 bits. */
+    CHECK(v("blink182!?&+", &r) == PP_COMMON, "common: an entry that ends in digits, with symbols after it (blink182!?&+) (F368)");
+    CHECK(v("++agent007!?", &r) == PP_COMMON, "common: the same with symbols on both sides (++agent007!?) (F368)");
+    CHECK(v("blink182trustno1", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u && r.est_bits < 30u,
+          "predictable: two entries that hold digits, run together, are two words (blink182trustno1) (F368)");
+    CHECK(v("BLINK182TrustNo1", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u && r.est_bits < 30u,
+          "predictable: and in any case of letters (BLINK182TrustNo1) (F368)");
+    CHECK(v("agent007-2024-xy", &r) == PP_PREDICTABLE && (r.reasons & PP_R_WORDS) != 0u,
+          "predictable: an entry that holds digits counts as one word inside other text (agent007-2024-xy) (F368)");
+    CHECK(v("password2024!", &r) == PP_COMMON && v("tr0ub4dor&3-Xq9v", &r) == PP_OK,
+          "common: a word with a year and a symbol is still found, and digits in an unlisted passphrase cost nothing (the controls)");
 
     /* ---- predictable ---- */
     CHECK(v("zzzzzzzzzzzz", &r) == PP_PREDICTABLE && (r.reasons & PP_R_REPEATS) != 0u && r.est_bits < PP_MIN_BITS,

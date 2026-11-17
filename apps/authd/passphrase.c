@@ -220,6 +220,21 @@ static int common_match_one(const uint32_t *cp, size_t n)
     w[ascii ? n : 0] = '\0';
     int hit = ascii && is_common(w);
     if (ascii && !hit) {
+        /* F368: first with the symbols alone stripped. 2,802 of the list's
+         * entries hold a digit (blink182, agent007, trustno1), and stripping
+         * digits with the symbols took the entry's own digits away with the
+         * suffix: "blink182!?&+" was looked up as "blink" and passed. */
+        size_t sa = 0, sb = n;
+        while (sa < sb && (class_of(cp[sa]) & C_SYMBOL) != 0u) { sa++; }
+        while (sb > sa && (class_of(cp[sb - 1u]) & C_SYMBOL) != 0u) { sb--; }
+        if (sb - sa >= 4u && !(sa == 0 && sb == n)) {
+            const char keep = w[sb];
+            w[sb] = '\0';
+            hit = is_common(w + sa);
+            w[sb] = keep;
+        }
+    }
+    if (ascii && !hit) {
         while (a < b && (class_of(cp[a]) & (C_DIGIT | C_SYMBOL)) != 0u) { a++; }
         while (b > a && (class_of(cp[b - 1u]) & (C_DIGIT | C_SYMBOL)) != 0u) { b--; }
         if (b - a >= 4u && !(a == 0 && b == n)) {
@@ -287,8 +302,13 @@ static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32
     uint32_t dp[PP_MAX_BYTES + 1u];
     uint8_t  wd[PP_MAX_BYTES + 1u];     /* the best split to here holds a word */
     char t[PP_MAX_BYTES + 1u];
+    /* F368: and as typed. An entry that holds a digit of its own stops being
+     * that entry once the substitutions are undone (blink182 -> blinki82),
+     * so it was never found here and counted as eight characters. */
+    char typed[PP_MAX_BYTES + 1u];
     for (size_t i = 0; i < n; i++) {
         t[i] = (cp[i] < 0x80u) ? (char)unleet(fold(cp[i]), one) : '\x01';   /* never in the list */
+        typed[i] = (cp[i] < 0x80u) ? (char)fold(cp[i]) : '\x01';
     }
     dp[0] = 0u;
     wd[0] = 0u;
@@ -303,7 +323,11 @@ static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32
             char w[PP_WORD_MAX + 1u];
             memcpy(w, t + j, len);
             w[len] = '\0';
-            const int hit = is_common(w);
+            int hit = is_common(w);
+            if (!hit && memcmp(w, typed + j, len) != 0) {
+                memcpy(w, typed + j, len);
+                hit = is_common(w);
+            }
             sodium_memzero(w, sizeof w);
             if (hit) {
                 dp[i] = dp[j] + WORD_MILLIBITS;
@@ -314,6 +338,7 @@ static uint32_t word_estimate(const uint32_t *cp, size_t n, uint32_t per, uint32
     *used_words = wd[n];
     const uint32_t total = dp[n];
     sodium_memzero(t, sizeof t);
+    sodium_memzero(typed, sizeof typed);
     sodium_memzero(dp, sizeof dp);
     sodium_memzero(wd, sizeof wd);
     return total;

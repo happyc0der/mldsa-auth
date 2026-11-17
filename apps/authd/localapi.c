@@ -1255,7 +1255,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         }
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index,
-                              now_locked ? "invalid (now locked)" : "invalid");
+                              now_locked ? "invalid-locked" : "invalid");
         return send_err(slot, "invalid");
     }
 
@@ -1297,7 +1297,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
 
     app->recoveries_used++;
     authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
-    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok revoke=all" : "ok");
+    authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, revoke_all ? "ok-revoke-all" : "ok");
     if (revoke_all) {
         authd_log_num(AUTHD_LOG_WARN, "recovery-use", "revoked", (uint64_t)revoked);
         authd_log_num(AUTHD_LOG_INFO, "recovery-use", "closed", (uint64_t)closed);

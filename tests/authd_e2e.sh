@@ -2227,6 +2227,18 @@ for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
     [ -f "$f" ] || continue
     if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
 done
+# V4-254 (F369): every log line the daemon wrote in this whole run is a
+# level and then key=value words, nothing else. Two events used to carry a
+# detail of several words ("ok revoke=all", "invalid (now locked)"), which a
+# key=value reader takes apart into a key the field list does not have.
+loglines=$(grep -cE '^(debug|info|warn|error) ' "$TMP/authd.log")
+[ "$loglines" -gt 50 ] || fail "only $loglines log lines to look at, so the shape check shows nothing"
+odd=$(grep -E '^(debug|info|warn|error) ' "$TMP/authd.log" | grep -vE '^(debug|info|warn|error)( [a-z]+=[^ =]+)+$' | head -3)
+[ -z "$odd" ] || fail "a daemon log line is not a level followed by key=value words (F369): $odd"
+grep -qE '^warn event=recovery-use slot=[0-9]+ detail=(ok|ok-revoke-all|invalid|invalid-locked|locked)$' "$TMP/authd.log" \
+    || fail "no recovery-use line with a one-word detail was logged, so the shape check did not see one (F369)"
+echo "PASS: E2E: all $loglines daemon log lines are a level and key=value words (F369)"
+
 # V4-181, F257: the scan above looks for the DEVICE passphrase, which no
 # daemon ever receives. The SERVER key's passphrase -- what every daemon here
 # and `authd_admin init`, `audit-verify` and `pseudonym` read from a file --

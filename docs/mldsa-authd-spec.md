@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.72, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251)
+# mldsa-authd — deployment specification (v1.73, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1197,7 +1197,10 @@ one with common letter substitutions (p@ssw0rd) (9,913 entries, pinned by
 hash); and an estimate of at least 60 bits, in which repeats, runs, keyboard
 walks and one repeated unit count for almost nothing, and a word from the
 list counts as one choice from it, about 13 bits, not as its letters
-(erratum 69; it was 50 bits, with words counted as letters).
+(erratum 69; it was 50 bits, with words counted as letters). An entry of
+the list that holds digits of its own (2,802 of them: `blink182`,
+`agent007`) is that entry, both as the core of a passphrase with symbols
+around it and as a word inside one (erratum 115).
 It refuses the obviously weak; it does not certify strength, and the page says
 so. `apps/authd/passphrase.h` is normative for the details.
 
@@ -1234,7 +1237,11 @@ line, nor smuggle binary (erratum 55). `idh` replaces it under `log_identities =
 (below): 16 hex characters, or `unavailable`. `fp` is a 32-byte public-key
 fingerprint in hex and nothing else: its prototype fixes the width. `src` is a
 client address from §7.2, rendered so it can contain only `[0-9a-f.:/]` or the
-word `none`; the `/` appears only under `log_client_ip = prefix`.
+word `none`; the `/` appears only under `log_client_ip = prefix`. `detail`
+is one word (erratum 115): the logging function writes any byte outside
+printable ASCII, a space or an `=` as `.`, and cuts it at 64 bytes, so no
+caller can add a token or a key to a line. A `recovery-use` line's detail
+is one of `ok`, `ok-revoke-all`, `invalid`, `invalid-locked`, `locked`.
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
@@ -2171,3 +2178,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 114 | 16 | A start that created the store and then failed removes it; `--check-config` refuses a `store_path` that is not a regular file or not a database, and socket paths that name one file under two spellings | A start that created its store and then could not open a listener left the store behind, and the next start, the one that served, found it there and gave no `store-created` warning: a mistyped `store_path` met by one transient failure was served in silence, which is what erratum 81 was written to prevent. `--check-config` said "is valid" of a `store_path` naming a directory or another file, and of `d/p.sock` beside `./d/p.sock`; the unit's `ExecStartPre` passed and `ExecStart` failed, every two seconds. Audit F361, F362, F363 |
+
+### Revision v1.73 (V4-254)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 115 | 14, 15 | A common-password entry that holds digits is found as the core of a passphrase and as a word in one; `detail` in a log line is one word, enforced by the logging function | The core of a passphrase was cut at its first trailing digit, which took a listed entry's own digits with the suffix, and the word estimate undid letter substitutions in entries that have none: `blink182!?&+` and `blink182trustno1` passed at about 62 bits where `password!?&+` is refused, for 2,802 of the 9,913 entries. Two `recovery-use` lines carried `detail=ok revoke=all` and `detail=invalid (now locked)`: a `revoke` key the field list above does not have, and bare tokens. Audit F368, F369 |

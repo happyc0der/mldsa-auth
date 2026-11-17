@@ -1,0 +1,7 @@
+PW1|^test_passphrase$|common: an entry that ends in digits, with symbols after it (blink182!?&+) (F368)
+PW2|^test_passphrase$|predictable: two entries that hold digits, run together, are two words (blink182trustno1) (F368)
+PW3|^test_passphrase$|predictable: and in any case of letters (BLINK182TrustNo1) (F368)
+LD1|^test_authd_log$|detail: a space or an '=' in a detail cannot add a token or a key to the line (F369)
+LD2|^test_authd_log$|detail: a space or an '=' in a detail cannot add a token or a key to the line (F369)
+LD3|^test_authd_log$|detail: a detail is cut at 64 bytes (F369)
+LD4|^test_authd_log$|detail: the same beside an address, with a tab and a newline (F369)

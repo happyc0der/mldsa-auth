@@ -23,12 +23,19 @@
  *                passwords (passphrase_common.c), compared case-insensitively
  *                and, since V4-85, with common letter substitutions undone
  *                (p@ssw0rd is password)
+ *                and, since V4-254 (F368), with the symbols alone stripped
+ *                as well, so an entry that ends in digits of its own is
+ *                found with symbols after it (blink182!?&+ is blink182)
  *   PREDICTABLE  the estimate is under PP_MIN_BITS: repeated characters,
  *                runs (abc, 321), keyboard rows (qwerty, asdf) and a string
  *                made of one repeated unit count for almost nothing; and,
  *                since V4-85 (F150, the owner's choice of a strict policy),
  *                a word from the list counts as one choice from it, about 13
  *                bits, not as its letters (letmeinplease is two words)
+ *                -- looked up both with substitutions undone and as
+ *                typed, since V4-254: an entry that holds digits is not
+ *                one once they are read as letters (blink182trustno1 is
+ *                two words)
  */
 
 #include <stddef.h>
