@@ -18530,3 +18530,61 @@ No code.
 Counts: 630 mutations, 114 campaigns, 674 anchors; 345 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests (unchanged by
 this step).
+
+## V4-244 — the restore proves the backup first and says what it undoes; a refused store is left as it was (F346 to F350)
+
+The twenty-sixth review took an operator's view of a deployment over time:
+the store's life (creation, versions, journal), backup and restore, the
+server key, and the runbook's own words, steps 17 and 18 especially, since
+no rehearsal runs those.
+
+- **F346 (Medium).** The restore in step 12 deleted the write-ahead log and
+  wrote over the store, and verified afterwards. With a backup that is not
+  one, or a full disk, the operator had neither. The order is now the one
+  step 23 already used for the key: prove the new thing, move the old
+  aside, keep it until a login has worked. The log is moved with the
+  store, because after a crash it is where the newest commits are.
+- **F348 (Medium).** A restore brings back every device, user and key as
+  the backup has them, the revoked and the disabled with the rest. That is
+  what a restore is, and nothing said so. The runbook now says it before
+  the store is touched and tells the operator to list what has happened
+  since and do it again. A daemon that refused a store older than some
+  recorded mark would be a design of its own (where is the mark kept, and
+  who may lower it); for the owner, not taken here.
+- **F347.** The writing open changed a store before reading its version.
+  One schema version exists, so this was waiting for the first downgrade.
+- **F349.** `BACKUP` has one word, `internal`, for every refusal. The
+  runbook now says so and stops recommending a name that collides on the
+  second backup of a day. Codes of its own for "exists" and "no such
+  directory" would be new entries in §8's vocabulary: for the owner.
+- **F350.** A path in step 18, and two comments that had gone stale.
+
+The rehearsal runs the new blocks twice (the step itself, and the crash
+drill of step 16), and the drill now requires that the crashed store was
+kept aside. It cannot run here; CI's rehearsal job is the proof, and this
+entry is corrected if it says otherwise.
+
+Suspected by the review, not measured, left: a backup runs inside the
+single-threaded loop and no watchdog ping is sent during it, so one that
+took longer than `WatchdogSec=30s` would get the daemon killed, every
+time. A store would have to be several gigabytes for that on any disk
+this is likely to run on (a device row is about 2 KiB of public key), and
+logins wait for the whole copy long before then. A measurement on a large
+store belongs before any change.
+
+Also left: the runbook's rule that a backup being verified must sit in a
+writable directory may be stale since readers open read-only (F290);
+harmless either way, not tested. If the hourly audit timer fires between
+step 23's two renames it reports a failure that is not one. Step 22
+compares only the main unit file with the installed one.
+
+Read and found sound: every change of more than one statement is in one
+transaction; the store is created 0600 with full sync and foreign keys;
+the backup is made with `O_EXCL` and removed on failure, and holds
+everything a restore needs; key files are published by link, never
+written in place; there is no server-key rotation and the runbook says so.
+
+Campaign v145, one mutant, tried by hand first.
+
+Counts: 631 mutations, 115 campaigns, 675 anchors; 350 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.

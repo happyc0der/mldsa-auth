@@ -596,6 +596,32 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         if ((r = has_meta_table(s->db, &has)) != STORE_OK) { goto fail; }
         if (!has) { r = STORE_ERR_DAMAGED; goto fail; }
     }
+    /* F347: a store that already says which version it is, is asked BEFORE
+     * anything is done to it. The journal mode and the whole schema used to
+     * go into the file first, and the version was read afterwards: an older
+     * daemon started on a newer store (a downgrade) added its tables to it
+     * and then refused it. The check further down stays the authority; this
+     * one only keeps the refusal from leaving a mark. */
+    if (!existing) {
+        int has_meta = 0;
+        if ((r = has_meta_table(s->db, &has_meta)) != STORE_OK) { goto fail; }
+        if (has_meta) {
+            uint8_t pv[8] = { 0 };
+            size_t pvlen = 0;
+            int pfound = 0;
+            if ((r = meta_get(s->db, "schema_version", pv, sizeof pv, &pvlen, &pfound)) != STORE_OK) {
+                goto fail;
+            }
+            if (pfound) {
+                uint64_t have = 0;
+                for (size_t i = 0; i < 8u; i++) { have = (have << 8) | (uint64_t)pv[i]; }
+                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) {
+                    r = STORE_ERR_SCHEMA;
+                    goto fail;
+                }
+            }
+        }
+    }
     /* Spec §9: WAL, durable commits, foreign keys enforced. None of it for a
      * reader (F290): the journal mode and the schema are the file's, and a
      * reader changes neither. */

@@ -165,14 +165,14 @@ POST = {
     22: [LOGIN],
     # V4-153: the restored daemon serves the device enrolled in step 11 with
     # the pin it has had since then, and the restored chain verifies.
-    24: [LOGIN, "@runbook:12:audit-verify"],
+    24: [LOGIN, "@runbook:12:--store /var/lib/mldsa-authd/store.sqlite3"],
     # V4-108 (F190): after the passphrase change the daemon is running on the
     # swapped key and credential; a device logs in, the runbook's OWN
     # audit-verify block (which names the standard paths, so it now reads the
     # new pair) verifies the whole chain, and the runbook's own pseudonym
     # block prints the pseudonym it printed in step 15.
     23: [LOGIN,
-         "@runbook:12:audit-verify",
+         "@runbook:12:--store /var/lib/mldsa-authd/store.sqlite3",
          "@runbook:15:pseudonym",
          "echo \"pseudonym-same=$(cmp -s /tmp/idh.before /tmp/idh.out && grep -cE '^idh=[0-9a-f]{16}$' /tmp/idh.out)\"",
          "sudo od -An -tu1 -j8 -N1 /var/lib/mldsa-authd/server.ek | tr -d ' ' | sed 's/^/ek-version-after=/'",
@@ -233,9 +233,13 @@ POST = {
          # The runbook's OWN restore and audit-verify blocks (step 12), not a
          # copy of them: @runbook:STEP:MARKER is that step's block holding
          # MARKER, with the step's substitutions applied.
+         # V4-244: the backup is proven first (daemon down, old store still
+         # in place), and the old store is moved aside, not removed.
+         "@runbook:12:--store \"$1\"",
          "@runbook:12:sudo systemctl stop mldsa-authd",
          "sleep 1; systemctl is-active mldsa-authd",
-         "@runbook:12:audit-verify",
+         "sudo ls /var/lib/mldsa-authd/ | grep -c 'before-restore$' | sed 's/^/kept-aside=/'",
+         "@runbook:12:--store /var/lib/mldsa-authd/store.sqlite3",
          "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.after",
          # list-users prints ids in hex
          "U=$(printf browser-user | od -An -tx1 | tr -d ' \\n'); "
@@ -322,6 +326,8 @@ EXPECT = {
          # the bucket may start below 5 (the browser's recovery spends from
          # it), so only the sixth is certain: refused, whatever it claims.
          r"(?m)^recover 6 429$",
+         # V4-244: the crashed store and its log were moved aside, not removed
+         r"(?m)^kept-aside=[23]$",
          r"event=login-code-issued slot=\d+ idh=[0-9a-f]{16}",
          r"event=client-address slot=\d+ src=[0-9A-Fa-f:.]+/(24|48) detail=admitted",
          r"(?m)^browser-user-before=1 after-restore=0$"],

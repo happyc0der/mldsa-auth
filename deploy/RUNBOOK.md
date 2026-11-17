@@ -338,6 +338,12 @@ sudo authd_admin backup \
      --path /var/lib/mldsa-authd/backups/$(date +%F).sqlite3
 ```
 
+The daemon never writes over a file: a second backup to a name that exists
+is refused, and so is one to a directory that is not there or that the
+service may not write to. It has one word for all of these, `internal`, so
+look at the path first. For a second backup on the same day (before an
+upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
+
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
 plain `sudo`; as any other user the daemon closes the connection at accept and
 the tool says `io-error` and that the daemon closed without answering, which
@@ -406,25 +412,74 @@ is what turns them into the second trust domain; the timer only guarantees
 there is a line to forward. If your `server_id` is not `authd`, edit
 `--server-id` in the audit unit to match.
 
-**Restoring.** Stop the service, remove the store's write-ahead log, put the
-backup in place, start it, then run `audit-verify` (above) before you trust it:
+**Restoring.** First prove the backup, while the store it will replace is
+still there. A backup the daemon was killed in the middle of writing has the
+right name and is not a store, and so far nothing has been touched:
 
 ```bash
 BACKUP=/var/lib/mldsa-authd/backups/YYYY-MM-DD.sqlite3    # the one to restore
+sudo systemd-run --quiet --wait --pipe --collect -p User=mldsa-authd \
+     -p LoadCredentialEncrypted=passphrase:/etc/mldsa-authd/passphrase.cred \
+     sh -c 'exec authd_admin audit-verify \
+     --store "$1" \
+     --key /var/lib/mldsa-authd/server.ek \
+     --passphrase-file "$CREDENTIALS_DIRECTORY/passphrase" \
+     --server-id authd' sh "$BACKUP"
+```
+
+It must say `the audit chain verifies`, and the head MAC should be the one you
+recorded for that backup. If it does not, stop here and choose another backup.
+
+**A restore undoes what was done since the backup, revocations included.**
+What is in the backup is what the daemon will believe. A device revoked after
+it is a device again; a user disabled after it can log in; a device that
+rotated away from a stolen key is back on the stolen one (and the device
+itself is locked out, step 24). Nothing warns of any of this. So before you
+go on, list what has happened since, from the store you are about to replace
+if the daemon still answers, and from your own records if it does not:
+
+```bash
+sudo authd_admin audit-tail --socket /run/mldsa-authd/admin.sock --n 24
+sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock
+```
+
+Every `revoke-device`, `disable-user` and rotation since the backup has to be
+done again after the restore (steps 19 and 20), before the service is
+reachable from outside if any of them was for a stolen key.
+
+Then stop the service, move the old store and its write-ahead log aside, put
+the backup in place and start it:
+
+```bash
 sudo systemctl stop mldsa-authd
-sudo rm -f /var/lib/mldsa-authd/store.sqlite3-wal /var/lib/mldsa-authd/store.sqlite3-shm
+for f in store.sqlite3 store.sqlite3-wal store.sqlite3-shm; do
+    sudo sh -c "[ ! -e /var/lib/mldsa-authd/$f ] || mv /var/lib/mldsa-authd/$f /var/lib/mldsa-authd/$f.before-restore"
+done
 sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
 sudo systemctl start mldsa-authd
 ```
 
-**The `rm` is the restore.** The store runs in SQLite's WAL mode, and after a
-crash — the usual reason to restore — the last transactions are in
+Run `audit-verify` (above) on the restored store before you trust it. If the
+daemon does not come up, or the `install` failed on a full disk, stop it and
+move the three `.before-restore` files back to their names: that is the store
+as it was. Once a login has worked and the revocations are back, remove them:
+
+```bash
+sudo rm -f /var/lib/mldsa-authd/store.sqlite3.before-restore \
+     /var/lib/mldsa-authd/store.sqlite3-wal.before-restore \
+     /var/lib/mldsa-authd/store.sqlite3-shm.before-restore
+```
+
+**Moving the log aside is the restore.** The store runs in SQLite's WAL mode,
+and after a crash — the usual reason to restore — the last transactions are in
 `store.sqlite3-wal`, not in `store.sqlite3`. Left beside a restored file, that
 log is replayed into it when the daemon opens it, so the "restored" store comes
 back with everything since the backup: rehearsed (V4-100, F188), a user
 enrolled after the backup was still there after a restore that only replaced
 the file. If you are restoring to undo something — a device you did not
-enrol — that is exactly what would survive.
+enrol — that is exactly what would survive. The same log is why the old store
+is moved and not deleted (since V4-244): it holds the newest commits there
+are, and until the backup has served a login it is the only other copy.
 
 **What to keep off this host.** Everything above is on one disk. A backup in
 `backups/` survives a bad day, not a lost host, and a store backup alone
@@ -692,7 +747,7 @@ Argon2id's 64 MiB.
 To measure your own devices, on the build host (not the production daemon):
 
 ```bash
-node tools/phone_timing.mjs --fixture build/tests/authd_wasm_fixture \
+node tools/phone_timing.mjs --fixture build-release/tests/authd_wasm_fixture \
      --module-dir build-wasm/web --host <an address your phone reaches>
 ```
 
@@ -924,6 +979,10 @@ What comes back is the store **as of that backup**:
   same handle is refused (`exists-different-key`). Make that device a new key
   with `authd_client keygen` and enrol it as in step 11.
 - Sessions and recovery codes are as they were at the backup.
+- **So is every revocation.** A device revoked, a user disabled, or a key
+  rotated away from after the backup is as it was before: revoke, disable
+  and rotate again (steps 19 and 20) before anything else. Step 12's
+  "Restoring" says how to list them.
 
 If the daemon does not start and says `audit-chain-corrupt`, the `server.ek`
 is not the one this store was made with ("When it will not start", below).

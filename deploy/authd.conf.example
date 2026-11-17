@@ -82,8 +82,9 @@ max_conns_per_addr = 8
 # so a public deployment sets:
 #
 #   log_identities = hashed   idh=<16 hex>, a keyed pseudonym. The key is
-#                             derived from the server key's KEK, so the value
-#                             is stable across restarts and only someone with
+#                             derived from the root key sealed in the server
+#                             key file, so the value is stable across restarts
+#                             and a passphrase change, and only someone with
 #                             the passphrase can find a user's lines:
 #                               authd_admin pseudonym --store ... --id alice
 #                   off       no identifier at all

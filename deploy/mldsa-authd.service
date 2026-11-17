@@ -10,7 +10,7 @@
 # Install:
 #   install -m 0644 mldsa-authd.service /etc/systemd/system/
 #   systemctl daemon-reload
-# See deploy/RUNBOOK.md for the whole sequence; this file is step 6 of it.
+# See deploy/RUNBOOK.md for the whole sequence; this file is step 8 of it.
 
 [Unit]
 Description=mldsa-authd post-quantum authentication daemon

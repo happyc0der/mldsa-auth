@@ -1136,6 +1136,18 @@ int main(void)
                              store_open(vp, KEK, &w) == STORE_ERR_SCHEMA && w == NULL;
               CHECK(ok, vers[k].what);
               if (w != NULL) { store_close(w); }
+              /* V4-244, F347: and the open that refused it changed nothing.
+               * The copy is in SQLite's rollback-journal mode (byte 18 of the
+               * header is 1); the daemon's open set WAL (2) and ran its whole
+               * schema over the file BEFORE it read the version. */
+              if (k == 0) {
+                  unsigned char hdr[20] = { 0 };
+                  FILE *hf = fopen(vp, "rb");
+                  const size_t hn = (hf != NULL) ? fread(hdr, 1, sizeof hdr, hf) : 0u;
+                  if (hf != NULL) { (void)fclose(hf); }
+                  CHECK(hn == sizeof hdr && hdr[18] == 1u && hdr[19] == 1u,
+                        "version: a store of a version this build does not know is refused before anything in it is changed (F347)");
+              }
           } }
 
         /* Another process holds the write lock until told to let go. The
