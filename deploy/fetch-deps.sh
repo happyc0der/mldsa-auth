@@ -95,6 +95,16 @@ fetch_verified "$SODIUM_URL $SODIUM_MIRROR" "$DEST/libsodium-1.0.22.tar.gz" "$SO
 # openssl does, and it is on every host that has a TLS proxy.
 sha3_of() { openssl dgst -sha3-256 "$1" | sed 's/.*= //'; }
 command -v openssl > /dev/null 2>&1 || { echo "FAIL: openssl is needed for sqlite's SHA3-256 pin"; exit 1; }
+# F379: and it must be an openssl that HAS SHA3. LibreSSL 3.3 (macOS's own
+# /usr/bin/openssl) does not: it printed its usage, the hash came back empty,
+# and a correct download was reported as "hashes , pinned ..." with advice to
+# delete it. Asked once, with the digest of no bytes at all.
+[ "$(printf '' | openssl dgst -sha3-256 2> /dev/null | sed 's/.*= //')" = \
+    "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a" ] || {
+    echo "FAIL: this openssl ($(openssl version 2> /dev/null)) cannot compute SHA3-256, which sqlite's pin needs"
+    echo "      put an OpenSSL 1.1.1 or later first on PATH; nothing was downloaded for sqlite"
+    exit 1
+}
 fetch_verified "$SQLITE_URL" "$DEST/$(basename "$SQLITE_URL")" "$SQLITE_SHA3" sha3_of
 
 echo

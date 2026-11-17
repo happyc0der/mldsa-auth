@@ -13,16 +13,46 @@
 set -u
 UNIT="${1:-}"
 [ -f "$UNIT" ] || { echo "FAIL: UNIT: no unit file '$UNIT'"; exit 2; }
+# F377: read as systemd reads it. The counts used to be `grep -c "^Name="`,
+# which sees neither ` NoNewPrivileges = no` (systemd strips the white space
+# round a line, a key and a value, and takes the last assignment) nor which
+# section a line is in: the five sandbox switches moved under [Install], where
+# systemd ignores them, passed. Every assignment is first reduced to
+# "<section><TAB><key>=<value>".
+N=$(mktemp "${TMPDIR:-/tmp}/unit-directives.XXXXXX") || { echo "FAIL: UNIT: mktemp"; exit 2; }
+trap 'rm -f "$N"' EXIT INT TERM
+awk '
+    { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, "") }
+    /^$/ || /^[#;]/ { next }
+    /^\[.*\]$/ { section = substr($0, 2, length($0) - 2); next }
+    {
+        i = index($0, "=")
+        if (i == 0) { next }
+        key = substr($0, 1, i - 1); val = substr($0, i + 1)
+        sub(/[ \t]+$/, "", key); sub(/^[ \t]+/, "", val)
+        printf "%s\t%s=%s\n", section, key, val
+    }' "$UNIT" > "$N"
+TAB=$(printf '\t')
 bad=""
+count() {   # $1 = name: how often it is assigned in [Service]
+    grep -c "^Service$TAB$1=" "$N" || true
+}
+elsewhere() {   # $1 = name: an assignment in any other section is not in force
+    e=$(grep -v "^Service$TAB" "$N" | grep -c "$TAB$1=" || true)
+    [ "$e" -eq 0 ] || bad="$bad $1(outside-[Service])"
+}
 want() {    # $1 = name, $2 = exact value
-    n=$(grep -c "^$1=" "$UNIT" || true)
+    elsewhere "$1"
+    n=$(count "$1")
     if [ "$n" -ne 1 ]; then bad="$bad $1(${n}x)"; return; fi
-    v=$(sed -n "s/^$1=//p" "$UNIT")
+    v=$(sed -n "s/^Service$TAB$1=//p" "$N")
     [ "$v" = "$2" ] || bad="$bad $1=$v"
 }
 present() { # $1 = name: once, with some value
-    n=$(grep -c "^$1=..*" "$UNIT" || true)
-    [ "$n" -eq 1 ] || bad="$bad $1(${n}x)"
+    elsewhere "$1"
+    n=$(count "$1")
+    if [ "$n" -ne 1 ]; then bad="$bad $1(${n}x)"; return; fi
+    [ -n "$(sed -n "s/^Service$TAB$1=//p" "$N")" ] || bad="$bad $1(empty)"
 }
 want Type notify
 want NoNewPrivileges yes

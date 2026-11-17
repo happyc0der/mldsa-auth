@@ -74,14 +74,28 @@ grep -q 'GOODBYE exchanged' "$TMP/server.log" || fail "server saw no GOODBYE"
 echo "PASS: E2E: two authenticated echoes and GOODBYE on both sides"
 
 if grep -q 'E2E-CANARY' "$TMP/server.log" "$TMP/client.log"; then fail "plaintext canary found in a log"; fi
-for who in e2e-server e2e-client; do
-    # Secret key starts after magic(8) + id_len(1) + id + public key(1952)
-    # (same offset in MLDSASK2; the 32-byte digest follows the secret key).
-    off=$((8 + 1 + ${#who} + 1952))
-    hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
-    [ "${#hex}" -eq 32 ] || fail "could not read the $who secret key prefix"
-    if grep -qi "$hex" "$TMP/server.log" "$TMP/client.log"; then fail "$who secret key bytes found in a log"; fi
-done
+# F378: windows that are wholly secret. The scan used to look for sk[0..16),
+# which is rho -- and rho is also the first 32 bytes of the PUBLIC key
+# (tests/key_windows.h; F105). A log that printed K or s1 in hex passed, and
+# one that printed the public key would have failed. An ML-DSA-65 secret key
+# is rho(32) K(32) tr(64) s1...: K[0..16) and s1's first 16 bytes are looked
+# for, each shown to be findable by planting it in a copy of the first log.
+sk_scan() { # $1 = what to call the run, $2... = the logs
+    run="$1"; shift
+    for who in e2e-server e2e-client; do
+        # Secret key starts after magic(8) + id_len(1) + id + public key(1952)
+        # (same offset in MLDSASK2; the 32-byte digest follows the secret key).
+        off=$((8 + 1 + ${#who} + 1952))
+        for win in 32 128; do
+            hex=$(od -An -tx1 -j "$((off + win))" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
+            [ "${#hex}" -eq 32 ] || fail "${run}could not read the $who secret key at +$win"
+            if grep -qi "$hex" "$@"; then fail "${run}$who secret key bytes (sk+$win) found in a log"; fi
+            { cat "$1"; echo "planted $hex"; } > "$TMP/planted.log"
+            grep -qi "$hex" "$TMP/planted.log" || fail "${run}the scan cannot find $who sk+$win when it is there"
+        done
+    done
+}
+sk_scan "" "$TMP/server.log" "$TMP/client.log"
 echo "PASS: E2E: no plaintext canary and no secret-key bytes in either log"
 
 # --- Second run: asymmetric record padding (V2-7) --------------------------
@@ -119,11 +133,7 @@ grep -q 'GOODBYE exchanged' "$TMP/server2.log" || fail "padded run: server saw n
 echo "PASS: E2E: padded run completed an authenticated echo and GOODBYE"
 
 if grep -q 'E2E-CANARY' "$TMP/server2.log" "$TMP/client2.log"; then fail "padded run: plaintext canary in a log"; fi
-for who in e2e-server e2e-client; do
-    off=$((8 + 1 + ${#who} + 1952))
-    hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
-    if grep -qi "$hex" "$TMP/server2.log" "$TMP/client2.log"; then fail "padded run: $who secret key bytes in a log"; fi
-done
+sk_scan "padded run: " "$TMP/server2.log" "$TMP/client2.log"
 echo "PASS: E2E: padded run leaked no canary and no secret-key bytes"
 
 # --- Third run: legacy key migration (V2-9) --------------------------------
@@ -185,13 +195,7 @@ grep -q 'GOODBYE exchanged' "$TMP/client3.log" || fail "migrated run: client saw
 echo "PASS: E2E: the migrated key authenticates against the ORIGINAL pinned public key (identity preserved)"
 
 if grep -q 'E2E-CANARY' "$TMP/server3.log" "$TMP/client3.log"; then fail "migrated run: plaintext canary in a log"; fi
-for who in e2e-server e2e-client; do
-    off=$((8 + 1 + ${#who} + 1952))
-    hex=$(od -An -tx1 -j "$off" -N 16 "$TMP/keys/$who.sk" | tr -d ' \n')
-    if grep -qi "$hex" "$TMP/server3.log" "$TMP/client3.log" "$TMP/migrate.log" "$TMP/migrate.err"; then
-        fail "migrated run: $who secret key bytes in a log"
-    fi
-done
+sk_scan "migrated run: " "$TMP/server3.log" "$TMP/client3.log" "$TMP/migrate.log" "$TMP/migrate.err"
 echo "PASS: E2E: migrated run leaked no canary and no secret-key bytes"
 
 echo "All checks passed"

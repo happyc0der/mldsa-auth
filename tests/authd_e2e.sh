@@ -1219,14 +1219,30 @@ if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
     # code in the log" cannot pass because nothing was logged at all.
     grep -q 'recovery-issue' "$TMP/authd.log" || fail "the recovery issue was not logged at all"
     grep -q 'recovery-use' "$TMP/authd.log" || fail "the recovery use was not logged at all"
+    # F380: in the form it was SENT, too. e2e_recovery.mjs types the first
+    # code as a person would (lower case, a dash every four, o for 0 and l
+    # for 1) and the daemon is handed exactly that, so a log line holding the
+    # request's own bytes was invisible to a search for the canonical form.
+    # Both forms, in any case; and each is first shown to be findable.
+    typed_form() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr '01' 'ol' | sed 's/..../&-/g; s/-$//'; }
+    ncodes=0
     while IFS= read -r c; do
         [ -n "$c" ] || continue
-        ! grep -qF -- "$c" "$TMP/authd.log" || fail "a recovery code reached the daemon log: $c"
-        for f in "$TMP/rec.err" "$TMP/login.err" "$TMP/keygen.err"; do
-            [ -f "$f" ] || continue
-            ! grep -qF -- "$c" "$f" || fail "a recovery code reached $f"
+        ncodes=$((ncodes + 1))
+        t=$(typed_form "$c")
+        [ "$t" != "$c" ] && [ "${#t}" -gt "${#c}" ] || fail "the typed form of a recovery code is the code itself"
+        for form in "$c" "$t"; do
+            { tail -n 5 "$TMP/authd.log"; echo "info event=recovery-use detail=$form"; } > "$TMP/rc-planted.log"
+            grep -qiF -- "$form" "$TMP/rc-planted.log" || fail "the recovery-code scan cannot find a code that is there"
+            ! grep -qiF -- "$form" "$TMP/authd.log" || fail "a recovery code reached the daemon log: $form"
+            for f in "$TMP/rec.err" "$TMP/login.err" "$TMP/keygen.err"; do
+                [ -f "$f" ] || continue
+                ! grep -qiF -- "$form" "$f" || fail "a recovery code reached $f"
+            done
         done
     done < "$TMP/codes.txt"
+    rm -f "$TMP/rc-planted.log"
+    [ "$ncodes" -ge 2 ] || fail "the recovery-code scan had $ncodes code(s) to look for"
     echo "PASS: E2E: recovery issue and use are logged, and the codes never are (spec 15)"
 else
     echo "SKIP: E2E: node not found, so the recovery leg did not run"
@@ -2171,8 +2187,15 @@ if [ "$RU_OK" -eq 1 ]; then
     # shellcheck disable=SC2086
     $AS "$CLIENT" login --handle "$HANDLE" --key "$RU/ck/own.ek" --passphrase-file "$RU/ck/opass" \
         --server-id authd --server-pub "$TMP/d/server.pub" --unix "$TMP/p.sock" --proxy-v2 \
-        > /dev/null 2> "$TMP/ck-own.err" || true
+        > /dev/null 2> "$TMP/ck-own.err" || ckrc=$?
     grep -q 'unsafe-permissions' "$TMP/ck-own.err" && fail "root's own 0600 key copy was refused as unsafe-permissions (the canary)"
+    # F381: and the canary got as far as the key takes it. Two absences were
+    # all that was asked of this run, so one that died before the custody
+    # check, for any reason, passed as "not refused". The key is opened
+    # before the client connects: a run that logged in, or that stopped at
+    # the connection, had its key and its passphrase file accepted.
+    [ "${ckrc:-0}" -eq 0 ] || grep -q 'cannot connect' "$TMP/ck-own.err" \
+        || fail "root's own key copy was not refused for custody, but the run ended some other way (exit ${ckrc:-0}): $(cat "$TMP/ck-own.err")"
     echo "PASS: E2E: a device key owned by another user is refused as unsafe-permissions though its mode is 0600; the owner's own copy is not (spec 12)"
     # V4-48: the passphrase file is held to the same rule (authd_secret.c's
     # owner check), and CI's first run of the leg above hit it by accident.

@@ -50,6 +50,16 @@ sed 's/^CapabilityBoundingSet=$/CapabilityBoundingSet=CAP_NET_ADMIN/' "$U" | uni
 grep -v '^ProtectProc=' "$U" | unit_case "ProtectProc removed" "ProtectProc(0x)"
 sed 's/^\[Install\]$/MemoryDenyWriteExecute=no\
 [Install]/' "$U" | unit_case "a second, later MemoryDenyWriteExecute=no" "MemoryDenyWriteExecute(2x)"
+# F377: as systemd reads a unit, not as grep does. White space round a line,
+# a key or a value is stripped, the last assignment wins, and a key in a
+# section that does not know it is ignored.
+sed 's/^\[Install\]$/ NoNewPrivileges = no\
+[Install]/' "$U" | unit_case "a later ' NoNewPrivileges = no', indented and spaced" "NoNewPrivileges(2x)"
+sed 's/^\[Install\]$/MemoryDenyWriteExecute =no\
+[Install]/' "$U" | unit_case "a later 'MemoryDenyWriteExecute =no'" "MemoryDenyWriteExecute(2x)"
+sed 's/^ProtectSystem=strict$/ProtectSystem= full/' "$U" | unit_case "'ProtectSystem= full'" "ProtectSystem=full"
+{ grep -v '^SystemCallFilter=' "$U"; echo 'SystemCallFilter=@system-service'; } |
+    unit_case "SystemCallFilter moved under [Install], where systemd ignores it" "SystemCallFilter(outside-\[Service\])"
 
 # --- TARGET -----------------------------------------------------------------
 # A stand-in build tree holding one real executable, with each record of the

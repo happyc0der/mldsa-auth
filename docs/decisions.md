@@ -19045,3 +19045,41 @@ tool.
 
 Counts: 663 mutations, 119 campaigns, 707 anchors; 376 findings (F273,
 F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests.
+
+## V4-257 — checks that read what they name: the unit as systemd reads it, secret windows, both forms of a code (F377 to F381)
+
+The thirty-fifth review read the test scripts as code, `src/util/` and
+`src/crypto/`, and the files under `deploy/`. The cryptographic wrappers,
+the secure-memory code, the units, the Caddyfile, the example
+configuration and `tests/authd_e2e.sh` as a whole were sound; five checks
+were weaker than their names. No product code changes.
+
+- **F377.** Not a full unit-file parser: no line continuations, no
+  drop-in directories, no quoting. It reads one file the way systemd
+  reads simple assignments, which is what the shipped unit consists of.
+  `systemd-analyze verify` in `deploy_checks.sh` remains the check that a
+  key is one systemd knows in its section.
+- **F378.** The offsets are those of `tests/key_windows.h`. The planted
+  copy is the proof that the search can find what it looks for; it does
+  not show that the demo would print a key, only that a printed one would
+  be seen.
+- **F379.** A probe rather than a fallback to another tool: a second
+  implementation of the pin's hash is a second thing to trust.
+- **F380.** The files searched are the ones already searched. Widening
+  to every log in the test directory was considered and left: nothing
+  says which of them may hold a code legitimately.
+- **F381.** The leg cannot be run on this Mac; the first CI run on this
+  commit is its test. The assertion accepts a login as well as a refused
+  connection, so it does not depend on whether a daemon is listening on
+  the socket the client is pointed at.
+- **Not fully read by the review, recorded:** `web_flows.mjs`,
+  `site_sessions.mjs`, `browser_e2e.mjs`, `phone_timing_tool.mjs`,
+  `wasm_interop.mjs` and `hand_control_selftest.py` were sampled only.
+
+No campaign: nothing compiled changed. The scripts were shown red by
+hand (the old unit gate against the four doctored units) and run under
+Ubuntu 24.04's `sh` and `awk`.
+
+Counts: 663 mutations, 119 campaigns, 707 anchors; 381 findings (F273,
+F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
+this step).
