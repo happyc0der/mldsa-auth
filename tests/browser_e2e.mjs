@@ -136,6 +136,15 @@ try {
   let r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: 'password1234' });
   check(r.result.startsWith('error') && /refused by the policy/.test(r.status),
         'policy: enrollment under a common passphrase is refused inside wasm');
+  // F386: and nothing was asked of the site. The page used to sign up first,
+  // so the refused passphrase left the invitation spent on this session.
+  const afterRefusal = await b.eval("fetch('/api/session').then((x) => x.json()).then((j) => j.signupUser)");
+  check(afterRefusal === null, `policy: a passphrase the policy refuses is refused before the site is asked to sign anyone up (${afterRefusal}) (F386)`);
+  // F384: a DevTools command that is never answered ends at its own deadline.
+  { let stuck = null;
+    try { await b.send('Runtime.evaluate', { expression: 'new Promise(() => {})', awaitPromise: true }, 500); }
+    catch (e) { stuck = e.message; }
+    check(/Runtime\.evaluate was not answered in 500 ms/.test(stuck ?? ''), `cdp: a command the page never answers is given up on, by name (${stuck}) (F384)`); }
   const canary1 = await writeCanary(b);
   r = await act(b, 'enroll.html', { user: 'alice', invite: INVITE, passphrase: PASS });
   check(r.result === 'ok' && /Enrolled alice/.test(r.status), `enroll: a key made in the browser is enrolled (${r.status})`);
@@ -180,6 +189,13 @@ try {
   const asked = await forgetState();
   check((await stored()).length === 2 && /recovery code/.test(asked[2]) && asked[1] !== 'Forget this key',
         `forget: the first press removes nothing and says what would be lost (${asked[1]}) (V4-140)`);
+  // F385: the second click of a double click is not a second decision.
+  await b.eval("delete document.body.dataset.result; document.getElementById('forget').click()");
+  await new Promise((res) => setTimeout(res, 300));
+  const afterDouble = await inPage(b, 'return (await store.list()).length;');
+  check(afterDouble === 2 && (await b.eval('document.body.dataset.result ?? null')) === null,
+        `forget: a second press right after the first removes nothing (${afterDouble} keys) (F385)`);
+  await new Promise((res) => setTimeout(res, 900));
   await b.eval("delete document.body.dataset.result; document.getElementById('forget').click()");
   await b.waitFor('!!document.body.dataset.result', 'forget result');
   const left = await stored();

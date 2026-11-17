@@ -28,6 +28,8 @@ const { client, store } = await boot();
 const out = document.getElementById('out');
 const line = (s) => { out.textContent += s + '\n'; };
 const params = new URLSearchParams(location.hash.slice(1));
+// Read once, then out of the address bar and the history entry (F388).
+if (location.hash) { history.replaceState(null, '', location.pathname); }
 if (!window.isSecureContext) {
   line('note: this page is not a secure context, so a WebKit browser runs it without its JIT ' +
        'and its times are not what an HTTPS deployment sees (F119)');

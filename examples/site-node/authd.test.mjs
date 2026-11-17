@@ -70,8 +70,15 @@ async function withDaemon(fn) {
   assert.ok(!existsSync(dir), 'the fixture, stopped with SIGTERM, removed its scratch directory (V4-31)');
 }
 
-if (!FIXTURE || !existsSync(FIXTURE)) {
-  skip('AUTHD_FIXTURE is not set or not built: build the project first (cmake --build build)');
+if (FIXTURE && !existsSync(FIXTURE)) {
+  // F383: named but not there is a failure, not a skip. CTest sets
+  // AUTHD_FIXTURE, and after a build that did not make the fixture this file
+  // "passed" with one skip and none of the daemon tests run.
+  test('the fixture AUTHD_FIXTURE names exists', () => {
+    assert.fail(`AUTHD_FIXTURE=${FIXTURE} does not exist: build authd_node_fixture`);
+  });
+} else if (!FIXTURE) {
+  skip('AUTHD_FIXTURE is not set: build the project first (cmake --build build) and name its authd_node_fixture');
 } else {
   test('PING reports the daemon version and schema', async () => {
     await withDaemon(async (authd) => {

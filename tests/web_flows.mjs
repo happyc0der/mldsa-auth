@@ -656,8 +656,15 @@ try {
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
+  // F382: a fixture that has ALREADY exited emits no second 'exit', and the
+  // wait for one never ended: the run stopped here with no summary line
+  // (exit 13, or CTest's timeout). The guard wasm_interop has had since F286.
+  const exited = new Promise((r) => {
+    if (fx.exitCode !== null || fx.signalCode !== null) { r(true); } else { fx.once('exit', () => r(true)); }
+  });
   fx.kill();
-  await new Promise((r) => fx.once('exit', r));
+  const quick = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), 3000))]);
+  if (!quick) { fx.kill('SIGKILL'); await exited; }
 }
 console.log(fail ? '\nFAILED' : '\nAll checks passed');
 process.exit(fail);

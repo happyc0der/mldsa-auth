@@ -13,32 +13,51 @@ for (const r of (await store.list()).sort((x, y) => Number(x.unconfirmed === tru
 // A key the site never confirmed can be forgotten here (V4-140); a confirmed
 // one cannot. The first press says what would be lost, the second removes it.
 const forget = document.getElementById('forget');
+// F385: the two presses must be two decisions. The second click of a double
+// click arrived a few milliseconds after the first had armed the button and
+// removed the key before the warning could be read; so a press within
+// FORGET_PAUSE_MS of the arming does nothing. The key removed is the one the
+// warning named, and a press while a removal is in flight does nothing.
+const FORGET_PAUSE_MS = 800;
+let armedAt = 0, armedFor = null, forgetting = false;
 const offer = () => {
   const chosen = list.selectedOptions[0];
   delete forget.dataset.armed;
+  armedFor = null;
   forget.textContent = 'Forget this key';
   forget.hidden = !(chosen && chosen.dataset.unconfirmed === '1');
 };
 list.addEventListener('change', offer);
 offer();
 forget.addEventListener('click', async () => {
+  if (forgetting) { return; }
   const handle = list.value;
-  if (forget.dataset.armed !== '1') {
+  if (forget.dataset.armed !== '1' || armedFor !== handle) {
     document.getElementById('status').textContent =
       `The site never confirmed ${handle}. If it did enroll it, forgetting the key leaves this device unable to log in ` +
       'to that account without a recovery code: try to log in with it first. Press again to forget it.';
     forget.textContent = 'Yes, forget it';
     forget.dataset.armed = '1';
+    armedFor = handle;
+    armedAt = performance.now();
     return;
   }
+  if (performance.now() - armedAt < FORGET_PAUSE_MS) { return; }
+  forgetting = true;
+  forget.disabled = true;
   try {
     await flows.forgetUnconfirmed(store, handle);
-    list.remove(list.selectedIndex);
+    // By handle, not by what is selected now: the selection can change while
+    // the removal waits for the store.
+    [...list.options].find((o) => o.value === handle)?.remove();
     offer();
     report(true, `Forgot ${handle}`);
   } catch (e) {
     offer();
     report(false, e.message);
+  } finally {
+    forgetting = false;
+    forget.disabled = false;
   }
 });
 document.body.dataset.ready = '1';

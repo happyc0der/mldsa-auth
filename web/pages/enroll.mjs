@@ -20,7 +20,15 @@ action('go', async () => {
   // The invitation is the site's secret: read once and emptied, like the
   // passphrase (V4-188).
   const invite = secret('invite');
+  meter.textContent = '';                      // it described a field that is now empty
   try {
+    // F386: the policy is asked BEFORE the site is. The sign-up used to go
+    // first: a passphrase the policy refuses left the invitation spent on
+    // this session and the field empty, and the second attempt, with a good
+    // passphrase, was answered "signup refused".
+    if (!client.checkPassphrase(passphrase).ok) {
+      throw Object.assign(new Error('passphrase-policy'), { statusName: 'passphrase-policy' });
+    }
     const sess = await session();
     // V4-188, F267: with a recovery in progress the key goes to the account
     // being recovered -- the site holds that account's ticket -- and the name

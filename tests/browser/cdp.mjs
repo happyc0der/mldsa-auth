@@ -36,6 +36,7 @@ const until = async (cond, what, ms = 20000, every = 50) => {
 };
 
 export class Browser {
+  static COMMAND_TIMEOUT_MS = 150000;
   static async launch(path, extraArgs = [], { timeoutMs = 20000 } = {}) {
     const profile = mkdtempSync(join(tmpdir(), 'mldsa-cdp-'));
     const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
@@ -100,11 +101,20 @@ export class Browser {
     });
   }
 
-  send(method, params = {}) {
+  // F384: every command has a deadline of its own. `eval` waits for the
+  // page's promise, and one that never settled (a lock never released, a hung
+  // renderer) held the caller past every deadline it had been given: the test
+  // ended by CTest's SIGKILL, unnamed, with the browsers and the scratch
+  // directory left behind.
+  send(method, params = {}, timeoutMs = Browser.COMMAND_TIMEOUT_MS) {
     const id = ++this.id;
     return new Promise((res, rej) => {
       if (this.ws.readyState !== WebSocket.OPEN) { rej(new Error('DevTools connection closed')); return; }
-      this.pending.set(id, { res, rej });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        rej(new Error(`DevTools command ${method} was not answered in ${timeoutMs} ms`));
+      }, timeoutMs);
+      this.pending.set(id, { res: (v) => { clearTimeout(timer); res(v); }, rej: (e) => { clearTimeout(timer); rej(e); } });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
   }

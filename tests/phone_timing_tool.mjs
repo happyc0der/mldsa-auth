@@ -69,15 +69,24 @@ try {
     const port = squat.address().port;
     // 7.77 minutes: the fixture's lifetime argument is then 496.2, which no
     // other test's fixture has, so its process can be looked for by name.
-    const fixtures = () => spawnSync('pgrep', ['-f', 'authd_wasm_fixture 496.2'], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).length;
+    // F387: by this tree's own fixture path. By name alone, the same test in
+    // another build tree was counted here, and killed below.
+    const mine = `${resolve(fixturePath)} 496.2`;
+    const fixtures = () => spawnSync('pgrep', ['-f', mine], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).length;
+    let seen = 0;
     const busy = runTool(['--count', '1', '--minutes', '7.77', '--port', String(port), '--out', join(work, 'busy.jsonl')]);
+    // ...and one must have been there to be left: "none left" was also true
+    // of a tool that never started a fixture at all.
+    const watching = setInterval(() => { seen = Math.max(seen, fixtures()); }, 20);
     const code = await Promise.race([busy.exited, new Promise((r) => setTimeout(() => r('still running'), 30000))]);
+    clearInterval(watching);
     await new Promise((r) => setTimeout(r, 500));
     const left = fixtures();
     check(code !== 0 && code !== 'still running', `with its port taken, the tool exits non-zero (exit ${code}) (the control)`);
+    check(seen >= 1, `the tool had started this tree's fixture when its site failed to start (${seen} seen) (F387)`);
     check(left === 0, `and the fixture it had started is not left running (${left} left) (F289)`);
     if (code === 'still running') { busy.p.kill('SIGKILL'); }
-    spawnSync('pkill', ['-f', 'authd_wasm_fixture 496.2']);
+    spawnSync('pkill', ['-f', mine]);
     await new Promise((r) => squat.close(r)); }
 
   // 1c. V4-256, F374: a number that is not one is refused before anything is

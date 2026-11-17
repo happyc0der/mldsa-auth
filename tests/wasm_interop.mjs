@@ -145,8 +145,8 @@ try {
   check(rotated, 'rotate: the daemon acknowledges the new key');
   let oldRefused = false;
   try { const o = await client.login({ ...base, envelope: id.envelope, timeoutMs: 3000 }); await o.close(); }
-  catch { oldRefused = true; }
-  check(oldRefused, 'rotate: the superseded key no longer logs in');
+  catch (e) { oldRefused = /timed out/i.test(e.message) ? `not a refusal: ${e.message}` : true; console.log(`  the superseded key: ${e.name}: ${e.message}`); }
+  check(oldRefused === true, `rotate: the superseded key is refused by the daemon, not merely unanswered (${oldRefused})`);
   const n = await client.login({ ...base, envelope: next.envelope });
   check(n.code.length === 32, 'rotate: the new key logs in');
   await n.close();

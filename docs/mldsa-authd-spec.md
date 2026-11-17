@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.73, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254)
+# mldsa-authd — deployment specification (v1.74, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1094,8 +1094,14 @@ confirmed, and a login the daemon accepts with it clears the mark.
 A marked key can be forgotten from the login page (erratum 95), and only a
 marked one: the page says first that, if the daemon did enroll it, the account
 then needs a recovery code, and removes the record on a second press. The
+second press is a second decision (erratum 116): one that comes within 800 ms
+of the first does nothing, so a double click removes no key, and the record
+removed is the one the warning named. The
 check and the removal hold the identity's lock, so a key that a login in
 another tab has just confirmed is left.
+
+The enroll page asks the passphrase policy before it asks the site for
+anything (erratum 116): a passphrase the policy refuses causes no sign-up.
 
 The enrollment holds that lock too (erratum 106), from before the record is
 written until the site's answer has been acted on: a key cannot be forgotten
@@ -2184,3 +2190,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 115 | 14, 15 | A common-password entry that holds digits is found as the core of a passphrase and as a word in one; `detail` in a log line is one word, enforced by the logging function | The core of a passphrase was cut at its first trailing digit, which took a listed entry's own digits with the suffix, and the word estimate undid letter substitutions in entries that have none: `blink182!?&+` and `blink182trustno1` passed at about 62 bits where `password!?&+` is refused, for 2,802 of the 9,913 entries. Two `recovery-use` lines carried `detail=ok revoke=all` and `detail=invalid (now locked)`: a `revoke` key the field list above does not have, and bare tokens. Audit F368, F369 |
+
+### Revision v1.74 (V4-259)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 116 | 14 | The login page ignores a second "forget" press within 800 ms of the first and removes the key its warning named; the enroll page checks the passphrase policy before it signs anyone up | Erratum 95's two presses were one gesture: the second click of a double click removed an unconfirmed key, possibly the account's only one, before the warning could be read. The enroll page signed up first, so a passphrase the policy refused left the session signed up and the invitation field empty, and the retry with a good passphrase was answered "signup refused" (audit F385, F386) |

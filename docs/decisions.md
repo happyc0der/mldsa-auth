@@ -19110,3 +19110,43 @@ No code.
 Counts: 663 mutations, 119 campaigns, 707 anchors; 381 findings (F273,
 F288, F309 and F338 open); spec v1.73, 115 errata; 65 tests (unchanged by
 this step).
+
+## V4-259 — the browser tests and pages: two presses are two decisions, the policy before the sign-up, tests that end (F382 to F388)
+
+The thirty-sixth review read every JavaScript test in full, the DevTools
+helper and everything under `web/pages/`. The pages have no DOM injection,
+keep no secret in a URL, in storage or in the console, submit no form, and
+load nothing the site's CSP forbids; `site_sessions`, `e2e_site`,
+`e2e_recovery` and the module gates were sound. Nothing above Low.
+
+- **F385.** 800 ms: longer than any system's double-click interval,
+  short enough that a person who has read the warning does not notice
+  it. The pause is in the page, not in `flows.forgetUnconfirmed`: the
+  flow's refusals (a confirmed key, an unknown handle) are unchanged,
+  and another caller of the flow decides its own confirmation.
+- **F386.** The check in the page is the same wasm call the meter makes,
+  so the two cannot disagree; key generation still applies the policy
+  itself. The alternative, skipping the sign-up when the session already
+  holds that name, would have kept a spent invitation on a session whose
+  enrollment never happened.
+- **F384.** 150 seconds per command: the longest legitimate single
+  evaluation in these tests is far below it, and CTest's own limits (300
+  and 600 seconds) stay above it, so a stuck command is now reported by
+  name with the `finally` blocks run. Shown the hard way: the new check,
+  run against the old helper, held `browser_e2e` to CTest's timeout.
+- **F383.** A run by hand with no `AUTHD_FIXTURE` still skips, and says
+  so. CI's own assertion that the test is registered (F364) is
+  unchanged.
+- **Not changed, recorded:** the helper removes the browser profile
+  right after the browser's main process ends; a helper process still
+  writing could make that removal throw. Not seen.
+
+No campaign: no compiled code changed. Each new check was run against
+the old page or helper and failed (F384 by timeout, F385 with one key
+left, F386 with the session signed up as `alice`, F383 exit 0 with one
+skip).
+
+Spec v1.74, erratum 116.
+
+Counts: 663 mutations, 119 campaigns, 707 anchors; 388 findings (F273,
+F288, F309 and F338 open); spec v1.74, 116 errata; 65 tests.
