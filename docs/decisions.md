@@ -19300,3 +19300,26 @@ Campaign v152, seven mutants, each tried with `tools/hand_control.py`.
 
 Counts: 685 mutations, 122 campaigns, 729 anchors; 403 findings (F273,
 F288, F309, F338, F398 and F403 open); spec v1.77, 119 errata; 65 tests.
+
+## V4-264: cleanup after V4-260 to V4-262 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `08adeea` (V4-262), now
+  main: CI 44125281502 (16/16), nightly 44125286828 (136/136, 121
+  campaigns). V4-263's campaign v152 is in this tree and not yet in a
+  landed nightly; the counts REPRODUCE states (685, 122) are the tree's.
+- Before it: `466d1d0` (V4-261) had CI 44123513507 (16/16); `2c7179b`
+  (V4-260) had CI 44112195534 (16/16), nightly 44112201955 (135/135)
+  and main's push CI 44128276085 (16/16); `daad7a2` (V4-259) had main's
+  push CI 44121907211 (16/16).
+- Open for the owner: F273, F288, F309, F338 and the questions listed
+  in V4-246's entry; and since V4-262 and V4-263, F398 (a signup whose
+  reply is lost cannot be retried; recommended: `idempotent=1` when
+  user, handle and key all match) and F403 (the locked-memory figure
+  assumes 4 KiB pages; recommended: derive the page size, after
+  measuring on a 16 KiB host).
+
+Counts: 685 mutations, 122 campaigns, 729 anchors; 403 findings (F273,
+F288, F309, F338, F398 and F403 open); spec v1.77, 119 errata; 65 tests
+(unchanged by this step).
