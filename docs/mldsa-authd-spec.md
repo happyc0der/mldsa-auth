@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.78, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265)
+# mldsa-authd — deployment specification (v1.79, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1139,7 +1139,13 @@ second press is a second decision (erratum 116): one that comes within 800 ms
 of the first does nothing, so a double click removes no key, and the record
 removed is the one the warning named. The
 check and the removal hold the identity's lock, so a key that a login in
-another tab has just confirmed is left.
+another tab has just confirmed is left. A login with a marked key holds that
+lock too (erratum 121), from before the key is used until the mark is
+cleared, so the key cannot be forgotten while the daemon is accepting it; and
+a rotation's own login clears the mark as a login does. The page asks the
+browser to keep its storage before the key is made, not after the site has
+answered. The account page says "Not logged in" only when the site says so
+(401); any other answer that is not the site's own is shown as no answer.
 
 The enroll page asks the passphrase policy before it asks the site for
 anything (erratum 116): a passphrase the policy refuses causes no sign-up.
@@ -2269,3 +2275,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 120 | 12 | A public-key file and the plaintext secret key `migrate-key` reads are opened without blocking too | Erratum 105 named the sealed key, the passphrase file and the configuration file. The two older readers, which `authd_client login` and `rotate`, `authd_admin enroll-operator` and `migrate-key` use, still waited on a FIFO with no writer: `--server-pub` naming one was a tool that never exited (audit F407) |
+
+### Revision v1.79 (V4-266)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 121 | 14 | A login with an unconfirmed key holds the identity's lock until the mark is cleared; a rotation's login clears the mark; persistent storage is asked for before the key is made; the account page shows "Not logged in" only for the site's own 401 | Erratum 95 protected a key that a login had just confirmed, not one a login was still using: pressed during the login, "forget" removed the record, the daemon accepted the key, and the session that came back was for an account whose only key was no longer stored. A rotation the daemon accepted left the mark set. `persist()` was asked only after the site confirmed, so the one case where the key may be the account's only copy was never asked for. A proxy's 502 or a catch-all page served 200 for `/api/me` was shown as "Not logged in" over a live session (audit F409 to F413) |

@@ -40,7 +40,13 @@ export class Browser {
   static async launch(path, extraArgs = [], { timeoutMs = 20000 } = {}) {
     const profile = mkdtempSync(join(tmpdir(), 'mldsa-cdp-'));
     const args = ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-                  '--no-first-run', '--no-default-browser-check', '--disable-extensions', ...extraArgs,
+                  '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+                  // V4-266: a fresh profile otherwise fetches the browser's own
+                  // components and models in the background. How much arrived
+                  // before a test ended varied from run to run (15 to 21 MB
+                  // seen), and browser_e2e's at-rest scan reads every byte of
+                  // it once per key: 22 s one run, 240 s or more the next.
+                  '--disable-component-update', '--disable-background-networking', ...extraArgs,
                   'about:blank'];
     const proc = spawn(path, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';

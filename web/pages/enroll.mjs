@@ -45,13 +45,17 @@ action('go', async () => {
     // A 4xx is the site's refusal: the key was not enrolled, and flows.enroll
     // removes it. Anything else -- no answer, a 5xx -- says nothing about
     // whether it was, and the key is kept, marked unconfirmed (F220).
+    // Asked before the key is made (F413), not after the site said yes: an
+    // enrollment the site never answers leaves a key that may be the
+    // account's only one, and that is the one case that was never asked for.
+    let persisted = false;
+    try { persisted = await IdentityStore.persist(); } catch { /* the browser's answer is "no" */ }
     const { handle, answer: r } = await flows.enroll(client, store,
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
         try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
         catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }
       });
-    const persisted = await IdentityStore.persist();
     report(true, `Enrolled ${r.user} on this device as ${handle}` +
                  (persisted ? '' : ' (the browser did not promise to keep this storage)'));
   } catch (e) {

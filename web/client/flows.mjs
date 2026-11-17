@@ -191,13 +191,32 @@ async function resolveHeld(client, store, handle, params, events) {
 // The server identity comes from the store too; one the page offers must match.
 export async function login(client, store, params, events) {
   const p = await pinned(store, params);
+  // F409: a login with a key the site never confirmed holds the identity's
+  // lock from before the key is used until the mark is cleared. Without it
+  // the key could be forgotten (by this page, or another tab) while the
+  // login was in flight: forgetUnconfirmed saw the mark still set and
+  // removed the record, the daemon then accepted the key, and the session
+  // that came back was for an account whose only key was no longer stored.
+  // A confirmed key cannot be forgotten, so an ordinary login takes no lock.
+  if ((await store.get(p.handle))?.unconfirmed === true) {
+    return store.exclusive(p.handle, async () => {
+      const envelope = await resolveHeld(client, store, p.handle, p, events ?? (() => {}));
+      const s = await client.login({ ...p, envelope });
+      await confirmQuietly(store, p.handle);
+      return s;
+    });
+  }
   const envelope = await resolveKey(client, store, p.handle, p, events);
   const s = await client.login({ ...p, envelope });
-  // The daemon accepted the key, so it was enrolled after all (F220). The
-  // login has succeeded either way: a store that cannot record that says so
-  // the next time.
-  try { if ((await store.get(p.handle))?.unconfirmed) { await store.confirm(p.handle); } } catch { /* still unconfirmed */ }
+  await confirmQuietly(store, p.handle);
   return s;
+}
+
+// The daemon accepted the key, so it was enrolled after all (F220). The
+// login has succeeded either way: a store that cannot record that says so
+// the next time.
+async function confirmQuietly(store, handle) {
+  try { if ((await store.get(handle))?.unconfirmed) { await store.confirm(handle); } } catch { /* still unconfirmed */ }
 }
 
 // Makes a key and has the site enroll it (V4-138, F220).
@@ -284,6 +303,9 @@ async function rotateHeld(client, store, params, events) {
     events('no session was opened, so the new key was never sent; it is not kept');
     throw e;
   }
+  // The daemon accepted the current key here too (F411): a mark that an
+  // earlier login could not clear is cleared by this one.
+  await confirmQuietly(store, params.handle);
   try {
     await s.rotate(next.envelope, params.passphrase);
   } catch (e) {

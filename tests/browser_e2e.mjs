@@ -485,6 +485,35 @@ try {
     r = await act(b, 'login.html', { passphrase: PASS });
     check(r.result === 'ok', 'logout: and the device logs in again (the rest of this test needs the session)'); }
 
+  // V4-266 (F410): the account page with a LIVE session, when what answers
+  // /api/me is not the site. The request is answered here, by the DevTools
+  // protocol, as a proxy's 502 and then as a catch-all page served 200. The
+  // page said "Not logged in" of both.
+  { const answers = [{ code: 502, type: 'text/html', body: '<html>bad gateway</html>' },
+                     { code: 200, type: 'text/html', body: '<html>maintenance</html>' }];
+    let answer = answers[0];
+    const onPaused = (m, prm) => {
+      if (m !== 'Fetch.requestPaused') { return; }
+      b.send('Fetch.fulfillRequest', { requestId: prm.requestId, responseCode: answer.code,
+                                       responseHeaders: [{ name: 'Content-Type', value: answer.type }],
+                                       body: Buffer.from(answer.body).toString('base64') }).catch(() => {});
+    };
+    b.on(onPaused);
+    await b.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/me' }] });
+    for (answer of answers) {
+      await b.navigate(`${origin}/account.html`);
+      await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
+      const who = await b.eval("document.getElementById('who').textContent");
+      check(!/Not logged in|Logged in as/.test(who) && who.includes(`did not answer as this page expects (HTTP ${answer.code})`),
+            `account: an /api/me answered ${answer.code} by something that is not the site is not "Not logged in" ("${who}") (F410)`);
+    }
+    await b.send('Fetch.disable');
+    b.listeners.splice(b.listeners.indexOf(onPaused), 1);
+    await b.navigate(`${origin}/account.html`);
+    await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
+    const who = await b.eval("document.getElementById('who').textContent");
+    check(/^Logged in as alice/.test(who), `account: and with the site answering again the same session is still logged in ("${who}") (the control)`); }
+
   // ---- phishing: a device whose pin is wrong ----
   await inPage(b, `
     const r = await store.get(${JSON.stringify(handle)});

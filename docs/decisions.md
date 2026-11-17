@@ -19365,3 +19365,46 @@ Campaign v153, two mutants, each tried with `tools/hand_control.py`.
 
 Counts: 687 mutations, 123 campaigns, 731 anchors; 408 findings (F273,
 F288, F309, F338, F398 and F403 open); spec v1.78, 120 errata; 65 tests.
+
+## V4-266 — the browser client: a key in use cannot be forgotten, "Not logged in" is the site's answer; ten stale statements (F409 to F414)
+
+The forty-first review read the browser client against spec 14 and
+10.2, listed the crash points between its IndexedDB transactions (each
+repairs as the file rules require), and checked the documents'
+concrete statements against the tree. The wasm glue, the site handler's
+mapping of the daemon's replies, every `authd_admin` and `authd_client`
+command line in the README and the runbook, and the gated counts were
+consistent.
+
+- **F409.** The lock is taken only for a marked key. Taking it for
+  every login would make two tabs logging in with one key wait on each
+  other for nothing: a confirmed key cannot be forgotten.
+- **F412.** Fixed from the specification's event order, not from a
+  failure seen.
+- **F414.** The review page's list of open findings had not been
+  touched since V4-82. It is not gated; a count is. Worth a gate one
+  day: every row the register marks OPEN is named on that page.
+- **`browser_e2e`'s time.** During this step the test took 373, 271
+  and 240 seconds in the Release tree under CTest, and 22 and 46 when
+  run again; every check passed each time. What the slow runs were
+  doing was not established: their logs were overwritten before they
+  were read. A fresh profile fetches the browser's own components in
+  the background, and the at-rest scan reads every byte of the profile
+  once per key, so the helper now starts the browser with
+  `--disable-component-update` and `--disable-background-networking`;
+  three runs after that took 22 seconds each. V4-262 raised the limit
+  to 1200 seconds for the UBSan tree, on the same symptom.
+- **Not changed, recorded:** where the Web Locks API is absent a
+  pending key is resolved under a lock that covers the page only, where
+  spec 10.2 says every tab; no rotation can be running in such a
+  browser, since `rotate` refuses there. `/api/me` ends the session on
+  any code of the daemon's that is not "away", where spec 14 lists
+  five; the others cannot arise for a token the daemon issued.
+
+No campaign: no compiled code changed. Each new check was run against
+the old flow or page and failed.
+
+Spec v1.79, erratum 121.
+
+Counts: 687 mutations, 123 campaigns, 731 anchors; 414 findings (F273,
+F288, F309, F338, F398 and F403 open); spec v1.79, 121 errata; 65 tests.

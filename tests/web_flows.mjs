@@ -445,7 +445,48 @@ try {
       let threw = null;
       try { await flows.forgetUnconfirmed(store, unsure.handle); } catch (e) { threw = e; }
       check(threw === null && (await store.list()).length === 0,
-            `forget: a key the site never confirmed is removed (${threw && threw.message}) (V4-140)`); } }
+            `forget: a key the site never confirmed is removed (${threw && threw.message}) (V4-140)`); }
+
+    // V4-266 (F409): a key the site never confirmed, which the daemon DID
+    // enroll, cannot be forgotten while a login with it is in flight. The
+    // forget waits for the login, which confirms the key, and is then
+    // refused. It used to remove the record at once, and the login came back
+    // with a session for an account whose only key was no longer stored.
+    { const store = new MemoryStore();
+      let held = null;
+      try {
+        await flows.enroll(client, store, want, async (id) => { held = id.handle; await enroll(id.handle, id.publicImage); throw new Error('HTTP 503'); });
+      } catch { /* enrolled at the daemon, the answer lost: kept, marked */ }
+      const before = await store.get(held);
+      check(before !== null && before.unconfirmed === true, 'login/forget: the fixture is a key the daemon holds and the store marks unconfirmed');
+      // The forget is started from inside the login, when the key is about
+      // to be used: another tab pressing Forget at that moment.
+      let forgetting = null, early = 'not started';
+      const during = Object.create(client);
+      during.login = async (...args) => {
+        forgetting = flows.forgetUnconfirmed(store, held).then(() => 'removed', (e) => e.name);
+        early = await Promise.race([forgetting, new Promise((res) => setTimeout(() => res('not settled'), 300))]);
+        return client.login(...args);
+      };
+      const logged = await flows.login(during, store, paramsOf(held)).then(async (s) => { const ok = s.code.length === 32; await s.close(); return ok; }, (e) => e.message);
+      const how = await forgetting;
+      const rec = await store.get(held);
+      check(logged === true && early === 'not settled' && how === 'ForgetRefused' && rec !== null && rec.unconfirmed === false,
+            `login/forget: a forget during a login with an unconfirmed key waits, and then leaves the key the login confirmed ` +
+            `(login: ${logged}; during: ${early}; after: ${how}; kept: ${rec !== null}) (F409)`); }
+
+    // V4-266 (F411): a rotation's login is the daemon accepting the key too.
+    { const store = new MemoryStore();
+      let held = null;
+      try {
+        await flows.enroll(client, store, want, async (id) => { held = id.handle; await enroll(id.handle, id.publicImage); throw new Error('HTTP 503'); });
+      } catch { /* as above */ }
+      let rotated = null;
+      try { await flows.rotate(client, store, paramsOf(held)); rotated = true; } catch (e) { rotated = e.message; }
+      const rec = await store.get(held);
+      check(rotated === true && rec !== null && rec.unconfirmed === false,
+            `rotate: a rotation the daemon accepted clears the unconfirmed mark (rotated: ${rotated}; unconfirmed: ${rec && rec.unconfirmed}) (F411)`);
+      check(await logsIn(store, held), 'rotate: and the rotated key logs in'); } }
 
   // F305: a peer that answers the upgrade and then sends one message far
   // larger than any frame. It is refused as a frame error without being

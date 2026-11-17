@@ -18,7 +18,7 @@ as carefully as the first: it is where this map is most useful to a reviewer.
 | `proverif "…"` | a query `formal/run.sh` requires ProVerif to prove; since V4-204 every query has a control that must make it fail, and the run must exhibit a login reaching the site |
 | `fuzz name` | a libFuzzer target whose oracle asserts the property |
 | `tool path` | a gate script |
-| `ci job` | a CI job that runs the evidence |
+| `ci job` | a job in `ci.yml` or `nightly.yml` that runs the evidence |
 
 **The map is checked.** `tools/audit/check_claim_map.py` fails if any
 requirement in either specification lacks an entry here, if a heading's

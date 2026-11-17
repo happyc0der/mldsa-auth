@@ -802,8 +802,9 @@ sudo authd_admin disable-user --socket /run/mldsa-authd/admin.sock \
 ```
 
 Every device of that user stops logging in at once, their tokens are deleted,
-and live connections are closed (spec §10.3). The reason is one word: values
-on the admin socket are single tokens (spec §8).
+and live connections are closed (spec §10.3). The reason is free text of up
+to 256 bytes; `authd_admin` encodes it for the socket, so quote one that has
+spaces.
 
 ## 21. Let them back in
 

@@ -85,7 +85,11 @@ const DURABLE = { durability: 'strict' };
 
 const committed = (tx) => new Promise((resolve, reject) => {
   tx.oncomplete = () => resolve();
-  tx.onerror = () => reject(tx.error);
+  // A request's error reaches the transaction BEFORE the transaction aborts,
+  // and tx.error is set by the abort: this could reject with null, which a
+  // page's `e.message` then turned into a TypeError inside its own catch
+  // (F412). The request's error is the reason while the transaction has none.
+  tx.onerror = (ev) => reject(tx.error ?? ev?.target?.error ?? new Error('transaction failed'));
   tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
 });
 

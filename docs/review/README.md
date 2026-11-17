@@ -27,8 +27,8 @@ that rests on reading says that too.
 - **A symbolic model** ([`formal/`](../../formal/README.md)). ProVerif proves
   agreement, key secrecy, login-code secrecy, the login `state` binding and
   rotation binding, exhibits a login that reaches the site, and has a
-  control for every query that must make its proof fail (ten, since
-  V4-204). Its README lists what the model leaves out.
+  control for every query that must make its proof fail (eleven, since
+  V4-265, each exhibiting its attack). Its README lists what the model leaves out.
 
 ## In and out of scope
 
@@ -49,9 +49,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 408 findings (F0–F408), with severity, evidence and
+   register](../v4/audit.md). 414 findings (F0–F414), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 120 errata, each
+3. The two specifications. The deployment spec's §20 lists 121 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -96,6 +96,18 @@ page said only F91 until V4-38, F120):
 | F5 | Med | Coverage had been measured once, before the daemon existed. Since V4-40 `apps/authd/` has a figure ([coverage.md](../v4/coverage.md)), and the security checks it found untested (F122) are all covered, the last (`REVOKE-TOKENS handle=`) in V4-60. The wasm build is not measured |
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
+
+Six found since this page's account ends are open in the register, each
+with a recommendation there (this list was missing them until V4-266):
+
+| Finding | Severity | In one line |
+|---|---|---|
+| F273 | Med | A daemon that refuses its configuration is restarted every two seconds for ever, and the unit never shows as failed |
+| F309 | Med | The operator's loopback listener is outside the rate limiter, the per-address cap and Req 12; recommended: its own connection cap |
+| F288 | Low | On server-class shared hardware the pin's 10 µs time floor is below the lookup's 99th percentile |
+| F338 | Low | At accepted settings the rate limiter's table, not its rates, is what refuses; recommended: size it from the configuration |
+| F398 | Low | A signup whose reply is lost cannot be retried: two sentences of spec 8 disagree; recommended: `idempotent=1` when user, handle and key all match |
+| F403 | Low | The locked-memory requirement assumes 4 KiB pages; recommended: derive the page size, after measuring on a 16 KiB host |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite
