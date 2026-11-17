@@ -18906,3 +18906,40 @@ No code.
 Counts: 654 mutations, 117 campaigns, 698 anchors; 364 findings (F273,
 F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests (unchanged by
 this step).
+
+## V4-253 — the reference site: a relay that closes both ends, a token ended before its session is replaced, every session cookie read (F365 to F367)
+
+The thirty-second review read `examples/site-node/` end to end, the file
+an operator is expected to copy, and probed its modules against stand-in
+daemons.
+
+- **F365 (Medium).** An earlier look at this relay tried the client
+  closing before the upstream connected, found nothing, and was not
+  written down. The leak that is there needs the daemon to close first
+  and the client to keep its half open. The fix is the one F213 used for the
+  refused path: destroy the other side a second after one has closed, so
+  the last frame in flight still arrives. Medium because it takes no
+  login and ends with a site that accepts nothing; landed without asking
+  because it is a plain defect with a test, in the reference site, and
+  changes no behaviour a correct client sees.
+- **F366.** Best effort, as `/api/logout` is: if the daemon is away the
+  session is still rotated, and the token expires on its own.
+- **F367.** The alternative was to refuse a request carrying two. That
+  logs a visitor out as surely as the defect did.
+
+Not changed: a reply line from the daemon with no newline grows the
+handler's buffer without bound. The daemon is the site's own, on a socket
+only the site's user can reach.
+
+Read and found sound: the cookie's attributes on every path; the id
+rotated at login, signup and recovery; idle expiry on the server; body
+limits and parsing (413 at 20 KB, 400 for an array, `__proto__` refused);
+static paths (encoded traversal, a trailing dot, a directory: all 404);
+methods; the Origin check ahead of any session; only six headers
+forwarded on the relay; `authd.mjs` refusing any value that is not one
+printable token, so no second command can be put on the line; split and
+joined replies; one request in flight at a time.
+
+JS only: no campaign. Each check was seen red against the site as it
+was. Counts: 654 mutations, 117 campaigns, 698 anchors; 367 findings
+(F273, F288, F309 and F338 open); spec v1.72, 114 errata; 65 tests.

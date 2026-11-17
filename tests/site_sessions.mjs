@@ -457,6 +457,40 @@ try {
     check(devices.startsWith('OK count=1'), 'signup: the existing account still has exactly one device');
   }
 
+  // V4-253, F367: two cookies of the session's name. Without --secure a
+  // sibling host can plant one; a planted id that names nothing, sent ahead
+  // of the real one, made the visitor a stranger on every request.
+  {
+    const ghost = 'ab'.repeat(32);
+    const two = (cookie) => fetch(`${base}/api/me`, { headers: { Cookie: cookie } });
+    const first = await two(`sid=${ghost}; sid=${fresh}`);
+    check(first.status === 200 && first.headers.get('set-cookie') === null,
+          `cookies: an id that names nothing, ahead of the visitor's own, does not make them a stranger (${first.status}) (F367)`);
+    const second = await two(`sid=${fresh}; sid=${ghost}`);
+    const none = await two(`sid=${ghost}; sid=${'cd'.repeat(32)}`);
+    check(second.status === 200 && none.status === 401,
+          `cookies: the visitor's id first works as before, and two ids that name nothing are still nobody (${second.status}, ${none.status}) (the controls)`);
+  }
+
+  // V4-253, F366: a logged-in session that logs in again, signs up or
+  // recovers gets a new id, and the old one's token is ended at the daemon,
+  // not just forgotten by the site.
+  {
+    const alive = async (token) => (await siteLine(`VERIFY token=${token}`)).startsWith('OK');
+    const a = idOf(await login(idOf(await get('/api/session')), vid, PASS));
+    const tokenA = sessions.get(a)?.token;
+    check(typeof tokenA === 'string' && await alive(tokenA), 'retire: a fresh login\'s token verifies at the daemon (the canary)');
+    const b = idOf(await login(a, vid, PASS));
+    const tokenB = sessions.get(b)?.token;
+    check(b !== undefined && b !== a && typeof tokenB === 'string' && tokenB !== tokenA && await alive(tokenB),
+          'retire: a second login on a logged-in session gives a new id and a new token (not vacuous)');
+    check(!(await alive(tokenA)),
+          'retire: the token of the session a second login replaced is ended at the daemon, not left to expire (F366)');
+    const su = await post('/api/signup', { user: 'retiree', invite: 'the-invite' }, b);
+    check(su.status === 200 && !(await alive(tokenB)),
+          `retire: a signup on a logged-in session ends that session's token at the daemon (${su.status}) (F366)`);
+  }
+
   // Logout forgets the session and the cookie.
   {
     const lo = await post('/api/logout', {}, fresh);
@@ -768,6 +802,33 @@ try {
               `malformed: a refused upgrade's socket is closed by the site, whatever the client does (${held}) (F213)`);
       } else {
         check(false, 'malformed: a refused upgrade\'s socket is closed by the site (not run: the site had exited) (F213)');
+      }
+      // V4-253, F365: an upgrade the site DOES relay, which the daemon then
+      // closes (a state of 65 bytes; it takes 64). The client keeps its half
+      // open. The site ended its own writing side and stopped reading, and
+      // the socket stayed, paused, for good -- one descriptor per connection.
+      if (alive()) {
+        const relayed = (stateLen) => new Promise((resolve) => {
+          const u = createConnection({ port: cp, host: '127.0.0.1', allowHalfOpen: true });
+          const t0 = Date.now();
+          let done = false, ended = false;
+          const finish = (v) => { if (!done) { done = true; u.destroy(); resolve(v); } };
+          u.on('error', (e) => finish(`error ${e.code}`));
+          u.on('close', () => finish('closed'));
+          u.on('data', () => {});
+          u.on('end', () => { ended = true; });
+          u.on('connect', () => u.write(`GET /authd/v1?state=${'s'.repeat(stateLen)} HTTP/1.1\r\nHost: 127.0.0.1:${cp}\r\n` +
+                                        'Upgrade: websocket\r\nConnection: Upgrade\r\n' +
+                                        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n'));
+          const poke = () => { if (!u.destroyed) { u.write('x'); setTimeout(poke, 250); } };
+          setTimeout(poke, 2500);
+          setTimeout(() => finish(`still open ${Date.now() - t0} ms on${ended ? ', the site\'s side ended' : ''}`), 5000);
+        });
+        const held = await relayed(65);
+        check(/^(error (ECONNRESET|EPIPE)|closed)$/.test(held) && alive(),
+              `relay: when the daemon closes a relayed upgrade, the site closes the client's socket too, whatever the client does (${held}) (F365)`);
+      } else {
+        check(false, 'relay: a relayed upgrade the daemon closes (not run: the site had exited) (F365)');
       }
       check(alive() && (await fetch(`${cb}/api/session`)).status === 200, 'malformed: the site still serves after all of them');
     } finally {

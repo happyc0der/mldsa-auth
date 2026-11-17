@@ -251,7 +251,7 @@ export async function startSite(opt) {
   //     so those are evicted last (F215). A deployment also rate-limits per
   //     client in front of the site.
   const COOKIE = opt.secure ? '__Host-sid' : 'sid';
-  const COOKIE_RE = new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})(?=;|$)`);
+  const COOKIE_RE = new RegExp(`(?:^|;\\s*)${COOKIE}=([0-9a-f]{64})(?=;|$)`, 'g');
   const IDLE_MS = opt.sessionIdleMs ?? 30 * 60 * 1000;
   const MAX_ANON = opt.maxAnonSessions ?? 10000;
   let anon = 0;                     // sessions with no token: the ones the cap bounds
@@ -290,8 +290,17 @@ export async function startSite(opt) {
     return s;
   };
   const session = (req, res) => {
-    const m = COOKIE_RE.exec(req.headers.cookie || '');
-    const s = m ? sessions.get(m[1]) : undefined;
+    // Every cookie of the name is looked at, and the first that names a live
+    // session is the visitor's (F367). Only the first was: without --secure
+    // a sibling host can plant a second `sid`, and one that named nothing --
+    // sent ahead of the real one -- made every request a new visitor. Under
+    // --secure the __Host- prefix lets nobody else set the cookie at all.
+    let s;
+    for (const m of (req.headers.cookie || '').matchAll(COOKIE_RE)) {
+      const named = sessions.get(m[1]);
+      if (named && (s === undefined || Date.now() - named.seen <= IDLE_MS)) { s = named; }
+      if (s && Date.now() - s.seen <= IDLE_MS) { break; }
+    }
     if (s && Date.now() - s.seen <= IDLE_MS) {
       // F304: a ticket past the daemon's own expiry is no longer held. It
       // stayed, so the session kept saying it was recovering, kept refusing
@@ -311,6 +320,15 @@ export async function startSite(opt) {
   const rotate = (res, s) => {
     drop(s);
     return create(res);
+  };
+  // Before a logged-in session is rotated away, its token is ended at the
+  // daemon (F366). rotate() drops the session and everything it held, the
+  // token included -- which only forgot it: a second login, a signup or a
+  // recovery on a logged-in session left the old token valid at the daemon
+  // until it expired, where /api/logout would have ended it.
+  const retire = async (s) => {
+    const token = s.token;
+    if (token) { try { await withAuthd((a) => logout(a, token)); } catch { /* already gone, or the daemon is away */ } }
   };
   const authenticate = (s, user, token) => {
     if (!s.token) { anon--; }
@@ -398,6 +416,7 @@ export async function startSite(opt) {
       s.state = null;               // one state, one login
       try {
         const r = await withAuthd((a) => exchange(a, code, state));
+        await retire(s);
         authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
       } catch (e) {
@@ -440,6 +459,7 @@ export async function startSite(opt) {
       if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || !vouched) {
         return send(res, 403, { error: 'signup refused' });
       }
+      await retire(s);
       rotate(res, s).signupUser = user;                    // F131: the account a planted id must not be able to claim
       send(res, 200, { user });
     },
@@ -493,6 +513,7 @@ export async function startSite(opt) {
       if (typeof user !== 'string' || typeof code !== 'string') { return send(res, 403, { error: 'recover-failed' }); }
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code));
+        await retire(s);
         rotate(res, s).ticket = { user, ticket: t.ticket, expires: t.expires };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
       } catch (e) {
@@ -597,6 +618,16 @@ export async function startSite(opt) {
     });
     up.on('error', () => sock.destroy());
     sock.on('error', () => up.destroy());
+    // When one side has closed, the other is not left open (F365). pipe()
+    // ends the destination's writing side and stops reading the source: a
+    // client that kept its own half open after the daemon had closed was
+    // held, paused, for good -- even after the client itself went away,
+    // since a paused socket never reads the end. One short-lived connection
+    // each cost the site a descriptor until it had none. The second lets
+    // what is already on its way arrive (the daemon's last frame, the
+    // client's last request), as for a refused upgrade (F213).
+    up.on('close', () => { setTimeout(() => sock.destroy(), REFUSED_UPGRADE_LINGER_MS).unref(); });
+    sock.on('close', () => { setTimeout(() => up.destroy(), REFUSED_UPGRADE_LINGER_MS).unref(); });
   });
 
   // Loopback unless told otherwise; only the phone timing tool says otherwise.
