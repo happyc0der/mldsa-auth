@@ -18898,6 +18898,9 @@ No code.
   `49cf1e4` (V4-245) had main's push CI 44037779703 (16/16). V4-248's
   first runs, CI 44032330377 and nightly 44032334735, were red on Linux
   and are described in its entry.
+- V4-251 landed while this was being written, as `5539212`, on CI
+  44044133057 (16/16) and nightly 44044136961 (132/132, 117 campaigns);
+  the next cleanup cites those.
 - Open for the owner, unchanged since V4-246: F273, F288, F309, F338 and
   the questions listed there.
 
