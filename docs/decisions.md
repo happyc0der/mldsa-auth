@@ -19548,3 +19548,24 @@ v132 KL1, which names the long-path check, tried again.
 Counts: 689 mutations, 124 campaigns, 734 anchors; 429 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
 spec v1.80, 122 errata; 65 tests.
+
+## V4-271: cleanup after V4-268 to V4-270 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `218fba5` (V4-270), now
+  main: CI 44185457208 (16/16), nightly 44185462139 (139/139, 124
+  campaigns).
+- Before it: `71110b9` (V4-269) had CI 44174472855 (16/16), with the
+  Docker Caddy job and both systemd rehearsals of the runbook green on
+  the new Caddyfile, nightly 44174480536 (138/138) and main's push CI
+  44187961515 (16/16); `79cd5b5` (V4-268) had CI 44174415285 (16/16)
+  and main's push CI 44177612489 (16/16); `9df64ad` (V4-267) had main's
+  push CI 44174359831 (16/16).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420 and F421, and the
+  questions listed in V4-246's entry.
+
+Counts: 689 mutations, 124 campaigns, 734 anchors; 429 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
+spec v1.80, 122 errata; 65 tests (unchanged by this step).
