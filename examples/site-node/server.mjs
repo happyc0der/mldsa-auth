@@ -482,7 +482,13 @@ export async function startSite(opt) {
         // F304: the daemon says the ticket is spent or expired; it will say
         // so every time, so the session stops holding it.
         if (e.code === 'ticket-invalid') { s.ticket = null; }
-        send(res, 403, { error: e.code });
+        // F418: one word for both conflicts. Passed through as the daemon
+        // gave them, `pk-in-use` and `exists-different-key` told anyone
+        // holding an invitation or a ticket, as often as they liked and
+        // with no proof of possession, whether a public key or a handle was
+        // enrolled -- the answer ROTATE hides on purpose (spec 6.3).
+        const conflict = e.code === 'pk-in-use' || e.code === 'exists-different-key';
+        send(res, 403, { error: conflict ? 'enroll-refused' : e.code });
       }
     },
     // Minting recovery codes needs a LOGIN, not only a session (V4-62, the

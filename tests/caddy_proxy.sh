@@ -251,6 +251,42 @@ CTRL=$(upgrade_status 8082 6000)
 [ "$CTRL" != 101 ] || fail "the same upgrade was answered 101 with header_up -Cookie removed: this check cannot fail"
 echo "PASS: CADDY: an upgrade carrying 6,000 bytes of cookies is answered 101 through the example configuration, and $CTRL without its header_up -Cookie line (F271)"
 
+# ------------------------- only this site's pages reach the daemon (F417)
+#
+# The daemon charges the client address's bucket per connection, so what
+# Caddy forwards is what a third-party page can spend on the visitor's
+# behalf. The example forwards a WebSocket upgrade whose Origin is the site's
+# own, or that has none (a native client); everything else is answered 403 by
+# Caddy and never reaches the daemon. The control is a fourth Caddy with the
+# Origin condition taken out, through which the foreign upgrade IS answered.
+inc "sed -e '/header Origin https/d' -e 's/^:8080 {/:8083 {/' /etc/Caddyfile > /etc/Caddyfile.anyorigin"
+inc "grep -q '^:8083 {' /etc/Caddyfile.anyorigin && ! grep -q 'header Origin https' /etc/Caddyfile.anyorigin && grep -q 'header Origin https://authd.example.com' /etc/Caddyfile" \
+    || fail "the any-origin Caddyfile was not derived as intended, or the example no longer names its Origin"
+inc "caddy start --config /etc/Caddyfile.anyorigin --adapter caddyfile > /tmp/caddy4.log 2>&1" \
+    || { inc "cat /tmp/caddy4.log"; fail "the fourth caddy would not start"; }
+inc "for i in \$(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:8083/ && exit 0; sleep 0.1; done; exit 0"
+origin_status() {    # origin_status <port> <Origin value, or "" for none>
+    inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 \
+           -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+           ${2:+-H 'Origin: $2'} 'http://127.0.0.1:$1/authd/v1?state=s9' || true"
+}
+seen() { inc "grep -c 'event=client-address' /tmp/authd.log || true"; }
+OWN=$(origin_status 8080 https://authd.example.com)
+NONE=$(origin_status 8080 "")
+[ "$OWN" = 101 ] || fail "an upgrade from the site's own Origin answered $OWN, not 101 -- the canary"
+[ "$NONE" = 101 ] || fail "an upgrade with no Origin (a native client) answered $NONE, not 101 -- the canary"
+N0=$(seen)
+FOREIGN=$(origin_status 8080 https://evil.example)
+PLAIN=$(inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 'http://127.0.0.1:8080/authd/v1' || true")
+N1=$(seen)
+[ "$FOREIGN" = 403 ] || fail "an upgrade from another site's Origin answered $FOREIGN through the example configuration, not 403 (F417)"
+[ "$PLAIN" = 403 ] || fail "a plain GET of /authd/v1 answered $PLAIN through the example configuration, not 403 (F417)"
+[ "$N1" = "$N0" ] || fail "the daemon saw $((N1 - N0)) connection(s) for requests Caddy should have refused (F417)"
+CTRL4=$(origin_status 8083 https://evil.example)
+[ "$CTRL4" = 101 ] || fail "with the Origin condition removed the foreign upgrade answered $CTRL4, not 101: this check cannot fail"
+echo "PASS: CADDY: another site's upgrade and a plain GET are answered 403 by Caddy and never reach the daemon; the site's own Origin and no Origin are served (F417)"
+
 # ---------------------------------------- the public journal (V4-13d, F14)
 #
 # deploy/RUNBOOK.md's public settings, behind the real Caddy: the same store,

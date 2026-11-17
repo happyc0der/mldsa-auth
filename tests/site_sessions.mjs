@@ -457,6 +457,25 @@ try {
     check(devices.startsWith('OK count=1'), 'signup: the existing account still has exactly one device');
   }
 
+  // V4-269, F418: the two enrollment conflicts are one word to the page. As
+  // the daemon's own words they told a holder of the invitation, with no
+  // proof of possession and as often as asked, whether a public key or a
+  // handle was enrolled.
+  {
+    const su = await post('/api/signup', { user: 'prober-269', invite: 'the-invite' });
+    const sid = idOf(su);
+    check(su.status === 200 && sid !== undefined, 'conflict: a new name signs up (the canary)');
+    const atk = client.newIdentity('an attacker passphrase, long enough');
+    const inUse = await post('/api/enroll', { handle: atk.handle, pub: hex(vid.publicImage) }, sid);
+    const a = await inUse.json();
+    const taken = await post('/api/enroll', { handle: vid.handle, pub: hex(atk.publicImage) }, sid);
+    const b = await taken.json();
+    check(inUse.status === 403 && taken.status === 403 && a.error === 'enroll-refused' && b.error === 'enroll-refused',
+          `conflict: a key that is enrolled and a handle that is enrolled are refused in one word (${inUse.status} ${a.error}; ${taken.status} ${b.error}) (F418)`);
+    const own = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage) }, sid);
+    check(own.status === 200, `conflict: and the same session then enrolls a key of its own (${own.status}) (the control)`);
+  }
+
   // V4-253, F367: two cookies of the session's name. Without --secure a
   // sibling host can plant one; a planted id that names nothing, sent ahead
   // of the real one, made the visitor a stranger on every request.

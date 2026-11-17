@@ -53,8 +53,9 @@ SUBST = {
          "-e \"s/^proxy_uids = .*/proxy_uids = $(id -u caddy)/\" /etc/mldsa-authd/authd.conf",
          "an interactive editor; the edit the comment asks for, made with sed")],
     10: [("sudo -e /etc/caddy/Caddyfile          # set your real hostname",
-          "sudo sed -i 's/^authd.example.com {/localhost {/' /etc/caddy/Caddyfile",
-          "an interactive editor; `localhost` gets Caddy's internal CA, no ACME")],
+          "sudo sed -i 's/authd\\.example\\.com/localhost/g' /etc/caddy/Caddyfile",
+          "an interactive editor; `localhost` gets Caddy's internal CA, no ACME. Every "
+          "occurrence: the hostname is the site address AND the Origin the proxy admits (V4-269)")],
     11: [("authd_client keygen --dir ~/.mldsa --passphrase-prompt",
           "HANDLE=$(authd_client keygen --dir ~/.mldsa --passphrase-file ~/op.pass | tail -n 1)\n"
           "echo \"HANDLE=$HANDLE\" >> " + STATE + "\n"

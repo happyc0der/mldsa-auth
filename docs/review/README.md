@@ -49,9 +49,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 416 findings (F0–F416), with severity, evidence and
+   register](../v4/audit.md). 421 findings (F0–F421), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 121 errata, each
+3. The two specifications. The deployment spec's §20 lists 122 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -97,7 +97,7 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Eight more are open in the register, each with its reasons there. This list
+Eleven more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
@@ -112,6 +112,9 @@ no row here:
 | F403 | Low | The locked-memory requirement assumes 4 KiB pages; recommended: derive the page size, after measuring on a 16 KiB host |
 | F156 | Low | A known user's recovery refusal is still tens of microseconds slower than an unknown user's: it lists the codes and writes the failure count, which an unknown user's does not |
 | F148 | Info | `handshake_*_init` on a context still in use returns OK and orphans its secrets; the header requires fresh or wiped storage and every in-tree caller complies |
+| F419 | Low | `REVOKE-TOKENS` and `LIST-DEVICES` on the site socket have no operator check; recommended: `not-permitted` there, as for `REVOKE-DEVICE` |
+| F420 | Low | Nothing refuses a uid that is in both `site_uids` and `proxy_uids`; recommended: a warning from `--check-config` |
+| F421 | Info | A site that keeps every local slot busy keeps the administrative socket from being served; recommended: one slot reserved for it |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite

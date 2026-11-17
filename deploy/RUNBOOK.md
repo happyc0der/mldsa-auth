@@ -290,6 +290,11 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl restart caddy
 ```
 
+The hostname is in that file twice: as the site address, and in the
+`header Origin https://...` line, which is the only Origin whose pages Caddy
+lets through to the daemon. Set both, or every browser login is answered 403
+by Caddy (a native `authd_client` sends no Origin and is not affected).
+
 `restart`, not `reload`: a reload keeps the process, and with it the groups it
 started with, so Caddy would not yet be in `mldsa-authd` (step 4) and could
 not reach the socket.

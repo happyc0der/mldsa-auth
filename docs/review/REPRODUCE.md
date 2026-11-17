@@ -158,7 +158,7 @@ python3 tools/audit/check_claim_map.py .            # OK: every requirement is m
 ## Scripts outside CTest
 
 ```bash
-sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; ten PASS lines, "PASS: CADDY: all checks" (also a CI job since V4-22b)
+sh tests/caddy_proxy.sh      # a real Caddy in Docker, a real login through it; eleven PASS lines, "PASS: CADDY: all checks" (also a CI job since V4-22b)
 sh tests/deploy_checks.sh    # systemd's own analysers on the unit (Docker); exposure 1.7, "PASS: DEPLOY: all checks"
 ```
 

@@ -19463,3 +19463,43 @@ No code.
 Counts: 687 mutations, 123 campaigns, 731 anchors; 416 findings (F148,
 F156, F273, F288, F309, F338, F398 and F403 open); spec v1.79, 121
 errata; 65 tests (unchanged by this step).
+
+## V4-269 — across the components: the proxy forwards only this site's upgrades; one word for an enrollment conflict (F417 to F421)
+
+The forty-second review took attacker positions instead of files (a page
+on another site, a client making direct requests, a thief of each
+credential in turn, a compromised site, a local user, a replayer) and
+traced each goal through the page, the site, the local socket and the
+daemon. Cross-site requests, login CSRF, the state binding, every stolen
+credential's lifetime and scope, replay across restarts and daemons,
+and the pinned server identity all held, each by a check it names.
+Nothing High.
+
+- **F417.** Fixed in the proxy, where the cost is: the daemon cannot
+  tell another site's page from this one's before it has read the
+  request, and by then it has charged the address. A request with no
+  `Origin` is forwarded, because `authd_client` sends none and every
+  browser sends one with an upgrade. The Docker test was run here
+  with a real Caddy; its control is the same file with the `Origin`
+  line removed.
+- **F418.** The page never branched on the two words; it shows what it
+  is given. One word costs it nothing.
+- **F419, F420, F421 (open).** Each changes what a deployment is
+  allowed to do; each has a recommendation in its row and a row on the
+  review page.
+- **Already recorded, met again:** one enrolled device can spend the
+  ledger's login capacity alone, because a successful login is
+  refunded (V4-239's entry; the owner's). A local user who can reach
+  or take the site's loopback port can choose its `X-Forwarded-For`
+  or serve its pages: the question F309 asks about the daemon's
+  loopback listener, asked of the site's. A Unix socket between Caddy
+  and the site would close it and needs an option the reference site
+  does not have.
+
+No campaign: no compiled code changed.
+
+Spec v1.80, erratum 122.
+
+Counts: 687 mutations, 123 campaigns, 731 anchors; 421 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
+spec v1.80, 122 errata; 65 tests.

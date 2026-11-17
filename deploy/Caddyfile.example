@@ -36,14 +36,9 @@
 # nothing else -- no inline script, no eval. Caddy serves `.wasm` as
 # application/wasm by itself, which streaming compilation needs.
 
-authd.example.com {
-	header {
-		Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
-		X-Content-Type-Options nosniff
-		Referrer-Policy no-referrer
-		Strict-Transport-Security "max-age=31536000"
-	}
-	reverse_proxy /authd/v1* unix//run/mldsa-authd/p.sock {
+# One upstream, used twice below.
+(authd_upstream) {
+	reverse_proxy unix//run/mldsa-authd/p.sock {
 		# The daemon reads at most 4,096 bytes of upgrade request and
 		# closes on more. A browser sends every cookie it holds for this
 		# domain with the upgrade; the daemon uses none of them, so they
@@ -53,5 +48,44 @@ authd.example.com {
 			proxy_protocol v2
 		}
 	}
-	reverse_proxy 127.0.0.1:9080
+}
+
+authd.example.com {
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Strict-Transport-Security "max-age=31536000"
+	}
+	# Only a WebSocket upgrade reaches the daemon, and from a browser only
+	# this site's own pages (V4-269, F417). The daemon charges the client
+	# address's rate-limit bucket for every connection, before it has read
+	# the request. With `/authd/v1*` forwarded as it came, any page on any
+	# site could spend the visitor's own bucket for them -- ten image tags
+	# pointing here, then one every twelve seconds -- and their real login
+	# was answered 429. A browser always sends Origin with an upgrade; a
+	# native client (authd_client) sends none. REPLACE THE ORIGIN below
+	# together with the site address above.
+	handle /authd/v1* {
+		@page {
+			header Upgrade websocket
+			header Origin https://authd.example.com
+		}
+		@native {
+			header Upgrade websocket
+			not header Origin *
+		}
+		handle @page {
+			import authd_upstream
+		}
+		handle @native {
+			import authd_upstream
+		}
+		handle {
+			respond 403
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:9080
+	}
 }

@@ -55,6 +55,11 @@ admin_uids = 0
 # forgets it gets a proxy-facing listener with no client address, no rate
 # limiting, and no complaint (audit finding F63). If Caddy (or any proxy) is in
 # front, this must be v2, and `proxy_uids` must name the uid it runs as.
+# Not the site's uid (V4-269): a process that may write to this socket states
+# the client's address, so a site running as the proxy's user can state any
+# address it likes. This example gives `site_uids` and `proxy_uids` the same
+# 33; a deployment gives the proxy and the site a user each, as the runbook
+# does.
 proxy_protocol = v2
 proxy_uids = 33
 
