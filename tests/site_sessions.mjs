@@ -854,6 +854,26 @@ try {
       child.kill('SIGKILL');
     }
   }
+  // V4-272 (F434): the recovery limiter measures elapsed time, so a wall
+  // clock stepped back does not empty every bucket. Date.now() is moved back
+  // an hour between two attempts from one address; with a bucket of 2 and a
+  // refill of a minute, the second attempt is still within the burst.
+  {
+    const ls = await start({ recoverBurst: 2, recoverRefillMs: 60 * 1000 });
+    const lb = `http://127.0.0.1:${ls.port}`;
+    const lpost = (obj) => fetch(`${lb}/api/recover`, {
+      method: 'POST', body: JSON.stringify(obj), headers: { Origin: lb, 'Content-Type': 'application/json' } });
+    const first = (await lpost({ user: 'nobody-434', code: 'AAAAAAAAAAAAAAAA' })).status;
+    const realNow = Date.now;
+    let second;
+    try {
+      Date.now = () => realNow.call(Date) - 60 * 60 * 1000;
+      second = (await lpost({ user: 'nobody-434', code: 'AAAAAAAAAAAAAAAA' })).status;
+    } finally { Date.now = realNow; }
+    const third = (await lpost({ user: 'nobody-434', code: 'AAAAAAAAAAAAAAAA' })).status;
+    check(first !== 429 && second !== 429 && third === 429,
+          `recover limit: a wall clock stepped back an hour does not empty the bucket; the burst is still two (${first}, ${second}, ${third}) (F434)`);
+  }
   // F304: a ticket the daemon no longer honours does not stay in the session.
   {
     const ts = await start({ recoverBurst: 10, recoverRefillMs: 60 * 60 * 1000 });

@@ -62,6 +62,7 @@ import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { performance } from 'node:perf_hooks';
 import { Authd, AuthdError, exchange, enroll, verify, logout, recoveryIssue, recoveryUse } from './authd.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -146,6 +147,14 @@ export function hostAllowed(hostHeader, opt = {}) {
   return (opt.hostNames ?? []).some((h) => String(h).toLowerCase() === name);
 }
 
+// Elapsed time, not the time of day (V4-272, F434). The recovery limiter and
+// the session table measure intervals; on the wall clock a step back made a
+// bucket's refill negative, and every client that had one was answered 429 on
+// /api/recover for about the size of the step, and a step forward ended every
+// session at once. A ticket's expiry is the DAEMON'S wall-clock time and is
+// still compared with Date.now().
+const monoMs = () => Math.floor(performance.now());
+
 export async function startSite(opt) {
   const sessions = new Map();       // sid -> { sid, seen, state, user, token, signupUser, ticket }, least recently used first
   const csp = opt.csp ?? CSP;
@@ -180,7 +189,7 @@ export async function startSite(opt) {
     return limiterKey(addr);
   };
   const takeRecoverToken = (req) => {
-    const key = clientKey(req), now = Date.now();
+    const key = clientKey(req), now = monoMs();
     let b = recoverBuckets.get(key);
     if (b) {
       recoverBuckets.delete(key);       // re-inserted below: the Map's order is least recently used first
@@ -260,7 +269,7 @@ export async function startSite(opt) {
     if (sessions.delete(s.sid) && !s.token) { anon--; }
   };
   const create = (res) => {
-    const now = Date.now();
+    const now = monoMs();
     // The table is in least-recently-used order, so the expired ones are at the
     // front: dropping them costs nothing per request that is not reclaimed.
     for (const old of sessions.values()) {
@@ -298,10 +307,10 @@ export async function startSite(opt) {
     let s;
     for (const m of (req.headers.cookie || '').matchAll(COOKIE_RE)) {
       const named = sessions.get(m[1]);
-      if (named && (s === undefined || Date.now() - named.seen <= IDLE_MS)) { s = named; }
-      if (s && Date.now() - s.seen <= IDLE_MS) { break; }
+      if (named && (s === undefined || monoMs() - named.seen <= IDLE_MS)) { s = named; }
+      if (s && monoMs() - s.seen <= IDLE_MS) { break; }
     }
-    if (s && Date.now() - s.seen <= IDLE_MS) {
+    if (s && monoMs() - s.seen <= IDLE_MS) {
       // F304: a ticket past the daemon's own expiry is no longer held. It
       // stayed, so the session kept saying it was recovering, kept refusing
       // any other account name on the enroll page, and kept the eviction
@@ -309,7 +318,7 @@ export async function startSite(opt) {
       if (s.ticket && Number.isFinite(s.ticket.expires) && s.ticket.expires * 1000 <= Date.now()) { s.ticket = null; }
       sessions.delete(s.sid);         // to the back: most recently used
       sessions.set(s.sid, s);
-      s.seen = Date.now();
+      s.seen = monoMs();
       return s;
     }
     if (s) { drop(s); }

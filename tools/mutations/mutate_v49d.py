@@ -71,7 +71,7 @@ M = {
  # is seen as a locked attempt costing two -- the generation's and the
  # refusal's -- where the lockout read first costs one.
  "G4": (LA, [("""    if (locked) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
@@ -90,7 +90,7 @@ M = {
                                       app->recovery_ops, app->recovery_mem, &code_id, &tried);
     app->recovery_kdf_calls += (uint64_t)tried;
     if (locked) {   /* MUTATION G4: lockout enforced after the KDF, not before */
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");

@@ -225,12 +225,33 @@ static ev_action_t send_resp(authd_slot_t *slot, resp_t *r)
     return EV_ACTION_CONTINUE;
 }
 
+/* The command being served, for send_err's ERROR line (one request at a time:
+ * the event loop serves one slot's line to its end before the next). */
+static const char *g_serving_cmd = "?";
+
 static ev_action_t send_err(authd_slot_t *slot, const char *code)
 {
+    /* F432: an `internal` answer is the daemon failing -- a full disk, a
+     * store another process holds locked, an allocation -- and was written
+     * to the journal nowhere: the only line such a request left was its
+     * `local-request` at INFO. Every one is now an ERROR line naming the
+     * command and the peer. */
+    if (strcmp(code, "internal") == 0) {
+        authd_log_local(AUTHD_LOG_ERROR, "local-internal", g_serving_cmd, slot->peer.uid, slot->peer.pid,
+                        slot->is_admin ? "admin" : "site");
+    }
     resp_t r;
     resp_init(&r);
     resp_add(&r, "ERR code=%s\n", code);
     return send_resp(slot, &r);
+}
+
+/* F433: the Argon2id a refusal spends could not be computed. Answered as the
+ * real verification answers that (`internal`), and logged at ERROR. */
+static ev_action_t kdf_failed(authd_slot_t *slot)
+{
+    authd_log_slot_detail(AUTHD_LOG_ERROR, "recovery-use", slot->index, "kdf-failed");
+    return send_err(slot, "internal");
 }
 
 /* ------------------------------------------------------------- handlers */
@@ -1238,7 +1259,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     const store_status_t us = store_get_user(app->store, user, user_len, &role, status, sizeof status);
     if (us != STORE_OK && us != STORE_ERR_NOT_FOUND) { return send_err(slot, "internal"); }
     if (us == STORE_ERR_NOT_FOUND) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "invalid");
@@ -1255,7 +1276,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
      * ever minted. Discloses nothing new: the site socket can already learn a
      * user's role from ENROLL's role-mismatch. */
     if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "not-permitted");
@@ -1263,7 +1284,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     }
     /* After the role (F394), as in RECOVERY-ISSUE. */
     if (strcmp(status, "active") != 0) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "user-disabled");
@@ -1282,7 +1303,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
         return send_err(slot, "internal");
     }
     if (locked) {
-        recovery_spend_one(app->recovery_ops, app->recovery_mem);
+        if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
@@ -1472,12 +1493,16 @@ ev_action_t localapi_on_line(void *user, authd_slot_t *slot, const uint8_t *line
      * never are -- a token or a login code would reach the journal. */
     authd_log_local(AUTHD_LOG_INFO, "local-request", req.cmd, slot->peer.uid, slot->peer.pid,
                     slot->is_admin ? "admin" : "site");
+    g_serving_cmd = req.cmd;
 
     for (size_t i = 0; i < n; i++) {
         if (strcmp(req.cmd, table[i].cmd) == 0) {
-            return table[i].fn(app, slot, &req);
+            const ev_action_t act = table[i].fn(app, slot, &req);
+            g_serving_cmd = "?";      /* req is this frame's; nothing may keep it */
+            return act;
         }
     }
+    g_serving_cmd = "?";
     /* Either genuinely unknown, or an admin command on the site socket. Both
      * answer the same thing, so the site socket does not become an oracle for
      * which administrative commands exist. */

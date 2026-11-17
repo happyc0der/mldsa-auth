@@ -82,8 +82,10 @@ int recovery_make_code(char code_out[BASE32_CODE_CHARS + 1u],
 
 /* One Argon2id computation at `ops`/`mem`, its result discarded: what a
  * refusal that has nothing to verify spends, so that it takes as long as one
- * that has (F143). */
-void recovery_spend_one(unsigned long long ops, size_t mem);
+ * that has (F143). 0, or -1 if the computation could not be made (its
+ * memory could not be had): the caller answers `internal` then, as the
+ * verification it stands in for would have (V4-272, F433). */
+int recovery_spend_one(unsigned long long ops, size_t mem);
 
 /* A fresh ticket and its stored hash. */
 void recovery_make_ticket(uint8_t ticket_out[RECOVERY_TICKET_BYTES],

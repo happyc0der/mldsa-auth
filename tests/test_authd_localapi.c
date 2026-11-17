@@ -2485,8 +2485,12 @@ static void test_store_write_failure(void)
               " WHEN NEW.idle_expires_at <> OLD.idle_expires_at"
               " BEGIN SELECT RAISE(ABORT, 'wfail'); END;") == 0,
           "wfail: a trigger that refuses the sliding update is planted");
-    CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
-          "wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)");
+    { char *log = logged_cmd(&d, fd, vreq, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=internal"),
+            "wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)");
+      CHECK(log != NULL && strstr(log, "error event=local-internal") != NULL && strstr(log, "cmd=VERIFY") != NULL,
+            "wfail: ...and the journal says so at ERROR, naming the command (F432)");
+      free(log); }
     CHECK(store_exec(DB, "DROP TRIGGER wfail_slide;") == 0, "wfail: the trigger is removed");
     CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "OK user="),
           "wfail: the same token verifies once the write can succeed");
@@ -2829,6 +2833,47 @@ static void test_spec_clauses_v262(void)
     h_stop(&d);
 }
 
+/* V4-272 (F433): when the Argon2id a recovery spends cannot be computed, the
+ * answer is `internal` whoever is named. The memory limit is set past what
+ * libsodium accepts, so every computation fails at once, as one that could not
+ * get its memory does. It used to be ignored on the refusal paths: an unknown
+ * user was answered `invalid` at once while a user with codes was answered
+ * `internal`. */
+static void test_recovery_kdf_failure(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "kdffail.sqlite3", 1) == 0, "kdf-failure: daemon starts");
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "kdf-failure: connect to site.sock and admin.sock");
+    static const uint8_t U[] = { 'k','u' }, GHOST[] = { 'n','o','b','o','d','y' };
+    char uh[32], gh[32], req[512], resp[8192];
+    hx(uh, sizeof uh, U, sizeof U); hx(gh, sizeof gh, GHOST, sizeof GHOST);
+    CHECK(store_add_user(d.store, U, sizeof U, STORE_ROLE_USER) == STORE_OK, "kdf-failure: a user exists");
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=1", uh);
+    CHECK(h_local_cmd(&d, adm, req, resp, sizeof resp) == 0 && starts(resp, "OK"), "kdf-failure: the user has a code");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", gh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "kdf-failure: with Argon2id working, an unknown user is invalid (the control)");
+    const size_t saved = d.app.recovery_mem;
+    d.app.recovery_mem = (size_t)crypto_pwhash_MEMLIMIT_MAX + 1u;
+    char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+    CHECK(starts(resp, "ERR code=internal") && log != NULL && strstr(log, "error event=recovery-use") != NULL &&
+          strstr(log, "detail=kdf-failed") != NULL,
+          "kdf-failure: when Argon2id cannot be computed an unknown user is internal, logged at error, not invalid (F433)");
+    free(log);
+    /* A user with codes is verified at the cost recorded in each code's hash,
+     * not at recovery_mem, so this setting cannot make that verification
+     * fail; a real shortage of memory fails both, and the matcher already
+     * answers `internal` for its own failure. Here the control is that the
+     * real verification still runs and refuses the wrong code. */
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "kdf-failure: a user with codes is still verified at the codes' own cost (the control)");
+    d.app.recovery_mem = saved;
+    (void)close(fd); (void)close(adm);
+    h_stop(&d);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2875,6 +2920,7 @@ int main(void)
     test_store_read_failure();
     test_enroll_without_continuity();
     test_spec_clauses_v262();
+    test_recovery_kdf_failure();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

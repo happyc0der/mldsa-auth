@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.80, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269)
+# mldsa-authd — deployment specification (v1.81, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1302,7 +1302,7 @@ word `none`; the `/` appears only under `log_client_ip = prefix`. `detail`
 is one word (erratum 115): the logging function writes any byte outside
 printable ASCII, a space or an `=` as `.`, and cuts it at 64 bytes, so no
 caller can add a token or a key to a line. A `recovery-use` line's detail
-is one of `ok`, `ok-revoke-all`, `invalid`, `invalid-locked`, `locked`,
+is one of `ok`, `ok-revoke-all`, `invalid`, `invalid-locked`, `locked`, `kdf-failed`,
 `user-disabled`, `not-permitted`, `busy` (erratum 118): every refusal of a
 `RECOVERY-USE` that was well formed writes the line, an unknown user's as
 `invalid`.
@@ -1369,7 +1369,7 @@ rotate rotate-fp-old rotate-fp-new rotate-tokens-dropped rotate-store-failed
 The local API and the lifecycle (§8, §10):
 
 ```
-local-request exchange
+local-request local-internal exchange
 enroll enroll-idempotent enroll-fp enroll-without-continuity
 enroll-key-mismatch enroll-key-mismatch-old enroll-key-mismatch-new
 enroll-recovery enroll-recovery-fp
@@ -2295,3 +2295,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 122 | 7.1 | The proxy forwards to the daemon only a WebSocket upgrade whose `Origin` is the site's own or absent; the reference site answers both enrollment conflicts with one word | `deploy/Caddyfile.example` forwarded everything under `/authd/v1`. Any page on any site could then spend a visitor's own rate-limit bucket (ten image tags, then one every twelve seconds, at the shipped limits) and the visitor's real login was answered 429; F160 had recorded the missing `Origin` check as no authentication bypass, which it is not. And the site passed `pk-in-use` and `exists-different-key` through to the page, telling a holder of an invitation whether a key or a handle was enrolled, with no proof of possession (audit F417, F418) |
+
+### Revision v1.81 (V4-272)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 123 | 8, 15 | Every local-API request answered `internal` writes `error event=local-internal` with the command and the peer; a `RECOVERY-USE` refusal whose Argon2id cannot be computed answers `internal` and logs `recovery-use detail=kdf-failed` at ERROR | A full disk or a locked store left a local-API request with one INFO line and nothing at ERROR, where errata 99 and 117 had put store failures on the handshake and rotation paths. And the one computation a refusal spends ignored its own failure, so when Argon2id could not get its memory an unknown user was refused at once as `invalid` while a user with codes was answered `internal`: the answer, and the time, by who was named (audit F432, F433) |

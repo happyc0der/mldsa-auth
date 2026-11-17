@@ -1,0 +1,2 @@
+LI1|^test_authd_localapi$|wfail: ...and the journal says so at ERROR, naming the command (F432)
+KF1|^test_authd_localapi$|kdf-failure: when Argon2id cannot be computed an unknown user is internal, logged at error, not invalid (F433)

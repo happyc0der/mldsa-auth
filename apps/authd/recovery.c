@@ -120,16 +120,19 @@ int recovery_make_code(char code_out[BASE32_CODE_CHARS + 1u],
 }
 
 /* One Argon2id computation at `ops`/`mem` whose result nobody reads. */
-void recovery_spend_one(unsigned long long ops, size_t mem)
+int recovery_spend_one(unsigned long long ops, size_t mem)
 {
     static const uint8_t salt[crypto_pwhash_SALTBYTES] = {0};
     uint8_t h[MRC1_HASH_BYTES];
-    if (crypto_pwhash(h, sizeof h, "0000000000000000", (unsigned long long)BASE32_CODE_CHARS,
-                      salt, ops, mem, crypto_pwhash_ALG_ARGON2ID13) != 0) {
-        /* Nothing to report: the computation, not its result, is the point.
-         * (A (void) cast does not silence gcc's warn_unused_result.) */
-    }
+    /* The result is not read; whether it could be computed is (F433). A
+     * failure was ignored, so when Argon2id could not get its memory an
+     * unknown, disabled, locked or operator user got a fast refusal while
+     * an active user with codes got `internal` from the real verification:
+     * a different answer, and a different time, by who was named. */
+    const int r = crypto_pwhash(h, sizeof h, "0000000000000000", (unsigned long long)BASE32_CODE_CHARS,
+                                salt, ops, mem, crypto_pwhash_ALG_ARGON2ID13);
     sodium_memzero(h, sizeof h);
+    return (r == 0) ? 0 : -1;
 }
 
 void recovery_make_ticket(uint8_t ticket_out[RECOVERY_TICKET_BYTES],
@@ -238,7 +241,9 @@ int recovery_find_match(const store_t *s, const uint8_t *user_id, size_t user_id
      * count, so it is tens of microseconds slower than an unknown user's,
      * against ~45 ms of Argon2id (V4-78, F156). */
     if (tried == 0u) {
-        recovery_spend_one(ops, mem);
+        if (recovery_spend_one(ops, mem) != 0) {
+            return -1;                  /* F433: as a failed verification is */
+        }
         tried = 1u;
     }
     if (tried_out != NULL) { *tried_out = tried; }

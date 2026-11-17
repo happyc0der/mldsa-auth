@@ -19569,3 +19569,43 @@ No code.
 Counts: 689 mutations, 124 campaigns, 734 anchors; 429 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
 spec v1.80, 122 errata; 65 tests (unchanged by this step).
+
+## V4-272 — failure underneath: an `internal` answer is logged, a refusal whose Argon2id fails says so, the site measures elapsed time (F430 to F437)
+
+The forty-fourth review asked what each component does when the
+environment fails under it: a full disk, a store another process holds
+locked, no memory, no descriptors, a stepped clock, signals at awkward
+points, a daemon that is absent or slow. Store writes roll back and
+never become a refusal or a success; BACKUP removes its partial file;
+a locked store costs 250 ms a write and cannot reach the watchdog;
+SIGTERM finishes or drains; the site keeps its sessions and answers 503;
+key files are written by rename. Eight findings, none above Low.
+
+- **F432.** At `send_err`, not at each of some fifty call sites: every
+  `internal` is a failure of the daemon's, and one line names the
+  command. Which store status it was is not on the line; the
+  handshake and rotation paths' lines carry it, and adding it here
+  means a status at every call site.
+- **F433.** The memory limit past libsodium's maximum is the test's
+  stand-in for a failed allocation: it fails the refusals' computation
+  and not the real verification, which runs at the cost recorded in each
+  code's hash. A real shortage fails both.
+- **F434.** The reference site, not the daemon; the change is two
+  lines and a test that moves `Date.now`.
+- **Not changed, recorded:** `authd_client rotate` with no daemon keeps
+  the `.ek.next` it wrote, though no ROTATE was sent, so later logins
+  probe with both keys until the next rotate; removing it on that proof,
+  as the browser does (F235), would also remove what `test_authd_cli`'s
+  stale-rotate leg and campaign v70 RK4 scan for the new key's windows,
+  and is left for a step that changes those together.
+- **Open, each with a row on the review page:** F430, F431, F435, F436,
+  F437.
+
+Campaign v155, two mutants, each tried with `tools/hand_control.py`,
+with v49d G4 and v151 RU2, whose anchors held the changed line.
+
+Spec v1.81, erratum 123.
+
+Counts: 691 mutations, 125 campaigns, 736 anchors; 437 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F430, F431,
+F435, F436 and F437 open); spec v1.81, 123 errata; 65 tests.
