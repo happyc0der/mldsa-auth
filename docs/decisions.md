@@ -18784,3 +18784,22 @@ suite each of them runs first.
 No C changed; no campaign. Counts: 641 mutations, 116 campaigns, 685
 anchors; 358 findings (F273, F288, F309 and F338 open); spec v1.71, 113
 errata; 65 tests.
+
+## V4-249: cleanup after V4-245 landed; the README against the tree (F359)
+
+- `docs/review/REPRODUCE.md` cites the runs on `49cf1e4`, now main: CI
+  44028959100 (16/16), nightly 44028962476 (131/131, 116 campaigns).
+- Before it: `868769b` (V4-244) had CI 44017946331 (16/16), nightly
+  44017949713 (130/130) and main's push CI 44025116947 (16/16).
+- **F359.** The thirtieth review followed the README as a reader would,
+  running the walk-through's offline steps and the three binaries' usage
+  text. Six passages had been overtaken by later steps; each is corrected,
+  and the walk-through now stops the daemon after the rotation that needs
+  it. `deploy/README.md` lists what the directory holds. Found in
+  agreement: the example configuration against the parser (24 keys, every
+  default), usage text against the options parsed, every path and link.
+- Open for the owner, unchanged since V4-246: F273, F288, F309, F338 and
+  the questions listed there.
+
+No code. Counts: 641 mutations, 116 campaigns, 685 anchors; 359 findings
+(F273, F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.

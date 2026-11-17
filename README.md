@@ -81,12 +81,14 @@ cmake -S . -B build
 cmake --build build -j8
 ```
 
-Two constraints that will otherwise cost you an afternoon:
+Two things that will otherwise cost you an afternoon:
 
-- **The project path must not contain spaces** — not the source directory and
-  not the build directory. libsodium's Autotools/libtool build breaks on
-  whitespace in its own paths, unpatchably. See
-  [cmake/Dependencies.cmake](cmake/Dependencies.cmake).
+- **A project path with spaces works, and moves libsodium's build.**
+  libsodium's Autotools/libtool build breaks on whitespace in its own paths,
+  unpatchably, so when the source or build directory has any, it is built
+  under `$TMPDIR` or `~/.cache/mldsa-auth` instead of inside the build tree,
+  and configure is refused only if neither can be used. See
+  [cmake/SodiumDirs.cmake](cmake/SodiumDirs.cmake).
 - **The default build type is `Debug`**, which leaves the vendored liboqs
   unoptimized: signing is ~5.8× slower than Release. Use
   `-DCMAKE_BUILD_TYPE=Release` for anything where speed matters, and never
@@ -523,12 +525,11 @@ node /tmp/authd-demo/site.mjs "<the code from step 5>"
 ```
 
 ```sh
-# 6. Administrative queries, and shutdown.
+# 6. Administrative queries.
 "$REPO/build/apps/authd/authd_admin" list-users    --socket /tmp/authd-demo/a.sock
 "$REPO/build/apps/authd/authd_admin" list-devices  --socket /tmp/authd-demo/a.sock --user alice
 "$REPO/build/apps/authd/authd_admin" audit-tail    --socket /tmp/authd-demo/a.sock --n 10
 "$REPO/build/apps/authd/authd_admin" backup        --socket /tmp/authd-demo/a.sock --path /tmp/authd-demo/backup.sqlite3
-kill %1
 ```
 
 ```sh
@@ -541,14 +542,19 @@ kill %1
     --passphrase-file /tmp/authd-demo/opass \
     --server-id authd --server-pub /tmp/authd-demo/data/server.pub \
     --unix /tmp/authd-demo/p.sock
+
+# 8. Shutdown.
+kill %1
 ```
 
 Identifiers and labels are hex on the wire and are printed back as hex: they
 are attacker-influenced strings, and a tool that decodes them for display is a
 tool with a terminal-escape hazard. `xxd -r -p` decodes one when you want it.
 
-**Passphrases are files, never a prompt and never `argv`** — argv and the
-environment are readable by other processes on the same host. The file must be
+**Passphrases are never `argv` and never the environment** — both are
+readable by other processes on the same host. `authd_admin` and the daemon
+take a file only; `authd_client` takes a file or, with `--passphrase-prompt`,
+the terminal. The file must be
 mode 0600 and owned by you; anything else is a configuration error (exit 3).
 
 ### Losing the device
@@ -599,7 +605,9 @@ and then removes `proxy_protocol` from the Caddyfile to prove the refusal.
 
 **`proxy_protocol` defaults to `none`**, because there is no default that is
 right for both "a proxy is in front" and "an operator's client is connected
-directly" — a deployment must set it, and `--check-config` prints what it is.
+directly" — a deployment must set it, and `mldsa-authd --check-config` prints what it is
+(the daemon's form: `authd_admin --check-config` validates the same file and
+prints fewer of its values).
 
 The proxy configuration itself is [`deploy/Caddyfile.example`](deploy/Caddyfile.example),
 and it is the file under test rather than an illustration of one:
@@ -649,7 +657,7 @@ is where the remaining risk lives.
 
 ## Dependencies
 
-Both are fetched from upstream at pinned versions and built from source. No
+All three are fetched from upstream at pinned versions and built from source. No
 system packages are used, so a clean checkout builds identical bits.
 
 | Dependency | Version | Pin mechanism |
@@ -663,8 +671,8 @@ exactly one signature algorithm and one KEM, so the library's algorithm
 surface is only what the protocol uses. The backend is selected at build
 time (`OQS_DIST_BUILD=OFF`), so no CPU-feature branch is taken per
 cryptographic call. libsodium is built via its own Autotools tooling from the
-maintainer's release tarball, outside the build tree (see the path constraint
-above).
+maintainer's release tarball, inside the build tree unless the tree's path has
+whitespace (see the note on paths above).
 
 **Both pins are exact and neither trusts a mutable ref.** libsodium is
 pinned by the SHA-256 of its release tarball. liboqs is *fetched* by tag —
@@ -792,7 +800,7 @@ enforced by CI rather than by anyone remembering them:
 
 | Workflow | When | What it runs |
 |---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the whole test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s × 5) and the repository secret scan, a real login through Caddy in Docker, and **the deployment runbook rehearsed top to bottom** on two fresh Ubuntu hosts with systemd (`rehearse`: every command block of `deploy/RUNBOOK.md` as written, a browser enrolling, logging in and recovering through Caddy to the daemon, a crash-and-restore drill) — ~6 min |
+| [`ci.yml`](.github/workflows/ci.yml) | every push and PR | the whole test suite in debug/ASan/UBSan on Linux and macOS, a gcc build, fuzz smoke (60 s on each of twelve targets) and the repository secret scan, a real login through Caddy in Docker, and **the deployment runbook rehearsed top to bottom** on two fresh Ubuntu hosts with systemd (`rehearse`: every command block of `deploy/RUNBOOK.md` as written, a browser enrolling, logging in and recovering through Caddy to the daemon, a crash-and-restore drill) — ~6 min |
 | [`nightly.yml`](.github/workflows/nightly.yml) | 03:17 UTC, or on demand | all 116 committed campaigns against fresh ASan trees — 115 on Linux, and v35 on macOS because its mutations live in macOS-only code — behind a mutation-anchors gate, plus 600 s on each of twelve fuzz targets with crash artifacts kept — ~80 min |
 | [`bench.yml`](.github/workflows/bench.yml) | on demand only | Release build, proof that an optimized backend is linked, and the benchmarks — numbers, so never in a gate |
 
@@ -830,10 +838,11 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE)
 for the full text.
 
 The dependencies are fetched and built from source, not vendored here, and
-both are GPL-compatible: [liboqs](https://github.com/open-quantum-safe/liboqs)
-is MIT and [libsodium](https://github.com/jedisct1/libsodium) is ISC. A binary
-built from this repository combines all three, and the combined work is
-covered by the GPL.
+all are GPL-compatible: [liboqs](https://github.com/open-quantum-safe/liboqs)
+is MIT, [libsodium](https://github.com/jedisct1/libsodium) is ISC and
+[SQLite](https://sqlite.org/copyright.html) is in the public domain. A binary
+built from this repository combines them with this code, and the combined
+work is covered by the GPL.
 
 Where to read next: the [specification](docs/ml-dsa-auth-protocol-spec.md) for
 what the protocol is, the [decision log](docs/decisions.md) for why it is that
