@@ -1,6 +1,8 @@
 #ifndef MLDSA_AUTHD_SDNOTIFY_H
 #define MLDSA_AUTHD_SDNOTIFY_H
 
+#include <stdint.h>
+
 /*
  * systemd's readiness notification, without libsystemd (V4-104).
  *
@@ -35,5 +37,15 @@ int authd_sd_notify(const char *msg);
  */
 #define AUTHD_SD_WATCHDOG_MAX_MS 1000u
 unsigned authd_sd_watchdog_period_ms(void);
+
+/*
+ * How long the loop may sleep with nothing to do: `idle_ms`, or less when a
+ * ping falls due sooner. `since_ms` is the time since the last ping. F340:
+ * the loop slept its whole idle wait whenever a ping was not yet due, so a
+ * wake a millisecond early put the next ping a whole period late -- pings
+ * up to twice the period apart, where spec 16 says a quarter of the
+ * interval and never more than 1 s. With no watchdog (period 0), `idle_ms`.
+ */
+int authd_sd_watchdog_wait_ms(unsigned period_ms, uint64_t since_ms, int idle_ms);
 
 #endif /* MLDSA_AUTHD_SDNOTIFY_H */

@@ -2106,6 +2106,15 @@ static void test_sd_watchdog(void)
     CHECK(all_zero, "sd_watchdog: an empty, zero, signed, non-numeric, padded or overflowing WATCHDOG_USEC is no watchdog (0)");
     (void)setenv("WATCHDOG_USEC", "18446744073709551615", 1);
     CHECK(authd_sd_watchdog_period_ms() == 1000u, "sd_watchdog: the largest 64-bit WATCHDOG_USEC is still one ping a second");
+    /* F340: the loop's idle wait never runs past the next ping. */
+    CHECK(authd_sd_watchdog_wait_ms(1000u, 0u, 1000) == 1000 && authd_sd_watchdog_wait_ms(300u, 0u, 1000) == 300,
+          "sd_watchdog wait: just after a ping the loop may sleep one period, or its idle wait if that is shorter");
+    CHECK(authd_sd_watchdog_wait_ms(1000u, 999u, 1000) == 1 && authd_sd_watchdog_wait_ms(300u, 120u, 1000) == 180,
+          "sd_watchdog wait: woken early, the loop sleeps only what is left until the ping is due, not a whole wait more (F340)");
+    CHECK(authd_sd_watchdog_wait_ms(1000u, 1000u, 1000) == 0 && authd_sd_watchdog_wait_ms(300u, 5000u, 1000) == 0,
+          "sd_watchdog wait: a ping that is due or overdue is not slept on at all");
+    CHECK(authd_sd_watchdog_wait_ms(0u, 123456u, 1000) == 1000,
+          "sd_watchdog wait: with no watchdog the idle wait is the loop's own");
     (void)setenv("WATCHDOG_USEC", "2000000", 1);
     /* The pid as systemd would write it -- an environment value, not a name
      * (tests/scratch_dirs.sh forbids the latter, F114). */

@@ -91,3 +91,12 @@ unsigned authd_sd_watchdog_period_ms(void)
     }
     return (unsigned)ms;
 }
+
+int authd_sd_watchdog_wait_ms(unsigned period_ms, uint64_t since_ms, int idle_ms)
+{
+    if (period_ms == 0u || idle_ms <= 0) {
+        return idle_ms;
+    }
+    const uint64_t left = (since_ms < (uint64_t)period_ms) ? (uint64_t)period_ms - since_ms : 0u;
+    return (left < (uint64_t)idle_ms) ? (int)left : idle_ms;
+}

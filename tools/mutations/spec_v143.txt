@@ -1,0 +1,4 @@
+LT1|^test_authd_cli$|sd_watchdog wait: woken early, the loop sleeps only what is left until the ping is due, not a whole wait more (F340)
+LT2|^test_authd_evloop$|accept-run: an accept() that succeeded ends the run of failures, though its peer was refused (F341)
+LT3|^test_authd_evloop$|bad-header: an illegal header behind a served frame closes the connection at once, not at its deadline (F342)
+LT4|^test_authd_evloop$|bad-header: and it is counted and logged as closed-protocol, once (F342)

@@ -1757,6 +1757,83 @@ static void test_accept_failure(void)
     (void)close(lfd);
 }
 
+/* V4-241, F341: a run of accept() failures ends at the next accept() that
+ * succeeds -- whatever becomes of the peer. A peer the listener's uid rule
+ * turned away left the run "still going", and the next run of failures,
+ * hours later, was never logged: spec 16 says once for each run. */
+static void test_accept_run_ends_at_refused_peer(void)
+{
+    static authd_slot_t slots[2];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    memset(&h, 0, sizeof h);
+    char dir[] = "/tmp/authd-evl-XXXXXX", path[64];
+    CHECK(mkdtemp(dir) != NULL, "accept-run: a scratch directory for the socket");
+    (void)snprintf(path, sizeof path, "%s/ar.sock", dir);
+    CHECK(listener_open_unix(path, 8, LISTENER_MODE_PRIVATE, &lfd) == LISTENER_OK, "accept-run: a Unix listener");
+    CHECK(evloop_init(&ev, slots, 2, 5000u, 20000u, on_frame, on_close, &h) == 0, "accept-run: init");
+    /* Nobody this test can be: every peer is refused by the uid rule. */
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)(getuid() + 1u)) == 0, "accept-run: a listener that admits another uid only");
+    ev.accept_failing[0] = 1;            /* a run of failures has been logged */
+    int c = dial_unix_small(path, 4096);
+    CHECK(c >= 0, "accept-run: a peer connects");
+    (void)PUMP_UNTIL(&ev, 1000, ev.closed_peer >= 1u);
+    CHECK(ev.closed_peer == 1u && evloop_active(&ev) == 0u,
+          "accept-run: the peer is accepted and turned away by the uid rule (not vacuous)");
+    CHECK(ev.accept_failing[0] == 0,
+          "accept-run: an accept() that succeeded ends the run of failures, though its peer was refused (F341)");
+    if (c >= 0) { (void)close(c); }
+    evloop_close_all(&ev);
+    listener_close(&lfd, path);
+    (void)rmdir(dir);
+}
+
+/* V4-241, F342: a frame header that can never be a frame, already in the
+ * buffer behind a frame that was served. The header is read when the served
+ * frame is dropped, and the connection was poisoned there without a word:
+ * no closed-protocol, no count, and the slot kept until the peer sent one
+ * more byte or its deadline came. */
+static void test_bad_header_behind_a_frame(void)
+{
+    static authd_slot_t slots[1];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    h.echo = 1;
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK && port != 0, "bad-header: listener binds");
+    CHECK(evloop_init(&ev, slots, 1, 5000u, 20000u, on_frame, on_close, &h) == 0, "bad-header: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "bad-header: listener registered");
+    FILE *lf = tmpfile();
+    CHECK(lf != NULL, "bad-header: a log file");
+    if (lf == NULL) { return; }
+    authd_log_init(lf, AUTHD_LOG_WARN);
+    int c = dial(port);
+    CHECK(c >= 0, "bad-header: client connects");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+    /* One good frame, then a header declaring a length of 0, in one write. */
+    static const uint8_t two[] = { 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A', 0, 0, 0, 0 };
+    CHECK(write(c, two, sizeof two) == (ssize_t)sizeof two, "bad-header: a frame and an illegal header, back to back");
+    uint8_t back[9];
+    const size_t got = pump_read(&ev, 1000, c, back, sizeof back);
+    CHECK(h.frames == 1 && got == sizeof back && memcmp(back, two, sizeof back) == 0,
+          "bad-header: the good frame is served and its reply arrives whole");
+    /* The clock does not move and the peer sends nothing more. */
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 0u);
+    CHECK(evloop_active(&ev) == 0u,
+          "bad-header: an illegal header behind a served frame closes the connection at once, not at its deadline (F342)");
+    fflush(lf);
+    CHECK(ev.closed_protocol == 1u && count_in_file(lf, "warn event=closed-protocol") == 1,
+          "bad-header: and it is counted and logged as closed-protocol, once (F342)");
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    (void)fclose(lf);
+    (void)close(c);
+    evloop_close_all(&ev);
+    listener_close(&lfd, NULL);
+}
+
 /* V4-184, F261: a WebSocket Close ends the connection. The daemon echoed
  * the Close and then kept the slot, and the per-address connection count
  * with it, until the peer hung up or a deadline fired: RFC 6455 7.1.1 has
@@ -1861,6 +1938,8 @@ int main(void)
     test_conn_io();
     test_evloop();
     test_pipelined();
+    test_bad_header_behind_a_frame();
+    test_accept_run_ends_at_refused_peer();
     test_ws_close();
     test_accept_burst();
     test_listener_turns();

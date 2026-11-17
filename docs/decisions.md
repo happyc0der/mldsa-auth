@@ -18415,3 +18415,53 @@ No code.
 Counts: 620 mutations, 112 campaigns, 664 anchors; 339 findings (F273,
 F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests (unchanged by
 this step).
+
+## V4-241 — the loop's idle wait and the watchdog; a run of accept() failures; an illegal header behind a served frame (F340, F341, F342)
+
+The twenty-fourth review read the event loop and the life of a connection:
+`evloop.c`, `listener.c`, `authd_conn.c`, `conn_io.c`, `fdlimit.c`, and the
+loop in `authd_main.c`. It found nothing above Low. Three things, each
+reproduced before it was touched.
+
+- **F340.** Spec §16 says the daemon pings the watchdog at a quarter of the
+  interval and never more than 1 s apart. The loop slept its whole idle
+  wait whenever a ping was not yet due, so a wake just before one put the
+  next a whole wait later: up to two periods between pings on a busy
+  daemon. Nothing was killed for it (under `WatchdogSec=30s` the worst gap
+  was 2 s). The sentence in the spec was wrong of the code, and the code is
+  what changed: `authd_sd_watchdog_wait_ms()` is the idle wait, cut to what
+  is left until the next ping. No erratum; the spec already said it.
+- **F341.** A run of `accept()` failures was over only once a peer had been
+  admitted. One the uid rule refused came from an `accept()` that
+  succeeded, and left the run "going", so the next run was not logged. One
+  statement now ends the run for both.
+- **F342.** A header that can never be a frame, in the buffer behind a
+  frame that was served, failed the connection silently. It is now counted
+  and logged as `closed-protocol` and closed after the queued reply, as the
+  same bytes are when they arrive by themselves.
+
+Two older mutants were re-pointed, because the lines they changed are gone:
+v100 WD4 (the idle wait ignores the watchdog) now replaces the call, and
+v96 AF3 (the run is never ended) the new statement. Each still fails the
+check its spec line names; tried by hand. Campaign v143 has four mutants,
+each tried by hand against its one test first.
+
+Suspected by the review and refuted by its own experiment: a peer that
+half-closes and does not read, with a reply stalled, does not spin the
+loop on macOS. Not tried on Linux.
+
+Read and found sound: descriptor lifetimes (one close, in
+`evloop_close_slot`); the slot and address counts; deadline arithmetic
+(64-bit, monotonic; the handshake deadline is never re-armed); partial
+reads and writes; the drain; iteration while a handler closes other slots;
+the retry after `EMFILE`.
+
+Left as they are:
+- A signal that lands between the loop's check and `poll()` delays the
+  drain by one wait, at most 1 s. The `EINTR` branch after
+  `evloop_run_once()` cannot be taken (the loop retries inside).
+- The review did not read `ws.c`, `proxy_v2.c`, or the bodies of the
+  local API's handlers.
+
+Counts: 624 mutations, 113 campaigns, 668 anchors; 342 findings (F273,
+F288, F309 and F338 open); spec v1.70, 112 errata; 65 tests.

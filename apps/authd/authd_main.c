@@ -585,7 +585,6 @@ int main(int argc, char **argv)
      * nothing below does anything. */
     const unsigned wd_ms = authd_sd_watchdog_period_ms();
     uint64_t wd_last_ms = now_ms();
-    const int idle_wait_ms = (wd_ms != 0u && wd_ms < 1000u) ? (int)wd_ms : 1000;
 
     int draining = 0;
     /* F208: a loop that failed is a failure of the daemon. Exiting 0 after
@@ -619,6 +618,8 @@ int main(int argc, char **argv)
             wd_last_ms = app.now_ms;
         }
         authd_app_maybe_sweep(&app);
+        /* F340: never past the moment the next ping is due. */
+        const int idle_wait_ms = authd_sd_watchdog_wait_ms(wd_ms, app.now_ms - wd_last_ms, 1000);
         if (evloop_run_once(&ev, draining ? 50 : idle_wait_ms, app.now_ms) < 0) {
             if (errno == EINTR) {
                 continue;

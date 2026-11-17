@@ -296,6 +296,12 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
         if (st == LISTENER_AGAIN) {
             return;
         }
+        /* accept() itself succeeded, so a run of its failures is over and
+         * the next one is said again -- whatever becomes of this peer. F341:
+         * one the uid rule turns away, below, used to leave the run going. */
+        if (st == LISTENER_OK || st == LISTENER_ERR_PEER) {
+            ev->accept_failing[li] = 0;
+        }
         if (st == LISTENER_ERR_PEER) {
             ev->closed_peer++;
             authd_log_event(AUTHD_LOG_WARN, "listener-peer-rejected");
@@ -314,7 +320,6 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
             ev->accept_retry_ms[li] = now_ms + (uint64_t)EVLOOP_ACCEPT_RETRY_MS;
             return;
         }
-        ev->accept_failing[li] = 0;
         authd_slot_t *s = take_slot(ev, kind);
         if (s == NULL) {
             /* The PROTOCOL pool is full (a local peer was not accepted at
@@ -404,6 +409,17 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
         if (conn_io_pending(&s->io) > 0u) {
             break;
         }
+    }
+    /* F342: dropping a served frame reads the header behind it, and one that
+     * can never be a frame poisons the connection there. Said and counted
+     * here, as it is when the bytes arrive in a read of their own; a reply
+     * already queued is flushed first. It used to wait, silently, for one
+     * more byte from the peer or for the deadline. */
+    if (s->state == SLOT_ACTIVE && s->io.failed) {
+        ev->closed_protocol++;
+        authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", s->index,
+                              conn_io_status_name(CONN_IO_ERR_PROTOCOL));
+        s->state = SLOT_DRAINING;
     }
 }
 
