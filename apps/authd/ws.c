@@ -227,6 +227,8 @@ ws_status_t ws_refuse(ws_t *w, unsigned code)
      * before the read that got us here. */
     w->reply_len = (size_t)n;
     w->reply_sent = 0u;
+    w->close_queued = 0u;   /* a Close read behind the request went with the 101 */
+    w->close_at = 0u;
     w->stage = WS_STAGE_CLOSED;
     return WS_OK;
 }
@@ -280,6 +282,12 @@ static void queue_ctrl(ws_t *w, uint8_t opcode, const uint8_t *p, size_t n)
     const size_t keep = (opcode == WS_OP_CLOSE) ? 0u : WS_CLOSE_ECHO_MAX;
     if (hl + n + keep > sizeof w->reply - w->reply_len) {
         return;
+    }
+    if (opcode == WS_OP_CLOSE) {
+        /* Nothing is queued behind a Close (ws_consume takes no more once
+         * the stage is CLOSED), so this offset is never moved again. */
+        w->close_queued = 1u;
+        w->close_at = w->reply_len;
     }
     memcpy(w->reply + w->reply_len, hdr, hl);
     memcpy(w->reply + w->reply_len + hl, p, n);

@@ -1932,6 +1932,60 @@ static void test_ws_close(void)
     (void)close(lfd);
 }
 
+/* V4-245, F351: the same through the loop. A client that does not wait for
+ * the 101 -- the upgrade, a request and a Close in ONE write -- was answered
+ * with the reply first and the 101 behind it. */
+static void test_ws_pipelined_upgrade(void)
+{
+    static authd_slot_t slots[WSC_SLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    static const char UP[] =
+        "GET /authd/v1 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    static const uint8_t REQ[]  = { 0x82u, 0x89u, 0, 0, 0, 0, 0, 0, 0, 5, 'B', 'B', 'B', 'B', 'B',
+                                    0x88u, 0x82u, 0, 0, 0, 0, 0x03u, 0xe8u };
+    static const uint8_t WANT[] = { 0x82u, 0x09u, 0, 0, 0, 5, 'B', 'B', 'B', 'B', 'B',
+                                    0x88u, 0x02u, 0x03u, 0xe8u };
+    uint8_t msg[sizeof UP - 1u + sizeof REQ], wire[1024];
+    size_t wn = 0, hl = 0;
+    int eof = 0;
+
+    memset(&h, 0, sizeof h);
+    h.echo = 1;
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK && port != 0, "wspipe: listener binds");
+    CHECK(evloop_init(&ev, slots, WSC_SLOTS, 600000u, 600000u, on_frame, on_close, &h) == 0, "wspipe: init");
+    CHECK(evloop_add_ws_listener(&ev, lfd, NULL, 0, 0) == 0, "wspipe: WebSocket listener registered");
+    int c = dial(port);
+    CHECK(c >= 0, "wspipe: client connects");
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+    memcpy(msg, UP, sizeof UP - 1u);
+    memcpy(msg + sizeof UP - 1u, REQ, sizeof REQ);
+    CHECK(write(c, msg, sizeof msg) == (ssize_t)sizeof msg, "wspipe: client sends everything in one write");
+    for (int i = 0; i < 400 && !eof; i++) {
+        (void)evloop_run_once(&ev, 10, 1000);
+        struct pollfd pf = { c, POLLIN, 0 };
+        if (poll(&pf, 1, 0) == 1 && wn < sizeof wire) {
+            ssize_t r = read(c, wire + wn, sizeof wire - wn);
+            if (r == 0) { eof = 1; } else if (r > 0) { wn += (size_t)r; }
+        }
+    }
+    for (size_t i = 0; i + 4u <= wn && hl == 0u; i++) {
+        if (memcmp(wire + i, "\r\n\r\n", 4) == 0) { hl = i + 4u; }
+    }
+    CHECK(h.frames == 1 && eof && evloop_active(&ev) == 0u,
+          "wspipe: the request is served and the connection ends (not vacuous)");
+    CHECK(wn > 12u && memcmp(wire, "HTTP/1.1 101", 12) == 0,
+          "wspipe: an upgrade, a request and a Close in one write are answered with the 101 first (F351)");
+    CHECK(hl != 0u && wn - hl == sizeof WANT && memcmp(wire + hl, WANT, sizeof WANT) == 0,
+          "wspipe: and then the reply, and then the Close echo (F351)");
+    (void)close(c);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1956,6 +2010,7 @@ int main(void)
     test_bad_header_behind_a_frame();
     test_accept_run_ends_at_refused_peer();
     test_ws_close();
+    test_ws_pipelined_upgrade();
     test_accept_burst();
     test_listener_turns();
     test_hangup_long_request();

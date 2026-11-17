@@ -102,6 +102,11 @@ typedef struct {
     uint8_t  reply[WS_REPLY_MAX];
     size_t   reply_len;
     size_t   reply_sent;
+    /* Where in `reply` the Close echo begins, once one is queued (F351).
+     * What lies before it -- an unsent 101, a Pong -- was queued first and is
+     * written first; the echo alone waits for a data reply (conn_io.c). */
+    uint8_t  close_queued;
+    size_t   close_at;
 } ws_t;
 
 void ws_init(ws_t *w);

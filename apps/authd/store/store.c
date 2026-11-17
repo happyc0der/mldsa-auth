@@ -538,6 +538,24 @@ static store_status_t has_meta_table(sqlite3 *db, int *found)
     return (rc == SQLITE_DONE) ? STORE_OK : STORE_ERR_DB;
 }
 
+/* Which stored schema versions this build opens: 1 up to its own, as eight
+ * big-endian bytes. Anything else is STORE_ERR_SCHEMA. `ver` must be 8 bytes
+ * of storage, zero-filled beyond `len`, so a short value is never read
+ * together with stack bytes even if the length check went.
+ *
+ * Unsigned (V4-213, F291): built up in an int64_t, a value with its top bit
+ * set overflowed the shift, came out negative, and passed
+ * `v > STORE_SCHEMA_VERSION` as an older store. Version 0 is not a version
+ * either. */
+static store_status_t schema_version_known(const uint8_t ver[8], size_t len)
+{
+    if (len != 8u) { return STORE_ERR_SCHEMA; }
+    uint64_t v = 0;
+    for (size_t i = 0; i < 8u; i++) { v = (v << 8) | (uint64_t)ver[i]; }
+    if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; }
+    return STORE_OK;
+}
+
 static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BYTES], int existing,
                                 store_t **out)
 {
@@ -600,8 +618,9 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * anything is done to it. The journal mode and the whole schema used to
      * go into the file first, and the version was read afterwards: an older
      * daemon started on a newer store (a downgrade) added its tables to it
-     * and then refused it. The check further down stays the authority; this
-     * one only keeps the refusal from leaving a mark. */
+     * and then refused it. Asked again inside the transaction below, where
+     * the answer is the one the rest of the open relies on; both ask
+     * schema_version_known(), so the rule is written once. */
     if (!existing) {
         int has_meta = 0;
         if ((r = has_meta_table(s->db, &has_meta)) != STORE_OK) { goto fail; }
@@ -612,14 +631,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
             if ((r = meta_get(s->db, "schema_version", pv, sizeof pv, &pvlen, &pfound)) != STORE_OK) {
                 goto fail;
             }
-            if (pfound) {
-                uint64_t have = 0;
-                for (size_t i = 0; i < 8u; i++) { have = (have << 8) | (uint64_t)pv[i]; }
-                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) {
-                    r = STORE_ERR_SCHEMA;
-                    goto fail;
-                }
-            }
+            if (pfound && (r = schema_version_known(pv, pvlen)) != STORE_OK) { goto fail; }
         }
     }
     /* Spec §9: WAL, durable commits, foreign keys enforced. None of it for a
@@ -645,7 +657,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     }
 
     /* schema_version. Zeroed, so a value shorter than 8 bytes can never be
-     * read together with stack bytes, even if the length check below went. */
+     * read together with stack bytes, even if the length check went. */
     uint8_t vbuf[8] = { 0 };
     size_t vlen = 0;
     int found = 0;
@@ -653,14 +665,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         goto fail_tx;
     }
     if (found) {
-        if (vlen != 8u) { r = STORE_ERR_SCHEMA; goto fail_tx; }
-        /* Unsigned (V4-213, F291): built up in an int64_t, a value with its
-         * top bit set overflowed the shift, came out negative, and passed
-         * `v > STORE_SCHEMA_VERSION` as an older store. Version 0 is not a
-         * version either. */
-        uint64_t v = 0;
-        for (size_t i = 0; i < 8u; i++) { v = (v << 8) | (uint64_t)vbuf[i]; }
-        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }
+        if ((r = schema_version_known(vbuf, vlen)) != STORE_OK) { goto fail_tx; }
     } else if (existing) {
         r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
         goto fail_tx;

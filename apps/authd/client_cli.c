@@ -577,6 +577,33 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
                     "[--state S] [--proxy-v2] [--ws]");
     }
     a->port = (uint16_t)port;
+    /* F352: --state and --proxy-v2 are things a WebSocket connection carries,
+     * and --port without --ws is the raw listener. Both were dropped there
+     * without a word: `login --port N --state S` exited 0 with a code bound
+     * to the EMPTY state, and the site's exchange for S then failed with
+     * nothing pointing here. An option that cannot take effect is refused. */
+    if (a->unix_path == NULL && !a->ws && (a->state != NULL || a->proxy_v2)) {
+        fprintf(stderr, "%s %s: --state and --proxy-v2 need a WebSocket connection: "
+                        "with --port, add --ws\n", prog, sub);
+        return EX_USAGE;
+    }
+    /* The daemon's own rule for `state` (ws.c take_state, spec 7.1), asked
+     * here so the refusal names it: over 64 bytes or with a space the answer
+     * was only "WebSocket upgrade failed", and `a&b` was sent as it stood
+     * and bound as `a`. */
+    if (a->state != NULL) {
+        const size_t sl = strlen(a->state);
+        int ok = (sl >= 1u && sl <= WS_STATE_MAX);
+        for (size_t i = 0; ok && i < sl; i++) {
+            const unsigned char ch = (unsigned char)a->state[i];
+            if (ch < 0x21u || ch > 0x7eu || ch == '&') { ok = 0; }
+        }
+        if (!ok) {
+            fprintf(stderr, "%s %s: --state is 1 to %u printable ASCII characters, "
+                            "with no space and no '&'\n", prog, sub, (unsigned)WS_STATE_MAX);
+            return EX_USAGE;
+        }
+    }
     return EX_OK;
 }
 

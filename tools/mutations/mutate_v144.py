@@ -19,8 +19,10 @@ CLI = "apps/authd/authd_cli.c"
 API = "apps/authd/localapi.c"
 
 M = {
-    "WQ1": [(CIO, "    if (c->ws.stage == WS_STAGE_CLOSED && c->ws.reply_sent == 0u && c->out_len > c->out_sent) {\n",
-                  "    if (c->ws.stage == WS_STAGE_CLOSED && c->ws.reply_sent == 0u && c->out_len > c->out_sent && 0) { /* MUTATION WQ1 */\n")],
+    # (Re-anchored in V4-245: F351 rewrote the rule as ws_reply_turn(). The
+    # mutant is the same: the Close echo never waits for the reply.)
+    "WQ1": [(CIO, "    if (c->ws.close_queued && c->out_len > c->out_sent && c->ws.reply_sent <= c->ws.close_at) {\n",
+                  "    if (c->ws.close_queued && c->out_len > c->out_sent && c->ws.reply_sent <= c->ws.close_at && 0) { /* MUTATION WQ1 */\n")],
     "CB1": [(CLI, "    if (!cli_id_in_bounds(user)) {\n",
                   "    if (!cli_id_in_bounds(user) && 0) { /* MUTATION CB1 */\n")],
     "CB2": [(CLI, "    return n >= 1u && n <= AUTHD_CLI_ID_MAX;\n",

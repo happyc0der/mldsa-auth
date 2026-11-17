@@ -18600,3 +18600,61 @@ anchors of v77 and v130 together, and is left for a step of its own.
 
 Counts: 631 mutations, 115 campaigns, 677 anchors; 350 findings (F273,
 F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.
+
+## V4-245 — what a WebSocket connection writes, in order; client options that could not apply; one version rule (F351, F352)
+
+The twenty-seventh review read the client side: the WebSocket client in
+`ws.c`, the line reassembler and output queue of `conn_io.c`, recovery
+tickets end to end, and `client_core.c` / `client_cli.c`.
+
+- **F351.** A regression of mine from V4-242. F343's rule was "the reply
+  goes ahead of the Close echo while nothing of `ws.reply` has been sent",
+  and `ws.reply` also holds the `101` and Pongs. With the upgrade, a
+  request and a Close in one read the reply went out before the `101`.
+  Looking at the rule again showed a second way in that the review did not
+  name: a control reply is appended after the sent part of the buffer is
+  moved away, which sets "sent" back to zero, so a Pong partly written
+  looked like nothing written and the reply went into the middle of it.
+  The rule is now about the echo alone. `queue_ctrl` records where the
+  Close echo begins; everything queued before it is written first, the
+  echo waits for the reply, and an echo already begun is finished.
+- **F352.** `authd_client --state` and `--proxy-v2` did nothing over the
+  raw listener and said nothing. Refused as usage now, and `--state` is
+  held to the daemon's own rule so the refusal names it. `&` is refused
+  too: the daemon reads the query up to it. The browser client takes the
+  site's own state and is not affected.
+
+**One version rule.** V4-244 left the schema-version rule written twice in
+`open_impl`, and its first nightly showed the cost: two older mutants of
+the rule became equivalent. Both places now ask `schema_version_known()`.
+v77 SD2 and SD3 are back to one change each, v130 RD3 and RD4 and v145 SV1
+are re-anchored; anchors go from 677 to 675 before this step's campaign.
+No behaviour changes: the store test's 65-suite run was green on the
+refactor alone before anything else was touched.
+
+Checked by the review and not reproducible: the one-byte look for a
+pipelined second line (F333) against macOS's 8192-byte local-socket
+buffers, 200 of 200 refused at each of seven shapes.
+
+Read and found sound: the client's `101` check (one accept header, exact,
+read a byte at a time so it cannot over-read); its frame reader (masked
+server frames, RSV bits, non-minimal lengths, lengths over the buffer,
+fragmented control frames all refused; one absolute deadline over EINTR,
+EAGAIN and a Ping flood); the line reassembler (every line measured, one
+trailing CR, control bytes `malformed`, nothing served behind a refused
+line); recovery tickets (consume and enrol in one transaction with the
+user binding inside it, single use in both the SELECT and the UPDATE,
+unusable at the second they expire, spent by disable, re-issue and
+`revoke=all`); `client_core.c` (no index by a claimed length, every
+failure wipes, the acknowledgement compared in constant time).
+
+The review looked for `ws_client*.c` files and an `ENROLL-TICKET`
+command because I named them; neither exists. The client is the
+`ws_client_*` functions in `ws.c`, and the only tickets are recovery
+tickets.
+
+Campaign v146, ten mutants, each tried by hand first with the five
+re-anchored ones and v144 WQ1.
+
+Counts: 641 mutations, 116 campaigns, 685 anchors; 352 findings (F273,
+F288, F309 and F338 open); spec v1.71, 113 errata; 65 tests.

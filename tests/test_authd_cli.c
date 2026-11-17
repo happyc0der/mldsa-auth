@@ -65,14 +65,15 @@ static int run_cli(int (*fn)(int, char **), char **argv)
 
 /* Runs a CLI with one of its streams captured into `buf`. Used where the
  * MESSAGE is the thing under test, not just the exit code. */
-static int run_admin_capture_stream(char **argv, char *buf, size_t cap, FILE *stream, int fd)
+static int run_tool_capture_stream(int (*tool)(int, char **), char **argv, char *buf, size_t cap,
+                                   FILE *stream, int fd)
 {
     char tmp[256];
     (void)snprintf(tmp, sizeof tmp, "%s/captured.txt", g_dir);
     (void)fflush(stream);
     const int saved = dup(fd);
     FILE *f = freopen(tmp, "w", stream);
-    const int rc = (f != NULL) ? run_cli(authd_cli_admin, argv) : -1;
+    const int rc = (f != NULL) ? run_cli(tool, argv) : -1;
     (void)fflush(stream);
     if (saved >= 0) {
         (void)dup2(saved, fd);
@@ -88,6 +89,16 @@ static int run_admin_capture_stream(char **argv, char *buf, size_t cap, FILE *st
     }
     (void)unlink(tmp);
     return rc;
+}
+
+static int run_admin_capture_stream(char **argv, char *buf, size_t cap, FILE *stream, int fd)
+{
+    return run_tool_capture_stream(authd_cli_admin, argv, buf, cap, stream, fd);
+}
+
+static int run_client_capture(char **argv, char *buf, size_t cap)
+{
+    return run_tool_capture_stream(authd_cli_client, argv, buf, cap, stderr, 2);
 }
 
 static int run_admin_capture(char **argv, char *buf, size_t cap)
@@ -1429,6 +1440,51 @@ static void test_backup_path_bound(void)
           "backup: a destination with a byte outside printable ASCII is usage, and says so (F345)");
 }
 
+/* V4-245, F352: authd_client options that could not take effect were dropped
+ * in silence. --state and --proxy-v2 travel on a WebSocket connection; over
+ * the raw listener (--port without --ws) the login went through, exit 0,
+ * with a code bound to the empty state. Nothing here reaches a daemon or a
+ * key: the arguments are judged first. */
+static void test_client_ws_only_options(void)
+{
+    char err[1024], key[300], pass[300], pub[300], sock[300];
+    (void)snprintf(key, sizeof key, "%s/absent.ek", g_dir);
+    (void)snprintf(pass, sizeof pass, "%s/absent.pass", g_dir);
+    (void)snprintf(pub, sizeof pub, "%s/absent.pub", g_dir);
+    (void)snprintf(sock, sizeof sock, "%s/absent.sock", g_dir);
+#define CLIENT_LOGIN(...) run_client_capture((char *[]){ "authd_client", "login", "--handle", "d1aa", \
+        "--key", key, "--passphrase-file", pass, "--server-id", "authd", "--server-pub", pub, \
+        __VA_ARGS__, NULL }, err, sizeof err)
+    int rc = CLIENT_LOGIN("--port", "9", "--state", "s1");
+    CHECK(rc == 2 && strstr(err, "with --port, add --ws") != NULL,
+          "client: --state over the raw listener is usage, not a login bound to the empty state (F352)");
+    rc = CLIENT_LOGIN("--port", "9", "--proxy-v2");
+    CHECK(rc == 2 && strstr(err, "with --port, add --ws") != NULL,
+          "client: --proxy-v2 over the raw listener is usage, not ignored (F352)");
+    rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", "a&b");
+    const int amp = (rc == 2 && strstr(err, "--state is 1 to 64 printable ASCII characters") != NULL);
+    rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", "a b");
+    const int space = (rc == 2 && strstr(err, "--state is 1 to 64 printable ASCII characters") != NULL);
+    rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", "");
+    const int empty = (rc == 2 && strstr(err, "--state is 1 to 64 printable ASCII characters") != NULL);
+    char s65[66], s64[65];
+    memset(s65, 'z', 65u); s65[65] = '\0';
+    memset(s64, 'z', 64u); s64[64] = '\0';
+    rc = CLIENT_LOGIN("--unix", sock, "--state", s65);
+    CHECK(amp && space && empty && rc == 2 && strstr(err, "--state is 1 to 64 printable ASCII characters") != NULL,
+          "client: a --state the daemon would refuse or cut short is usage, with the rule named (F352)");
+    /* The controls: the same options where they do apply get past the
+     * arguments and fail later, at the passphrase file that is not there. */
+    rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", s64, "--proxy-v2");
+    const int tcp_ok = (rc == 1 && strstr(err, "--state") == NULL);
+    rc = CLIENT_LOGIN("--unix", sock, "--state", "s~1", "--proxy-v2");
+    const int unix_ok = (rc == 1 && strstr(err, "--state") == NULL);
+    rc = CLIENT_LOGIN("--port", "9");
+    CHECK(tcp_ok && unix_ok && rc == 1 && strstr(err, "--ws") == NULL,
+          "client: with --ws or --unix a 64-byte --state and --proxy-v2 pass the arguments, and a bare --port still does");
+#undef CLIENT_LOGIN
+}
+
 /* F297: a FIFO where a file is expected. open() without O_NONBLOCK waits for a
  * writer that never comes, so each reader runs in a child with a deadline:
  * the answer is its exit status, or 99 for "still blocked after 3 s". */
@@ -2227,6 +2283,7 @@ int main(void)
     test_localcli_robustness();
     test_key_plan();
     test_backup_path_bound();
+    test_client_ws_only_options();
     test_fifo_refused();
     test_reply_not_protocol();
     test_online_bounds();

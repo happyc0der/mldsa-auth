@@ -77,6 +77,8 @@ void conn_io_ws_silence(conn_io_t *c)
     sodium_memzero(c->ws.reply, sizeof c->ws.reply);
     c->ws.reply_len = 0u;
     c->ws.reply_sent = 0u;
+    c->ws.close_queued = 0u;
+    c->ws.close_at = 0u;
     c->ws.stage = WS_STAGE_CLOSED;
 }
 
@@ -449,23 +451,31 @@ conn_io_status_t conn_io_queue(conn_io_t *c, const uint8_t *payload, size_t len)
  * goes through conn_io_pending/_ptr/_sent and nothing else, so giving
  * `ws.reply` priority here IS the whole output integration: slot_writable does
  * not change, and the half-duplex rule now correctly counts a pending 101 or
- * Pong as "there is something to send". */
-static int ws_reply_pending(const conn_io_t *c)
+ * Pong as "there is something to send".
+ *
+ * Returns how many bytes of `ws.reply` are to be written now; 0 when it is
+ * `out`'s turn or there is nothing.
+ *
+ * F343: with one exception. Once the peer's Close has been read, `ws.reply`
+ * ends with its echo, and nothing may follow a Close (RFC 6455 5.5.1): a
+ * browser drops it. A request that arrived in the same read as the Close is
+ * served after the echo was queued, so its reply goes out FIRST.
+ *
+ * F351: first of the ECHO, not of the whole buffer. What was queued ahead of
+ * the echo -- a 101 not yet written when the upgrade, a request and a Close
+ * came in one read, or the unsent rest of a Pong -- is written before the
+ * reply; the rule used to be "nothing of ws.reply sent yet", and the reply
+ * went out ahead of the 101, or into the middle of a Pong. An echo already
+ * begun is finished: nothing is ever written inside a frame. */
+static size_t ws_reply_turn(const conn_io_t *c)
 {
     if (c->mode != CONN_IO_MODE_WS || c->ws.reply_len <= c->ws.reply_sent) {
-        return 0;
+        return 0u;
     }
-    /* F343: with one exception. Once the peer's Close has been read, what
-     * is in `ws.reply` ends with its echo, and nothing may follow a Close
-     * (RFC 6455 5.5.1): a browser drops it. A request that arrived in the
-     * same read as the Close is served after the echo was queued, so its
-     * reply goes out FIRST. Only while none of the control bytes have been
-     * sent, so the two are never interleaved; a reply already being written
-     * keeps this true until it is done. */
-    if (c->ws.stage == WS_STAGE_CLOSED && c->ws.reply_sent == 0u && c->out_len > c->out_sent) {
-        return 0;
+    if (c->ws.close_queued && c->out_len > c->out_sent && c->ws.reply_sent <= c->ws.close_at) {
+        return c->ws.close_at - c->ws.reply_sent;
     }
-    return 1;
+    return c->ws.reply_len - c->ws.reply_sent;
 }
 
 size_t conn_io_in_room(const conn_io_t *c)
@@ -478,8 +488,9 @@ size_t conn_io_pending(const conn_io_t *c)
     if (c == NULL) {
         return 0u;
     }
-    if (ws_reply_pending(c)) {
-        return c->ws.reply_len - c->ws.reply_sent;
+    const size_t turn = ws_reply_turn(c);
+    if (turn > 0u) {
+        return turn;
     }
     if (c->out_len <= c->out_sent) {
         return 0u;
@@ -492,7 +503,7 @@ const uint8_t *conn_io_pending_ptr(const conn_io_t *c)
     if (c == NULL) {
         return NULL;
     }
-    if (ws_reply_pending(c)) {
+    if (ws_reply_turn(c) > 0u) {
         return c->ws.reply + c->ws.reply_sent;
     }
     return c->out + c->out_sent;
@@ -503,13 +514,15 @@ void conn_io_sent(conn_io_t *c, size_t n)
     if (c == NULL) {
         return;
     }
-    if (ws_reply_pending(c)) {
-        const size_t left = c->ws.reply_len - c->ws.reply_sent;
-        c->ws.reply_sent += (n > left) ? left : n;
+    const size_t turn = ws_reply_turn(c);
+    if (turn > 0u) {
+        c->ws.reply_sent += (n > turn) ? turn : n;
         if (c->ws.reply_sent >= c->ws.reply_len) {
             sodium_memzero(c->ws.reply, c->ws.reply_len);
             c->ws.reply_len = 0u;
             c->ws.reply_sent = 0u;
+            c->ws.close_queued = 0u;
+            c->ws.close_at = 0u;
         }
         return;
     }

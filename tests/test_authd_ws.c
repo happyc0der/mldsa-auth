@@ -405,6 +405,178 @@ static size_t mk_proxy(uint8_t *out, uint8_t ver_cmd, uint8_t fam_proto,
     return 16u + body;
 }
 
+/* V4-245, F351: what a WebSocket connection writes, in order.
+ *
+ * Two buffers feed the socket: `ws.reply` (the 101, Pongs, the Close echo)
+ * and `out` (the reply to a request). F343 let `out` go ahead of the Close
+ * echo whenever nothing of `ws.reply` had been sent -- but a 101 not yet
+ * sent, or the unsent rest of a Pong, sits in that same buffer AHEAD of the
+ * echo. The reply then went out before the 101, or into the middle of a
+ * Pong. Only the Close echo waits for the reply; everything queued before it
+ * goes first. */
+static size_t order_drain(conn_io_t *io, size_t step, uint8_t *to, size_t cap)
+{
+    size_t n = 0;
+    for (int guard = 0; guard < 4096; guard++) {
+        size_t have = conn_io_pending(io);
+        if (have == 0u) { break; }
+        if (have > step) { have = step; }
+        if (n + have > cap) { break; }
+        memcpy(to + n, conn_io_pending_ptr(io), have);
+        conn_io_sent(io, have);
+        n += have;
+    }
+    return n;
+}
+
+/* Serves the one request the pushed bytes hold, as the event loop does. */
+static int order_serve(conn_io_t *io)
+{
+    const uint8_t *p = NULL;
+    size_t len = 0;
+    if (conn_io_next_frame(io, &p, &len) != 1 || len != 5u) { return 0; }
+    uint8_t copy[5];
+    memcpy(copy, p, sizeof copy);
+    conn_io_consume_frame(io);
+    return conn_io_queue(io, copy, sizeof copy) == CONN_IO_OK;
+}
+
+static void test_reply_order(void)
+{
+    static const char UP[] =
+        "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+    static const uint8_t PING[]  = { 0x89u, 0x81u, 0, 0, 0, 0, 'P' };
+    static const uint8_t DATA[]  = { 0x82u, 0x89u, 0, 0, 0, 0, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A' };
+    static const uint8_t CLOSE[] = { 0x88u, 0x82u, 0, 0, 0, 0, 0x03u, 0xe8u };
+    static const uint8_t PONG[]  = { 0x8au, 0x01u, 'P' };
+    static const uint8_t REPLY[] = { 0x82u, 0x09u, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A' };
+    static const uint8_t ECHO[]  = { 0x88u, 0x02u, 0x03u, 0xe8u };
+    static conn_io_t io;
+    uint8_t in[512], wire[1024], want[64];
+    size_t il, wl, hl;
+
+    /* The upgrade, a request and a Close in one read. */
+    for (size_t step = 1u; step <= 64u; step += 7u) {
+        conn_io_reset(&io);
+        conn_io_set_mode(&io, CONN_IO_MODE_WS);
+        il = 0;
+        memcpy(in + il, UP, sizeof UP - 1u); il += sizeof UP - 1u;
+        memcpy(in + il, DATA, sizeof DATA);  il += sizeof DATA;
+        memcpy(in + il, CLOSE, sizeof CLOSE); il += sizeof CLOSE;
+        const int fed = conn_io_push(&io, in, il) == CONN_IO_OK && order_serve(&io);
+        wl = order_drain(&io, step, wire, sizeof wire);
+        hl = 0;
+        for (size_t i = 0; i + 4u <= wl && hl == 0u; i++) {
+            if (memcmp(wire + i, "\r\n\r\n", 4) == 0) { hl = i + 4u; }
+        }
+        memcpy(want, REPLY, sizeof REPLY);
+        memcpy(want + sizeof REPLY, ECHO, sizeof ECHO);
+        CHECK(fed && wl > 12u && memcmp(wire, "HTTP/1.1 101", 12) == 0,
+              "order: an upgrade, a request and a Close in one read: the 101 is the first thing written (F351)");
+        CHECK(fed && hl != 0u && wl - hl == sizeof REPLY + sizeof ECHO &&
+                  memcmp(wire + hl, want, sizeof REPLY + sizeof ECHO) == 0,
+              "order: and behind the 101 come the reply and then the Close echo, nothing else (F351)");
+    }
+
+    /* The same with a Ping ahead of the request: the Pong was queued before
+     * the Close, so it is not held back with it. */
+    conn_io_reset(&io);
+    conn_io_set_mode(&io, CONN_IO_MODE_WS);
+    il = 0;
+    memcpy(in + il, UP, sizeof UP - 1u); il += sizeof UP - 1u;
+    memcpy(in + il, PING, sizeof PING);  il += sizeof PING;
+    memcpy(in + il, DATA, sizeof DATA);  il += sizeof DATA;
+    memcpy(in + il, CLOSE, sizeof CLOSE); il += sizeof CLOSE;
+    {
+        const int fed = conn_io_push(&io, in, il) == CONN_IO_OK && order_serve(&io);
+        wl = order_drain(&io, 5u, wire, sizeof wire);
+        hl = 0;
+        for (size_t i = 0; i + 4u <= wl && hl == 0u; i++) {
+            if (memcmp(wire + i, "\r\n\r\n", 4) == 0) { hl = i + 4u; }
+        }
+        memcpy(want, PONG, sizeof PONG);
+        memcpy(want + sizeof PONG, REPLY, sizeof REPLY);
+        memcpy(want + sizeof PONG + sizeof REPLY, ECHO, sizeof ECHO);
+        CHECK(fed && hl != 0u && memcmp(wire, "HTTP/1.1 101", 12) == 0 &&
+                  wl - hl == sizeof PONG + sizeof REPLY + sizeof ECHO &&
+                  memcmp(wire + hl, want, sizeof PONG + sizeof REPLY + sizeof ECHO) == 0,
+              "order: with a Ping ahead of the request the wire is 101, Pong, reply, Close echo (F351)");
+    }
+
+    /* A Pong partly written when a request and a Close arrive: the rest of
+     * the Pong first. The reply used to be written into the middle of it. */
+    conn_io_reset(&io);
+    conn_io_set_mode(&io, CONN_IO_MODE_WS);
+    {
+        int fed = conn_io_push(&io, (const uint8_t *)UP, sizeof UP - 1u) == CONN_IO_OK;
+        (void)order_drain(&io, 64u, wire, sizeof wire);
+        fed = fed && conn_io_push(&io, PING, sizeof PING) == CONN_IO_OK && conn_io_pending(&io) == sizeof PONG;
+        wl = 0;
+        if (fed) {
+            memcpy(wire, conn_io_pending_ptr(&io), 2u);
+            conn_io_sent(&io, 2u);
+            wl = 2u;
+        }
+        il = 0;
+        memcpy(in + il, DATA, sizeof DATA);  il += sizeof DATA;
+        memcpy(in + il, CLOSE, sizeof CLOSE); il += sizeof CLOSE;
+        fed = fed && conn_io_push(&io, in, il) == CONN_IO_OK && order_serve(&io);
+        wl += order_drain(&io, 1u, wire + wl, sizeof wire - wl);
+        memcpy(want, PONG, sizeof PONG);
+        memcpy(want + sizeof PONG, REPLY, sizeof REPLY);
+        memcpy(want + sizeof PONG + sizeof REPLY, ECHO, sizeof ECHO);
+        CHECK(fed && wl == sizeof PONG + sizeof REPLY + sizeof ECHO &&
+                  memcmp(wire, want, sizeof PONG + sizeof REPLY + sizeof ECHO) == 0,
+              "order: a Pong partly written is finished before the reply to a request that came with a Close (F351)");
+    }
+
+    /* A Close echo already being written is finished: nothing is ever put
+     * inside a frame. (The loop serves a request before it writes, so this
+     * order of calls is the harness's, not the daemon's.) */
+    conn_io_reset(&io);
+    conn_io_set_mode(&io, CONN_IO_MODE_WS);
+    {
+        int fed = conn_io_push(&io, (const uint8_t *)UP, sizeof UP - 1u) == CONN_IO_OK;
+        (void)order_drain(&io, 64u, wire, sizeof wire);
+        il = 0;
+        memcpy(in + il, DATA, sizeof DATA);  il += sizeof DATA;
+        memcpy(in + il, CLOSE, sizeof CLOSE); il += sizeof CLOSE;
+        fed = fed && conn_io_push(&io, in, il) == CONN_IO_OK && conn_io_pending(&io) == sizeof ECHO;
+        wl = 0;
+        if (fed) {
+            memcpy(wire, conn_io_pending_ptr(&io), 1u);
+            conn_io_sent(&io, 1u);
+            wl = 1u;
+        }
+        fed = fed && order_serve(&io);
+        wl += order_drain(&io, 3u, wire + wl, sizeof wire - wl);
+        memcpy(want, ECHO, sizeof ECHO);
+        memcpy(want + sizeof ECHO, REPLY, sizeof REPLY);
+        CHECK(fed && wl == sizeof ECHO + sizeof REPLY && memcmp(wire, want, sizeof ECHO + sizeof REPLY) == 0,
+              "order: a Close echo already begun is written whole before anything else");
+    }
+
+    /* A refusal replaces everything queued, the mark of a queued Close with
+     * it: the 429 is not a Close echo and waits for nothing. */
+    conn_io_reset(&io);
+    conn_io_set_mode(&io, CONN_IO_MODE_WS);
+    il = 0;
+    memcpy(in + il, UP, sizeof UP - 1u); il += sizeof UP - 1u;
+    memcpy(in + il, CLOSE, sizeof CLOSE); il += sizeof CLOSE;
+    {
+        const int fed = conn_io_push(&io, in, il) == CONN_IO_OK && io.ws.close_queued == 1u;
+        /* Read before the drain: a buffer written out whole clears the
+         * mark by itself. */
+        const int refused = conn_io_ws_refuse(&io, 429u) == CONN_IO_OK && io.ws.close_queued == 0u;
+        wl = order_drain(&io, 9u, wire, sizeof wire);
+        CHECK(fed && refused && wl > 12u && memcmp(wire, "HTTP/1.1 429", 12) == 0 &&
+                  memcmp(wire + wl - 4u, "\r\n\r\n", 4) == 0,
+              "order: a refusal after an upgrade and a Close in one read is the 429 alone, with no Close marked");
+    }
+}
+
 static const uint8_t V4BLOCK[12] = {
     203u, 0u, 113u, 7u,        /* source */
     10u, 0u, 0u, 1u,           /* destination */
@@ -1484,6 +1656,7 @@ int main(void)
     test_upgrade();
     test_frames();
     test_split_upgrade();
+    test_reply_order();
     test_proxy_parse();
     test_proxy_pipeline();
     test_login_over_ws();

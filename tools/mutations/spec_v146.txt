@@ -1,0 +1,10 @@
+PO1|^test_authd_ws$|order: an upgrade, a request and a Close in one read: the 101 is the first thing written (F351)
+PO2|^test_authd_ws$|order: an upgrade, a request and a Close in one read: the 101 is the first thing written (F351)
+PO3|^test_authd_ws$|order: a refusal after an upgrade and a Close in one read is the 429 alone, with no Close marked
+PO4|^test_authd_ws$|order: and behind the 101 come the reply and then the Close echo, nothing else (F351)
+PL1|^test_authd_evloop$|wspipe: an upgrade, a request and a Close in one write are answered with the 101 first (F351)
+CS1|^test_authd_cli$|client: --state over the raw listener is usage, not a login bound to the empty state (F352)
+CS2|^test_authd_cli$|client: --proxy-v2 over the raw listener is usage, not ignored (F352)
+CS3|^test_authd_cli$|client: a --state the daemon would refuse or cut short is usage, with the rule named (F352)
+CS4|^test_authd_cli$|client: a --state the daemon would refuse or cut short is usage, with the rule named (F352)
+CS5|^test_authd_cli$|client: a --state the daemon would refuse or cut short is usage, with the rule named (F352)

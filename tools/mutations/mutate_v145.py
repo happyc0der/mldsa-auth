@@ -13,8 +13,8 @@ import sys, pathlib
 ST = "apps/authd/store/store.c"
 
 M = {
-    "SV1": [(ST, "                if (pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) {\n",
-                 "                if ((pvlen != 8u || have == 0u || have > (uint64_t)STORE_SCHEMA_VERSION) && 0) { /* MUTATION SV1 */\n")],
+    "SV1": [(ST, "            if (pfound && (r = schema_version_known(pv, pvlen)) != STORE_OK) { goto fail; }\n",
+                 "            if (pfound && 0 && (r = schema_version_known(pv, pvlen)) != STORE_OK) { goto fail; } /* MUTATION SV1 */\n")],
 }
 
 

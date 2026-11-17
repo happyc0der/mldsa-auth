@@ -30,11 +30,11 @@ M = {
              "    if (!found && existing) {\n        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */\n        goto fail_tx;\n    }\n    if (!found) {\n        mldsa_keypair_t kp;\n",
              "    if (!found) {\n        mldsa_keypair_t kp;\n")],
     "RD3": [(ST,
-             "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-             "        if (v == 0u || (int64_t)v > (int64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION RD3 */\n")],
+             "    if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; }\n",
+             "    if (v == 0u || (int64_t)v > (int64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; } /* MUTATION RD3 */\n")],
     "RD4": [(ST,
-             "        if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; }\n",
-             "        if (v > (uint64_t)STORE_SCHEMA_VERSION) { r = STORE_ERR_SCHEMA; goto fail_tx; } /* MUTATION RD4 */\n")],
+             "    if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; }\n",
+             "    if (v > (uint64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; } /* MUTATION RD4 */\n")],
 }
 
 def main():
