@@ -1,0 +1,2 @@
+RC1|^test_authd_localapi$|recovery: a code cannot be used twice, within its own live generation (F422)
+ER1|^test_client_core$|fake: an ERROR reply is a refusal, with its code (0x05, not the 0x03 every unknown code becomes) (F428)

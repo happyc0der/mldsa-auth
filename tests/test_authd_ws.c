@@ -1086,7 +1086,18 @@ static void test_ratelimit(void)
 /* Dials the WebSocket listener, sends `pre` then an upgrade request, and
  * returns whatever the daemon answers. Deliberately lower-level than
  * h_ws_connect: the interesting cases are the ones that never reach a 101. */
+static int ws_raw_try_tail(h_daemon_t *d, const uint8_t *pre, size_t pre_len,
+                           const uint8_t *tail, size_t tail_len, char *out, size_t cap);
 static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *out, size_t cap)
+{
+    return ws_raw_try_tail(d, pre, pre_len, NULL, 0u, out, cap);
+}
+
+/* ...with `tail` in the same write after the upgrade request: what a real
+ * proxy delivers when the client's first frame follows its upgrade at once
+ * (V4-270, F424). */
+static int ws_raw_try_tail(h_daemon_t *d, const uint8_t *pre, size_t pre_len,
+                           const uint8_t *tail, size_t tail_len, char *out, size_t cap)
 {
     static const char req[] =
         "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
@@ -1101,11 +1112,12 @@ static int ws_raw_try(h_daemon_t *d, const uint8_t *pre, size_t pre_len, char *o
      * separately would let a refusal LOOK silent because the request had not
      * arrived yet -- the check would then pass on a daemon that answers
      * 101-then-EOF whenever the two land together. */
-    static uint8_t one[1024];
+    static uint8_t one[1024 + WS_SRV_HDR_MAX + 8u + AUTHD_FRAME_MAX];
     size_t on = 0;
     if (pre_len > 0u) { memcpy(one, pre, pre_len); on = pre_len; }
     memcpy(one + on, req, sizeof req - 1u);
     on += sizeof req - 1u;
+    if (tail_len > 0u && on + tail_len <= sizeof one) { memcpy(one + on, tail, tail_len); on += tail_len; }
     if (write(fd, one, on) != (ssize_t)on) { (void)close(fd); return -1; }
     size_t n = 0;
     for (int i = 0; i < 4000 && n + 1u < cap; i++) {
@@ -1175,14 +1187,59 @@ static void test_proxy_through_loop(void)
      * which is the cost 7.3 assigns to "the rate limiter's problem". */
     { ratelimit_init(&d.rl, 1u, 1u, 10000u, 8u, d.app.now_ms);
       char resp[512];
-      const int n1 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
-      CHECK(n1 > 0 && strncmp(resp, "HTTP/1.1 101", 12) == 0,
-            "proxy-loop: the first connection from an address is upgraded (the canary)");
-      const int n2 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
+      /* V4-270 (F424): each probe carries a real ClientHello, masked as a
+       * browser sends it, in the SAME write as its upgrade. Without one the
+       * ledger was empty whatever the limiter did: nothing had asked for a
+       * signature. The canary shows this frame does cost one when served. */
+      static uint8_t tail[WS_SRV_HDR_MAX + 8u + AUTHD_FRAME_MAX];
+      size_t tail_len = 0;
+      { handshake_ctx_t hs;
+        memset(&hs, 0, sizeof hs);
+        keystore_t pins;
+        keystore_init(&pins);
+        uint8_t ch[AUTHD_FRAME_MAX], inner[4u + AUTHD_FRAME_MAX], mask[4] = { 1, 2, 3, 4 };
+        size_t chn = 0;
+        if (keystore_add(&pins, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key) == KEYSTORE_OK &&
+            handshake_initiator_init(&hs, HANDLE1, sizeof HANDLE1, &kp, &pins, H_SERVER_ID, sizeof H_SERVER_ID) == HANDSHAKE_OK &&
+            handshake_initiator_create_client_hello(&hs, ch, sizeof ch, &chn) == HANDSHAKE_OK) {
+            h_put_be32(inner, (uint32_t)chn);
+            memcpy(inner + 4, ch, chn);
+            tail_len = ws_client_frame(tail, sizeof tail, inner, 4u + chn, mask);
+        }
+        handshake_ctx_wipe(&hs); }
+      CHECK(tail_len > 0u, "proxy-loop: a masked ClientHello frame is built for the probes");
+      { const int fd = h_dial_unix(d.ws_path);
+        static uint8_t one[1024 + sizeof tail];
+        static const char req[] =
+            "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n";
+        size_t on = 0;
+        memcpy(one, pre, pre_len); on = pre_len;
+        memcpy(one + on, req, sizeof req - 1u); on += sizeof req - 1u;
+        memcpy(one + on, tail, tail_len); on += tail_len;
+        const int wrote = fd >= 0 && write(fd, one, on) == (ssize_t)on;
+        CHECK(wrote && H_PUMP_UNTIL(&d, handshake_pending_active_count(&d.pending) == 1u),
+              "proxy-loop: the first connection from an address is upgraded and its ClientHello is answered: one signature (the canary)");
+        /* Read what the daemon sends (the 101 and the ServerHello) before
+         * closing: closing first left it writing to a socket with no reader,
+         * which is SIGPIPE in a process that has not ignored it. */
+        { static uint8_t sink[16384];
+          int idle = 0;
+          for (int i = 0; fd >= 0 && i < 4000 && idle < 50; i++) {
+              h_tick(&d);
+              const ssize_t k = recv(fd, sink, sizeof sink, MSG_DONTWAIT);
+              idle = (k > 0) ? 0 : idle + 1;
+              if (k == 0) { break; }
+          } }
+        if (fd >= 0) { (void)close(fd); }
+        (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u); }
+      const size_t spent = handshake_pending_active_count(&d.pending);
+      const int n2 = ws_raw_try_tail(&d, pre, pre_len, tail, tail_len, resp, sizeof resp);
       CHECK(n2 > 0 && strncmp(resp, "HTTP/1.1 429", 12) == 0,
             "proxy-loop: the next one is answered 429 at the upgrade, not at the handshake");
-      CHECK(handshake_pending_active_count(&d.pending) == 0u,
-            "proxy-loop: a refused connection cost no ServerHello signature (7.3)"); }
+      CHECK(handshake_pending_active_count(&d.pending) == spent,
+            "proxy-loop: a refused connection cost no ServerHello signature, though a ClientHello came with it (7.3, F424)"); }
 
     /* V4-13d, F81, through the loop. A burst of 2 at 1 a minute: without the
      * refund the third login from one address is refused. With it, five in a

@@ -503,7 +503,14 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         uint8_t buf[CLIENT_HELLO_MAX_ENCODED_LEN];
         size_t len = 0;
         encode_client_hello(&ch, buf, sizeof buf, &len);
-        buf[1] = 0; /* overwrite id_len field with 0 */
+        /* V4-270 (F425): the id's bytes are taken OUT and the length follows,
+         * so the message is well-formed in every other respect. Overwriting
+         * the field alone left them behind as trailing bytes, and the
+         * full-consumption rule refused the message whether or not id_len
+         * 0 was refused. */
+        memmove(buf + 2, buf + 2 + ch.id_len, len - 2u - ch.id_len);
+        len -= ch.id_len;
+        buf[1] = 0;
         CHECK(decode_client_hello(buf, len, &tmp_ch, &consumed) != 0,
               "malformed: decode_client_hello rejects id_len == 0");
     }
@@ -530,14 +537,16 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
             1 + 1 + sh.id_len + WIRE_X25519_PUB_LEN + WIRE_MLKEM_CT_LEN + WIRE_NONCE_LEN + WIRE_SESSION_ID_LEN;
         buf[unsigned_len] = 0;
         buf[unsigned_len + 1] = 0; /* sig_len = 0, big-endian */
-        CHECK(decode_server_hello(buf, len, &tmp_sh, &consumed) != 0,
+        /* ...and nothing after it (F425): with the old length the signature's
+         * bytes were trailing bytes, refused whatever the bound said. */
+        CHECK(decode_server_hello(buf, unsigned_len + 2u, &tmp_sh, &consumed) != 0,
               "malformed: decode_server_hello rejects sig_len == 0");
     }
 
     /* sig_len > MLDSA_SIGNATURE_MAX_BYTES */
     make_server_hello(&sh, 10, 1, 0x11);
     {
-        uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN + 8];
+        uint8_t buf[SERVER_HELLO_MAX_ENCODED_LEN + 8] = {0};
         size_t len = 0;
         encode_server_hello(&sh, buf, sizeof buf, &len);
         size_t unsigned_len =
@@ -545,8 +554,37 @@ static void test_malformed_lengths_and_trailing_bytes(void) {
         uint16_t too_big = (uint16_t)(MLDSA_SIGNATURE_MAX_BYTES + 1);
         buf[unsigned_len] = (uint8_t)(too_big >> 8);
         buf[unsigned_len + 1] = (uint8_t)(too_big & 0xFF);
-        CHECK(decode_server_hello(buf, len, &tmp_sh, &consumed) != 0,
+        /* ...with exactly that many bytes behind it (F425), so the bound is
+         * the only thing that can refuse it: with the old length the message
+         * was refused as truncated, and a decoder with no maximum -- which
+         * would copy 3310 bytes into a 3309-byte array -- passed. */
+        const size_t whole = unsigned_len + 2u + too_big;
+        CHECK(whole <= sizeof buf, "malformed: the over-long ServerHello fits the test's buffer");
+        CHECK(whole <= sizeof buf && decode_server_hello(buf, whole, &tmp_sh, &consumed) != 0,
               "malformed: decode_server_hello rejects sig_len > MLDSA_SIGNATURE_MAX_BYTES");
+        buf[unsigned_len] = (uint8_t)(MLDSA_SIGNATURE_MAX_BYTES >> 8);
+        buf[unsigned_len + 1] = (uint8_t)(MLDSA_SIGNATURE_MAX_BYTES & 0xFF);
+        CHECK(decode_server_hello(buf, whole - 1u, &tmp_sh, &consumed) == 0,
+              "malformed: and the same ServerHello with a signature of exactly the maximum decodes (the control)");
+    }
+
+    /* V4-270 (F425): the same bound in decode_client_auth had no case of
+     * its own. type | handshake_id | sig_len | sig, with exactly sig_len
+     * bytes of signature. */
+    {
+        uint8_t buf[CLIENT_AUTH_MAX_ENCODED_LEN + 8] = {0};
+        const size_t head = 1u + WIRE_HANDSHAKE_ID_LEN;
+        buf[0] = MSG_TYPE_CLIENT_AUTH;
+        const uint16_t over = (uint16_t)(MLDSA_SIGNATURE_MAX_BYTES + 1);
+        buf[head] = (uint8_t)(over >> 8);
+        buf[head + 1u] = (uint8_t)(over & 0xFF);
+        CHECK(head + 2u + over <= sizeof buf &&
+                  decode_client_auth(buf, head + 2u + over, &tmp_ca, &consumed) != 0,
+              "malformed: decode_client_auth rejects sig_len > MLDSA_SIGNATURE_MAX_BYTES, with that many bytes present");
+        buf[head] = (uint8_t)(MLDSA_SIGNATURE_MAX_BYTES >> 8);
+        buf[head + 1u] = (uint8_t)(MLDSA_SIGNATURE_MAX_BYTES & 0xFF);
+        CHECK(decode_client_auth(buf, head + 2u + MLDSA_SIGNATURE_MAX_BYTES, &tmp_ca, &consumed) == 0,
+              "malformed: and a ClientAuth with a signature of exactly the maximum decodes (the control)");
     }
 
     /* sig_len declares more than the actual remaining buffer */

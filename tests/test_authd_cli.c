@@ -1780,7 +1780,10 @@ static void test_rotate_on_disk(void)
                                                "--server-pub", spub, "--port", port, NULL });
         CHECK(named,
               "long path: the padded path is PATH_MAX - 1 bytes and names the key");
-        CHECK(have && rc != 0 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
+        /* rc == 1, the refusal (V4-270, F427): `rc != 0` was also met by
+         * -1, which the runner returns for a client that crashed or was
+         * killed after 60 seconds, and the key file is untouched then too. */
+        CHECK(have && rc == 1 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
               memcmp(before, after, n0) == 0,
               "long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)");
     }

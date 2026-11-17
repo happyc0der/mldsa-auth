@@ -55,7 +55,11 @@ static void check(int ok, const char *what)
 
 #define GOOD  "tidal-harbor-quilted-lantern"   /* passes the policy */
 #define GOOD2 "moss-cobalt-verandah-thimble"   /* passes too; a different one */
-#define SHORT "short"                          /* too short (5 of 12 characters) */
+/* Too short (5 of 12 characters), and in no message the prompt prints (V4-270,
+ * F423): it was "short", which "too short" contains, and the terminal turns an
+ * echoed newline into "\r\n", so the check for an echo looked for "short\n" --
+ * which nothing could ever print. */
+#define SHORT "q7zk9"
 
 /* ------------------------------------------------------ the master's side */
 
@@ -339,7 +343,7 @@ static void test_new(void)
     term_drain(&t);
     CHECK(strstr(t.out, "it does not certify strength") != NULL,
           "new: acceptance says the policy does not certify strength");
-    CHECK(strstr(t.out, GOOD) == NULL && strstr(t.out, SHORT "\n") == NULL,
+    CHECK(strstr(t.out, GOOD) == NULL && strstr(t.out, SHORT) == NULL,
           "new: neither the refused nor the accepted passphrase appears on the terminal");
 
     /* three mismatches: refused, nothing returned */
@@ -409,7 +413,8 @@ static void test_cli(void)
     (void)waitpid(pid, &ws, 0);
     term_drain(&t);
     CHECK(WIFEXITED(ws) && WEXITSTATUS(ws) == 0, "cli: keygen exits 0");
-    CHECK(strstr(t.out, GOOD) == NULL, "cli: the passphrase never appears on the terminal");
+    CHECK(strstr(t.out, GOOD) == NULL && strstr(t.out, SHORT) == NULL,
+          "cli: neither the refused nor the accepted passphrase appears on the terminal (F423)");
 
     /* the handle it printed, and the key sealed under what was typed */
     char handle[64] = {0};

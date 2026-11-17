@@ -1142,7 +1142,12 @@ static void test_poll_fairness(void)
     authd_slot_t *local = calloc(4u, sizeof *local);
     if (proto == NULL || local == NULL) {
         free(proto); free(local);
-        printf("SKIP: ev: F62 needs ~100 MB for a full protocol pool\n");
+        /* A FAIL, not a SKIP (V4-270, F429): a printed SKIP does not reach
+         * the exit status, so F62's check vanished and the test still
+         * passed. A machine that cannot give ~100 MB to the test of a
+         * daemon that needs that much at its maximum is a machine this
+         * test should say so on. */
+        CHECK(0, "ev: F62 needs ~100 MB for a full protocol pool, and the allocation failed");
         return;
     }
 

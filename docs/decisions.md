@@ -19503,3 +19503,48 @@ Spec v1.80, erratum 122.
 Counts: 687 mutations, 123 campaigns, 731 anchors; 421 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
 spec v1.80, 122 errata; 65 tests.
+
+## V4-270 — the C tests read as code: eight checks that could not fail, or checked something else (F422 to F429)
+
+The forty-third review read the C test programs and their headers as
+code, as reviews 35 and 36 read the shell and JavaScript tests. The
+plumbing is sound: every `CHECK` reaches the exit status, no setup path
+returns success, every log capture is flushed, restored and has a
+present canary, every fork helper reads `WIFEXITED`, every executable is
+registered. Eight checks were weaker than their messages. No product
+code changes; two of the eight hid product defects nothing else would
+catch, and campaign v154 now holds those two lines.
+
+- **F422, F428.** The two with a mutant each. RC1 lets a spent recovery
+  code be tried and spent again: it removes `used_at` from the query
+  that lists a user's codes and from the update that spends one, because
+  with only the first removed the second still refused the reuse. Four
+  older checks fail on RC1 too, so it shows the new check can fail, not
+  that nothing else would catch it. ER1 reports every refusal as 0x03,
+  and only the new check sees that.
+- **F424.** A first run of the new canary died of SIGPIPE: it closed its
+  socket while the in-process daemon was still writing the ServerHello,
+  and the test process, unlike `mldsa-authd`, does not ignore the
+  signal. The canary now reads until the daemon has finished.
+- **F425.** Each over-long case now has a control at exactly the
+  maximum, so a decoder that refused everything would fail the control.
+- **F424.** The canary keeps its connection open until the ledger shows
+  one entry: a probe that closes after the 101 cannot show that its
+  ClientHello was answered.
+- **Not changed, recorded:** `test_handshake`'s Pext-3 sweep checks pass
+  with the sweep removed (T19 kills an emptied sweep); `test_authd_log`'s
+  "full is still in force" canary never observes the IP mode; a comment
+  in `test_authd_keyfile.c` credits the associated data for failures
+  that format checks cause (the binding is proven by the relabel
+  checks). All three Info, from a sub-reviewer's reading.
+- **The review ran on a different model** for the first time in this
+  loop: the session moved from Fable 5.2 to Opus 5.5 at 16:03 ET, when
+  the first attempt at this review stopped at a usage limit before
+  reporting. Commits from here carry the Opus trailer.
+
+Campaign v154, two mutants, each tried with `tools/hand_control.py`;
+v132 KL1, which names the long-path check, tried again.
+
+Counts: 689 mutations, 124 campaigns, 734 anchors; 429 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420 and F421 open);
+spec v1.80, 122 errata; 65 tests.

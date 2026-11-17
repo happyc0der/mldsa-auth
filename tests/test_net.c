@@ -2075,9 +2075,19 @@ static void test_t17_pad_bucket(void) {
                  "T17: ...and the server's confirmation record is %zu bytes on the wire (bucket %u)",
                  cases[i].confirm_rec,
                  (unsigned)(cases[i].srv ? cases[i].srv : SESSION_PAD_BUCKET_DEFAULT));
-        CHECK(o.prx_ok && g_prx_rep.bytes_seen[S2C] >=
-                              SH + FRAME_HEADER_BYTES + cases[i].confirm_rec,
-              name);
+        /* EXACTLY (V4-270, F426): every S2C byte is accounted for -- the
+         * ServerHello, the confirmation record, the echo of the one 1-byte
+         * message and the server's GOODBYE, each record at the server's
+         * bucket. This was a lower bound, which a server padding everything
+         * to 4096 also met for buckets 1 and 256. */
+        const uint32_t srv_bucket = cases[i].srv ? cases[i].srv : SESSION_PAD_BUCKET_DEFAULT;
+        const size_t s2c_expect = SH + FRAME_HEADER_BYTES + cases[i].confirm_rec +
+                                  (FRAME_HEADER_BYTES + SESSION_RECORD_LEN(2, srv_bucket)) +  /* the echo: op + 1 byte */
+                                  (FRAME_HEADER_BYTES + SESSION_RECORD_LEN(1, srv_bucket));   /* GOODBYE: op only */
+        CHECK(o.prx_ok && g_prx_rep.bytes_seen[S2C] == s2c_expect, name);
+        if (!(o.prx_ok && g_prx_rep.bytes_seen[S2C] == s2c_expect)) {
+            printf("    (S2C carried %zu bytes, %zu expected)\n", (size_t)g_prx_rep.bytes_seen[S2C], s2c_expect);
+        }
     }
 
     /* The asymmetric case again, this time asserting the client's own

@@ -1138,6 +1138,17 @@ static void test_recovery(void)
     { const char *t = strstr(resp, "ticket=");
       if (t != NULL) { sscanf(t + 7, "%79[0-9a-f]", ticket_hex); } }
     CHECK(strlen(ticket_hex) == 64u, "recovery: the ticket is 32 bytes of hex");
+
+    /* single use -- asked HERE, while gen1's generation is still the live one
+     * (V4-270, F422). It was asked after the log block below, whose
+     * RECOVERY-ISSUE replaces the whole generation: gen1 was then refused as
+     * a code of a replaced generation, and would have been had spent codes
+     * never been marked. The response is copied first: the ticket's expiry
+     * is read from it below. */
+    { char again[8192], ans[4096];
+      snprintf(again, sizeof again, "RECOVERY-USE user=%s code=%s", uh, gen1);
+      CHECK(h_local_cmd(&d, fd, again, ans, sizeof ans) == 0 && starts(ans, "ERR code=invalid"),
+            "recovery: a code cannot be used twice, within its own live generation (F422)"); }
     long long expires = 0;
     { const char *e = strstr(resp, "expires=");
       if (e != NULL) { sscanf(e + 8, "%lld", &expires); } }
@@ -1205,11 +1216,6 @@ static void test_recovery(void)
            * the enrollment below presents the one this block's recovery minted. */
           if (strlen(t2) == 64u) { memcpy(ticket_hex, t2, 65u); }
           free(buf); fclose(lf); } }
-
-    /* single use */
-    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, gen1);
-    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
-          "recovery: a code cannot be used twice");
 
     /* --- enroll against the ticket --- */
     mldsa_keypair_t kp2;

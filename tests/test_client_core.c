@@ -352,6 +352,10 @@ static void test_fake(void)
     /* Spec 6.5: a code this build does not know is a refusal, 0x03 (F312). */
     static const uint8_t err_new[] = { AUTHMSG_OP_ERROR, AUTHMSG_VERSION, 0x06u };
     static const uint8_t err_zero[] = { AUTHMSG_OP_ERROR, AUTHMSG_VERSION, 0x00u };
+    /* V4-270 (F428): a known code that is not 0x03. With 0x03 -- which is also
+     * what every unknown code becomes (F312) -- a core that always reported
+     * 0x03 passed "with its code". */
+    static const uint8_t err_internal[] = { AUTHMSG_OP_ERROR, AUTHMSG_VERSION, AUTHMSG_ERR_INTERNAL };
     for (int c = ACK_OK; c <= ACK_ERROR_ZERO; c++) {
         fs_t fs;
         (void)fs_init(&fs, SID, sizeof SID, hid, hl, kp.public_key);
@@ -373,7 +377,7 @@ static void test_fake(void)
         case ACK_SHORT_HANDLE: sent = fs_send_rotate_ack(&fs, hid, hl - 1u, nkp.public_key, 7u, g_in, sizeof g_in, &m); break;
         case ACK_ERROR_NEW:    sent = fs_send(&fs, err_new, sizeof err_new, g_in, sizeof g_in, &m); break;
         case ACK_ERROR_ZERO:   sent = fs_send(&fs, err_zero, sizeof err_zero, g_in, sizeof g_in, &m); break;
-        default:               sent = fs_send(&fs, err, el, g_in, sizeof g_in, &m); break;
+        default:               sent = fs_send(&fs, err_internal, sizeof err_internal, g_in, sizeof g_in, &m); break;
         }
         uint8_t ec = 0;
         const cc_status_t st = (built && sent == 0) ? cc_rotate_on_reply(&g_cc, g_in, m, &ec) : CC_ERR_ARG;
@@ -393,8 +397,8 @@ static void test_fake(void)
             CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_REJECTED,
                   "fake: an ERROR with code zero is a refusal, 0x03 (spec 6.5)"); break;
         default:
-            CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_REJECTED,
-                  "fake: an ERROR reply is a refusal, with its code"); break;
+            CHECK(st == CC_ERR_REFUSED && ec == AUTHMSG_ERR_INTERNAL,
+                  "fake: an ERROR reply is a refusal, with its code (0x05, not the 0x03 every unknown code becomes) (F428)"); break;
         }
         if (c != ACK_OK) {
             CHECK(cc_state(&g_cc) == CC_STATE_LIVE &&
