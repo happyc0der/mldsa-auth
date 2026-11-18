@@ -20325,3 +20325,27 @@ No campaign: no product code changed.
 Counts: 712 mutations, 131 campaigns, 757 anchors; 499 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.
+
+## V4-295: cleanup after V4-292 to V4-294
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `00300e5` (V4-294), now
+  main: CI 44313117669 (16/16), nightly 44313121620 (146/146, 131
+  campaigns). That nightly is the one that landed V4-291 to V4-294
+  together: with the runners backlogged, the nightlies of V4-291 and
+  V4-293 were cancelled before they started a job, and the top commit's
+  covered the stack, as the landing rule allows.
+- Before it: `a43d2f0` (V4-290) had CI 44291969966 and nightly
+  44291974425 (146/146), landing V4-289 (CI 44291965634) with it;
+  `dcf5158` (V4-288) had CI 44288708487 and nightly 44288712636
+  (146/146). V4-291 had CI 44301748226, V4-292 CI 44310267735 and
+  V4-293 CI 44310272879, each 16/16.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's and V4-291's entries.
+
+Counts: unchanged by this step (712 mutations, 131 campaigns, 757
+anchors; 499 findings, the 18 above open; spec v1.89, 131 errata; 66
+tests).
