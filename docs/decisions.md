@@ -20060,3 +20060,26 @@ Spec v1.87, erratum 129.
 Counts: 708 mutations, 130 campaigns, 753 anchors; 477 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.87, 129 errata; 65 tests.
+
+## V4-286: cleanup after V4-283 to V4-285
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `39613e3` (V4-284), now
+  main: CI 44266866642 (16/16), nightly 44266871008 (144/144, 129
+  campaigns).
+- Before it: `89bc7e8` (V4-282) had CI 44259319921 (16/16) and nightly
+  44259323430 (143/143); `6db1f80` (V4-283) had CI 44266859502 (16/16).
+  V4-285 (`29aae13`, stacked under this) had CI 44274074594 (16/16); its
+  nightly was still running when this was written, and the next cleanup
+  cites it.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's (a per-user device limit) and V4-285's entries
+  (`ENROLL-OPERATOR via=recovery`, and no `authd_admin` command for an
+  operator's recovery codes).
+
+Counts: unchanged by this step (V4-285's: 708 mutations, 130 campaigns,
+753 anchors; 477 findings, the 18 above open; spec v1.87, 129 errata;
+65 tests).
