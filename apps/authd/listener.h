@@ -73,7 +73,9 @@ typedef struct {
  * `n_allow == 0` disables the check (the protocol listeners, which are
  * reached through the proxy and authenticated by the handshake, not by uid).
  * Otherwise the peer's uid must appear in `allow[0..n_allow)`, or the
- * connection is closed and LISTENER_ERR_PEER returned.
+ * connection is closed and LISTENER_ERR_PEER returned -- with `*peer_out`
+ * the peer that was refused, for the log line (F450), or uid -1 when its
+ * credentials could not be read.
  *
  * An allowlist rather than one uid because the site and the daemon are not
  * always the same user in a real deployment, and "root only" for the admin

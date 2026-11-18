@@ -180,4 +180,12 @@ authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *
  * a file the caller cannot read. Not called by the start. */
 authd_config_status_t authd_config_check_store(const authd_config_t *cfg, char *detail, size_t detail_cap);
 
+/* F420: a uid in BOTH site_uids and proxy_uids. A process allowed on the
+ * proxy-facing socket states the client's address, so a site that runs as the
+ * proxy's user can state any address it likes and empty any address's rate
+ * bucket. Not refused: a single-user development setup is exactly this shape,
+ * and every test in the tree runs as one user. --check-config warns instead.
+ * Returns 1 and stores the first such uid in *uid_out (when non-NULL), or 0. */
+int authd_config_shared_uid(const authd_config_t *cfg, uid_t *uid_out);
+
 #endif /* MLDSA_AUTHD_CONFIG_H */

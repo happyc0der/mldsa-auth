@@ -234,6 +234,19 @@ int main(int argc, char **argv)
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(probe_key));
             return 3;
         }
+        /* F420: valid, but worth saying. Not a refusal -- a single-user
+         * development setup is this shape -- and on stderr, so the unit's
+         * ExecStartPre puts it in the journal. */
+        {
+            uid_t shared = 0;
+            if (authd_config_shared_uid(&cfg, &shared)) {
+                fprintf(stderr,
+                        "mldsa-authd: warning: uid %lu is in both site_uids and proxy_uids: "
+                        "the site can state any client address to the rate limiter. "
+                        "Give the site and the proxy a user each (F420).\n",
+                        (unsigned long)shared);
+            }
+        }
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
                "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
                "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "
@@ -570,9 +583,10 @@ int main(int argc, char **argv)
         if (ms == MEMLOCK_LOW) {
             fprintf(stderr,
                     "mldsa-authd: RLIMIT_MEMLOCK is %llu bytes but %u slots need %llu "
-                    "(4 KiB x %u blocks x max_slots): secrets may be swapped to disk. "
-                    "Set LimitMEMLOCK in the service unit (spec 16).\n",
+                    "(%llu-byte page x %u blocks x max_slots): secrets may be swapped "
+                    "to disk. Set LimitMEMLOCK in the service unit (spec 16).\n",
                     (unsigned long long)lim, cfg.max_slots, (unsigned long long)need,
+                    (unsigned long long)memlock_page_bytes(),
                     (unsigned)MEMLOCK_BLOCKS_PER_SLOT);
         }
     }

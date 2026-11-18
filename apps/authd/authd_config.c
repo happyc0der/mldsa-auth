@@ -688,6 +688,21 @@ static int same_socket(const char *a, const char *b)
     return stat(da, &ta) == 0 && stat(db, &tb) == 0 && ta.st_dev == tb.st_dev && ta.st_ino == tb.st_ino;
 }
 
+int authd_config_shared_uid(const authd_config_t *cfg, uid_t *uid_out)
+{
+    for (size_t i = 0; i < cfg->n_site_uids; i++) {
+        for (size_t j = 0; j < cfg->n_proxy_uids; j++) {
+            if (cfg->site_uids[i] == cfg->proxy_uids[j]) {
+                if (uid_out != NULL) {
+                    *uid_out = cfg->site_uids[i];
+                }
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *detail, size_t detail_cap)
 {
     if (cfg == NULL) {

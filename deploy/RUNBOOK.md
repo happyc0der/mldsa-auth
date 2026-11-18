@@ -248,7 +248,10 @@ is only a warning — so the absence of output is the signal, not the status.
 `security` should report an exposure level around **1.7**.
 
 **If you raised `max_slots`,** raise `LimitMEMLOCK` with it: the requirement is
-`4 KiB × 10 × max_slots`.
+`page × 10 × max_slots`, where the page is what `getconf PAGESIZE` prints. The
+table is for x86_64's 4 KiB pages. **On arm64, check the page first:** a 16 KiB
+page needs four times these figures and a 64 KiB page sixteen times, so the
+default 256 slots need `LimitMEMLOCK=64M` or `256M` there.
 
 | `max_slots` | required | set `LimitMEMLOCK` to at least |
 |---|---|---|
@@ -1206,8 +1209,9 @@ Common ones, and what they actually are:
   must admit its group (steps 4 and 7).
 - **Everything starts, no client can connect** — check `proxy_protocol` in
   the `--check-config` line at the top of the journal and the proxy's uid in
-  `proxy_uids`. In the journal: `warn event=listener-peer-rejected` for a
-  peer whose uid is not in its socket's list; `warn event=closed-protocol
+  `proxy_uids`. In the journal: `warn event=listener-peer-rejected uid=N
+  detail=proxy` (or `site`, `admin`; since V4-306) for a peer whose uid is not
+  in that socket's list — compare N with the list `detail` names; `warn event=closed-protocol
   detail=protocol` for a proxy that sends no PROXY v2 preamble;
   `refused-no-client-address` for one whose preamble names no client.
 - **`decryption-failed`** opening the server key or a device key — the
@@ -1218,6 +1222,12 @@ Common ones, and what they actually are:
 - **`audit-verify` … `FAILED at entry 1`, on every backup** — `--key` is not
   the server key the stores were written with, more likely than every backup
   being altered (F446).
+- **`Unexpected NULL returned from … API. Exiting.`**, and the daemon gone
+  with exit 1 (F435) — an allocation inside liboqs's SHA-3 failed and the
+  library exits the process; this daemon cannot catch it. It needs a host that
+  refuses memory (`vm.overcommit_memory = 2`, or a `LimitAS=` added to the
+  unit): give the daemon more memory or lower `max_slots`. systemd starts it
+  again; connections in flight at that moment are lost.
 - **Journal lines worth an alert** (F449): `error event=local-internal` (a
   local request the daemon failed to serve: a full disk, a locked store; a
   refused BACKUP also writes one), `error event=store-read-failed` (enrolled

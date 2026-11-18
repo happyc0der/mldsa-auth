@@ -83,9 +83,11 @@ M = {
  # 10x. The most dangerous of the five: everything still reads correctly and
  # the reported number is plausible, so only an expectation written as a
  # LITERAL sees it.
- "Z3": (ML, [("""    return (uint64_t)MEMLOCK_PAGE_BYTES * (uint64_t)MEMLOCK_BLOCKS_PER_SLOT *
+ # Re-anchored in V4-306: the formula is memlock_required_bytes_for, given
+ # the page (F403).
+ "Z3": (ML, [("""    return page_bytes * (uint64_t)MEMLOCK_BLOCKS_PER_SLOT *
            (uint64_t)max_slots;""",
-              """    return (uint64_t)MEMLOCK_PAGE_BYTES *
+              """    return page_bytes *
            (uint64_t)max_slots; /* MUTATION Z3: the ten blocks are dropped */""")]),
 
  # Z4 -- the WRONG status is the loud one: UNKNOWN warns and LOW does not. The
@@ -108,8 +110,12 @@ M = {
  # a subtler scale: a 2x error is far easier to believe than a 10x one, and
  # the boundary cases (25 slots fit in 1 MiB, 26 do not) are what catch it
  # where the coarse cases would not.
- "Z5": (ML, [("#include \"memlock.h\"",
-              "#include \"memlock.h\"\n#undef MEMLOCK_PAGE_BYTES\n#define MEMLOCK_PAGE_BYTES 2048u /* MUTATION Z5 */")]),
+ #
+ # Re-anchored in V4-306 (F403): MEMLOCK_PAGE_BYTES is now only the fallback
+ # when sysconf fails, so redefining it is equivalent. The halving moved to
+ # where the page is used: the host's page, halved, on the way to the formula.
+ "Z5": (ML, [("    return memlock_required_bytes_for(memlock_page_bytes(), max_slots);",
+              "    return memlock_required_bytes_for(memlock_page_bytes() / 2u, max_slots); /* MUTATION Z5 */")]),
 }
 
 if MID not in M:

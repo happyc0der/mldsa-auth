@@ -183,6 +183,24 @@ if [ -f "$EX" ]; then
         -e "s|^listen_port = .*|listen_port = 0|" "$EX" > "$TMP/ex.conf"
     "$DAEMON" --config "$TMP/ex.conf" --check-config > "$TMP/ex.out" 2>&1 \
         || { cat "$TMP/ex.out"; fail "deploy/authd.conf.example does not pass --check-config"; }
+    # F420 (V4-306): with every uid list rewritten to this user, the site and
+    # the proxy share a uid; --check-config still passes, and says so on
+    # stderr, naming the uid. The example AS SHIPPED gives them a user each,
+    # and is valid with no warning (the canary).
+    grep -q "^mldsa-authd: warning: uid $(id -u) is in both site_uids and proxy_uids: " "$TMP/ex.out" \
+        || { cat "$TMP/ex.out"; fail "--check-config did not warn that site_uids and proxy_uids share uid $(id -u) (F420)"; }
+    sed -e "s|/var/lib/mldsa-authd|$TMP/ex|g" \
+        -e "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/ex/pass|" \
+        -e "s|/run/mldsa-authd|$TMP|g" \
+        -e "s|^listen_port = .*|listen_port = 0|" "$EX" > "$TMP/ex-shipped.conf"
+    "$DAEMON" --config "$TMP/ex-shipped.conf" --check-config > "$TMP/ex-shipped.out" 2>&1 \
+        || { cat "$TMP/ex-shipped.out"; fail "deploy/authd.conf.example, uids as shipped, does not pass --check-config"; }
+    grep -q 'is valid' "$TMP/ex-shipped.out" \
+        || { cat "$TMP/ex-shipped.out"; fail "the shipped example's --check-config did not say it is valid"; }
+    if grep -q 'warning: uid' "$TMP/ex-shipped.out"; then
+        cat "$TMP/ex-shipped.out"; fail "the shipped example gives the site and the proxy one uid (F420)"
+    fi
+    echo "PASS: E2E: --check-config warns, naming it, of a uid in both site_uids and proxy_uids, and the shipped example gives them a user each (F420)"
     # Gone at once: a second copy of the passphrase file is what the scan at
     # the end of this script is there to find.
     rm -f "$TMP/ex/server.ek" "$TMP/ex/pass"
@@ -594,8 +612,13 @@ echo "PASS: E2E: a start that fails after creating its store takes the store wit
 # stderr; the unit tests pin the level function, and until now nothing pinned
 # that the daemon's start uses it (the rehearsal's pattern was blind from
 # V4-99 to V4-111, F201). Staged with a 1 MiB soft limit, which the default
-# 256 slots (10485760 B) do not fit. A platform that will not lower the limit
-# is a SKIP, said aloud.
+# 256 slots do not fit on any page size. The need is THIS host's page x 2560
+# (F403, V4-306): 10485760 on 4 KiB pages, 41943040 on this Mac's 16 KiB --
+# read here with getconf, not from the daemon. A platform that will not lower
+# the limit is a SKIP, said aloud.
+ML_PAGE=$(getconf PAGESIZE)
+case "$ML_PAGE" in ''|*[!0-9]*) fail "getconf PAGESIZE gave no page size: '$ML_PAGE'" ;; esac
+ML_NEED=$((ML_PAGE * 2560))
 if (ulimit -S -l 1024) 2>/dev/null; then
     (ulimit -S -l 1024; exec "$DAEMON" --config "$TMP/su.conf") > "$TMP/su-ml.log" 2>&1 &
     SUPID=$!
@@ -607,11 +630,11 @@ if (ulimit -S -l 1024) 2>/dev/null; then
         sleep 0.05
     done
     kill -TERM "$SUPID"; wait "$SUPID" 2>/dev/null || true
-    grep -q '^warn event=memlock-limit need=10485760$' "$TMP/su-ml.log" \
-        || fail "a daemon whose memlock limit is short did not log 'warn event=memlock-limit need=10485760': $(cat "$TMP/su-ml.log")"
-    grep -q 'RLIMIT_MEMLOCK is 1048576 bytes but 256 slots need 10485760' "$TMP/su-ml.log" \
-        || fail "a daemon whose memlock limit is short did not say so on stderr, with both numbers: $(cat "$TMP/su-ml.log")"
-    echo "PASS: E2E: under a 1 MiB memlock limit the daemon starts, logs 'warn event=memlock-limit need=10485760' and names both numbers on stderr"
+    grep -q "^warn event=memlock-limit need=$ML_NEED\$" "$TMP/su-ml.log" \
+        || fail "a daemon whose memlock limit is short did not log 'warn event=memlock-limit need=$ML_NEED' ($ML_PAGE-byte pages): $(cat "$TMP/su-ml.log")"
+    grep -q "RLIMIT_MEMLOCK is 1048576 bytes but 256 slots need $ML_NEED ($ML_PAGE-byte page x 10 blocks" "$TMP/su-ml.log" \
+        || fail "a daemon whose memlock limit is short did not say so on stderr, with both numbers and the page: $(cat "$TMP/su-ml.log")"
+    echo "PASS: E2E: under a 1 MiB memlock limit the daemon starts, logs 'warn event=memlock-limit need=$ML_NEED' and names both numbers and the $ML_PAGE-byte page on stderr (F403)"
 else
     echo "SKIP: E2E: this platform will not lower RLIMIT_MEMLOCK; the memlock-limit WARN line is not staged"
 fi
@@ -2104,9 +2127,18 @@ n0=$(grep -c 'event=listener-peer-rejected' "$TMP/foreign.log" || true)
 "$ADMIN" list-users --socket "$TMP/a.sock" > "$TMP/foreign-admin.txt" 2>&1 \
     && fail "admin.sock SERVED a uid outside admin_uids (Req 11)"
 refused_after "$n0" || fail "admin.sock did not refuse a uid outside admin_uids at accept (Req 11)"
+# F450 (V4-306): each refusal names the uid it refused and the listener, so the
+# journal says which list was wrong. Checked HERE, before site.sock is tried:
+# counted at the end, labels swapped between the two would still give one line
+# of each (v165 PR2 survived exactly that).
+[ "$(grep -c "^warn event=listener-peer-rejected uid=$(id -u) detail=admin\$" "$TMP/foreign.log")" -eq 1 ] \
+    || { cat "$TMP/foreign.log"; fail "admin.sock's refusal did not log 'uid=$(id -u) detail=admin' once (F450)"; }
 n1=$(grep -c 'event=listener-peer-rejected' "$TMP/foreign.log" || true)
 "$ADMIN" list-users --socket "$TMP/s.sock" > "$TMP/foreign-site.txt" 2>&1 || true
 refused_after "$n1" || fail "site.sock did not refuse a uid outside site_uids at accept (Req 11)"
+# F450 (V4-306): and site.sock's names the site, after admin.sock's above.
+[ "$(grep -c "^warn event=listener-peer-rejected uid=$(id -u) detail=site\$" "$TMP/foreign.log")" -eq 1 ] \
+    || { cat "$TMP/foreign.log"; fail "site.sock's refusal did not log 'uid=$(id -u) detail=site' once (F450)"; }
 kill -0 "$DPID" 2>/dev/null || fail "the foreign-uid daemon died refusing a peer"
 "$CLIENT" login --handle "$CAROL" --key "$TMP/carol/$CAROL.ek" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
@@ -2199,6 +2231,12 @@ if [ "$RU_OK" -eq 1 ]; then
         && fail "the proxy socket SERVED nobody, a real user outside proxy_uids (Req 11)"
     grep -q "cannot-connect" "$TMP/ru-proxy.txt" && fail "nobody's connect() to the proxy socket failed: file permission, not the peer check"
     rej_after "$n" || fail "the proxy socket did not refuse nobody at accept (Req 11)"
+    # F450 (V4-306): the two refusals name nobody's uid and their listeners --
+    # the proxy's among them, which the foreign-uid daemon above cannot stage.
+    [ "$(grep -c "^warn event=listener-peer-rejected uid=$NB_UID detail=admin\$" "$TMP/realuser.log")" -eq 1 ] \
+        || { cat "$TMP/realuser.log"; fail "admin.sock's refusal of nobody did not log 'uid=$NB_UID detail=admin' once (F450)"; }
+    [ "$(grep -c "^warn event=listener-peer-rejected uid=$NB_UID detail=proxy\$" "$TMP/realuser.log")" -eq 1 ] \
+        || { cat "$TMP/realuser.log"; fail "the proxy socket's refusal of nobody did not log 'uid=$NB_UID detail=proxy' once (F450)"; }
     # The control: without the daemon's group, nobody is stopped by site.sock's
     # 0660 at connect() and the daemon never sees it -- so the two refusals
     # above were the peer check, not a file permission counted by mistake.

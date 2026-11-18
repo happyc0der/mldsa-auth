@@ -144,6 +144,13 @@ struct authd_addr;
 void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
                          const struct authd_addr *addr, const char *detail);
 
+/* A peer a listener turned away at accept (F450): `uid=` the kernel reported,
+ * or `uid=unavailable` when it reported none, and `detail=` the LISTENER --
+ * a literal, "admin", "site" or "proxy" -- so the journal tells a wrong
+ * proxy_uids from a wrong site_uids or admin_uids. */
+void authd_log_peer(authd_log_level_t lvl, const char *event, int uid_known,
+                    unsigned long uid, const char *detail);
+
 /* An event with one unsigned number (a count, a port, a millisecond figure). */
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value);
 

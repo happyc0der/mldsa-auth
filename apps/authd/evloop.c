@@ -304,7 +304,12 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
         }
         if (st == LISTENER_ERR_PEER) {
             ev->closed_peer++;
-            authd_log_event(AUTHD_LOG_WARN, "listener-peer-rejected");
+            /* F450: which uid, and on which listener -- a bare event told
+             * an operator nothing about which allowlist was wrong. */
+            const char *which = (ev->listen_kind[li] != SLOT_KIND_LOCAL) ? "proxy"
+                                : ev->listen_is_admin[li] ? "admin" : "site";
+            authd_log_peer(AUTHD_LOG_WARN, "listener-peer-rejected",
+                           peer.uid != (uid_t)-1, (unsigned long)peer.uid, which);
             continue;
         }
         if (st != LISTENER_OK) {

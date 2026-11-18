@@ -279,6 +279,9 @@ listener_status_t listener_accept_ex(int listen_fd, const uid_t *allow, size_t n
             if (allow[i] == p.uid) { ok = 1; break; }
         }
         if (!ok) {
+            /* F450: who was turned away, for the log line. Not before: a
+             * peer whose credentials could not be read stays uid -1. */
+            if (peer_out != NULL) { *peer_out = p; }
             (void)close(c);
             return LISTENER_ERR_PEER;
         }

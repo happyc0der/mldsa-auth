@@ -331,6 +331,24 @@ static void test_config(void)
                     "listen_unix = /run/p.sock\n", &cfg, &line) == AUTHD_CFG_OK,
           "cfg: a proxy-facing listener WITHOUT proxy_protocol still needs no proxy_uids (the development shape)");
 
+    /* F420: a uid in both lists is found, wherever it sits in either list;
+     * disjoint lists are not. Both the canary and the hit from parsed files,
+     * the way --check-config will see them. */
+    {
+        uid_t u = 999u;
+        CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
+                        "listen_unix = /run/p.sock\nproxy_protocol = v2\nproxy_uids = 997\n"
+                        "site_socket = /run/s.sock\nsite_uids = 33\n", &cfg, &line) == AUTHD_CFG_OK
+                  && authd_config_shared_uid(&cfg, &u) == 0 && u == 999u,
+              "cfg: site_uids 33 and proxy_uids 997 share no uid, and *uid_out is untouched (F420 canary)");
+        CHECK(parse_str("store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = sid\n"
+                        "listen_unix = /run/p.sock\nproxy_protocol = v2\nproxy_uids = 997,5,33\n"
+                        "site_socket = /run/s.sock\nsite_uids = 7,33\n", &cfg, &line) == AUTHD_CFG_OK
+                  && authd_config_shared_uid(&cfg, &u) == 1 && u == 33u,
+              "cfg: 33, last in proxy_uids and second in site_uids, is found and named (F420)");
+        CHECK(authd_config_shared_uid(&cfg, NULL) == 1, "cfg: a NULL uid_out is accepted (F420)");
+    }
+
     /* the contract the fuzzer found broken: a failed parse applies nothing */
     {
         authd_config_t def;
@@ -1303,15 +1321,40 @@ static void test_memlock(void)
 {
     /* The derived need, from literals rather than from the macros the
      * implementation uses -- otherwise a mutation to the formula would move
-     * the test's expectation with it and could never be caught. */
-    CHECK(memlock_required_bytes(1u) == 40960u,
-          "memlock: 1 slot needs 40960 B (4096 x 10)");
-    CHECK(memlock_required_bytes(256u) == 10485760u,
-          "memlock: the default 256 slots need 10485760 B (10 MiB)");
-    CHECK(memlock_required_bytes(4096u) == 167772160u,
-          "memlock: the 4096-slot ceiling needs 167772160 B (160 MiB)");
-    CHECK(memlock_required_bytes(0u) == 0u,
+     * the test's expectation with it and could never be caught. Pinned at
+     * the three page sizes Linux ships (F403), so the formula is checked on a
+     * host that has only one of them. */
+    CHECK(memlock_required_bytes_for(4096u, 1u) == 40960u,
+          "memlock: 1 slot on 4 KiB pages needs 40960 B (4096 x 10)");
+    CHECK(memlock_required_bytes_for(4096u, 256u) == 10485760u,
+          "memlock: the default 256 slots on 4 KiB pages need 10485760 B (10 MiB)");
+    CHECK(memlock_required_bytes_for(4096u, 4096u) == 167772160u,
+          "memlock: the 4096-slot ceiling on 4 KiB pages needs 167772160 B (160 MiB)");
+    CHECK(memlock_required_bytes_for(16384u, 256u) == 41943040u,
+          "memlock: 256 slots on 16 KiB pages need 41943040 B (40 MiB; F403)");
+    CHECK(memlock_required_bytes_for(65536u, 256u) == 167772160u,
+          "memlock: 256 slots on 64 KiB pages need 167772160 B (160 MiB; F403)");
+    CHECK(memlock_required_bytes_for(65536u, 4096u) == 2684354560ull,
+          "memlock: the ceiling on 64 KiB pages needs 2684354560 B -- past 32 bits, not wrapped");
+    CHECK(memlock_required_bytes_for(4096u, 0u) == 0u,
           "memlock: no slots need nothing");
+
+    /* The page is the HOST's (F403). The test reads it itself rather than
+     * through memlock_page_bytes(), so a daemon that used a fixed figure is
+     * seen on any host whose page is not that figure -- this Mac's 16 KiB
+     * among them. */
+    const long host_page_l = sysconf(_SC_PAGESIZE);
+    if (host_page_l <= 0) {
+        printf("SKIP: memlock: sysconf(_SC_PAGESIZE) unavailable on this platform\n");
+        return;
+    }
+    const uint64_t page = (uint64_t)host_page_l;
+    CHECK(memlock_page_bytes() == page, "memlock: the page is the host's sysconf(_SC_PAGESIZE) (F403)");
+    CHECK(memlock_required_bytes(1u) == page * 10u,
+          "memlock: 1 slot needs ten of this host's pages");
+    CHECK(memlock_required_bytes(256u) == page * 2560u,
+          "memlock: 256 slots need 2560 of this host's pages");
+    printf("memlock: this host's page is %llu bytes\n", (unsigned long long)page);
 
     struct rlimit saved;
     if (getrlimit(RLIMIT_MEMLOCK, &saved) != 0) {
@@ -1319,10 +1362,13 @@ static void test_memlock(void)
         return;
     }
 
+    /* Staged at 25.5 slots' worth on THIS host's pages: under 256 slots, over
+     * 16, and between 25 and 26 -- whatever the page. */
+    const uint64_t per_slot = page * 10u;
     struct rlimit rl = saved;
-    const rlim_t want = 1u << 20; /* 1 MiB: under 256 slots, over 16 */
+    const rlim_t want = (rlim_t)(per_slot * 25u + per_slot / 2u);
     if (saved.rlim_max != RLIM_INFINITY && saved.rlim_max < want) {
-        printf("SKIP: memlock: hard limit below 1 MiB; cannot stage the test\n");
+        printf("SKIP: memlock: hard limit below 25.5 slots; cannot stage the test\n");
         return;
     }
     rl.rlim_cur = want;
@@ -1337,21 +1383,20 @@ static void test_memlock(void)
      * same call must answer OK. Without this, "LOW" below could be true
      * because the check answers LOW unconditionally. */
     CHECK(memlock_check(16u, &limit, &need) == MEMLOCK_OK,
-          "memlock: 16 slots fit inside a 1 MiB limit (canary: OK is reachable)");
-    CHECK(limit == (uint64_t)want, "memlock: the staged 1 MiB limit is reported back");
-    CHECK(need == 655360u, "memlock: 16 slots derive a 655360 B need");
+          "memlock: 16 slots fit inside the staged limit (canary: OK is reachable)");
+    CHECK(limit == (uint64_t)want, "memlock: the staged limit is reported back");
+    CHECK(need == per_slot * 16u, "memlock: 16 slots derive a 16-slot need");
 
     CHECK(memlock_check(256u, &limit, &need) == MEMLOCK_LOW,
-          "memlock: the default 256 slots do NOT fit inside 1 MiB");
-    CHECK(need == 10485760u, "memlock: the reported need is the 256-slot need");
+          "memlock: the default 256 slots do NOT fit inside the staged limit");
+    CHECK(need == per_slot * 256u, "memlock: the reported need is the 256-slot need");
     CHECK(limit == (uint64_t)want, "memlock: the reported limit is the staged one");
 
-    /* The boundary, both sides, from literals: 1 MiB covers exactly 26 slots
-     * (26 x 40960 = 1064960 > 1048576, so 25 is the last that fits). */
+    /* The boundary, both sides: 25.5 slots' worth covers 25 and not 26. */
     CHECK(memlock_check(25u, NULL, NULL) == MEMLOCK_OK,
-          "memlock: 25 slots (1024000 B) fit in 1048576 B");
+          "memlock: 25 slots fit in 25.5 slots' worth");
     CHECK(memlock_check(26u, NULL, NULL) == MEMLOCK_LOW,
-          "memlock: 26 slots (1064960 B) do not");
+          "memlock: 26 slots do not");
 
     /* NULL outputs are accepted -- the daemon's startup path passes both, but
      * nothing should require them. */

@@ -57,11 +57,11 @@ admin_uids = 0
 # front, this must be v2, and `proxy_uids` must name the uid it runs as.
 # Not the site's uid (V4-269): a process that may write to this socket states
 # the client's address, so a site running as the proxy's user can state any
-# address it likes. This example gives `site_uids` and `proxy_uids` the same
-# 33; a deployment gives the proxy and the site a user each, as the runbook
-# does.
+# address it likes. Give the proxy and the site a user each, as the runbook
+# does: `id -u caddy` here, `id -u www-data` in site_uids. 997 is only an
+# example. `--check-config` warns when the two lists share a uid (F420).
 proxy_protocol = v2
-proxy_uids = 33
+proxy_uids = 997
 
 # Rate limiting, keyed on the address the PROXY v2 preamble states. Generous to
 # a person, useless to a prober; §7.3 assigns the decoy flow's per-probe
@@ -104,7 +104,8 @@ log_client_ip = prefix
 
 # --- capacity --------------------------------------------------------------
 # ~91 KiB per slot, so 256 slots is about 24 MB. RAISE LimitMEMLOCK IN THE UNIT
-# IF YOU RAISE THIS: the requirement is 4 KiB x 10 x max_slots, and the daemon
+# IF YOU RAISE THIS: the requirement is page x 10 x max_slots (4 KiB pages on
+# x86_64; `getconf PAGESIZE`), and the daemon
 # logs `memlock-limit` at WARN when its own limit is short.
 # Each slot is also an open file. The daemon raises its own soft limit to
 # max_slots + max_local_slots + 32 and logs `fd-limit`; it can only warn when

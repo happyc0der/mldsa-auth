@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.93, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305)
+# mldsa-authd — deployment specification (v1.94, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1399,7 +1399,9 @@ too, erratum 129). A refused `RECOVERY-ISSUE` writes a `recovery-issue`
 line (erratum 129) with the user's id and a detail of `invalid`,
 `not-permitted` or `user-disabled`. `user-disabled` and `user-enabled` name
 the user (erratum 129): every change of a user's status is in the journal
-with whom it was about.
+with whom it was about. `listener-peer-rejected` names the uid it refused
+and the listener (erratum 137): `uid=` the kernel reported, or
+`uid=unavailable`, and a detail of `admin`, `site` or `proxy`.
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
@@ -1619,10 +1621,14 @@ The systemd unit is `Type=notify` — the daemon sends `READY=1` to
 returns unlocked memory silently when the limit is exhausted (V4-2 S1) — this
 is a correctness setting, not a tuning knob.
 
-The requirement is **4 KiB × 10 × `max_slots`**: about ten secure allocations
-per in-flight handshake, each costing one locked page. At the default
-`max_slots = 256` that is 10 MiB, which is above Linux's usual 8 MiB default —
-so a host that has not set the directive is already short.
+The requirement is **page × 10 × `max_slots`**: about ten secure allocations
+per in-flight handshake, each costing one locked page, where the page is the
+host's (`sysconf(_SC_PAGESIZE)`; erratum 136). On x86_64 the page is 4 KiB, and
+at the default `max_slots = 256` that is 10 MiB, which is above Linux's usual
+8 MiB default — so a host that has not set the directive is already short. On
+an arm64 kernel with 16 KiB or 64 KiB pages the same 256 slots need 40 MiB or
+160 MiB, past the shipped unit's `LimitMEMLOCK=32M`; the daemon's line says
+so.
 
 The daemon **reads its own `RLIMIT_MEMLOCK` at startup** and logs it
 (`memlock-limit`), at WARN when it is below that requirement. It warns rather
@@ -2475,3 +2481,10 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 135 | 12, 14 | libsodium is built so that Argon2id clears its working memory when it ends; §12's paragraph on it, which erratum 133's insertion had split mid-sentence, is whole again | Unmapped or freed uncleared, it held what the envelope key is recomputed from: in the daemon for the second of the unseal (F512), in the browser module's heap, which never shrinks, for the page's lifetime (F531) |
+
+### Revision v1.94 (V4-306)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 136 | 16 | The locked-memory requirement is page × 10 × `max_slots` with the host's page (`sysconf(_SC_PAGESIZE)`), not 4 KiB × 10 × `max_slots`; 4 KiB is x86_64's figure, and 16 KiB and 64 KiB arm64 kernels need four and sixteen times it | `mlock` works in whole pages. Measured on a 16 KiB host: each secure allocation locks one 16 KiB page, so at 256 slots the need is 40 MiB against the shipped 32M, and the daemon logged the 4 KiB figure at INFO with no warning (F403) |
+| 137 | 15 | `listener-peer-rejected` carries `uid=` and a `detail=` naming the listener: `admin`, `site` or `proxy` | The bare event did not say which allowlist was wrong; both fields were already in §15's list (F450) |

@@ -51,7 +51,7 @@ system, which decides who may enroll.
 2. [The threat model](../v4/threat-model.md) and [the audit
    register](../v4/audit.md). 531 findings (F0–F531), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 135 errata, each
+3. The two specifications. The deployment spec's §20 lists 137 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -62,7 +62,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 66 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 718 committed defects in 134 campaigns, each of which must be
+- **Mutations**: 724 committed defects in 135 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -97,32 +97,29 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Nineteen more are open in the register, each with its reasons there. This list
+Sixteen more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
 
 | Finding | Severity | In one line |
 |---|---|---|
-| F273 | Med | A daemon that refuses its configuration is restarted every two seconds for ever, and the unit never shows as failed |
+| F273 | Med | A daemon that refuses its configuration is restarted every two seconds for ever, and the unit never shows as failed; recommended (review 66): a start limit, 5 starts in 120 s, with `RequiresMountsFor=` |
 | F309 | Med | The operator's loopback listener is outside the rate limiter, the per-address cap and Req 12; recommended: its own connection cap |
 | F288 | Low | On server-class shared hardware the pin's 10 µs time floor is below the lookup's 99th percentile |
-| F338 | Low | At accepted settings the rate limiter's table, not its rates, is what refuses; recommended: size it from the configuration |
+| F338 | Low | At accepted settings the rate limiter's table, not its rates, is what refuses; recommended: size it from the configuration, which needs no owner decision (review 66) |
 | F398 | Low | A signup whose reply is lost cannot be retried: two sentences of spec 8 disagree; recommended: `idempotent=1` when user, handle and key all match |
-| F403 | Low | The locked-memory requirement assumes 4 KiB pages; recommended: derive the page size, after measuring on a 16 KiB host |
 | F156 | Low | A known user's recovery refusal is still tens of microseconds slower than an unknown user's: it lists the codes and writes the failure count, which an unknown user's does not |
 | F148 | Info | `handshake_*_init` on a context still in use returns OK and orphans its secrets; the header requires fresh or wiped storage and every in-tree caller complies |
 | F419 | Low | `REVOKE-TOKENS` and `LIST-DEVICES` on the site socket have no operator check; recommended: `not-permitted` there, as for `REVOKE-DEVICE` |
-| F420 | Low | Nothing refuses a uid that is in both `site_uids` and `proxy_uids`; recommended: a warning from `--check-config` |
 | F421 | Info | A site that keeps every local slot busy keeps the administrative socket from being served; recommended: one slot reserved for it |
 | F431 | Low | A login the daemon could not record is read by the client as a refusal of the key; recommended: `ERROR(0x05)` before closing |
-| F435 | Low | A failed allocation in liboqs's SHA-3 exits the daemon; recommended: a runbook entry for its line |
-| F436 | Low | A recovery lockout can be cleared only by editing the store; recommended: an administrative `RECOVERY-ISSUE` clears it |
+| F435 | Low | A failed allocation in liboqs's SHA-3 exits the daemon; the runbook names its line since V4-306; nothing in this code can catch it |
+| F436 | Low | A recovery lockout can be cleared only by editing the store; recommended: an administrative `RECOVERY-ISSUE` clears it; the site's `ENROLL via=site` already re-enrols a locked user |
 | F437 | Info | A long system-wide descriptor shortage stops the watchdog ping; recommended: one notification socket, kept |
-| F450 | Low | `listener-peer-rejected` names neither the uid nor the listener; recommended: `uid=` and a `detail=` naming the listener |
 | F451 | Low | The three tools word the same faults differently, and `authd_client` exits 1 for an unusable key; recommended: one word per fault, exit 3 |
 | F453 | Low | A recovery code can be phished: a username and one code, given to a look-alike page, recover the account; recommended: tell the account's other sessions |
-| F511 | Low | The CLI's pasted login code can be phished: `--state` binds the code to whatever state a look-alike page supplies; recommended: the CLI names the site the code is for, or the flow is documented as operators-only |
+| F511 | Low | The CLI's pasted login code can be phished: `--state` binds the code to whatever state a look-alike page supplies; recommended (review 66): document `--state` as operators and testing only; naming the server identity would print `authd`, not a site |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite

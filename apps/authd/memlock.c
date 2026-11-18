@@ -4,6 +4,7 @@
 
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <unistd.h>
 
 const char *memlock_status_name(memlock_status_t st)
 {
@@ -24,14 +25,28 @@ authd_log_level_t memlock_log_level(memlock_status_t st)
     return (st == MEMLOCK_LOW) ? AUTHD_LOG_WARN : AUTHD_LOG_INFO;
 }
 
+uint64_t memlock_page_bytes(void)
+{
+    /* F403: the host's page, not x86_64's. A host that will not say gets the
+     * 4 KiB figure the documents quote; no supported platform takes that
+     * branch, but a zero or negative page must not turn the need into 0. */
+    const long page = sysconf(_SC_PAGESIZE);
+    return (page > 0) ? (uint64_t)page : (uint64_t)MEMLOCK_PAGE_BYTES;
+}
+
+uint64_t memlock_required_bytes_for(uint64_t page_bytes, uint32_t max_slots)
+{
+    /* page x 10 x max_slots (V4-2 S1). Computed in 64 bits because the
+     * product overflows 32 at the configured ceiling on a 64 KiB-page host:
+     * 65536 * 10 * 4096 is 2,684,354,560 -- and a limit that wrapped would
+     * read as "plenty". */
+    return page_bytes * (uint64_t)MEMLOCK_BLOCKS_PER_SLOT *
+           (uint64_t)max_slots;
+}
+
 uint64_t memlock_required_bytes(uint32_t max_slots)
 {
-    /* 4 KiB x 10 x max_slots (V4-2 S1). Computed in 64 bits because the
-     * product overflows 32 at the configured ceiling: 4096 * 10 * 4096 is
-     * 167,772,160, which fits -- but a future ceiling need not, and a limit
-     * that wrapped would read as "plenty". */
-    return (uint64_t)MEMLOCK_PAGE_BYTES * (uint64_t)MEMLOCK_BLOCKS_PER_SLOT *
-           (uint64_t)max_slots;
+    return memlock_required_bytes_for(memlock_page_bytes(), max_slots);
 }
 
 memlock_status_t memlock_check(uint32_t max_slots, uint64_t *limit_out, uint64_t *need_out)

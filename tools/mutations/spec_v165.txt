@@ -1,0 +1,6 @@
+PG1|^test_authd_evloop$|memlock: the page is the host's sysconf(_SC_PAGESIZE) (F403)
+SU1|^test_authd_evloop$|cfg: 33, last in proxy_uids and second in site_uids, is found and named (F420)
+SU2|^authd_e2e$|--check-config did not warn that site_uids and proxy_uids share uid
+SU3|^test_authd_evloop$|cfg: 33, last in proxy_uids and second in site_uids, is found and named (F420)
+PR1|^authd_e2e$|admin.sock's refusal did not log
+PR2|^authd_e2e$|admin.sock's refusal did not log

@@ -47,12 +47,24 @@ typedef enum {
 const char *memlock_status_name(memlock_status_t st);
 
 /* The bytes this daemon needs locked, from S1's measurement: about ten secure
- * allocations per in-flight handshake, each costing one 4 KiB page of locked
- * memory (guard pages are mapped but not locked). Exposed so the check, the
- * log line, the service unit's comment and the runbook's table all derive the
- * same number from the same place instead of four copies drifting apart. */
+ * allocations per in-flight handshake, each costing one PAGE of locked memory
+ * (guard pages are mapped but not locked). mlock() works in whole pages, so
+ * the page is the host's, read at run time (F403): 4 KiB on x86_64, but 16 KiB
+ * or 64 KiB on some arm64 kernels, where a 4 KiB figure would understate the
+ * need four- or sixteen-fold and the shortfall would be logged as "ok".
+ * Measured on a 16 KiB host (V4-306): each sodium_malloc of 64, 2400 or 4032
+ * bytes locks one 16 KiB data page.
+ *
+ * MEMLOCK_PAGE_BYTES is only the answer when the host will not say
+ * (sysconf fails), and x86_64's figure the documents quote. */
 #define MEMLOCK_PAGE_BYTES        4096u
 #define MEMLOCK_BLOCKS_PER_SLOT     10u
+/* The host's page size in bytes: sysconf(_SC_PAGESIZE), else 4096. */
+uint64_t memlock_page_bytes(void);
+/* page x 10 x max_slots, for a given page -- the formula on its own, so a
+ * test can pin it from literals at every page size without such a host. */
+uint64_t memlock_required_bytes_for(uint64_t page_bytes, uint32_t max_slots);
+/* The need on THIS host: memlock_required_bytes_for(memlock_page_bytes(), n). */
 uint64_t memlock_required_bytes(uint32_t max_slots);
 
 /* Reads RLIMIT_MEMLOCK and compares it with the need for `max_slots`.

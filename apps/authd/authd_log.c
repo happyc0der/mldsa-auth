@@ -299,6 +299,22 @@ void authd_log_fp(authd_log_level_t lvl, const char *event, const authd_fp_t *fp
     fflush(out());
 }
 
+void authd_log_peer(authd_log_level_t lvl, const char *event, int uid_known,
+                    unsigned long uid, const char *detail)
+{
+    if (!enabled(lvl)) {
+        return;
+    }
+    if (uid_known) {
+        fprintf(out(), "%s event=%s uid=%lu detail=%s\n",
+                level_name(lvl), event ? event : "?", uid, detail ? detail : "-");
+    } else {
+        fprintf(out(), "%s event=%s uid=unavailable detail=%s\n",
+                level_name(lvl), event ? event : "?", detail ? detail : "-");
+    }
+    fflush(out());
+}
+
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value)
 {
     if (!enabled(lvl)) {

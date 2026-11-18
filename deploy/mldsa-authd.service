@@ -86,9 +86,11 @@ StateDirectoryMode=0700
 # still succeeded and only ~16 were actually locked. No error, no log line —
 # the daemon's keys simply become swappable.
 #
-# The requirement is 4 KiB x 10 x max_slots: about ten secure allocations per
+# The requirement is page x 10 x max_slots: about ten secure allocations per
 # in-flight handshake, one locked page each. The value below covers the default
-# max_slots = 256 (10 MiB) with headroom for the store and the server key.
+# max_slots = 256 on x86_64's 4 KiB pages (10 MiB) with headroom for the store
+# and the server key. On an arm64 kernel with 16 KiB pages the need is 40 MiB
+# and with 64 KiB pages 160 MiB: set 64M or 256M there (`getconf PAGESIZE`).
 # RAISE IT IF YOU RAISE max_slots — the daemon logs `memlock-limit` at WARN
 # when its own limit is short, so the journal will tell you.
 LimitMEMLOCK=32M

@@ -20657,3 +20657,71 @@ Counts: 718 mutations, 134 campaigns, 763 anchors; 531 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.93, 135 errata; 66
 tests.
+
+## V4-306 — the host's page, a uid in both lists, and who was turned away (F403, F420, F450); the open findings re-read
+
+The sixty-sixth review re-read all nineteen open findings against the code
+at `31b6cbb`. None had been fixed by a later step. Three needed no owner
+decision and were cheap, and are fixed here. Six had a remedy or a reason
+that no longer held, and their rows are corrected.
+
+- **F403, fixed.** The review measured the 16 KiB-page case on this Mac
+  first: each `sodium_malloc` of 64, 2400 or 4032 bytes takes about four
+  16 KiB pages of address space and locks one data page, so the finding's
+  arithmetic holds. The page is now `sysconf(_SC_PAGESIZE)`, falling back to
+  4096 only if the host will not say. The formula is its own function,
+  pinned from literals at 4, 16 and 64 KiB. The need on the host is checked
+  against the test's own `sysconf`, and the staged limit is 25.5 slots' worth
+  on whatever page the host has. `authd_e2e` computes the need from
+  `getconf PAGESIZE`: 41943040 here, 10485760 on CI's x86_64. The stderr
+  line names the page. A page fixed at 4096 is equivalent on a 4 KiB host,
+  so campaign v165 leaves it out. It is killed by hand here, where the page
+  is 16 KiB. v51's Z3 and Z5 are re-anchored to where the formula and the
+  page now are, and the check names v51 and v92 cite were updated with them.
+- **F420, fixed as recommended.** `--check-config` warns on stderr, naming
+  the shared uid, and exits 0. The example config now gives the proxy 997
+  and the site 33, and `authd_e2e` checks that the shipped file draws no
+  warning and that the rewritten one does. Refusing a shared uid outright
+  would break every single-user setup; that stays the owner's call.
+- **F450, fixed.** The listener copies the refused peer's credentials out,
+  and the line reads `uid=N detail=admin|site|proxy`, both fields already in
+  spec 15's list (erratum 137). The foreign-uid leg checks the admin and
+  site lines exactly; the real-second-user leg (root or setpriv, so CI only)
+  checks the proxy's.
+- **Corrected rows.**
+  - **F273:** a start limit (5 starts in 120 s, with `RequiresMountsFor=`) is
+    a third way the decision never weighed, and is now the recommendation.
+  - **F338:** no spec text names the table's constant, and the defaults do
+    not reach it, so the fix needs no owner.
+  - **F431:** a second store-failure path has the same symptom, and 0x05
+    already exists for this.
+  - **F435:** an OpenSSL SHA-3 would exit the same way. The runbook now
+    names the line.
+  - **F436:** the site's `ENROLL via=site` already re-enrols a locked user.
+    `authd_admin` has no subcommand for it, so no operator route is
+    documented. The review's "an operator can enrol them" was checked and
+    holds only for the site.
+  - **F511:** printing the pinned server identity would print `authd`, so
+    the recommendation is now to document `--state` as operators-only.
+- **Next candidates, none needing the owner:**
+  - F338 (size the table at start);
+  - F431 with F451 (one client failure path);
+  - F437;
+  - F309's per-listener cap with F421's reserved slot. F309 itself stays
+    open for its threat-model sentence.
+
+Campaign v165: six mutations (PG1, SU1, SU2, SU3, PR1, PR2), each killed
+by hand in build-asan-p, with v51 Z1 to Z5 and v92 ML1 and ML2 again.
+
+**PR2 first SURVIVED.** It swaps the admin and site labels. The first test
+counted one admin line and one site line at the end, and a swap still gives
+one of each. The admin line is now checked as soon as admin.sock has refused,
+before site.sock is tried. With that, PR2 is killed. The fixed-4096 mutant,
+left out of the campaign, was killed by hand on this host by the
+host-page check.
+
+Spec v1.94, errata 136 and 137.
+
+Counts: 724 mutations, 135 campaigns, 769 anchors; 531 findings (F148,
+F156, F273, F288, F309, F338, F398, F419, F421, F431, F435, F436, F437,
+F451, F453 and F511 open); spec v1.94, 137 errata; 66 tests.
