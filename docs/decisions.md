@@ -20143,3 +20143,24 @@ Spec v1.89, erratum 131.
 Counts: 712 mutations, 131 campaigns, 757 anchors; 481 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.
+
+## V4-289: cleanup after V4-286 to V4-288
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `29aae13` (V4-285), now
+  main: CI 44274074594 (16/16), nightly 44274088562 (145/145, 130
+  campaigns).
+- Before it: `39613e3` (V4-284) had CI 44266866642 (16/16) and nightly
+  44266871008 (144/144). Stacked under this and not yet landed when it
+  was written: V4-286 `7ba326b` (CI 44284936542, 16/16), V4-287 `146ce6a`
+  (CI 44284940897, 16/16; nightly queued behind a runner backlog) and
+  V4-288 `dcf5158` (CI and nightly queued). The next cleanup cites them.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's and V4-285's entries.
+
+Counts: unchanged by this step (V4-288's: 712 mutations, 131 campaigns,
+757 anchors; 481 findings, the 18 above open; spec v1.89, 131 errata;
+65 tests).
