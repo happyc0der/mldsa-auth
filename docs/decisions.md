@@ -19954,3 +19954,26 @@ Spec v1.85, erratum 127.
 Counts: 699 mutations, 128 campaigns, 744 anchors; 469 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.85, 127 errata; 65 tests.
+
+## V4-283: cleanup after V4-280 to V4-282
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `1c356db` (V4-281), now
+  main: CI 44253781791 (16/16), nightly 44253784997 (142/142, 127
+  campaigns).
+- Before it: `c69fd6e` (V4-280) had CI 44250735403 (16/16); `76c4e9f`
+  (V4-279) had CI 44242020039 (16/16) and nightly 44242023214
+  (142/142). V4-282 (`89bc7e8`, stacked under this) had CI 44259319921
+  (16/16); its nightly was still running when this was written, and the
+  next cleanup cites it. Its first commit, `3a588d3`, had its runs
+  cancelled: its claim map was red (V4-282's entry).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions listed in V4-246's entry,
+  V4-274's, V4-281's (an authenticated `ERROR` after `ROTATE` as proof of
+  no commit) and V4-284's (a per-user device limit).
+
+Counts: unchanged by this step (V4-282's: 699 mutations, 128 campaigns,
+744 anchors; 469 findings, the 18 above open; spec v1.85, 127 errata;
+65 tests).
