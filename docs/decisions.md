@@ -19841,3 +19841,22 @@ Spec v1.83, erratum 125.
 Counts: 696 mutations, 127 campaigns, 741 anchors; 459 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.83, 125 errata; 65 tests.
+
+## V4-280: cleanup after V4-277 to V4-279 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `76c4e9f` (V4-279), now
+  main: CI 44242020039 (16/16), nightly 44242023214 (142/142, 127
+  campaigns).
+- Before it: `dec95ea` (V4-278) had CI 44229604566 (16/16) and nightly
+  44229608284 (142/142); `c4200b2` (V4-277) had CI 44229510188 (16/16).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions listed in V4-246's entry
+  and V4-274's.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 459 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.83, 125 errata; 65 tests
+(unchanged by this step).
