@@ -92,6 +92,28 @@ static void test_config(void)
                       "server_id = sid\nlisten_unix = /no-such-dir-zz/p.sock\nproxy_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&
             authd_config_check_paths(&cfg, detail, sizeof detail) == AUTHD_CFG_ERR_VALUE,
             "cfg: a socket in a directory that is not there is still refused (the canary)");
+      /* V4-276 (F444): a file this user cannot reach is not a file that is
+       * not there. A directory of mode 0 holds the key; for root the mode
+       * changes nothing, so the check is made only for anyone else. */
+      { char dd[160], kk[200];
+        const char *tmp = getenv("TMPDIR");
+        (void)snprintf(dd, sizeof dd, "%s/closed-444-XXXXXX", (tmp != NULL && tmp[0] != '\0') ? tmp : "/tmp");
+        if (mkdtemp(dd) != NULL) { (void)rmdir(dd); }
+        (void)snprintf(kk, sizeof kk, "%s/server.ek", dd);
+        FILE *kf = NULL;
+        if (mkdir(dd, 0700) == 0 && (kf = fopen(kk, "w")) != NULL) { (void)fclose(kf); }
+        char conf[600];
+        (void)snprintf(conf, sizeof conf, "store_path = /x.sqlite3\nkey_path = %s\nkey_passphrase_file = /bin/sh\n"
+                       "server_id = sid\nlisten_port = 9\n", kk);
+        const int parsed = parse_str(conf, &cfg, &line) == AUTHD_CFG_OK;
+        (void)chmod(dd, 0);
+        const authd_config_status_t cs = authd_config_check_paths(&cfg, detail, sizeof detail);
+        if (geteuid() != 0) {
+            CHECK(parsed && cs == AUTHD_CFG_ERR_VALUE && strstr(detail, "permission denied") != NULL &&
+                  strstr(detail, "does not exist") == NULL,
+                  "cfg: a key this user cannot reach is reported as permission denied, not as missing (F444)");
+        }
+        (void)chmod(dd, 0700); (void)unlink(kk); (void)rmdir(dd); }
       /* F400: a socket path where something that is not a socket already is. */
       CHECK(parse_str("store_path = /x.sqlite3\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n"
                       "server_id = sid\nlisten_port = 9\nsite_socket = /bin/sh\nsite_uids = 1\n", &cfg, &line) == AUTHD_CFG_OK &&

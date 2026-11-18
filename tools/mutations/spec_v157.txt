@@ -1,0 +1,4 @@
+KM1|^test_authd_keyfile$|the right passphrase but a wrong expected id -> ID_MISMATCH, not IMAGE (validator rejects, F443)
+EA1|^test_authd_evloop$|cfg: a key this user cannot reach is reported as permission denied, not as missing (F444)
+SC1|^test_authd_cli$|admin: a socket path with nothing there says so, beside cannot-connect (F445)
+AV1|^test_authd_cli$|and says the key is the likelier cause (F446)

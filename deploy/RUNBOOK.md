@@ -277,9 +277,14 @@ not see this one: watch `is-active`, or `NRestarts`.
 so a daemon that says it created one — the journal also has
 `created a new, empty store (no store was there)` with the path — found
 nothing at `store_path` and is serving an empty store beside your real one:
-every login will be refused as an unknown user. Stop it, correct `store_path`,
-delete the empty file it made (and its `-wal` and `-shm`), and start again.
-The same line after any later restart means the same thing.
+every login will be refused as an unknown user. There are two causes:
+`store_path` names the wrong place, or it is right and the real store is not
+there (a restore whose copy never ran). Stop the daemon, and correct
+`store_path` or restore the store (step 12). The file it made is empty only
+until someone signs up: before removing it (and its `-wal` and `-shm`), look
+with `authd_admin list-users` and `audit-tail` while it still runs, and if
+anything was written, take a `backup` of it first (V4-276, F442). The same
+line after any later restart means the same thing.
 
 ## 10. The proxy
 
@@ -350,9 +355,12 @@ look at the path first. For a second backup on the same day (before an
 upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
 
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
-plain `sudo`; as any other user the daemon closes the connection at accept and
-the tool says `io-error` and that the daemon closed without answering, which
-it does to a uid outside the socket's allowlist (V4-99, V4-101). `--path` must be absolute: the daemon
+plain `sudo`. As any other user the socket's own permissions stop the
+connection first, and the tool says `cannot-connect` and, since V4-276, why:
+the directory cannot be entered, the socket may not be written, or nothing is
+listening (F445). Only the service user itself gets past them, and the daemon
+then closes the connection at accept: `io-error`, and that the daemon closed
+without answering (V4-99, V4-101). `--path` must be absolute: the daemon
 resolves it, not your shell, and writes it into `backups/` (step 4) as the
 service user. The backup is 0600, like the store.
 
@@ -670,7 +678,12 @@ journalctl -u mldsa-authd | grep -F 'idh=3f09c2d18a7be641'
 ```
 
 The first command prints `idh=…` (run as step 12's `audit-verify` is, for the
-same reason); grep for it. Nothing is lost by hashing:
+same reason); grep for it. `sudo` writes every command line it runs to the
+system journal, and that one holds the plain identifier and the fact that it
+was looked up: on a host whose journal is read more widely than the daemon's,
+look people up somewhere else, or keep the system journal as close as this
+one (V4-276, F447). The same holds for the `--user` and `--handle` of steps
+20 and 21. Nothing is lost by hashing:
 the store's audit chain (step 12) records the real identifiers under every
 setting, and the rate limiter keys on the full address in memory.
 
@@ -1071,9 +1084,12 @@ Common ones, and what they actually are:
   root:root, mode 0440, read through an ACL, and the daemon accepts that shape
   only directly inside `$CREDENTIALS_DIRECTORY` (spec §12, erratum 74). A file
   you copied by hand is held to the first rule and may not meet it.
-- **`unix listener …: path`** — a socket path longer than `sun_path` (104–108
-  bytes). The unit's `ExecStartPre=` check catches this before the daemon
-  tries to bind it.
+- **`unix listener …: path`** — the socket path cannot be used: longer than
+  `sun_path` (104–108 bytes), something that is not a socket is already
+  there, a stale socket that cannot be removed, or its mode cannot be set.
+  `--check-config` refuses the first two before the daemon tries to bind.
+- **`loopback listener: bind`** — another program, or a second daemon, holds
+  `listen_port` (8443 in the example) on 127.0.0.1 (F448).
 - **`unix listener …: in-use`** (also `site socket` and `admin socket`) —
   something is listening on that socket: the service is already running, or a
   second unit or a hand-started daemon uses the same configuration. The
@@ -1118,7 +1134,26 @@ Common ones, and what they actually are:
   must admit its group (steps 4 and 7).
 - **Everything starts, no client can connect** — check `proxy_protocol` in
   the `--check-config` line at the top of the journal and the proxy's uid in
-  `proxy_uids`.
+  `proxy_uids`. In the journal: `warn event=listener-peer-rejected` for a
+  peer whose uid is not in its socket's list; `warn event=closed-protocol
+  detail=protocol` for a proxy that sends no PROXY v2 preamble;
+  `refused-no-client-address` for one whose preamble names no client.
+- **`decryption-failed`** opening the server key or a device key — the
+  passphrase is not the one the file was sealed with. **`id-mismatch`** (since
+  V4-276; before it `decrypted-image-invalid`) — the passphrase opened the
+  file and it is another identity's key: `server_id`, `--server-id` or
+  `--handle` names another (F443). Neither means the file is damaged.
+- **`audit-verify` … `FAILED at entry 1`, on every backup** — `--key` is not
+  the server key the stores were written with, more likely than every backup
+  being altered (F446).
+- **Journal lines worth an alert** (F449): `error event=local-internal` (a
+  local request the daemon failed to serve: a full disk, a locked store; a
+  refused BACKUP also writes one), `error event=store-read-failed` (enrolled
+  devices are refused as if unknown while it lasts), `server-hello-failed
+  detail=ledger-full` (raise `max_slots` or lower `handshake_timeout_ms`),
+  and `enroll-key-mismatch`, `enroll-recovery` and
+  `enroll-without-continuity`, which are what an attempt on an account looks
+  like.
 
 ## What this deployment does not do
 

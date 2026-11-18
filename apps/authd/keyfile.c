@@ -39,6 +39,7 @@ const char *keyfile_status_name(keyfile_status_t st) {
     case KEYFILE_ERR_EXISTS: return "already-exists";
     case KEYFILE_ERR_CRYPTO: return "crypto-error";
     case KEYFILE_ERR_IMAGE: return "decrypted-image-invalid";
+    case KEYFILE_ERR_ID_MISMATCH: return "id-mismatch (the key is another identity's: check server_id, --server-id or --handle)";
     }
     return "unknown";
 }
@@ -332,8 +333,14 @@ keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_
         }
         /* The image validator runs the same digest/id/self-test as the file
          * loader; map any image failure to a single coarse status. */
-        r = (demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp) == DEMO_KEYS_OK)
-                ? KEYFILE_OK : KEYFILE_ERR_IMAGE;
+        /* F443: an id that is not the one asked for is told apart. As
+         * "decrypted-image-invalid" it read as a damaged key file, after the
+         * passphrase had opened it, and the remedies that suggested -- a
+         * restore, a new key -- were wrong; the same mismatch on server.pub
+         * already says `id-mismatch`. */
+        const demo_keys_status_t ims = demo_keys_load_identity_from_image(img, (size_t)mlen, expect_id, id_len, kp);
+        r = (ims == DEMO_KEYS_OK) ? KEYFILE_OK
+            : (ims == DEMO_KEYS_ERR_ID_MISMATCH) ? KEYFILE_ERR_ID_MISMATCH : KEYFILE_ERR_IMAGE;
         if (r == KEYFILE_OK && kek_out != NULL) {
             /* V4-108, F190: a version-2 file carries its store root key, and
              * a passphrase change reseals the same one. A version-1 file has

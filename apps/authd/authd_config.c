@@ -533,6 +533,16 @@ static void detail_set(char *detail, size_t cap, const char *key, const char *va
     }
 }
 
+/* F444: why stat() said no. Every failure read "does not exist", and for an
+ * operator running `authd_admin --check-config` as themselves a key under the
+ * daemon's 0700 directory is EACCES, not ENOENT: the file the check called
+ * missing was there. */
+static const char *why_not(int e, const char *missing)
+{
+    return (e == EACCES) ? "cannot be reached as this user (permission denied: run it as the service user)"
+                         : missing;
+}
+
 /* Cuts `path` down to its directory, given its last slash. A file directly
  * under the root has the root as its directory: "/x" becomes "/". (F336:
  * this wrote a '/' over the '/' that was already there, left "/x" whole, and
@@ -565,8 +575,10 @@ static authd_config_status_t check_sock(const char *key, const char *path, char 
     if (slash != NULL) {
         dir_of(dir, slash);
         struct stat st;
-        if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
-            detail_set(detail, cap, key, path, "its directory does not exist");
+        const int gone = stat(dir, &st) != 0;
+        if (gone || !S_ISDIR(st.st_mode)) {
+            detail_set(detail, cap, key, path,
+                       gone ? why_not(errno, "its directory does not exist") : "its directory does not exist");
             return AUTHD_CFG_ERR_VALUE;
         }
     }
@@ -594,7 +606,7 @@ static authd_config_status_t check_regular(const char *key, const char *path, ch
 {
     struct stat st;
     if (stat(path, &st) != 0) {
-        detail_set(detail, cap, key, path, "does not exist");
+        detail_set(detail, cap, key, path, why_not(errno, "does not exist"));
         return AUTHD_CFG_ERR_VALUE;
     }
     if (!S_ISREG(st.st_mode)) {
@@ -698,9 +710,10 @@ authd_config_status_t authd_config_check_paths(const authd_config_t *cfg, char *
         if (slash != NULL) {
             dir_of(dir, slash);
             struct stat ds;
-            if (stat(dir, &ds) != 0 || !S_ISDIR(ds.st_mode)) {
+            const int gone = stat(dir, &ds) != 0;
+            if (gone || !S_ISDIR(ds.st_mode)) {
                 detail_set(detail, detail_cap, K_STORE, cfg->store_path,
-                           "its directory does not exist");
+                           gone ? why_not(errno, "its directory does not exist") : "its directory does not exist");
                 return AUTHD_CFG_ERR_VALUE;
             }
         }

@@ -118,8 +118,8 @@ int main(void) {
 
     /* wrong expected id -> the shared validator rejects the decrypted image */
     { const uint8_t bob[] = {'b','o','b'};
-      CHECK(keyfile_open(ek, bob, 3, PASS, strlen(PASS), &kp, NULL) == KEYFILE_ERR_IMAGE,
-            "the right passphrase but a wrong expected id -> IMAGE (validator rejects)");
+      CHECK(keyfile_open(ek, bob, 3, PASS, strlen(PASS), &kp, NULL) == KEYFILE_ERR_ID_MISMATCH,
+            "the right passphrase but a wrong expected id -> ID_MISMATCH, not IMAGE (validator rejects, F443)");
       CHECK(kp.secret_key == NULL, "no key returned on an id mismatch"); }
 
     /* never clobbers, never in place */
@@ -534,9 +534,9 @@ int main(void) {
       /* a wrong expected id on a version-2 file: IMAGE, and no root handed out */
       { const uint8_t bob[] = {'b','o','b'};
         memset(got, 0xAA, sizeof(got));
-        CHECK(keyfile_open(r1, bob, 3, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_IMAGE && a.secret_key == NULL &&
+        CHECK(keyfile_open(r1, bob, 3, PASS, strlen(PASS), &a, got) == KEYFILE_ERR_ID_MISMATCH && a.secret_key == NULL &&
                   sodium_is_zero(got, sizeof(got)),
-              "v2: a wrong expected id -> IMAGE, no key, the root out-param zeroed"); }
+              "v2: a wrong expected id -> ID_MISMATCH, no key, the root out-param zeroed (F443)"); }
       sodium_memzero(root, sizeof(root)); sodium_memzero(got, sizeof(got)); sodium_memzero(got2, sizeof(got2));
       sodium_memzero(v1kek, sizeof(v1kek));
       free(b1); }

@@ -19691,3 +19691,36 @@ No campaign: no compiled code changed.
 Counts: 692 mutations, 126 campaigns, 737 anchors; 441 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436 and F437 open); spec v1.81, 123 errata; 65 tests.
+
+## V4-276 — the messages an operator acts on: a deleted store's advice, a wrong identity, a socket out of reach, a wrong key (F442 to F451)
+
+The forty-sixth review took the on-call operator's position and read
+every message the three tools print, every WARN and ERROR event, every
+`--check-config` refusal and every exit status against what is true on
+each path, what the runbook advises, and what the privacy modes hide.
+
+- **F442 (Medium).** The one finding where acting on the text did harm.
+  Landed without asking: a runbook correction, and the safer procedure
+  costs two commands.
+- **F443.** A new status, not a new word for an old one: the validator
+  already told the cases apart and `keyfile_open_buf` folded them. The
+  browser shows the core's diagnostic text, so it gets the clearer
+  word too; nothing branches on the old one.
+- **F444.** `EACCES` only. Other `stat()` failures (`ELOOP`,
+  `ENAMETOOLONG`) still read as missing; they are rarer, and a symlink is
+  refused elsewhere by name.
+- **F445.** The tool looks at the path after the connect fails, rather
+  than carrying `errno` out of the socket layer: the three answers it
+  needs are all visible from the path.
+- **Open, each with a row on the review page:** F450 (a log line's
+  fields) and F451 (words and exit statuses scripts may read).
+- **Suspected, recorded again:** the early exits after "created a new,
+  empty store" leave the store, reachable only on an allocation failure
+  (V4-263's entry).
+
+Campaign v157, four mutants, each tried with `tools/hand_control.py`;
+v46 E5 re-anchored.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 451 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450 and F451 open); spec v1.81, 123 errata; 65 tests.

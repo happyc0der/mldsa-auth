@@ -536,6 +536,21 @@ static int local_call(const char *prog, const char *sub, const char *sock,
                                                resp, sizeof resp, &len);
     if (st != LOCALCLI_OK) {
         fprintf(stderr, "%s %s: %s: %s\n", prog, sub, sock, localcli_status_name(st));
+        /* F445: `cannot-connect` was all a user outside the socket's
+         * permissions was told, word for word what a stopped daemon gives.
+         * The two have different remedies; the socket path says which. */
+        if (st == LOCALCLI_ERR_CONNECT) {
+            struct stat ss;
+            if (stat(sock, &ss) != 0) {
+                fprintf(stderr, "%s %s: %s\n", prog, sub,
+                        (errno == EACCES) ? "its directory cannot be entered as this user: run it as root (sudo)"
+                                          : "there is no socket at that path: is the daemon running, and is --socket right?");
+            } else if (access(sock, W_OK) != 0 && errno == EACCES) {
+                fprintf(stderr, "%s %s: this user may not write to the socket: run it as root (sudo)\n", prog, sub);
+            } else {
+                fprintf(stderr, "%s %s: nothing is listening there: is the daemon running?\n", prog, sub);
+            }
+        }
         /* V4-101, F186: the daemon refuses a peer whose uid is not in the
          * socket's allowlist by closing at accept, without a byte -- so the
          * one thing a closed, silent connection most often means is "wrong
@@ -899,6 +914,13 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
         }
         fprintf(stderr, "%s audit-verify: FAILED at entry %lld: the %lld before it verify: %s: %s\n",
                 prog, (long long)(entries + 1), (long long)entries, db, store_status_name(vv));
+        /* F446: with no entry verified the likelier cause is the key, not
+         * the chain: a backup checked with another store's server.ek fails
+         * here at entry 1, every backup alike. */
+        if (entries == 0) {
+            fprintf(stderr, "%s audit-verify: no entry verified: if every store fails here, --key is not "
+                            "the server key these stores were written with\n", prog);
+        }
         return EX_FAIL;
     }
     sodium_bin2hex(hex, sizeof hex, head, sizeof head);

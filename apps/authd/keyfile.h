@@ -64,7 +64,8 @@ typedef enum {
     KEYFILE_ERR_DECRYPT,      /* AEAD verification failed: wrong passphrase or tampering */
     KEYFILE_ERR_EXISTS,       /* output already present; never overwritten */
     KEYFILE_ERR_CRYPTO,       /* KDF/allocation failure */
-    KEYFILE_ERR_IMAGE         /* decryption succeeded but the MLDSASK2 image is invalid */
+    KEYFILE_ERR_IMAGE,        /* decryption succeeded but the MLDSASK2 image is invalid */
+    KEYFILE_ERR_ID_MISMATCH   /* V4-276, F443: a sound image of ANOTHER identity: the id asked for is not its id */
 } keyfile_status_t;
 
 const char *keyfile_status_name(keyfile_status_t st);

@@ -49,7 +49,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 441 findings (F0–F441), with severity, evidence and
+   register](../v4/audit.md). 451 findings (F0–F451), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 123 errata, each
    citing the finding that forced it.
@@ -62,7 +62,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 65 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 692 committed defects in 126 campaigns, each of which must be
+- **Mutations**: 696 committed defects in 127 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -97,7 +97,7 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Fifteen more are open in the register, each with its reasons there. This list
+Seventeen more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
@@ -119,6 +119,8 @@ no row here:
 | F435 | Low | A failed allocation in liboqs's SHA-3 exits the daemon; recommended: a runbook entry for its line |
 | F436 | Low | A recovery lockout can be cleared only by editing the store; recommended: an administrative `RECOVERY-ISSUE` clears it |
 | F437 | Info | A long system-wide descriptor shortage stops the watchdog ping; recommended: one notification socket, kept |
+| F450 | Low | `listener-peer-rejected` names neither the uid nor the listener; recommended: `uid=` and a `detail=` naming the listener |
+| F451 | Low | The three tools word the same faults differently, and `authd_client` exits 1 for an unusable key; recommended: one word per fault, exit 3 |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite

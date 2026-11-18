@@ -480,6 +480,20 @@ static void test_init(void)
                 strstr(err, "unsafe-permissions") != NULL,
                 "audit-verify: a group-readable --key is a configuration error (3) (F196)");
           (void)unlink(gkey); }
+        /* V4-276 (F443): the right passphrase and another identity's key
+         * name: id-mismatch, not a damaged image. */
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", db, "--key", ek,
+                                            "--passphrase-file", pass, "--server-id", "not-authd", NULL },
+                                err, sizeof err) == 3 &&
+              strstr(err, "id-mismatch") != NULL && strstr(err, "decrypted-image-invalid") == NULL,
+              "audit-verify: a --server-id the key is not is id-mismatch, not decrypted-image-invalid (F443)");
+        /* V4-276 (F445): a socket that is not there is told apart from one
+         * this user may not reach. */
+        { char nosock[256];
+          (void)snprintf(nosock, sizeof nosock, "%s/no-such.sock", g_dir);
+          CHECK(run_admin_capture((char *[]){ "authd_admin", "list-users", "--socket", nosock, NULL }, err, sizeof err) == 1 &&
+                strstr(err, "cannot-connect") != NULL && strstr(err, "there is no socket at that path") != NULL,
+                "admin: a socket path with nothing there says so, beside cannot-connect (F445)"); }
         CHECK(RUN_ADMIN("rewrap", "--id", "authd", "--in", nokey, "--out", gkey,
                         "--old-passphrase-file", pass, "--new-passphrase-file", wrong) == 3 &&
               file_size(gkey) < 0,
@@ -719,9 +733,15 @@ static void test_rewrap_keeps_store(void)
     CHECK(RUN_ADMIN("keygen-server", "--key", other, "--pub", opub, "--server-id", "authd",
                     "--passphrase-file", p2) == 0 && version_byte(other) == 2,
           "keygen-server: writes MLDSAEK1 version 2");
-    CHECK(RUN_ADMIN("audit-verify", "--store", db, "--key", other, "--passphrase-file", p2,
-                    "--server-id", "authd") == 1,
-          "control: a key file with a different root key fails audit-verify (1, not 3: the key opened) on the same store");
+    { char aerr[1024];
+      /* V4-276 (F446): ...at entry 1, and the tool says the key is the
+       * likelier cause than the chain. */
+      CHECK(run_admin_capture((char *[]){ "authd_admin", "audit-verify", "--store", db, "--key", other,
+                                          "--passphrase-file", p2, "--server-id", "authd", NULL },
+                              aerr, sizeof aerr) == 1 &&
+            strstr(aerr, "FAILED at entry 1") != NULL && strstr(aerr, "--key is not") != NULL,
+            "control: a key file with a different root key fails audit-verify (1, not 3: the key opened) on the same store, "
+            "and says the key is the likelier cause (F446)"); }
 
     /* ---- the legacy path: a version-1 server key, a store keyed from its KEK */
     char ldir[256], l1[300], l2[300], ldb[300], lp[300];
