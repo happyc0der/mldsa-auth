@@ -19724,3 +19724,26 @@ v46 E5 re-anchored.
 Counts: 696 mutations, 127 campaigns, 741 anchors; 451 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450 and F451 open); spec v1.81, 123 errata; 65 tests.
+
+## V4-277: cleanup after V4-274 to V4-276 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `1ec2059` (V4-276), now
+  main: CI 44218941028 (16/16), nightly 44218944315 (142/142, 127
+  campaigns).
+- Before it: `128929e` (V4-275) had CI 44214539292 (16/16), with both
+  systemd rehearsals of the runbook green on the new step 22, nightly
+  44214542947 (141/141) and main's push CI 44223796930 (16/16);
+  `9af1506` (V4-274) had CI 44214482156 (16/16) and main's push CI
+  44216020190 (16/16); `6d2a404` (V4-273) had main's push CI
+  44214262065 (16/16).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450 and F451, and the questions listed in V4-246's entry and
+  V4-274's.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 451 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450 and F451 open); spec v1.81, 123 errata; 65 tests
+(unchanged by this step).
