@@ -19925,10 +19925,19 @@ One Low; the rest Info; nothing loses a live key.
   fails is the reproduction: `.ek` made a directory, so the rename over it
   is refused after the probe has proved `.ek.next` live.
 - **F467.** The file was kept after a refused login only because a test
-  scanned it for the new key's windows (V4-273's entry). That scan is
-  covered by the V4-35 tests, which scan a `.ek.next` kept after `ROTATE`
-  left; the stale leg now checks the file is gone. Erratum 126 already
-  stated the rule; the CLI now follows it.
+  scanned it for the new key's windows (V4-273's entry). The stale leg
+  now checks the file is gone, and keeps the scan: a pump hook copies
+  `.ek.next` while it exists, and the copy is opened and scanned with the
+  other two keys. Not a sampling race (F408): the file is complete before
+  the client connects, and the refusal needs the daemon, which runs only
+  in the test's own loop, to answer first. Erratum 126 already stated the
+  rule; the CLI now follows it.
+- **A gate missed before the first push.** The first commit renamed the
+  stale leg's scan, which CLAIMS D10 cites and v70 RK4 expects;
+  `check_claim_map` said so, and the command that ran it piped it through
+  `tail`, so its failure did not stop the commit. CI's run on that
+  commit is superseded by the fix on top; RK4 and RK6 were tried again by
+  hand and are killed.
 - **F468, F469.** As recommended. Neither can be reached from a test:
   F468's window is between two system calls, and nothing makes the
   `.pub` writer fail after the key writer succeeded.

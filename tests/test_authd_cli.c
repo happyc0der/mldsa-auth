@@ -1383,6 +1383,22 @@ static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook,
     return WIFEXITED(ws) ? WEXITSTATUS(ws) : -1;
 }
 
+static int read_bytes(const char *path, uint8_t *buf, size_t cap, size_t *n);
+
+/* V4-282 (F467): the stale rotation now removes the .ek.next it sealed, so
+ * the test keeps a copy of it while it exists to scan that key's windows.
+ * Not a race: the file is published (link, complete) before the client
+ * connects, and the session cannot be refused until the daemon -- which
+ * runs only in this loop's h_tick -- has answered at least once. */
+typedef struct { const char *path; uint8_t buf[8192]; size_t n; } next_copy_t;
+static void copy_next_hook(h_daemon_t *d, void *ctx)
+{
+    (void)d;
+    next_copy_t *c = (next_copy_t *)ctx;
+    size_t n = 0;
+    if (c->n == 0u && read_bytes(c->path, c->buf, sizeof c->buf, &n) == 0) { c->n = n; }
+}
+
 static int read_bytes(const char *path, uint8_t *buf, size_t cap, size_t *n)
 {
     *n = 0;
@@ -1828,17 +1844,32 @@ static void test_rotate_on_disk(void)
      *    key C is sealed to .ek.next first (spec 10.2) and the daemon refuses
      *    A. No ROTATE can have been sent on a session that never opened, so
      *    .ek.next is REMOVED (V4-282, F467, erratum 126); it used to be kept.
-     *    A .ek.next kept after ROTATE left is scanned by the V4-35 tests. */
+     *    A copy taken while it existed is scanned with the other two. */
     CHECK(write_bytes(ek, sealed_a, na) == 0, "stale rotate: .ek is the superseded key again");
-    rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
-                                           "--passphrase-file", pass, "--server-id", "authd",
-                                           "--server-pub", spub, "--port", port, NULL });
+    static next_copy_t seen;
+    memset(&seen, 0, sizeof seen);
+    seen.path = next;
+    rc = run_client_pumped_hook(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                                "--passphrase-file", pass, "--server-id", "authd",
+                                                "--server-pub", spub, "--port", port, NULL },
+                                copy_next_hook, &seen);
     CHECK(rc != 0 && rc != -1 && access(next, F_OK) != 0 && same_bytes(ek, sealed_a, na),
           "stale rotate: the session is refused, .ek is as it was and no .ek.next is left (F467)");
-    CHECK(a.secret_key != NULL && b_ok &&
+    char seen_path[512];
+    (void)snprintf(seen_path, sizeof seen_path, "%s/stale-next-copy", g_dir);
+    const int c_ok = seen.n > 0u && write_bytes(seen_path, seen.buf, seen.n) == 0 &&
+                     keyfile_open(seen_path, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &c, NULL)
+                     == KEYFILE_OK;
+    (void)unlink(seen_path);
+    CHECK(c_ok && a.public_key != NULL && b_ok &&
+          memcmp(c.public_key, a.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 &&
+          memcmp(c.public_key, b.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0,
+          "stale rotate: the key it staged, copied while it existed, is a third key, sealed (not vacuous)");
+    CHECK(a.secret_key != NULL && b_ok && c_ok &&
           !any_file_has_key_window(root, a.secret_key, NULL) &&
-          !any_file_has_key_window(root, b.secret_key, NULL),
-          "stale rotate: no window of either earlier key in any file (Req 10)");
+          !any_file_has_key_window(root, b.secret_key, NULL) &&
+          !any_file_has_key_window(root, c.secret_key, NULL),
+          "stale rotate: no window of any of the three keys in any file (Req 10)");
     CHECK(!any_name_contains(dev, ".newpub."), "stale rotate: no .newpub temp file is left behind (F118)");
 
     /* V4-273 (F438): a rotation that reaches no daemon at all writes its
