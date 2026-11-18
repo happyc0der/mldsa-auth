@@ -20511,3 +20511,24 @@ Counts: 718 mutations, 134 campaigns, 763 anchors; 515 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.91, 133 errata; 66
 tests.
+
+## V4-301: cleanup after V4-298 to V4-300
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `8b77c84` (V4-299), now
+  main: CI 44360007879 (16/16), nightly 44360014681 (148/148, 133
+  campaigns).
+- Before it: `789bcfa` (V4-298) had CI 44356274248 (16/16). V4-300
+  (`d47d79d`, stacked under this) had CI 44363747175; its nightly,
+  44363781663, was still running when this was written, and the next
+  cleanup cites it.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451, F453 and F511, and the questions in V4-246's,
+  V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries
+  (a reason for the daemon's deadline close).
+
+Counts: unchanged by this step (V4-300's: 718 mutations, 134 campaigns,
+763 anchors; 515 findings, the 19 above open; spec v1.91, 133 errata; 66
+tests).
