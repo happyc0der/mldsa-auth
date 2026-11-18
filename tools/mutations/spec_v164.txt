@@ -1,0 +1,1 @@
+WC1|^test_authd_evloop$|wall clock: a failed read keeps the last good time, advanced by the monotonic clock -- not -1, before every expiry (F515)

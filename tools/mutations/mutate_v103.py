@@ -44,7 +44,7 @@ M = {
              "    (void)clock; /* MUTATION CK3 */\n")],
     "CK4": [(MA,
              "    app->now_ms = now_ms();\n"
-             "    app->now_unix = (int64_t)time(NULL);\n"
+             "    app->now_unix = wall_now(app->now_ms);\n"
              "    return app->now_ms;\n",
              "    /* MUTATION CK4 */\n"
              "    return app->now_ms;\n")],

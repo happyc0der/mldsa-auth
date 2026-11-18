@@ -20480,3 +20480,34 @@ Counts: 717 mutations, 133 campaigns, 762 anchors; 513 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.90, 132 errata; 66
 tests.
+
+## V4-300 — time, followed through every clock and deadline (F514, F515)
+
+The sixty-second review followed every clock: the daemon's monotonic and
+wall time and what each drives, every deadline, the limiter's refill, the
+store's expiry columns, the client core, the browser and the site. No
+comparison mixes the two clocks; units and widths are consistent; the
+limiter, run with a fake clock, refills nothing on a failed read and
+caps a ten-year jump at the burst; tests use a frozen clock. What a
+stepped wall clock does to lifetimes is already the owner's question
+(V4-246's list); two Info items besides.
+
+- **F514.** Text, not code: a client cannot tell a deadline close from a
+  refusal, and giving the daemon a way to say which is a protocol change.
+  The spec and the example configuration say to keep the deadline well
+  above the slowest round trip.
+- **F515.** The last good time advanced by the monotonic clock, not the
+  last good time frozen: a frozen clock would let codes outlive their
+  60 s for as long as the failure lasted. A small header so the rule can
+  be driven by a test; `authd_main.c` cannot be.
+- **Anchors rotted and re-anchored**, each tried again by hand and killed:
+  v74 CK1 (both its edits), v103 CK4 (and v103 CK1 checked alongside).
+
+Campaign v164: WC1, `KILLED | restored=byte-exact | rebuilt=ok`.
+
+Spec v1.91, erratum 133.
+
+Counts: 718 mutations, 134 campaigns, 763 anchors; 515 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.91, 133 errata; 66
+tests.

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.90, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299)
+# mldsa-authd — deployment specification (v1.91, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -800,7 +800,13 @@ A probe is the daemon's refusal of a key only if it failed after `ClientAuth`
 was sent and before the client's deadline (erratum 119). The daemon closes at
 once on a `ClientAuth` it does not accept (§7.3), so a probe that waited out
 its deadline was not answered, and the client says that the daemon could not
-be asked, not that the device must be enrolled again.
+be asked, not that the device must be enrolled again. The daemon also closes a
+connection still in its handshake when its own `handshake_timeout_ms` runs out
+(erratum 133), without reading what has arrived; a client cannot tell that close
+from a refusal. So `handshake_timeout_ms` is set well above the round trip the
+slowest client has (the default is 10 s): set below it, every `ClientAuth`
+arrives after the close, and a probe reports a refusal of a key the daemon
+never judged.
 
 **In a browser** (erratum 33) there are no files and no rename, but there are
 transactions that commit whole or not at all, and the same rule holds with
@@ -1041,7 +1047,13 @@ a format change.
 regular file, owner == euid, `mode & 077 == 0`) → size bounds → magic and
 version → algorithm ids → parameter bounds → KDF → AEAD open into
 `secure_mem` → `MLDSASK2` parse with its digest and id checks → sign/verify
-self-test. The passphrase and derived key are wiped immediately. Argon2id's
+self-test. The passphrase and derived key are wiped immediately.
+
+**The wall clock** dates every code, token, ticket and lockout. A read that
+fails (erratum 133) keeps the last good time, advanced by the monotonic
+clock; it was used as the time, -1, which is before every expiry. A daemon
+that cannot read it at all at start logs `clock-unreadable` at ERROR and does
+not start. Argon2id's
 own working memory is not (erratum 132): libsodium unmaps it without
 clearing it, and it is an ordinary mapping, so during the second or so of
 the KDF it can be swapped, or written into a core dump on Linux, and the key
@@ -1404,6 +1416,7 @@ Transport and lifecycle:
 
 ```
 started draining stopped loop-failed memlock-limit fd-limit store-created
+clock-unreadable
 sighup-ignored
 listening-loopback listening-unix listening-site listening-admin
 accepted local-accepted listener-peer-rejected
@@ -2423,3 +2436,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 132 | 12 | Argon2id's working memory is named as the one copy of key material that is not wiped, with what a deployment does about it; a stored recovery code is computed at the daemon's parameters only | libsodium unmaps the KDF's 256 MiB without clearing it, and the key is recomputable from it (F512); a row's stored parameters were used as stored, so a weakened row verified at no cost and an inflated one stalled the daemon (F513) |
+
+### Revision v1.91 (V4-300)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 133 | 10.2, 12, 15 | The daemon's own handshake deadline is named as a close a client cannot tell from a refusal, and `handshake_timeout_ms` is to stay well above the slowest round trip; a failed wall-clock read keeps the last good time, and a daemon with none does not start (`clock-unreadable`) | A deadline close read as a refusal, F402's wrong advice by another route (F514); `time()` failing was used as -1, before every expiry, admitting expired tokens, codes and tickets (F515) |

@@ -117,6 +117,9 @@ max_slots = 256
 # requests it has in flight during a tenth of a second.
 max_local_slots = 8
 
+# Keep it well above the slowest client's round trip (spec 10.2, erratum 133):
+# a ClientAuth that arrives after this deadline is closed unread, and the
+# client cannot tell that from a refused key.
 handshake_timeout_ms = 10000
 idle_timeout_ms = 60000
 pad_bucket = 256

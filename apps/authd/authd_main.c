@@ -22,6 +22,7 @@
 
 #include <sodium.h>
 
+#include "authd_clock.h"
 #include "authd_config.h"
 #include "authd_conn.h"
 #include "sdnotify.h"
@@ -82,11 +83,19 @@ static uint64_t now_ms(void)
  * well as answering, so the loop and the connection layer still see ONE
  * instant: a login code issued in this iteration expires from now, not from
  * before the sleep. */
+/* F515: the last good wall time and the monotonic time it was read at. */
+static int64_t  g_wall_last_unix = 0;
+static uint64_t g_wall_last_ms = 0;
+static int64_t wall_now(uint64_t mono_ms)
+{
+    return authd_wall_next((int64_t)time(NULL), &g_wall_last_unix, &g_wall_last_ms, mono_ms);
+}
+
 static uint64_t loop_clock(void *ctx)
 {
     authd_app_t *app = ctx;
     app->now_ms = now_ms();
-    app->now_unix = (int64_t)time(NULL);
+    app->now_unix = wall_now(app->now_ms);
     return app->now_ms;
 }
 
@@ -376,8 +385,19 @@ int main(int argc, char **argv)
     app.recovery_use_per_sec = RECOVERY_USE_PER_SEC;
     app.recovery_use_burst = RECOVERY_USE_BURST;
     app.now_ms = now_ms();
-    app.now_unix = (int64_t)time(NULL);
+    app.now_unix = wall_now(app.now_ms);
     app.started_ms = app.now_ms;
+    if (app.now_unix < 0) {
+        /* F515: every lifetime is on this clock; with none, nothing can be
+         * judged expired, so the daemon does not start. */
+        authd_log_event(AUTHD_LOG_ERROR, "clock-unreadable");
+        fprintf(stderr, "mldsa-authd: the wall clock cannot be read; refusing to start\n");
+        store_close(store);
+        if (store_created) { remove_created_store(cfg.store_path); }
+        mldsa_keypair_free(&server_kp);
+        free(slots); free(conns);
+        return 1;
+    }
 
     /* The limiter exists only where a client address does. Attaching it to a
      * daemon with no PROXY v2 listener would be theatre: every connection
@@ -636,7 +656,7 @@ int main(int argc, char **argv)
          * the same instant, so ledger expiry, session limits and login-code
          * expiry cannot disagree. */
         app.now_ms = now_ms();
-        app.now_unix = (int64_t)time(NULL);
+        app.now_unix = wall_now(app.now_ms);
         if (wd_ms != 0u && app.now_ms - wd_last_ms >= (uint64_t)wd_ms) {
             /* A ping that cannot be sent is not retried harder: if it goes
              * on failing, systemd restarts the daemon, which is the point. */

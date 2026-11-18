@@ -38,6 +38,7 @@
 #include "authd_log.h"
 #include "memlock.h"
 #include "fdlimit.h"
+#include "authd_clock.h"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -2137,6 +2138,21 @@ static void test_ws_pipelined_upgrade(void)
     (void)close(lfd);
 }
 
+/* V4-300 (F515): a failed wall-clock read is not the time. */
+static void test_wall_clock(void)
+{
+    int64_t last = 0;
+    uint64_t last_ms = 0;
+    CHECK(authd_wall_next(-1, &last, &last_ms, 500u) == -1,
+          "wall clock: with no good read yet, a failed one gives no time (the daemon does not start)");
+    CHECK(authd_wall_next(1800000000, &last, &last_ms, 1000u) == 1800000000,
+          "wall clock: a good read is the time (the control)");
+    CHECK(authd_wall_next(-1, &last, &last_ms, 4500u) == 1800000003,
+          "wall clock: a failed read keeps the last good time, advanced by the monotonic clock -- not -1, before every expiry (F515)");
+    CHECK(authd_wall_next(1800000010, &last, &last_ms, 11000u) == 1800000010 && last == 1800000010 && last_ms == 11000u,
+          "wall clock: the next good read replaces it");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2176,6 +2192,7 @@ int main(void)
     test_clock_after_poll();
     test_signal_ends_the_wait();
 
+    test_wall_clock();
     printf("%s: test_authd_evloop (%d checks)\n", g_fail ? "FAIL" : "PASS", g_checks);
     return g_fail ? 1 : 0;
 }
