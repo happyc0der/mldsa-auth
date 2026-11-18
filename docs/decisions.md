@@ -19658,3 +19658,36 @@ Counts: 692 mutations, 126 campaigns, 737 anchors; 438 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436 and F437 open); spec v1.81, 123 errata; 65 tests (unchanged by this
 step).
+
+## V4-275 — across versions: an upgrade is all four parts, with a way back; the browser's store can be upgraded (F439 to F441)
+
+The forty-fifth review asked what long-lived state meets across
+versions: an old store, key file, configuration, IndexedDB record,
+local-API client, or a deployment upgraded by the runbook. The store's
+schema has not changed since V4-7, a newer one is refused, and no column
+was added later; version-1 and version-2 key envelopes are both read and
+their limits documented; no configuration key was removed or renamed and
+no default changed; error words were only ever added; the site sends
+`no-store`, so a cached page and module cannot drift. Three findings.
+
+- **F439 (Medium), F440.** The runbook was the defect, and the fix is
+  the runbook, rehearsed: CI's systemd jobs run step 22's new blocks top
+  to bottom on both Ubuntus. The rollback is a `text` block, named in
+  the rehearsal's `NOT_COMMANDS`: the rehearsal's upgrade starts, so
+  there is nothing to roll back. Landed without asking: documentation
+  of what the tree already needs, nothing a deployment did not already
+  have to do.
+- **F441.** A fix that does nothing today, shipped now because the old
+  tabs' code is the code that has to cooperate. The test opens a second
+  database, so the identities the rest of the test uses are not touched.
+- **Not changed, recorded:** `authd_admin migrate-key` given an
+  `MLDSASK1` file says "convert it with migrate-key", which only
+  `auth_server migrate-key` does. A schema 2 will need a migration: no
+  mechanism exists, and `CREATE TABLE IF NOT EXISTS` adds no column to an
+  existing table.
+
+No campaign: no compiled code changed.
+
+Counts: 692 mutations, 126 campaigns, 737 anchors; 441 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436 and F437 open); spec v1.81, 123 errata; 65 tests.

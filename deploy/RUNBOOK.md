@@ -825,10 +825,25 @@ had. `authd_admin list-devices` shows the user's handles, and
 revokes one of them and leaves the others; for an operator's device it is the
 only way (spec §10.3).
 
-## 22. Upgrade the daemon
+## 22. Upgrade
 
-Build the new source as in step 1, check it as in step 2, install it as in
-step 3, and restart:
+An upgrade is the daemon, the browser module, the site and the proxy's
+configuration together: fixes land in all four, and installing the daemon
+alone leaves the others as they were first installed (V4-275, F439).
+
+First a backup, and a copy of the binaries that are running, so there is a
+way back:
+
+```bash
+sudo authd_admin backup --socket /run/mldsa-authd/admin.sock \
+     --path /var/lib/mldsa-authd/backups/$(date +%F-%H%M)-before-upgrade.sqlite3
+sudo install -d -o root -g root -m 0755 /usr/local/lib/mldsa-authd-previous
+sudo cp -p /usr/local/bin/mldsa-authd /usr/local/bin/authd_admin /usr/local/bin/authd_client \
+     /usr/local/lib/mldsa-authd-previous/
+```
+
+Then the daemon. Build the new source as in step 1, check it as in step 2,
+install it as in step 3, and restart:
 
 ```bash
 cd /opt/build/mldsa-auth
@@ -850,6 +865,38 @@ the new unit over (keeping your own `LimitMEMLOCK`, step 8), and run
 new daemon is listening (`Type=notify`, V4-104: as `Type=simple` it returned at
 fork, and a login sent straight after found nothing listening). The journal
 should show `event=started` again, and an existing device logs in as before.
+
+If it does not start, the unit's `ExecStartPre` has run the new build's
+`--check-config` on your configuration, and the journal names what it
+refused: a newer build can be stricter about a file an older one accepted.
+Fix the file, or go back to the binaries that were running:
+
+```text
+sudo cp -p /usr/local/lib/mldsa-authd-previous/* /usr/local/bin/
+sudo systemctl restart mldsa-authd
+```
+
+Then the browser module, the pages and the site, which step 14 copied and
+nothing since has replaced:
+
+```bash
+cd /opt/build/mldsa-auth
+cmake --build build-wasm -j"$(nproc)"
+ctest --test-dir build-wasm
+sudo rm -rf /opt/mldsa-site/web /opt/mldsa-site/examples/site-node
+sudo cp -r web /opt/mldsa-site/web
+sudo cp -r examples/site-node /opt/mldsa-site/examples/site-node
+sudo cp build-wasm/web/mldsa_client.mjs build-wasm/web/mldsa_client.wasm /opt/mldsa-site/module/
+sudo diff -u /etc/caddy/Caddyfile /usr/local/share/mldsa-authd/Caddyfile.example \
+     || echo "the Caddyfile differs from the example: read the diff"
+```
+
+`ctest` must report all 3 passed, as in step 13. Restart the site under your
+process manager. **Every visitor is logged out when the site restarts**: its
+sessions are in its memory, not the daemon's store. A visitor in the middle
+of a recovery starts it again, with another recovery code. The `diff`
+against the example Caddyfile always shows your hostname; read the rest, and
+if the example has changed, apply the change and `sudo systemctl reload caddy`.
 
 ## 23. Change the server passphrase
 

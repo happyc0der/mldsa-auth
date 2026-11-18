@@ -442,6 +442,27 @@ try {
               `login round trip ${t.login.toFixed(1)} ms`);
   check(t.seal > 0 && t.login > 0, 'timings: measured in the browser');
 
+  // V4-275 (F441): a page of a later release opening the store at a higher
+  // version is not held up by a tab running this code. A database of its
+  // own, so the identities above are not touched.
+  { const upgrade = await inPage(b, `
+      const name = 'mldsa-probe-441';
+      const held = await IdentityStore.open(name);
+      const r = await new Promise((res) => {
+        const q = indexedDB.open(name, 2);
+        q.onsuccess = () => { q.result.close(); res('opened'); };
+        q.onblocked = () => res('blocked');
+        q.onerror = () => res('error');
+        setTimeout(() => res('no answer'), 5000);
+      });
+      // Blocked (the old code): let go here, so the queued open and the
+      // delete below can run and this check fails by name, not by timeout.
+      if (r !== 'opened') { try { held.db.close(); } catch { /* closed already */ } }
+      await new Promise((res) => { const d = indexedDB.deleteDatabase(name); d.onsuccess = d.onerror = d.onblocked = () => res(); });
+      return r;`);
+    check(upgrade === 'opened',
+          `store: a later page opening the store at a higher version is let in by a tab still open on this one (${upgrade}) (F441)`); }
+
   // ---- recovery codes, then a fresh device recovers ----
   // V4-62: minting codes needs a login, not only the session -- so without the
   // passphrase the page cannot get them, and with it, it can.

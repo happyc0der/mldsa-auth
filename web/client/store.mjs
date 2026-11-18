@@ -97,10 +97,38 @@ export class IdentityStore {
   static async open(name = DB_NAME) {
     const req = indexedDB.open(name, 1);
     req.onupgradeneeded = () => { req.result.createObjectStore(STORE, { keyPath: 'handle' }); };
-    return new IdentityStore(await done(req));
+    // V4-275 (F441): a page of a later release that opens this database at a
+    // higher version waits until every open connection has closed. Without
+    // a word: `done` listened for success and error only, so that page would
+    // never finish starting. Today nothing opens above version 1; this is
+    // here so that the first release that does is not stuck behind tabs
+    // still running this code.
+    let blocked = false;
+    const s = new Promise((resolve, reject) => {
+      req.onsuccess = () => {
+        // Opened after all, once the other tab let go: too late for the
+        // caller, who was told. Close it rather than leak it.
+        if (blocked) { try { req.result.close(); } catch { /* gone */ } return; }
+        resolve(req.result);
+      };
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => {
+        blocked = true;
+        reject(new Error('another tab of this site is still open on an older version; close it and reload'));
+      };
+    });
+    return new IdentityStore(await s);
   }
 
-  constructor(db) { this.db = db; this.pageLocks = new PageLocks(); }
+  constructor(db) {
+    this.db = db;
+    this.pageLocks = new PageLocks();
+    // ...and THIS code's side of that (F441): when a later page asks for a
+    // higher version, this connection closes and lets it, rather than hold
+    // it up for as long as this tab stays open. This tab's next use of the
+    // store then fails, and says so.
+    this.db.onversionchange = () => { this.db.close(); };
+  }
 
   // Whether exclusive() excludes the other tabs of this origin too.
   get sharedLock() { return typeof navigator !== 'undefined' && !!navigator.locks; }

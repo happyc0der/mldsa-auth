@@ -372,6 +372,8 @@ ALLOW_NONZERO = {16: ["grep"], 23: ["grep"], 24: ["grep"]}
 # ```bash (V4-177, F251).
 NOT_COMMANDS = {
     (15, "log_identities = hashed"): "two configuration lines, quoted from authd.conf.example",
+    (22, "sudo cp -p /usr/local/lib/mldsa-authd-previous/* /usr/local/bin/"): "the rollback, for an upgrade that did not start; "
+                                                  "the rehearsal's upgrade starts (V4-275)",
 }
 
 
