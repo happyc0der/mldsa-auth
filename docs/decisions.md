@@ -19780,3 +19780,64 @@ Spec v1.82, erratum 124.
 Counts: 696 mutations, 127 campaigns, 741 anchors; 454 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.82, 124 errata; 65 tests.
+
+## V4-279 — the reference site, read whole again: a page that acts on load, a cookie another tab cleared, a command line that took anything (F455 to F459)
+
+The forty-eighth review read `examples/site-node/server.mjs` and
+`authd.mjs` whole, for the first time since about thirty fixes had
+touched them one at a time, looking at how those fixes meet: the
+monotonic clock against `Date.now`, retire-then-rotate against the
+routes that end a session, every route's status, the relay, static
+serving, startup. Three Low findings and two Info; nothing Medium.
+
+- **F455.** The timing page is served only by a site started with
+  `onTiming`, which only `tools/phone_timing.mjs` passes. The check is
+  on the resolved path, lower-cased, not the URL: a case-insensitive
+  filesystem (this Mac's) serves `/Timing.html` as the same file. The
+  runbook still copies all of `web`; a page that is not served needs no
+  separate copy step, and keeping one copy command keeps the upgrade
+  step's re-copy (V4-275) the same.
+- **F456.** The review named one path: a request that looked its
+  session up before another tab's rotation, whose `VERIFY` was then
+  refused because the rotation had ended the token, and which cleared
+  the cookie by name. Fixed as recommended: `/api/me` clears the cookie
+  only of a session still in the table. Working the fix found the second
+  path, the same race arriving a moment later: the old id names nothing,
+  so the site made a new anonymous session and set ITS cookie, which
+  replaced the rotation's just the same. An id rotated away is now
+  remembered for 60 s (`replacedMs`, at most `maxReplaced` of them), and
+  a request carrying one is answered 409 `session replaced` with no
+  session and no cookie. It is not mapped to the new session: that would
+  reopen session fixation (F131) for the window, so the remembered id
+  reaches nothing. The account page says to reload. The F131 fixation
+  checks now expect 409 for the planted id; they still check it is not
+  logged in and cannot mint codes. Spec §14 says a site clears only its
+  own session's cookie, erratum 125.
+- **F457.** `args()` is strict, and `--invite` is gone: no test or
+  document used it, and its one effect in production was the silent
+  case. `startSite` refuses no `authdSite` for callers that are not the
+  command line.
+- **F458, F459.** As the review recommended.
+- **Not counted, as the review judged:** one daemon connection per
+  request with no cap (F282, F421, open; the F132 decision).
+
+No campaign: no compiled code changed. Each fix was shown to be checked:
+six hand mutants of `server.mjs` (the `/api/me` guard, the replaced-id
+refusal, the timing check's lower-casing, the ticket's expiry in the
+rank, the unknown-flag refusal, the `authdSite` refusal), each failing
+its own named check in `site_sessions` and restored byte-exact. Two
+things the run taught:
+- `/TIMING.HTML` was the wrong spelling to test case: `.HTML` is not in
+  the MIME table, so it was refused before the timing check, mutant or
+  not. `/Timing.html` is served by the mutant on this Mac. On Linux the
+  same spelling is not found at all, so CI checks the exact names and
+  only a case-insensitive filesystem checks the lower-casing.
+- The older checks that an id from before a signup or a recovery cannot
+  enroll (403) now see 409: the id is refused as replaced before the
+  route runs. They still fail if the id reaches the new session.
+
+Spec v1.83, erratum 125.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 459 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.83, 125 errata; 65 tests.

@@ -12,14 +12,19 @@
  * the Origin check expect https://, which is what a browser sends there --
  * without it every POST is refused as cross-origin. The invite is read from a
  * file because argv is readable by every process on the host (spec 12's rule
- * for passphrases, applied to the site's own secret); --invite remains for
- * tests. --trust-proxy takes the client's address from the RIGHTMOST
+ * for passphrases, applied to the site's own secret); there is no --invite
+ * flag (V4-279, F457). --trust-proxy takes the client's address from the RIGHTMOST
  * X-Forwarded-For entry, the one the proxy itself added (spec 14;
  * the recovery route's rate limit keys on it); without it the key is the TCP
  * peer, which behind a proxy is the proxy. Behind Caddy, /authd/v1 is routed to the daemon before it reaches
  * this process, so --authd-ws/--authd-ws-unix are used only without a proxy.
  *
- * (opt.host and opt.onTiming exist for tools/phone_timing.mjs only.)
+ * (opt.host and opt.onTiming exist for tools/phone_timing.mjs only; without
+ * opt.onTiming the timing page itself is not served either, F455.)
+ *
+ * Any other flag, a flag given twice, or one with no value stops the site at
+ * start, as do a missing --authd-site, --server-id, --server-pub,
+ * --module-dir or --invite-file (V4-279, F457).
  *
  * What it demonstrates, because a site gets each of these wrong at its peril:
  *
@@ -88,13 +93,33 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; ch
                '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm',
                '.css': 'text/css; charset=utf-8' };
 
+// The command line, strictly (V4-279, F457). Unknown words used to be
+// skipped and unknown flags kept: a misspelled --authd-site started a site
+// that answered 503 to every login for good, `--secure=1 --trust-proxy`
+// dropped both, and `--invite <path>` made the path the invite.
 const FLAGS = new Set(['secure', 'trust-proxy']);
-function args(argv) {
+const VALUED = new Set(['authd-site', 'authd-ws', 'authd-ws-unix', 'server-id', 'server-pub',
+                        'module-dir', 'invite-file', 'port']);
+const REQUIRED = ['authd-site', 'server-id', 'server-pub', 'module-dir', 'invite-file'];
+export function args(argv) {
   const a = {};
   for (let i = 0; i < argv.length; i++) {
-    if (!argv[i].startsWith('--')) { continue; }
-    const k = argv[i].slice(2);
-    if (FLAGS.has(k)) { a[k] = true; } else { a[k] = argv[i + 1]; i++; }
+    const k = argv[i].startsWith('--') ? argv[i].slice(2) : null;
+    if (k === null || (!FLAGS.has(k) && !VALUED.has(k))) {
+      throw new Error(`server.mjs: unknown argument ${JSON.stringify(argv[i])}`);
+    }
+    if (Object.hasOwn(a, k)) { throw new Error(`server.mjs: --${k} given twice`); }
+    if (FLAGS.has(k)) { a[k] = true; continue; }
+    const v = argv[i + 1];
+    if (v === undefined || v === '' || v.startsWith('--')) { throw new Error(`server.mjs: --${k} needs a value`); }
+    a[k] = v;
+    i++;
+  }
+  for (const k of REQUIRED) {
+    if (!Object.hasOwn(a, k)) { throw new Error(`server.mjs: --${k} is required`); }
+  }
+  if (Object.hasOwn(a, 'port') && !/^[0-9]{1,5}$/.test(a.port)) {
+    throw new Error(`server.mjs: --port must be a number, not ${JSON.stringify(a.port)}`);
   }
   return a;
 }
@@ -165,6 +190,7 @@ export async function startSite(opt) {
     '/client/': join(REPO, 'web', 'client'),
     '/module/': resolve(opt.moduleDir),
   };
+  const TIMING_FILES = new Set(['timing.html', 'timing.mjs'].map((f) => join(ROOTS['/'], f).toLowerCase()));
 
   // /api/recover answers anyone, so it is limited per client (V4-76, F143): a
   // bucket of RECOVER_BURST attempts that refills one per RECOVER_REFILL_MS,
@@ -210,6 +236,11 @@ export async function startSite(opt) {
   // undefined against undefined -- a signup that offered nothing was vouched.
   if (typeof opt.invite !== 'string' || opt.invite === '') {
     throw new Error('startSite: an invite is required');
+  }
+  // Without the daemon's site socket every route answered 503 for good, which
+  // looked like the daemon being away, not like the site's own setting (F457).
+  if (typeof opt.authdSite !== 'string' || opt.authdSite === '') {
+    throw new Error('startSite: authdSite (the daemon\'s site socket) is required');
   }
   const INVITE_DIGEST = createHash('sha256').update(opt.invite).digest();
   // The daemon's WebSocket address is parsed HERE, at start (V4-158, F234).
@@ -264,6 +295,11 @@ export async function startSite(opt) {
   const IDLE_MS = opt.sessionIdleMs ?? 30 * 60 * 1000;
   const MAX_ANON = opt.maxAnonSessions ?? 10000;
   let anon = 0;                     // sessions with no token: the ones the cap bounds
+  // Ids rotated away in the last REPLACED_MS, oldest first, at most
+  // MAX_REPLACED of them (F456). Longer than a request to the daemon may take.
+  const replaced = new Map();
+  const REPLACED_MS = opt.replacedMs ?? 60 * 1000;
+  const MAX_REPLACED = opt.maxReplaced ?? 10000;
 
   const drop = (s) => {
     if (sessions.delete(s.sid) && !s.token) { anon--; }
@@ -283,7 +319,11 @@ export async function startSite(opt) {
     // send, so the sessions holding nothing go first. Vouched signups go
     // next: the invite is shared and makes as many as its holder likes.
     // Tickets go last: each one cost a valid recovery code.
-    const rank = (o) => (o.ticket !== null ? 2 : o.signupUser !== null ? 1 : 0);
+    // A ticket counts only while the daemon would still take it (F458): the
+    // F304 expiry check runs when a session is touched, so an untouched one
+    // kept the top rank for up to its last twenty idle minutes.
+    const live = (t) => t !== null && !(Number.isFinite(t.expires) && t.expires * 1000 <= Date.now());
+    const rank = (o) => (live(o.ticket) ? 2 : o.signupUser !== null ? 1 : 0);
     for (const tier of [0, 1, 2]) {
       if (anon < MAX_ANON) { break; }
       for (const old of sessions.values()) {
@@ -322,12 +362,29 @@ export async function startSite(opt) {
       return s;
     }
     if (s) { drop(s); }
+    // A cookie that names a session rotated away moments ago is a request
+    // that left before the rotation's answer arrived (V4-279, F456). A new
+    // session for it would set a new cookie, and that answer, landing after
+    // the rotation's, would replace the cookie the visitor now logs in with.
+    // It gets no session and no cookie: null, refused by the caller.
+    for (const m of (req.headers.cookie || '').matchAll(COOKIE_RE)) {
+      const at = replaced.get(m[1]);
+      if (at !== undefined && monoMs() - at <= REPLACED_MS) { return null; }
+    }
     return create(res);
   };
   // A new id for what the session is about to become; the old id is dropped
-  // with everything it held (F131).
+  // with everything it held (F131), and remembered for REPLACED_MS as
+  // replaced -- only so that a request still carrying it sets no cookie.
+  // A replaced id names no session: it cannot be used to reach the new one.
   const rotate = (res, s) => {
     drop(s);
+    replaced.delete(s.sid);
+    replaced.set(s.sid, monoMs());
+    for (const [old, at] of replaced) {
+      if (replaced.size <= MAX_REPLACED && monoMs() - at <= REPLACED_MS) { break; }
+      replaced.delete(old);
+    }
     return create(res);
   };
   // Before a logged-in session is rotated away, its token is ended at the
@@ -446,7 +503,12 @@ export async function startSite(opt) {
         // whose page asked in that moment, and answered with Node's error
         // name (`ENOENT`) as the reason.
         if (away(e)) { return unavailable(res); }
-        end(res, s);
+        // Only a session still in the table has a cookie of its own to clear
+        // (V4-279, F456). A login, signup or recovery in another tab ends the
+        // old token at the daemon and rotates the session away (F366); this
+        // request's VERIFY, refused for that, would otherwise clear the
+        // cookie by name -- the NEW session's, set by the other tab.
+        if (sessions.get(s.sid) === s) { end(res, s); }
         send(res, 401, { error: e.code });
       }
     },
@@ -567,13 +629,26 @@ export async function startSite(opt) {
       // `await`, so a route's rejection lands in the catch below. Without it
       // (F136) the rejection escaped this handler, and Node ended the process
       // on it: one POST of a malformed body stopped the site.
-      if (route) { return await route(req, res, session(req, res)); }
+      if (route) {
+        const s = session(req, res);
+        // F456: the cookie names a session another tab's login, signup or
+        // recovery just replaced. No Set-Cookie, so the new one stands.
+        if (s === null) { return send(res, 409, { error: 'session replaced' }); }
+        return await route(req, res, s);
+      }
       if (req.method !== 'GET') { return send(res, 405, { error: 'method' }); }
       if (url.pathname === '/') { res.writeHead(302, { Location: '/login.html' }); return res.end(); }
       for (const [prefix, root] of Object.entries(ROOTS).sort((x, y) => y[0].length - x[0].length)) {
         if (!url.pathname.startsWith(prefix)) { continue; }
         const path = normalize(join(root, url.pathname.slice(prefix.length)));
         if (!path.startsWith(root + sep) || !MIME[extname(path)]) { break; }
+        // The timing page only for the tool that asked for it (V4-279, F455).
+        // It acts on load (`#invite=…&auto=1`): enrolls, logs in and deletes
+        // a key, and its signup rotates the visitor's session away, so a link
+        // to it logged a visitor out -- what V4-133 closed for the API
+        // routes. Compared as a resolved, lower-cased path: a filesystem that
+        // ignores case serves `/Timing.html` as the same file.
+        if (!opt.onTiming && TIMING_FILES.has(path.toLowerCase())) { break; }
         try { return send(res, 200, await readFile(path), MIME[extname(path)]); } catch { break; }
       }
       send(res, 404, { error: 'not found' });
@@ -651,10 +726,11 @@ export async function startSite(opt) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const a = args(process.argv.slice(2));
+  let a;
+  try { a = args(process.argv.slice(2)); } catch (e) { console.error(e.message); process.exit(2); }
   const pubImage = readFileSync(a['server-pub']);
-  const invite = a['invite-file'] ? readFileSync(a['invite-file'], 'utf8').replace(/\r?\n$/, '') : a.invite;
-  if (!invite) { console.error('server.mjs: --invite-file is required'); process.exit(2); }
+  const invite = readFileSync(a['invite-file'], 'utf8').replace(/\r?\n$/, '');
+  if (!invite) { console.error('server.mjs: the invite file is empty'); process.exit(2); }
   const { port } = await startSite({
     authdSite: a['authd-site'], authdWs: a['authd-ws'], authdWsUnix: a['authd-ws-unix'],
     serverId: a['server-id'], serverPub: pubImage, moduleDir: a['module-dir'], invite,

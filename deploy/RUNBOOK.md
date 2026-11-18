@@ -598,7 +598,6 @@ sudo install -d -o www-data -g www-data -m 0700 /etc/mldsa-site
 head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | sudo install -o www-data -m 0600 /dev/stdin /etc/mldsa-site/invite
 sudo -u www-data node /opt/mldsa-site/examples/site-node/server.mjs \
      --authd-site /run/mldsa-authd/site.sock \
-     --authd-ws-unix /run/mldsa-authd/p.sock \
      --server-id authd --server-pub /opt/mldsa-site/server.pub \
      --module-dir /opt/mldsa-site/module \
      --invite-file /etc/mldsa-site/invite --port 9080 --secure --trust-proxy
@@ -613,7 +612,14 @@ fine; the invite is a secret, so its directory is the site user's alone.
 
 It prints `{"port":9080}`. Run it under your process manager. Keep the layout:
 the server finds `web/` two directories above itself, as it does in the
-repository.
+repository. It stops at start, naming the word, on any flag it does not know,
+a flag given twice or without its value, and a missing `--authd-site`,
+`--server-id`, `--server-pub`, `--module-dir` or `--invite-file` (V4-279,
+F457): a misspelled `--authd-site` used to start a site that answered every
+login with 503, and there is no `--invite` flag to put the secret, or its
+path, on the command line. `web/pages/timing.html` is copied with the rest
+and not served: only `tools/phone_timing.mjs` starts a site that serves it
+(F455).
 
 - **`--secure` is not optional behind TLS.** The browser sends
   `Origin: https://…`, and without the flag the site expects `http://` and
@@ -638,9 +644,9 @@ repository.
 `deploy/Caddyfile.example` already routes `/authd/v1` to the daemon and
 everything else to `127.0.0.1:9080`, under the Content-Security-Policy the
 pages need. Keep `'wasm-unsafe-eval'` — the module cannot compile without it —
-and add nothing looser: there is no inline script anywhere. So
-`--authd-ws-unix` is never used behind Caddy; it is there for running the
-site without a proxy.
+and add nothing looser: there is no inline script anywhere. So the command
+above passes neither `--authd-ws` nor `--authd-ws-unix`: they are for running
+the site without a proxy (F459).
 
 ## 15. The journal
 

@@ -19,7 +19,10 @@ const noAnswer = `The site did not answer as this page expects (HTTP ${meRes.sta
 document.getElementById('who').textContent = me ? `Logged in as ${me.user} (${me.handle})`
   : meRes.status === 503 ? 'The login service is not answering; reload in a moment'
   : meRes.status === 0 ? 'The site could not be reached; reload in a moment'
-  : meRes.status === 401 ? 'Not logged in' : noAnswer;
+  : meRes.status === 401 ? 'Not logged in'
+  // 409: a login in another tab replaced this page's session while it loaded
+  // (V4-279, F456); the browser now holds the new one.
+  : meRes.status === 409 ? 'You logged in again in another tab; reload this page' : noAnswer;
 document.body.dataset.ready = '1';
 
 // Why there is no session to act on (F237): "log in first" was said for a 503
@@ -28,7 +31,8 @@ const needMe = () => {
   if (!me) {
     throw new Error(why === 503 ? 'the login service is not answering; try again in a moment'
       : why === 0 ? 'the site could not be reached; reload and try again'
-      : why === 401 ? 'log in first' : 'the site did not answer as this page expects; reload and try again');
+      : why === 401 ? 'log in first' : why === 409 ? 'reload this page: another tab logged in again'
+      : 'the site did not answer as this page expects; reload and try again');
   }
 };
 action('rotate', async () => {

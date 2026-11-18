@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.82, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278)
+# mldsa-authd — deployment specification (v1.83, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1255,7 +1255,13 @@ token** — `VERIFY` answering `unknown`, `expired`, `idle-expired`,
 the connection, does not answer in time (the reference site waits 10 s) or
 answers `internal` or `busy` has refused nothing: the site answers 503 and
 keeps the session, because a token issued before a daemon restart is valid
-after it (erratum 91). `examples/site-node/server.mjs` is the reference.
+after it (erratum 91). **A site clears only its own session's cookie**
+(erratum 125): a request still carrying an id that another tab's login,
+signup or recovery has just rotated away gets no session and no `Set-Cookie`
+(the reference site answers 409 for 60 s), and a `VERIFY` refused for a
+session already rotated away clears nothing — either one, answered with a
+cookie, would replace the one the rotation set and log the visitor out of
+the new session. `examples/site-node/server.mjs` is the reference.
 
 **The passphrase policy** (erratum 35), enforced inside the module so a page
 cannot seal around it: at least 12 characters (code points, not bytes); not a
@@ -2313,3 +2319,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 124 | 1, 4 | A compromised site cannot revoke an operator's device, and can end and list any user's tokens and devices; the session token is kept server-side, not set as a cookie; phishing resistance is stated for logins, not recovery codes | §4 said a compromised site can "revoke anything", which V4-82 (erratum 65) ended for operators' devices, and left out what it can still do to operators (F419). §1 said the site "sets [the token] as a cookie", where §14 and the reference site keep it server-side and the cookie holds a session id. And "phishing-resistant" was said of the deployment, where a recovery code given to a look-alike page recovers the account (audit F452, F453) |
+
+### Revision v1.83 (V4-279)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 125 | 14 | A site clears only its own session's cookie: a request carrying an id rotated away in the last 60 s gets no session and no cookie (409), and a refused `VERIFY` of a session already rotated away clears nothing | Since V4-253 (F366) a login, signup or recovery ends the old token before rotating, so the account page's `/api/me` racing a login in another tab was refused and cleared the cookie by name — the new session's — leaving that session orphaned and a fresh recovery ticket lost (F456) |

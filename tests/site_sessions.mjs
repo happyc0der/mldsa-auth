@@ -99,10 +99,12 @@ try {
         'fixation: a login answers with a NEW session id, not the one the browser came with');
   check((await get('/api/me', fresh)).status === 200, 'fixation: the new id is the logged-in session (the canary)');
   // 3. The attacker, holding only the planted id.
-  check((await get('/api/me', planted)).status === 401,
+  // (409, not 401, since V4-279: an id rotated away moments ago is refused
+  // as replaced, with no new cookie, F456. Either way it is not logged in.)
+  check((await get('/api/me', planted)).status === 409,
         'fixation: the id issued before the login is NOT logged in after it');
   const rc = await post('/api/recovery-codes', {}, planted);
-  check(rc.status === 401, 'fixation: the planted id cannot mint the visitor\'s recovery codes');
+  check(rc.status === 409, 'fixation: the planted id cannot mint the visitor\'s recovery codes');
   check(!sessions.has(planted), 'fixation: the pre-login id is gone from the table, not just logged out');
 
   // V4-96, F166: a refused login answers one word, whatever the daemon's reason.
@@ -133,7 +135,8 @@ try {
     check(su.status === 200 && after !== undefined && after !== before, 'signup: answers with a new session id');
     const atk = client.newIdentity('an attacker passphrase, long enough');
     const en = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage) }, before);
-    check(en.status === 403, 'signup: the id from before the signup cannot enroll a key into the new account');
+    // 409 since V4-279 (F456): the id was rotated away moments ago.
+    check(en.status === 409, 'signup: the id from before the signup cannot enroll a key into the new account');
   }
   // V4-62 (the owner's decision): minting recovery codes needs a LOGIN -- the
   // device key and the passphrase -- not only a logged-in session.
@@ -171,7 +174,8 @@ try {
     check(rv.status === 200 && after !== undefined && after !== before, 'recovery: spending a code answers with a new session id');
     const atk = client.newIdentity('an attacker passphrase, long enough');
     const en = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage) }, before);
-    check(en.status === 403, 'recovery: the id from before the recovery cannot use its ticket to enroll a key');
+    // 409 since V4-279 (F456): the id was rotated away moments ago.
+    check(en.status === 409, 'recovery: the id from before the recovery cannot use its ticket to enroll a key');
     const devices = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
     check(devices.startsWith('OK count=1'), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
   }
@@ -908,6 +912,153 @@ try {
     const late = await tsess(sid2);
     check(late.recovering === false && held && held.ticket === null,
           `ticket: one past its expiry is no longer held (recovering=${late.recovering}) (F304)`);
+  }
+  // V4-279, F455: the timing page acts on load (it enrolls, logs in and
+  // deletes a key, and its signup rotates the visitor's session away), so a
+  // site serves it only to the tool that asked for it.
+  {
+    const ns = await start();
+    const nb = `http://127.0.0.1:${ns.port}`;
+    const st = async (path) => { const r = await fetch(`${nb}${path}`); await r.arrayBuffer(); return r.status; };
+    const got = [await st('/login.html'), await st('/timing.html'), await st('/timing.mjs'),
+                 await st('/Timing.html'), await st('/./timing.mjs')];
+    check(got[0] === 200 && got.slice(1).every((c) => c === 404),
+          `timing page: a site without onTiming serves login.html but not the timing page, in any spelling (${got.join(', ')}) (F455)`);
+    const ts = await start({ onTiming: () => {} });
+    const tr = await fetch(`http://127.0.0.1:${ts.port}/timing.html`);
+    check(tr.status === 200 && /phone_timing/.test(await tr.text()),
+          `timing page: a site started for the timing tool still serves it (${tr.status}) (not vacuous)`);
+  }
+  // V4-279, F456: a request that left with the cookie of a session another
+  // tab then rotated away must not touch the cookie the rotation set.
+  {
+    // 1. It arrives AFTER the rotation: the old id names a replaced session.
+    const a = idOf(await login(idOf(await get('/api/session')), vid, PASS));
+    const b = idOf(await login(a, vid, PASS));
+    check(a !== undefined && b !== undefined && b !== a && (await get('/api/me', b)).status === 200,
+          'replaced: a second login rotates the session to a new id (the canary)');
+    const late = await get('/api/me', a);
+    const lateS = await get('/api/session', a);
+    check(late.status === 409 && late.headers.get('set-cookie') === null &&
+          lateS.status === 409 && lateS.headers.get('set-cookie') === null,
+          `replaced: a request still carrying the replaced id is refused and sets no cookie (${late.status} ${late.headers.get('set-cookie')}; ` +
+          `${lateS.status} ${lateS.headers.get('set-cookie')}) (F456)`);
+    check((await get('/api/me', b)).status === 200 && !sessions.has(a),
+          'replaced: the new session stands, and the replaced id names nothing (F456)');
+    // Only for a short while: past it, an old id is an unknown one again.
+    const rs = await start({ replacedMs: 100 });
+    const rb = `http://127.0.0.1:${rs.port}`;
+    const ra = idOf(await fetch(`${rb}/api/signup`, { method: 'POST', body: JSON.stringify({ user: 'replaced-279', invite: 'the-invite' }),
+                                                      headers: { Origin: rb, 'Content-Type': 'application/json' } }));
+    const r2 = await fetch(`${rb}/api/signup`, { method: 'POST', body: JSON.stringify({ user: 'replaced-279b', invite: 'the-invite' }),
+                                                headers: { Cookie: `sid=${ra}`, Origin: rb, 'Content-Type': 'application/json' } });
+    const soon = await fetch(`${rb}/api/session`, { headers: { Cookie: `sid=${ra}` } });
+    await sleep(300);
+    const later = await fetch(`${rb}/api/session`, { headers: { Cookie: `sid=${ra}` } });
+    check(r2.status === 200 && soon.status === 409 && later.status === 200 && idOf(later) !== undefined && idOf(later) !== ra,
+          `replaced: past replacedMs the old id gets a new session as any unknown id does (${r2.status}, ${soon.status}, ${later.status}) (F456)`);
+
+    // 2. It looked its session up BEFORE the rotation, and its VERIFY reaches
+    //    the daemon after the rotation's LOGOUT: refused, so before V4-279
+    //    the site cleared the cookie by name -- the new session's.
+    const relayPath = join(dirname(info.site), 'relay279.sock');
+    let gate = null;                  // a held VERIFY: { conn, first, release }
+    let heldOne;
+    const holding = new Promise((r) => { heldOne = r; });
+    const relay = createServer((c) => {
+      c.on('error', () => {});
+      c.once('data', (first) => {
+        const go = () => {
+          const u = createConnection(info.site);
+          u.on('error', () => c.destroy());
+          c.on('close', () => u.destroy());
+          u.write(first);
+          c.pipe(u); u.pipe(c);
+        };
+        if (gate === 'armed' && String(first).startsWith('VERIFY ')) {
+          c.pause();
+          gate = { release: () => { c.resume(); go(); } };
+          heldOne();                 // the relay says so; nothing polls for it
+        } else { go(); }
+      });
+    });
+    await new Promise((r) => relay.listen(relayPath, r));
+    try {
+      const g = await start({ authdSite: relayPath });
+      const gb = `http://127.0.0.1:${g.port}`;
+      const gget = (path, sid) => fetch(`${gb}${path}`, { headers: sid ? { Cookie: `sid=${sid}` } : {} });
+      const glogin = async (sid) => {
+        const st = await (await gget('/api/session', sid)).json();
+        const ls = await client.login({ url: `ws://127.0.0.1:${g.port}/authd/v1?state=${st.state}`, serverId: info.server_id,
+                                        serverPub, handle: vid.handle, passphrase: PASS, envelope: vid.envelope });
+        const code = Buffer.from(ls.code).toString('base64url');
+        await ls.close();
+        return fetch(`${gb}/api/login`, { method: 'POST', body: JSON.stringify({ code }),
+                                          headers: { Cookie: `sid=${sid}`, Origin: gb, 'Content-Type': 'application/json' } });
+      };
+      const ga = idOf(await glogin(idOf(await gget('/api/session'))));
+      check(ga !== undefined && (await gget('/api/me', ga)).status === 200, 'in flight: a visitor logs in through the relay (the canary)');
+      gate = 'armed';
+      const tab1 = gget('/api/me', ga);                 // the account page loading in tab 1
+      await holding;                                    // its VERIFY is held at the relay
+      const tab2 = await glogin(ga);                    // tab 2 logs in again
+      const gbid = idOf(tab2);
+      gate.release();
+      const r1 = await tab1;
+      const cleared = r1.headers.get('set-cookie');
+      check(tab2.status === 200 && gbid !== undefined && r1.status === 401,
+            `in flight: tab 2's login rotates the session and tab 1's VERIFY is refused (${tab2.status}, ${r1.status}) (not vacuous)`);
+      check(cleared === null,
+            `in flight: tab 1's refused /api/me does not clear the cookie tab 2's login set (${cleared}) (F456)`);
+      check((await gget('/api/me', gbid)).status === 200 && g.sessions.has(gbid),
+            'in flight: tab 2\'s session is logged in (F456)');
+    } finally {
+      await new Promise((r) => relay.close(r));
+    }
+  }
+  // V4-279, F458: a ticket past its expiry keeps no eviction rank, even in
+  // a session nobody touched since.
+  {
+    const es = await start({ maxAnonSessions: 3 });
+    const eb = `http://127.0.0.1:${es.port}`;
+    const ids = [];
+    for (let i = 0; i < 3; i++) { ids.push(idOf(await fetch(`${eb}/api/session`))); }
+    const [expired, liveT, plain] = ids.map((i) => es.sessions.get(i));
+    const nowS = Math.floor(Date.now() / 1000);
+    expired.ticket = { user: 'x', ticket: '00', expires: nowS - 1 };
+    liveT.ticket = { user: 'y', ticket: '01', expires: nowS + 600 };
+    plain.signupUser = 'vouched-458';
+    await (await fetch(`${eb}/api/session`)).arrayBuffer();   // a fourth: one of the three must go
+    check(!es.sessions.has(ids[0]) && es.sessions.has(ids[1]) && es.sessions.has(ids[2]),
+          `evict: the session whose ticket expired goes before a vouched signup and a live ticket ` +
+          `(kept: ${ids.map((i) => es.sessions.has(i)).join(', ')}) (F458)`);
+  }
+  // V4-279, F457: the site's command line is strict.
+  {
+    const { args } = await import(pathToFileURL(`${repo}/examples/site-node/server.mjs`).href);
+    const ok = ['--authd-site', '/s', '--server-id', 'authd', '--server-pub', 'p', '--module-dir', 'm', '--invite-file', 'i'];
+    let good;
+    try { good = args([...ok, '--port', '9080', '--secure', '--trust-proxy']); } catch (e) { good = e.message; }
+    check(good && good['authd-site'] === '/s' && good.port === '9080' && good.secure === true && good['trust-proxy'] === true,
+          `argv: the runbook's command line is accepted (the canary) (${JSON.stringify(good)})`);
+    const bad = [
+      [['--authd-sock', '/s', ...ok.slice(2)], /unknown argument/],
+      [[...ok, '--invite', 'secret'], /unknown argument "--invite"/],
+      [[...ok, '--secure=1'], /unknown argument/],
+      [[...ok, 'stray'], /unknown argument/],
+      [ok.slice(2), /--authd-site is required/],
+      [[...ok.slice(0, 8)], /--invite-file is required/],
+      [[...ok, '--port', '--secure'], /--port needs a value/],
+      [[...ok, '--port', '80x'], /--port must be a number/],
+      [[...ok, '--server-id', 'again'], /--server-id given twice/],
+    ];
+    const wrong = bad.filter(([argv, re]) => { try { args(argv); return true; } catch (e) { return !re.test(e.message); } });
+    check(wrong.length === 0, `argv: ${bad.length - wrong.length}/${bad.length} malformed command lines refused, each by name` +
+          (wrong.length ? ` (not: ${wrong.map(([a]) => a.join(' ')).join(' | ')})` : '') + ' (F457)');
+    let refused;
+    try { await startSite({ serverId: info.server_id, serverPub, moduleDir: `${repo}/web`, invite: 'the-invite' }); refused = null; }
+    catch (e) { refused = e.message; }
+    check(refused !== null && /authdSite/.test(refused), `argv: startSite with no daemon site socket refuses to start (${refused}) (F457)`);
   }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
