@@ -73,6 +73,7 @@ M = {
  "G4": (LA, [("""    if (locked) {
         if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);   /* F476 */
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }
@@ -92,6 +93,7 @@ M = {
     if (locked) {   /* MUTATION G4: lockout enforced after the KDF, not before */
         if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);   /* F476 */
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }""")]),

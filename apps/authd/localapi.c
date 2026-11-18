@@ -50,11 +50,19 @@ static int parse_request(const uint8_t *line, size_t len, req_t *r)
     while (i < len && line[i] != ' ') {
         i++;
     }
-    if (i == 0u || i >= sizeof r->cmd) {
+    if (i == 0u) {
         return -1;
     }
-    memcpy(r->cmd, line, i);
-    r->cmd[i] = '\0';
+    if (i >= sizeof r->cmd) {
+        /* V4-285, F477: a command name longer than any command is a
+         * command that does not exist, which §8 answers `not-permitted`; it
+         * was `malformed`. "?" matches no table entry, and is what the
+         * journal's local-request line says instead of the long name. */
+        memcpy(r->cmd, "?", 2u);
+    } else {
+        memcpy(r->cmd, line, i);
+        r->cmd[i] = '\0';
+    }
 
     while (i < len) {
         if (line[i] != ' ') {
@@ -404,6 +412,10 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
                                                  ustatus, sizeof ustatus);
         if (gu == STORE_ERR_NOT_FOUND) {
             sodium_memzero(thash, sizeof thash);
+            /* V4-285, F473: Req 7 is logged whatever else refuses the
+             * request, as erratum 118 has it for the user's other refusals:
+             * a known handle with a different key, named by an unknown user. */
+            note_req7_before_refusal(app, slot, handle, handle_len, pk);
             return send_err(slot, "ticket-invalid");
         }
         if (gu != STORE_OK) {
@@ -428,7 +440,12 @@ static ev_action_t enroll_common(authd_app_t *app, authd_slot_t *slot, const req
                                                              (label_len > 0u) ? label : NULL, label_len,
                                                              app->now_unix, &ticket_idem);
         sodium_memzero(thash, sizeof thash);
-        if (es == STORE_ERR_NOT_FOUND) { return send_err(slot, "ticket-invalid"); }
+        if (es == STORE_ERR_NOT_FOUND) {
+            /* F473: the store checks the ticket before the handle, so a bad
+             * ticket used to hide a different key on a known handle. */
+            note_req7_before_refusal(app, slot, handle, handle_len, pk);
+            return send_err(slot, "ticket-invalid");
+        }
         if (es == STORE_ERR_STATE)     { return send_err(slot, "user-disabled"); }
         if (es == STORE_ERR_CONFLICT)  {
             /* Req 7 or a re-used public key. The ticket is NOT spent (the whole
@@ -872,9 +889,14 @@ static ev_action_t set_user_status(authd_app_t *app, authd_slot_t *slot, const r
     if (s != STORE_OK) {
         return send_err(slot, "internal");
     }
+    /* V4-285, F475: who, in the journal. §15 logs every status change of
+     * a user; the line named no user, and an enable wrote none at all. */
     if (disable) {
         const size_t closed = authd_app_close_user(app, user, user_len);
+        authd_log_slot_id(AUTHD_LOG_WARN, "user-disabled", slot->index, user, user_len);
         authd_log_num(AUTHD_LOG_WARN, "user-disabled", "closed", (uint64_t)closed);
+    } else {
+        authd_log_slot_id(AUTHD_LOG_WARN, "user-enabled", slot->index, user, user_len);
     }
     resp_t r;
     resp_init(&r);
@@ -1099,7 +1121,11 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
     if (us == STORE_ERR_NOT_FOUND) {
         /* §8 defines no error code for RECOVERY-ISSUE at all (recorded as a
          * spec gap); `invalid` is borrowed from RECOVERY-USE's vocabulary
-         * rather than inventing a new one. */
+         * rather than inventing a new one. V4-285, F474: every refusal of a
+         * well-formed RECOVERY-ISSUE writes a recovery-issue line, as every
+         * refusal of RECOVERY-USE does (F393). */
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-issue", slot->index, "invalid");
         return send_err(slot, "invalid");
     }
     if (us != STORE_OK) {
@@ -1116,12 +1142,17 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
      * ever minted. Discloses nothing new: the site socket can already learn a
      * user's role from ENROLL's role-mismatch. */
     if (role == STORE_ROLE_OPERATOR && !slot->is_admin) {
+        /* F474: a site minting an operator's codes is F43's escalation. */
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-issue", slot->index, "not-permitted");
         return send_err(slot, "not-permitted");
     }
     /* The role is asked before the status (F394): an operator is not the
      * site's to recover, disabled or not, as REVOKE-DEVICE has answered
      * since F172. */
     if (strcmp(status, "active") != 0) {
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-issue", slot->index, "user-disabled");
         return send_err(slot, "user-disabled");
     }
 
@@ -1305,6 +1336,7 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
     if (locked) {
         if (recovery_spend_one(app->recovery_ops, app->recovery_mem) != 0) { return kdf_failed(slot); }
         app->recovery_kdf_calls++;
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);   /* F476 */
         authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "locked");
         return send_err(slot, "locked");
     }

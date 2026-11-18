@@ -20021,3 +20021,42 @@ Spec v1.86, erratum 128.
 Counts: 702 mutations, 129 campaigns, 747 anchors; 472 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.86, 128 errata; 65 tests.
+
+## V4-285 — the local API, read whole again: the journal's gaps (F473 to F477)
+
+The fifty-second review read `localapi.c` whole with its parser,
+dispatch and the admin tool, and drove the real handlers with a harness
+of its own. The parser, the per-socket tables, the half-duplex
+buffering, the error mapping against §8, the recovery budget and
+lockout, the token rules and the list bounds were all as the spec has
+them. What it found is the journal: five places where §15 says a thing
+is always logged and it was not, or not with whom.
+
+- **F473 to F476.** Each the same shape as an earlier fix, F392 or F393,
+  missed at one more return. The detail words of `recovery-issue` are
+  `recovery-use`'s own; `user-enabled` is a new event, added to §15's
+  list, which the vocabulary gate checks both ways.
+- **F477.** `?` and not the truncated name: a truncated long name can
+  never equal a command, but the journal should not carry 23 bytes of a
+  peer's choosing either.
+- **Not changed:** a site's refused `REVOKE-DEVICE` of an operator's
+  device (§15 does not name it; the request is still in `local-request`);
+  the review's suspected items, an unreachable `invalid` after a code
+  spent inside the transaction (the daemon is the only writer) and the
+  reply-overflow `internal` (no reply comes near the buffer); and
+  `authd_admin` printing a non-daemon listener's reply verbatim, which
+  needs the attacker to own the socket path.
+- **Considered, ambiguous, recorded for the owner:** §8 lists only
+  `via=site` for `ENROLL-OPERATOR` on admin.sock, and the daemon also
+  accepts `via=recovery ticket=`; `authd_admin` has no command to issue
+  or redeem an operator's recovery codes (F397's shape).
+
+Campaign v160: RQ1, RQ2, RI1, US1, LK1, CN1; v151 RU3 and v49d G4
+re-anchored. All eight `KILLED | restored=byte-exact | rebuilt=ok` with
+`tools/hand_control.py`.
+
+Spec v1.87, erratum 129.
+
+Counts: 708 mutations, 130 campaigns, 753 anchors; 477 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.87, 129 errata; 65 tests.

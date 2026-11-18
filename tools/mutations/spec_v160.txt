@@ -1,0 +1,6 @@
+RQ1|^test_authd_localapi$|req7(recovery, unknown user): ticket-invalid, and the handle's different key is logged (F473)
+RQ2|^test_authd_localapi$|req7(recovery, no such ticket): ticket-invalid, and the handle's different key is logged (F473)
+RI1|^test_authd_localapi$|recovery-issue: an operator's codes asked for on site.sock are refused and logged, with the user and detail=not-permitted (F474)
+US1|^test_authd_localapi$|status: ENABLE-USER writes a user-enabled line naming the user (F475)
+LK1|^test_authd_localapi$|recovery-use: a locked user's attempt is logged with the user and detail=locked (F476)
+CN1|^test_authd_localapi$|grammar: a 26-character command name answers not-permitted, as any command that does not exist (F477)

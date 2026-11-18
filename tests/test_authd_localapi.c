@@ -2839,6 +2839,120 @@ static void test_spec_clauses_v262(void)
  * get its memory does. It used to be ignored on the refusal paths: an unknown
  * user was answered `invalid` at once while a user with codes was answered
  * `internal`. */
+/* V4-285 (F473 to F477): the local API's journal, read whole again -- what
+ * the fifty-second review found. */
+static int has_line(const char *log, const char *event, const char *tail)
+{
+    char want[128];
+    snprintf(want, sizeof want, "event=%s slot=", event);
+    for (const char *p = log; p != NULL && (p = strstr(p, want)) != NULL; p++) {
+        const char *e = strchr(p, '\n');
+        const size_t n = (e != NULL) ? (size_t)(e - p) : strlen(p);
+        const size_t tn = strlen(tail);
+        if (n >= tn && memcmp(p + n - tn, tail, tn) == 0) { return 1; }
+    }
+    return 0;
+}
+
+static void test_spec_clauses_v285(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "clauses285.sqlite3", 1) == 0, "clauses285: daemon starts");
+    int fd = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(fd >= 0 && adm >= 0, "clauses285: connect to site.sock and admin.sock");
+    static const uint8_t U5[] = { 'u','5' }, H6[] = { 'd','6','f','f' }, H7[] = { 'd','7','a','a' },
+                         OQ[] = { 'o','q' }, U7[] = { 'u','7' }, GHOST[] = { 'g','h','o','s','t' };
+    mldsa_keypair_t k5, other;
+    CHECK(mldsa_keypair_generate(&k5) == 0 && mldsa_keypair_generate(&other) == 0, "clauses285: keys");
+    CHECK(store_add_user(d.store, U5, sizeof U5, STORE_ROLE_USER) == STORE_OK &&
+          store_enroll_device(d.store, H6, sizeof H6, U5, sizeof U5, k5.public_key, "site", "test", NULL, 0) == STORE_OK &&
+          store_add_user(d.store, OQ, sizeof OQ, STORE_ROLE_OPERATOR) == STORE_OK &&
+          store_add_user(d.store, U7, sizeof U7, STORE_ROLE_USER) == STORE_OK &&
+          store_disable_user(d.store, U7, sizeof U7, "test", (const uint8_t *)"r", 1u) == STORE_OK,
+          "clauses285: fixture -- u5 with a device, an operator, u7 disabled");
+    static char req[8192], resp[16384], pkh[STORE_PK_BYTES * 2u + 1u];
+    char u5h[32], h6h[32], h7h[32], oqh[32], u7h[32], gh[32], tk[2u * RECOVERY_TICKET_BYTES + 1u];
+    hx(pkh, sizeof pkh, other.public_key, STORE_PK_BYTES);
+    hx(u5h, sizeof u5h, U5, sizeof U5); hx(h6h, sizeof h6h, H6, sizeof H6); hx(h7h, sizeof h7h, H7, sizeof H7);
+    hx(oqh, sizeof oqh, OQ, sizeof OQ); hx(u7h, sizeof u7h, U7, sizeof U7); hx(gh, sizeof gh, GHOST, sizeof GHOST);
+    memset(tk, '7', sizeof tk - 1u); tk[sizeof tk - 1u] = '\0';
+
+    /* F473: a different key on a known handle is Req 7, whatever refuses the
+     * request -- a user that does not exist, or a ticket that does not. */
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", gh, h6h, pkh, tk);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=ticket-invalid") && req7_logged(log, "d6ff", k5.public_key, other.public_key),
+            "req7(recovery, unknown user): ticket-invalid, and the handle's different key is logged (F473)");
+      free(log); }
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", u5h, h6h, pkh, tk);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=ticket-invalid") && req7_logged(log, "d6ff", k5.public_key, other.public_key),
+            "req7(recovery, no such ticket): ticket-invalid, and the handle's different key is logged (F473)");
+      free(log); }
+    snprintf(req, sizeof req, "ENROLL user=%s handle=%s pk=%s via=recovery ticket=%s", u5h, h7h, pkh, tk);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=ticket-invalid") && log != NULL && strstr(log, "enroll-key-mismatch") == NULL,
+            "req7(recovery, a NEW handle): refused, and nothing is logged as Req 7 (the control)");
+      free(log); }
+
+    /* F474: every refused RECOVERY-ISSUE is in the journal, with its user. */
+    const struct { int sock; const char *user, *code, *id, *what; } iss[] = {
+        { 0, oqh, "not-permitted", " id=oq", "an operator on site.sock" },
+        { 0, gh,  "invalid",       " id=ghost", "an unknown user" },
+        { 0, u7h, "user-disabled", " id=u7", "a disabled user" },
+    };
+    for (size_t i = 0; i < sizeof iss / sizeof iss[0]; i++) {
+        snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", iss[i].user);
+        char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+        char want_resp[64], want_detail[64];
+        snprintf(want_resp, sizeof want_resp, "ERR code=%s", iss[i].code);
+        snprintf(want_detail, sizeof want_detail, " detail=%s", iss[i].code);
+        CHECK(starts(resp, want_resp) && has_line(log, "recovery-issue", iss[i].id) &&
+              has_line(log, "recovery-issue", want_detail),
+              iss[i].sock == 0 && i == 0 ? "recovery-issue: an operator's codes asked for on site.sock are refused and logged, "
+                                           "with the user and detail=not-permitted (F474)"
+            : i == 1 ? "recovery-issue: an unknown user's refusal is logged with the user and detail=invalid (F474)"
+                     : "recovery-issue: a disabled user's refusal is logged with the user and detail=user-disabled (F474)");
+        free(log);
+    }
+
+    /* F475: who was disabled, and who enabled again. */
+    snprintf(req, sizeof req, "DISABLE-USER user=%s reason=%s", u5h, "73746f6c656e");
+    { char *log = logged_cmd(&d, adm, req, resp, sizeof resp);
+      CHECK(starts(resp, "OK") && has_line(log, "user-disabled", " id=u5"),
+            "status: DISABLE-USER's user-disabled line names the user (F475)");
+      free(log); }
+    snprintf(req, sizeof req, "ENABLE-USER user=%s", u5h);
+    { char *log = logged_cmd(&d, adm, req, resp, sizeof resp);
+      CHECK(starts(resp, "OK") && has_line(log, "user-enabled", " id=u5"),
+            "status: ENABLE-USER writes a user-enabled line naming the user (F475)");
+      free(log); }
+
+    /* F476: a locked attempt names its user, as every other refusal does. */
+    int locked = 0;
+    CHECK(store_recovery_note_failure(d.store, U5, sizeof U5, d.app.now_unix, 1, 3600, &locked, NULL) == STORE_OK &&
+          locked == 1, "clauses285: u5's recovery is locked");
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", u5h);
+    { char *log = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=locked") && has_line(log, "recovery-use", " id=u5") &&
+            has_line(log, "recovery-use", " detail=locked"),
+            "recovery-use: a locked user's attempt is logged with the user and detail=locked (F476)");
+      free(log); }
+
+    /* F477: a command too long to be one does not exist. */
+    CHECK(h_local_cmd(&d, fd, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+          "grammar: a 26-character command name answers not-permitted, as any command that does not exist (F477)");
+    CHECK(h_local_cmd(&d, fd, "ABCDEFGHIJKLMNOPQRSTUVW", resp, sizeof resp) == 0 && starts(resp, "ERR code=not-permitted"),
+          "grammar: a 23-character one does too (the control)");
+    CHECK(h_local_cmd(&d, fd, "ABCDEFGHIJKLMNOPQRSTUVWXYZ =zz", resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
+          "grammar: a long name with an empty key is still malformed (the line is parsed whole)");
+
+    if (fd >= 0) { close(fd); }
+    if (adm >= 0) { close(adm); }
+    mldsa_keypair_free(&k5); mldsa_keypair_free(&other);
+    h_stop(&d);
+}
+
 static void test_recovery_kdf_failure(void)
 {
     h_daemon_t d;
@@ -2921,6 +3035,7 @@ int main(void)
     test_enroll_without_continuity();
     test_spec_clauses_v262();
     test_recovery_kdf_failure();
+    test_spec_clauses_v285();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }
