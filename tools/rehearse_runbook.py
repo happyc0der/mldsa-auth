@@ -44,7 +44,8 @@ SUBST = {
     1: [("sh deploy/fetch-deps.sh /opt/mldsa-deps        # networked machine, once\n"
          "# carry /opt/mldsa-deps across, then, AS THE USER WHO WILL BUILD:\n"
          "chown -R \"$(id -un)\" /opt/mldsa-deps\n"
-         "cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...",
+         "cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \\\n"
+         "      -DMLDSA_OQS_OPT_TARGET=x86-64-v3 -DMLDSA_DEPS_CACHE=/opt/mldsa-deps",
          "# (offline alternative not taken: this host is networked)",
          "the offline path is an alternative to the block above, not a "
          "second step; CI's `unit + offline build` job rehearses it")],

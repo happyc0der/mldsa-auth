@@ -49,7 +49,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 515 findings (F0–F515), with severity, evidence and
+   register](../v4/audit.md). 521 findings (F0–F521), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 133 errata, each
    citing the finding that forced it.

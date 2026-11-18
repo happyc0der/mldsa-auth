@@ -21,6 +21,9 @@
 # what compile_commands.json says each translation unit was told.
 set -u
 BUILD="${1:?usage: check_hardening.sh <build-dir> [--require]}"
+# V4-302, F518: without `file` no executable was recognised, and the check
+# said "no executables found" rather than what was missing.
+command -v file > /dev/null 2>&1 || { echo "FAIL: \`file\` is not installed (apt-get install file); nothing can be checked"; exit 1; }
 REQUIRE=0; [ "${2:-}" = "--require" ] && REQUIRE=1
 
 case "$(uname -s)" in

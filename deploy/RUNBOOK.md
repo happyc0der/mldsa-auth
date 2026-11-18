@@ -33,9 +33,22 @@ from a silence.
   subdirective proxy_protocol` (V4-99) — so install from Caddy's own apt
   repository (caddyserver.com/docs/install), which also creates the `caddy`
   user and unit the steps below assume. CI tests 2.10.2.
-- A build host — the same machine is fine. **The build path must not contain
-  spaces** (libsodium's libtool cannot handle them; this is unpatchable, and it
-  is why `/opt/build/mldsa-auth` appears below rather than anything prettier).
+- A build host — the same machine is fine — with these packages (V4-302,
+  F518; the CI runners have them preinstalled, so nothing there notices one
+  missing): `cmake` (3.20 or later) `gcc` (or `clang`) `make` `git` `file`
+  `binutils` `curl` `ca-certificates` `openssl` `python3`, and `nodejs` for
+  Part II's site. On Ubuntu: `sudo apt-get install cmake gcc make git file
+  binutils curl ca-certificates openssl python3 nodejs`. A build path with
+  spaces works: libsodium, whose libtool cannot handle them, is then built
+  under `$TMPDIR` or `~/.cache/mldsa-auth` instead (V4-302 corrected this
+  sentence, which said such a path could not build).
+- **Encrypted swap, or none** (F512): a host decision, made when it is
+  provisioned. Argon2id's working memory during the daemon's unseal is not
+  locked memory, and step 9 explains why it matters.
+- **The source, at a commit of `main` whose CI and nightly runs passed.**
+  No release tag includes the daemon yet (`v2.0.0` is the library and the
+  demo); clone `https://github.com/happyc0der/mldsa-auth` into
+  `/opt/build/mldsa-auth` and check out that commit (V4-302, F521).
 
 ## 1. Build
 
@@ -53,7 +66,10 @@ cmake --build build-release -j"$(nproc)"
 
 `x86-64-v3` covers anything from roughly 2015 onward (AVX2). If your VPS is
 older or you do not know, use `generic` — it gives up liboqs's AVX2 backends
-and works everywhere.
+and works everywhere. **On arm64** `x86-64-v3` fails at configure, in
+liboqs, with `unknown value 'x86-64-v3' for '-mcpu'` (V4-302, F521): name an
+arm64 core instead, such as `neoverse-n1` for most arm64 VPS hosts, or use
+`generic`.
 
 **Offline or air-gapped?** Fetch the dependencies once on a networked machine
 and carry the cache over; every hash and commit pin is still enforced:
@@ -62,8 +78,12 @@ and carry the cache over; every hash and commit pin is still enforced:
 sh deploy/fetch-deps.sh /opt/mldsa-deps        # networked machine, once
 # carry /opt/mldsa-deps across, then, AS THE USER WHO WILL BUILD:
 chown -R "$(id -un)" /opt/mldsa-deps
-cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
+      -DMLDSA_OQS_OPT_TARGET=x86-64-v3 -DMLDSA_DEPS_CACHE=/opt/mldsa-deps
 ```
+
+(V4-302, F519: the line ended `...`, which pasted as written built a Debug,
+`auto` tree with only a warning.)
 
 The `chown` is not housekeeping. git refuses to read a repository owned by
 another user, so a cache fetched as you and built as root stops the build

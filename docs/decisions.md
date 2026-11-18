@@ -20532,3 +20532,37 @@ No code.
 Counts: unchanged by this step (V4-300's: 718 mutations, 134 campaigns,
 763 anchors; 515 findings, the 19 above open; spec v1.91, 133 errata; 66
 tests).
+
+## V4-302 — the documents, followed as a new adopter would (F516 to F521)
+
+The sixty-third review followed the README and runbook sections 0 to 3
+literally on a clean Ubuntu 24.04 (aarch64), as someone who had never seen
+the project, installing only what the documents named. The test counts,
+the protocol demo, the daemon walkthrough, the offline path, step 2's
+checks and step 3's eight-file install all behaved as described. What it
+found is what CI's preinstalled runners cannot: tools nobody named, a
+limit nobody's shell has, a line that pastes wrong.
+
+- **F516.** The test raises its own limit rather than the README asking
+  for `ulimit`: a test that needs more descriptors than a shell has should
+  say so by not needing the shell's. Shown both ways under `ulimit -n 1024`: with the
+  raise removed F62's check fails by name, with it the test passes. (The
+  restore was first left stale -- `cp -p` brought back the old mtime and
+  the mutant's object stayed -- and `check_build_current.sh` was run after
+  the rebuild that fixed it.)
+- **F517.** Named, not skipped: making the gates skip when `python3` or
+  `file` is missing would let them pass by not running, which is the
+  property every gate here exists to refuse.
+- **F518 to F520.** As recommended; F520 shown on a fresh tree at `-j2`.
+- **F521.** Each document fix taken from what the review saw, the demo's
+  output from a run of the demo on this machine.
+- **Not changed, recorded:** the review's suspicion that CI never runs step
+  1's networked configure (the rehearsal's environment sets a cache); and
+  its slow liboqs clone, which looked like the network.
+
+No campaign: no product code changed (a test, two scripts, a build line).
+
+Counts: 718 mutations, 134 campaigns, 763 anchors; 521 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.91, 133 errata; 66
+tests.

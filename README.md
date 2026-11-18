@@ -14,7 +14,10 @@ specify: [v1](docs/ml-dsa-auth-protocol-spec.md) (frozen) and
 [v2](docs/ml-dsa-auth-protocol-spec-v2.md) (current). Every design decision
 and its rationale is recorded in [docs/decisions.md](docs/decisions.md).
 
-**Status: `v2.0.0` is current.** Every normative element of the v2
+**Status: `v2.0.0` is current** for the protocol library and the demo. The
+deployment daemon (`apps/authd/`, `deploy/`) is newer than any release:
+deploy it from a commit of `main` whose CI and nightly passed (V4-302,
+F521). Every normative element of the v2
 specification is implemented and verified — hybrid X25519 + ML-KEM-768 key
 exchange, the v2 wire format and labels, the hybrid key schedule, the hybrid
 handshake, and padded records. The release tree was verified end to end rather
@@ -65,18 +68,23 @@ to the code that does not exist.
 > [docs/decisions.md](docs/decisions.md). `main` now speaks v2 only; a v2
 > peer and a v1 peer cannot interoperate, by design.
 
-> **Not production-ready.** The trust model is manual key pinning with no CA
-> or revocation, the reference server is loopback-only, demo key files are
-> unencrypted, and the library is single-threaded by design. Read
+> **The demo is not production-ready.** Its trust model is manual key pinning
+> with no CA or revocation, its reference server is loopback-only, its key
+> files are unencrypted, and the library is single-threaded by design. The
+> deployment daemon is a different thing -- revocation, encrypted keys, a
+> store, a proxy-facing listener -- with its own runbook
+> (`deploy/RUNBOOK.md`) and its own open questions (V4-302, F521). Read
 > [What this protects against](#what-this-protects-against-and-what-it-does-not)
 > before using any of it for anything real.
 
 ## Build
 
 Requirements: **CMake ≥ 3.20**, a **C11** compiler (tested with Apple clang 21
-and Homebrew LLVM clang 23), `git`, and `make`. Dependencies are fetched and
-built from source on first configure, which needs a network connection and a
-few minutes.
+and Homebrew LLVM clang 23, and gcc 13 on Ubuntu 24.04), `git`, and `make`.
+To run the tests as below you also need `python3`, `file` and `nm`
+(binutils), and `node` for three of them (V4-302, F517: without them five
+tests fail, not skip). Dependencies are fetched and built from source on
+first configure, which needs a network connection and a few minutes.
 
 ```sh
 cmake -S . -B build
@@ -161,7 +169,8 @@ than two:
 ```sh
 sh deploy/fetch-deps.sh /opt/mldsa-deps       # networked machine, once
 chown -R "$(id -un)" /opt/mldsa-deps          # git will not read another user's repo
-cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
+      -DMLDSA_OQS_OPT_TARGET=x86-64-v3 -DMLDSA_DEPS_CACHE=/opt/mldsa-deps
 ```
 
 **`MLDSA_OQS_OPT_TARGET` decides portability.** It defaults to `auto`,
@@ -216,7 +225,7 @@ headless Chromium (Chrome or Edge, found automatically, or `MLDSA_BROWSER`).
 ctest --test-dir build --output-on-failure
 ```
 
-61 tests in a native tree (58 if no `node` is found: three run under it; one fewer without `python3`, and one fewer without `nm` and `file`), 64 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 66 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
+61 tests in a native tree (58 if no `node` is found: three run under it; one fewer without `python3`, and one fewer without `nm` and `file` -- but other tests need them too, and fail without them: install all four, above), 64 when it names a WebAssembly tree (`-DMLDSA_WASM_DIR`, below) and 66 when a Chromium-family browser is also found, and 3 in the WebAssembly tree itself. `fuzz_libfuzzer` reports *Skipped* unless the tree was configured
 with `-DMLDSA_FUZZ=ON`, and `ubsan_aborts` unless it is a UBSan or fuzz tree; everything else runs in every configuration.
 
 | Test | Covers |
@@ -363,6 +372,7 @@ The client prints its progress through the handshake and each verified echo:
 ```
 client: ClientHello sent to 'demo-server'
 client: server 'demo-server' authenticated (ML-DSA-65 signature verified against the pinned key)
+client: record padding: bucket 256
 client: ClientAuth sent; waiting for the responder's confirmation record
 client: responder confirmed (empty authenticated record received)
 client: message 1: authenticated echo verified (5 bytes)
@@ -482,6 +492,12 @@ EOF
 "$REPO/build/apps/authd/authd_admin" --check-config --config /tmp/authd-demo/authd.conf
 "$REPO/build/apps/authd/mldsa-authd" --config /tmp/authd-demo/authd.conf &
 ```
+
+On a stock host the daemon's start says `warn event=memlock-limit
+need=10485760` and that secrets may be swapped to disk: a shell's locked-memory
+limit is below what the daemon asks for. It is harmless for this walkthrough;
+a deployment raises the limit (`LimitMEMLOCK`, RUNBOOK step 8) and runs with
+encrypted swap or none (V4-302, F521).
 
 ```sh
 # 3. On the operator's own machine: generate a device key. The secret never
@@ -859,7 +875,7 @@ is MIT, [libsodium](https://github.com/jedisct1/libsodium) is ISC and
 built from this repository combines them with this code, and the combined
 work is covered by the GPL.
 
-Where to read next: the [specification](docs/ml-dsa-auth-protocol-spec.md) for
-what the protocol is, the [decision log](docs/decisions.md) for why it is that
+Where to read next: the [specification](docs/ml-dsa-auth-protocol-spec-v2.md) for
+what the protocol is (v2; [v1](docs/ml-dsa-auth-protocol-spec.md) is frozen), the [decision log](docs/decisions.md) for why it is that
 way, [tests/fuzz/README.md](tests/fuzz/README.md) for the adversarial testing
 model, and [bench/results.md](bench/results.md) for measured performance.

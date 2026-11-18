@@ -21,6 +21,12 @@ DEST="${1:?usage: fetch-deps.sh <cache-directory>}"
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 DEPS="$HERE/cmake/Dependencies.cmake"
 [ -f "$DEPS" ] || { echo "FAIL: cannot find $DEPS"; exit 1; }
+# V4-302, F518: the tools first, by name. Without curl every download
+# failed and the run ended "no source served libsodium-1.0.22.tar.gz", which
+# reads as a network problem.
+for tool in curl git openssl; do
+    command -v "$tool" > /dev/null 2>&1 || { echo "FAIL: $tool is not installed; fetch-deps.sh needs curl, git and openssl"; exit 1; }
+done
 
 pin() { sed -n "$1" "$DEPS" | head -1; }
 OQS_COMMIT=$(pin 's/^set(MLDSA_LIBOQS_COMMIT "\([0-9a-f]*\)").*/\1/p')

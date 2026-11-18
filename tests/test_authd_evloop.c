@@ -2163,6 +2163,16 @@ int main(void)
     /* As mldsa-authd does (authd_main.c): a write to a peer that has gone is
      * EPIPE, a status the loop handles, not a signal that ends the process. */
     signal(SIGPIPE, SIG_IGN);
+    /* V4-302, F516: F62's check polls more than 4,096 descriptors, and a
+     * stock Ubuntu shell's soft limit is 1024, so the check failed on any
+     * machine but a CI runner. Raised as the daemon raises its own
+     * (fdlimit.c), up to the hard limit; tests that stage a limit of their
+     * own still set it themselves. */
+    { struct rlimit rl;
+      if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < 8192u && rl.rlim_cur < rl.rlim_max) {
+          rl.rlim_cur = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max > 8192u) ? 8192u : rl.rlim_max;
+          (void)setrlimit(RLIMIT_NOFILE, &rl);
+      } }
     if (sodium_init() < 0) {
         printf("FAIL: sodium_init\n");
         return 1;

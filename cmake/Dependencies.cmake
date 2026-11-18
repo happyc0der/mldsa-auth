@@ -299,6 +299,20 @@ else()
       --prefix=${LIBSODIUM_PREFIX} --disable-shared --enable-static)
   set(_mldsa_sodium_make make)
 endif()
+# V4-302, F520: the caller's job limit. `make -j` with no number was
+# unbounded -- 34 compilers at once from `cmake --build -j2` -- and on a small
+# host that is an out-of-memory risk. Under a Makefile generator $(MAKE)
+# joins the caller's jobserver; otherwise a fixed, modest number.
+if(CMAKE_GENERATOR MATCHES "Makefiles")
+  set(_mldsa_sodium_jobs "")
+  if(EMSCRIPTEN)
+    set(_mldsa_sodium_make emmake $(MAKE))
+  else()
+    set(_mldsa_sodium_make $(MAKE))
+  endif()
+else()
+  set(_mldsa_sodium_jobs -j4)
+endif()
 
 ExternalProject_Add(
   libsodium_ext
@@ -308,7 +322,7 @@ ExternalProject_Add(
   SOURCE_DIR        ${LIBSODIUM_BUILD_DIR}
   UPDATE_COMMAND    ""
   CONFIGURE_COMMAND ${_mldsa_sodium_configure}
-  BUILD_COMMAND     ${_mldsa_sodium_make} -j
+  BUILD_COMMAND     ${_mldsa_sodium_make} ${_mldsa_sodium_jobs}
   INSTALL_COMMAND   ${_mldsa_sodium_make} install
   BUILD_IN_SOURCE   TRUE
   BUILD_BYPRODUCTS  ${LIBSODIUM_LIBRARY}
