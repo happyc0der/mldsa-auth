@@ -19977,3 +19977,47 @@ No code.
 Counts: unchanged by this step (V4-282's: 699 mutations, 128 campaigns,
 744 anchors; 469 findings, the 18 above open; spec v1.85, 127 errata;
 65 tests).
+
+## V4-284 — the daemon's store, read whole again: revoke=all that stopped at 1024, an enable that erased the reason, a backup set by name (F470 to F472)
+
+The fifty-first review read `apps/authd/store/` whole with its callers:
+transaction boundaries, the audit chain under failure, index reliance,
+expiry, statements on error paths, WAL and backup, error mapping. It
+found every multi-statement change inside one `BEGIN IMMEDIATE`, the
+chain head read inside the write transaction and nothing cached, and
+every statement finalized on every path. Three findings; its
+experiments drove the real `store.c` with stubbed cryptography.
+
+- **F470.** The guard was a bound on a loop that cannot run forever:
+  each revocation takes a device out of the set it reads. It is replaced
+  by the check it stood for, the same handle twice. **For the owner:**
+  a per-user device limit at enrollment. Nothing limits a user's devices
+  today; `LIST-DEVICES` already answers `too-many` above 24, so a site
+  cannot show more. A limit is a new refusal (spec §8 vocabulary) and a
+  product choice, so it is not made here.
+- **F471.** The columns are kept, not moved to a history: nothing reads
+  them, and the status column already says whether the user is disabled.
+- **F472.** Reproduced through the observer V4-59 added for the backup
+  test, which runs right after the copy: it moves the file aside and
+  puts a symlink to another file at its name. Before the fix the target's
+  mode became 0600 and the backup answered `OK`.
+- **Smaller notes from the review, not recorded as findings:**
+  `device-revoke` audit entries carry no `user_id` (a revoke=all's user is
+  found through `devices`); `user_of_handle` reads a database error as
+  not-found; `recovery_codes` rows are never deleted, bounded by the
+  Argon2id cost per code (F39) and the site being trusted.
+
+Anchors rotted and re-anchored, each tried again by hand and killed:
+v49b B1 (the chmod is now `fchmod`), v84 BK2 (no close after the open:
+the mutant opens `/dev/null` instead of creating the file), v84 BK5 (the
+failed-backup unlink now also asks whether the name is still ours).
+Campaign v159: RA1, DR1, SW1, each `KILLED | restored=byte-exact |
+rebuilt=ok` with `tools/hand_control.py`. gcc-16 found a
+`-Wformat-truncation` in the new test that clang did not; the buffer
+was widened.
+
+Spec v1.86, erratum 128.
+
+Counts: 702 mutations, 129 campaigns, 747 anchors; 472 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.86, 128 errata; 65 tests.

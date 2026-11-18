@@ -1026,7 +1026,13 @@ static store_status_t set_user_status(store_t *s, const uint8_t *user_id, size_t
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db,
-            "UPDATE users SET status=?2, disabled_at=?3, disabled_reason=?4 "
+            /* V4-284, F471: an enable keeps the last disable's
+             * time and reason. They were set to NULL, and the audit row
+             * says only `local-api`, so re-enabling an account erased the
+             * one record of why it had been disabled (F194's reason). */
+            "UPDATE users SET status=?2, "
+            "disabled_at=CASE WHEN ?2='disabled' THEN ?3 ELSE disabled_at END, "
+            "disabled_reason=CASE WHEN ?2='disabled' THEN ?4 ELSE disabled_reason END "
             "WHERE user_id=?1 AND status<>?2;",
             -1, &st, NULL) != SQLITE_OK) {
         tx_rollback(s);
@@ -2475,10 +2481,17 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
     /* revoke=all (§10.3): every active device of this user, in THIS
      * transaction, so the code, the ticket and the revocations commit together
      * or not at all (F93). One active handle at a time: each revocation takes
-     * its device out of the set, and the guard bounds a loop that a
-     * misbehaving store could otherwise keep feeding. */
+     * its device out of the set, so the loop ends when the set is empty.
+     * V4-284, F470: it used to stop after 1024 devices and commit, answering
+     * OK with the newest devices still active -- a thief who had enrolled
+     * more kept theirs through the owner's revoke=all. What the guard was
+     * for, a store that hands back a device it did not take out of the set,
+     * is now caught as that: the same handle twice rolls the whole recovery
+     * back as damaged. */
     size_t revoked = 0;
-    for (size_t guard = 0; revoke_all && guard < 1024u; guard++) {
+    uint8_t prev[STORE_ID_MAX];
+    size_t prevn = 0;
+    while (revoke_all) {
         uint8_t h[STORE_ID_MAX];
         size_t hn = 0;
         int found = 0;
@@ -2509,6 +2522,9 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
         sqlite3_finalize(st);
         if (r != STORE_OK) { tx_rollback(s); return r; }
         if (!found) { break; }
+        if (hn == prevn && memcmp(h, prev, hn) == 0) { tx_rollback(s); return STORE_ERR_DAMAGED; }
+        memcpy(prev, h, hn);
+        prevn = hn;
         r = revoke_device_locked(s, h, hn, "recovery",
                                  (const uint8_t *)"recovery revoke=all", 19u, now);
         if (r != STORE_OK) { tx_rollback(s); return r; }
@@ -2892,12 +2908,19 @@ store_status_t store_backup(store_t *s, const char *dest_path)
      * symlink at the path, and SQLite accepts an existing EMPTY file. */
     const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */
-    (void)close(fd);
+    /* V4-284, F472: the file is kept open, so what VACUUM INTO wrote -- it
+     * opens the destination by NAME -- can be checked to be this file, and
+     * its mode set on it rather than on whatever the name means by then. In
+     * a directory others can rename entries in, the name could be swapped
+     * for a symlink between this open and the copy. */
+    struct stat made;
+    if (fstat(fd, &made) != 0) { (void)close(fd); (void)unlink(dest_path); return STORE_ERR_IO; }
     /* VACUUM INTO writes a consistent, compacted snapshot. The destination is
      * bound as a parameter so a path containing a quote cannot alter the
      * statement (SQLITE_DQS=0 as well). */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(s->db, "VACUUM INTO ?1;", -1, &st, NULL) != SQLITE_OK) {
+        (void)close(fd);
         (void)unlink(dest_path);
         return STORE_ERR_DB;
     }
@@ -2915,12 +2938,22 @@ store_status_t store_backup(store_t *s, const char *dest_path)
      * the audit chain and every enrolled public key. It gets the store's own
      * mode, not the umask's opinion. Found by running the V4-9b backup command
      * and looking at the file, not by reading the code. */
-    if (r == STORE_OK && chmod(dest_path, 0600) != 0) {
+    /* F472: the name must still be the file created above, a regular file,
+     * now holding the copy; otherwise the copy went somewhere else, and the
+     * name is not removed -- it is no longer this call's. */
+    struct stat now_at;
+    int ours = (lstat(dest_path, &now_at) == 0 && S_ISREG(now_at.st_mode) &&
+                now_at.st_dev == made.st_dev && now_at.st_ino == made.st_ino);
+    if (r == STORE_OK && !ours) {
         r = STORE_ERR_IO;
     }
+    if (r == STORE_OK && fchmod(fd, 0600) != 0) {
+        r = STORE_ERR_IO;
+    }
+    (void)close(fd);
     /* A failed backup leaves nothing behind. The file is this call's own:
      * O_EXCL created it above, so nothing else's is removed. */
-    if (r != STORE_OK) {
+    if (r != STORE_OK && ours) {
         (void)unlink(dest_path);
     }
     return r;

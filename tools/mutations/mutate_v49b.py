@@ -106,7 +106,7 @@ M = {
  # the umask's mode needs both undone (a lone chmod removal is equivalent).
  "B1": (ST, [("    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);",
               "    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666); /* MUTATION B1 */"),
-             ("    if (r == STORE_OK && chmod(dest_path, 0600) != 0) {\n        r = STORE_ERR_IO;\n    }",
+             ("    if (r == STORE_OK && fchmod(fd, 0600) != 0) {\n        r = STORE_ERR_IO;\n    }",
               "    /* MUTATION B1: the backup keeps the umask's mode */")]),
 }
 path, edits = M[MID]

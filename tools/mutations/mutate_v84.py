@@ -24,12 +24,12 @@ OPEN = "    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOL
 M = {
     "BK1": [(ST, OPEN,
                  "    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644); /* MUTATION BK1 */\n")],
-    "BK2": [(ST, OPEN + "    if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */\n    (void)close(fd);\n",
-                 "    const int fd = 0; /* MUTATION BK2: VACUUM INTO creates the file */\n    if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */\n    (void)fd;\n")],
+    "BK2": [(ST, OPEN + "    if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */\n",
+                 "    const int fd = open(\"/dev/null\", O_RDONLY | O_CLOEXEC); /* MUTATION BK2: VACUUM INTO creates the file */\n    if (fd < 0) { return STORE_ERR_IO; }    /* the path exists, or cannot be created */\n")],
     "BK4": [(ST, OPEN,
                  "    const int fd = open(dest_path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600); /* MUTATION BK4: no O_EXCL */\n")],
-    "BK5": [(ST, "    if (r != STORE_OK) {\n        (void)unlink(dest_path);\n    }\n    return r;\n",
-                 "    if (r != STORE_OK && 0) { /* MUTATION BK5: a failed backup's file is kept */\n        (void)unlink(dest_path);\n    }\n    return r;\n")],
+    "BK5": [(ST, "    if (r != STORE_OK && ours) {\n        (void)unlink(dest_path);\n    }\n    return r;\n",
+                 "    if (r != STORE_OK && ours && 0) { /* MUTATION BK5: a failed backup's file is kept */\n        (void)unlink(dest_path);\n    }\n    return r;\n")],
 }
 
 

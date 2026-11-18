@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.85, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282)
+# mldsa-authd — deployment specification (v1.86, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -615,6 +615,8 @@ controls — the exact escalation Req 11 exists to prevent.
 revokes every one of that user's active devices, deletes their tokens and
 closes their live connections (§10.3): it is the stolen-device path, and it is
 reachable only by someone who has already presented a valid recovery code.
+Every one, however many (erratum 128): a recovery that cannot revoke them
+all fails whole, and is never answered `OK` with some left active.
 
 **`admin.sock`** — mode 0600, root only: everything above plus
 `ENROLL-OPERATOR user= handle= pk= [label=] via=site`,
@@ -635,7 +637,10 @@ bytes, as §7.1 bounds it; a longer one is `malformed`. In an `AUDIT` item
 and `RECOVERY-USE` on `site.sock` answer `not-permitted` for an operator
 whatever the operator's status, as `REVOKE-DEVICE` does.
 `BACKUP`'s `path=` is resolved in the **daemon's**
-working directory, so a caller should give an absolute one.
+working directory, so a caller should give an absolute one. The daemon creates
+the file itself, mode 0600, and after the copy checks that the path is still
+that file before setting its mode on it (erratum 128); a path that has become
+anything else fails the backup and is left as it is.
 
 **The proxy-facing listener** (§7.1) is the third Unix socket: mode **0660**,
 group = the proxy's group, with its own uid allowlist (`proxy_uids`). It
@@ -863,7 +868,10 @@ and this section used to run them together:
    nothing, so the first revocation's record stands. Likewise a
    `DISABLE-USER` of a disabled user, and an `ENABLE-USER` of an active one,
    answers `OK` and changes nothing: the first disable's time and reason
-   stand, nothing is spent and no audit entry is written (erratum 80).
+   stand, nothing is spent and no audit entry is written (erratum 80). An
+   `ENABLE-USER` keeps the last disable's time and reason in the user's row
+   (erratum 128): the audit entry carries neither, so they are the only
+   record of why.
    **Revoking a device
    ends its user's unused recovery codes** (marked `revoked-device`, never
    deleted): a generation minted on a stolen, unlocked device would otherwise
@@ -2360,3 +2368,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 127 | 10.2, 13 | The login that completes an interrupted rotation replaces the `.pub` before it promotes the key; a run decides only about a `.ek.next` it saw before taking the directory's lock; `keygen` refuses a new passphrase from a file ending in a carriage return, and removes its key if the `.pub` cannot be written; the CLI's rotate discards its staged key whenever no `ROTATE` was sent, as erratum 126 says | The recovery promoted first, the order erratum 119 removed from rotate (F466); a `.ek.next` linked between a run's two looks was decided about unlocked (F468); a CRLF file sealed a passphrase the prompt could not give (F465); a failed `keygen` left an orphan key (F469); the CLI kept `.ek.next` after a refused login and an unbuilt `ROTATE` (F467) |
+
+### Revision v1.86 (V4-284)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 128 | 8, 9, 10.3 | `revoke=all` revokes every active device of the user however many, and a store that hands back a device it did not revoke fails the recovery whole; `ENABLE-USER` keeps the last disable's time and reason; `BACKUP` checks after the copy that its path is still the file it created and sets the mode on that file | The loop stopped after 1024 devices and committed `OK`, leaving the newest active (F470); an enable set both columns to NULL, the only record of why (F471); the mode was set by name, through a symlink swapped in after the copy (F472) |

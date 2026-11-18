@@ -1,0 +1,3 @@
+RA1|^test_authd_store$|revoke-all, many: all 1030 devices and their keys are revoked, not the first 1024 (F470)
+DR1|^test_authd_store$|disable reason: after the enable the user is active and the last disable's time and reason remain (F471)
+SW1|^test_authd_store$|backup swap: a name swapped for a symlink after the copy fails the backup, and neither the link nor its target is touched (F472)

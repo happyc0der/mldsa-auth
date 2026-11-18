@@ -587,6 +587,22 @@ static int commit_one(const sweep_case_t *c)
     return ok;
 }
 
+/* V4-284 (F472): an observer that, once VACUUM INTO has written the copy,
+ * moves the file aside and leaves a symlink to another file at its name. */
+static char g_swap_dest[600], g_swap_target[600];
+static int g_swapped = 0;
+static void swap_for_symlink(const char *dest_path)
+{
+    char moved[640];
+    snprintf(moved, sizeof moved, "%s.moved", dest_path);
+    g_swapped = (rename(dest_path, moved) == 0 && symlink(g_swap_target, dest_path) == 0);
+}
+static int mode_of_path(const char *p)
+{
+    struct stat st;
+    return stat(p, &st) == 0 ? (int)(st.st_mode & 07777) : -1;
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -2147,6 +2163,94 @@ int main(void)
               strcmp(store_status_name(STORE_ERR_CORRUPT), "audit-chain-corrupt") == 0,
               "damaged store: a damaged value is named store-corrupt, and only the audit chain is audit-chain-corrupt (F126)");
         if (again != NULL) { store_close(again); }
+    }
+
+    /* ---- V4-284 (F470): revoke=all revokes every active device, however many ----
+     * It stopped after 1024 and committed, answering OK with the newest
+     * devices still active. 1030 devices, then one recovery with revoke=all. */
+    {
+        store_t *s = fresh_store("many.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open many\n"); return 1; }
+        int made = (store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK);
+        for (unsigned i = 0; made && i < 1030u; i++) {
+            uint8_t h[8], pk[STORE_PK_BYTES];
+            (void)snprintf((char *)h, sizeof h, "h%05u", i);
+            make_pk(pk, (uint8_t)i);
+            pk[0] = (uint8_t)(i >> 8); pk[1] = (uint8_t)i; pk[2] = 0xa5;
+            made = (store_enroll_device(s, h, 6u, U1, sizeof U1, pk, "site", "admin", NULL, 0) == STORE_OK);
+        }
+        CHECK(made, "revoke-all, many: a user with 1030 active devices");
+        const char *g[] = { "hash-m1" };
+        size_t revoked = 0;
+        CHECK(store_recovery_replace(s, U1, sizeof U1, g, 1, 100, NULL) == STORE_OK &&
+              store_recovery_consume_ex(s, any_unused(s, U1, sizeof U1), U1, sizeof U1, TH2, 300, 900, 1, &revoked)
+                  == STORE_OK, "revoke-all, many: the recovery succeeds");
+        store_close(s);
+        long long active = -1, keys = -1;
+        char t[8];
+        CHECK(revoked == 1030u &&
+              raw_row(dbp, "SELECT COUNT(*), '' FROM devices WHERE status='active';", &active, t, sizeof t) == 0 &&
+              active == 0 &&
+              raw_row(dbp, "SELECT COUNT(*), '' FROM device_keys WHERE status='active';", &keys, t, sizeof t) == 0 &&
+              keys == 0,
+              "revoke-all, many: all 1030 devices and their keys are revoked, not the first 1024 (F470)");
+        store_t *s2 = NULL;
+        CHECK(store_open(dbp, KEK, &s2) == STORE_OK && store_audit_verify(s2) == STORE_OK,
+              "revoke-all, many: the audit chain verifies");
+        if (s2 != NULL) { store_close(s2); }
+    }
+
+    /* ---- V4-284 (F471): an enable keeps the record of why the user was disabled ---- */
+    {
+        store_t *s = fresh_store("reason.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open reason\n"); return 1; }
+        const char why[] = "stolen laptop";
+        CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+              store_disable_user(s, U1, sizeof U1, "admin", (const uint8_t *)why, sizeof why - 1u) == STORE_OK,
+              "disable reason: a user disabled with a reason");
+        long long at0 = 0, at1 = 0;
+        char r0[64] = "", r1[64] = "", st1[16] = "";
+        const char *q = "SELECT disabled_at, CAST(disabled_reason AS TEXT) FROM users;";
+        CHECK(raw_row(dbp, q, &at0, r0, sizeof r0) == 0 && at0 > 0 && strcmp(r0, why) == 0,
+              "disable reason: the row holds the time and the reason (the canary)");
+        CHECK(store_enable_user(s, U1, sizeof U1, "admin") == STORE_OK, "disable reason: the user is enabled again");
+        store_close(s);
+        long long dummy = 0;
+        CHECK(raw_row(dbp, q, &at1, r1, sizeof r1) == 0 && at1 == at0 && strcmp(r1, why) == 0 &&
+              raw_row(dbp, "SELECT 0, status FROM users;", &dummy, st1, sizeof st1) == 0 && strcmp(st1, "active") == 0,
+              "disable reason: after the enable the user is active and the last disable's time and reason remain (F471)");
+    }
+
+    /* ---- V4-284 (F472): the backup's file is checked to be the one it made ----
+     * VACUUM INTO and the chmod after it used the destination by name. Here
+     * the name is swapped for a symlink to another file once the copy is
+     * written (the observer runs there): the mode was set on the link's
+     * target and the backup answered OK. Now it is refused, the target is
+     * untouched, and the name -- no longer this call's -- is not removed. */
+    {
+        store_t *s = fresh_store("swap.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open swap\n"); return 1; }
+        snprintf(g_swap_dest, sizeof g_swap_dest, "%s/swap-backup.sqlite3", g_dir);
+        snprintf(g_swap_target, sizeof g_swap_target, "%s/swap-target", g_dir);
+        char moved[640];
+        snprintf(moved, sizeof moved, "%s.moved", g_swap_dest);
+        FILE *f = fopen(g_swap_target, "w");
+        if (f != NULL) { (void)fputs("someone else's\n", f); (void)fclose(f); }
+        CHECK(chmod(g_swap_target, 0644) == 0, "backup swap: another file, mode 0644");
+        store_fault_arm_backup_observer(swap_for_symlink);
+        const store_status_t br = store_backup(s, g_swap_dest);
+        store_fault_arm_backup_observer(NULL);
+        struct stat ts, ls;
+        CHECK(g_swapped == 1 && br == STORE_ERR_IO && stat(g_swap_target, &ts) == 0 && (ts.st_mode & 07777) == 0644 &&
+              lstat(g_swap_dest, &ls) == 0 && S_ISLNK(ls.st_mode),
+              "backup swap: a name swapped for a symlink after the copy fails the backup, and neither the link "
+              "nor its target is touched (F472)");
+        (void)unlink(g_swap_dest); (void)unlink(moved); (void)unlink(g_swap_target);
+        char plain[600];
+        snprintf(plain, sizeof plain, "%s/plain-backup.sqlite3", g_dir);
+        CHECK(store_backup(s, plain) == STORE_OK && mode_of_path(plain) == 0600,
+              "backup swap: the same backup, left alone, succeeds with mode 0600 (the control)");
+        store_close(s);
     }
 
     {
