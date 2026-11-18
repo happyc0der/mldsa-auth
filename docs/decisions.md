@@ -19747,3 +19747,36 @@ Counts: 696 mutations, 127 campaigns, 741 anchors; 451 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450 and F451 open); spec v1.81, 123 errata; 65 tests
 (unchanged by this step).
+
+## V4-278 — the documents a decision-maker reads first, against the register (F452 to F454)
+
+The forty-seventh review read the threat model, the README's security
+sections, the review page, the claim map, the runbook's closing section
+and the specifications' security statements against the register as it
+stands after forty-six reviews. Five Medium items, all of one kind:
+sentences a reader would make a deployment decision on, which had not
+followed the fixes and the open findings. Recorded as one finding, F452,
+because they have one cause: no gate reads these sentences against the
+register, and each was right when written.
+
+- **F452.** Corrected in place, each against the finding or the line of
+  code that is true now. The README's security section now says it is
+  about the library and points at the threat model.
+- **F453 (open).** A design property, not a defect in code: recovery
+  codes are the one secret a user types, and so the one a look-alike
+  page can take. The documents now say so; what to do about it is the
+  owner's.
+- **F454.** From systemd's documentation of `systemd-creds` without a
+  TPM. Not reproduced: it needs two VMs.
+- **Not changed:** the protocol spec's forward-secrecy statement has no
+  entry in the claim map and the model does not cover it; the formal
+  README now says so in its own words. That spec's text is not edited
+  outside errata.
+
+No campaign: no code changed.
+
+Spec v1.82, erratum 124.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 454 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.82, 124 errata; 65 tests.

@@ -157,7 +157,7 @@ the most important thing on this page.
 - mutation `v52 P5` — the pin lookup branches on the decoy flag, so an unknown identity fails earlier and differently
 - mutation `v48b C1` — an unknown identity gets no decoy and is refused outright
 - tool `tools/audit/constant_time_inventory.sh` — a list of comparison sites, not a timing check
-**Not established:** essentially unpinned. The audit (F17) records that this requirement has no executable pin and no timing test; the decoy evidence shows identical outcomes, not identical timing, and F37 records an accepted timing distinguisher in ROTATE rejection.
+**Not established:** partly pinned. `constant_time_sites` fixes which function compares (P3, since V4-15b; F17), and one path is timed by `bench_decoy` (D6); nothing else measures timing. The decoy evidence shows identical outcomes, not identical timing. (F37's timing distinguisher in ROTATE rejection was closed by V4-198, erratum 102.)
 
 ### P10 — Build-time algorithm backend selection
 - tool `tools/check_backend_symbols.sh` — every executable links no portable-C ML-DSA-65/ML-KEM-768 and exactly one optimised family; fails on no executables, no backend, or no optimised family
@@ -510,7 +510,7 @@ the most important thing on this page.
 - check `test_authd_evloop` "cfg: proxy_protocol = v2 without proxy_uids is refused (Req 11)"
 - mutation `v57 HC2` — `proxy_protocol = v2` without `proxy_uids` accepted again
 - ci `caddy proxy (Linux, Docker)` — a real login through Caddy over WebSocket with a PROXY v2 preamble, the client's address recorded, and refused once `proxy_protocol` is removed; the image and the Caddy tarball pinned by digest
-**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11); `proxy_protocol = v2` now requires `proxy_uids` (audit F92, fixed in V4-14c), but nothing checks that the uid named IS the proxy's. `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. Since V4-22b the real-Caddy leg (`tests/caddy_proxy.sh`) runs in CI as a job of its own, on amd64 only, with the container image and the Caddy tarball pinned by digest; the packages it installs into that image are not pinned, and it is still not a CTest.
+**Not established:** the preamble is only as trustworthy as the peer that wrote it (D11); `proxy_protocol = v2` now requires `proxy_uids` (audit F92, fixed in V4-14c), but nothing checks that the uid named IS the proxy's, and a uid listed in both `site_uids` and `proxy_uids` lets the site state any address (F420, open); the shipped example does exactly that. Req 12 holds on the proxy-facing listener only: the operator's TCP loopback listener takes no preamble, so no address, no limiter and no fail-closed (F309, open Medium). `proxy_protocol` defaults to `none` (audit F63): no address and no limiter at all. Since V4-22b the real-Caddy leg (`tests/caddy_proxy.sh`) runs in CI as a job of its own, on amd64 only, with the container image and the Caddy tarball pinned by digest; the packages it installs into that image are not pinned, and it is still not a CTest.
 
 ### D13 — Logging never contains
 - check `test_authd_conn` "logscan: the login code never appears in the daemon's log"

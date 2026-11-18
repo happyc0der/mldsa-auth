@@ -719,7 +719,8 @@ The enrollment page says these itself; your help page should too.
 - **The passphrase policy refuses the obviously weak; it does not certify
   strength.** A copied key blob can be guessed offline, and Argon2id only sets
   the price per guess.
-- **Script injected into your site can use an unlocked key.** No origin-level
+- **Script injected into your site while a passphrase is typed takes the
+  key**, usable anywhere until the device is revoked (F144). No origin-level
   bug is survivable; keep the CSP exactly as it is.
 - A copied blob is an undetectable clone, and there is no hardware backing.
 - **A browser trusts your TLS for the page itself** (F137). The page's code

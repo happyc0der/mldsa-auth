@@ -82,7 +82,8 @@ What the model leaves out, so that nothing is read into it:
   model does not show it.
 - **No long-term key is ever given to the attacker.** Forward secrecy and
   key-compromise impersonation are not modelled, so nothing here supports
-  or contradicts the protocol specification's statement about them.
+  or contradicts what the protocol specification says of forward secrecy, and
+  it makes no statement about key-compromise impersonation.
 - **`state` reaches the daemon on a channel the attacker cannot write.**
   It travels in the WebSocket URL, under the site's TLS. The property is
   about a web attacker who chooses which session a code is presented in

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.81, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272)
+# mldsa-authd — deployment specification (v1.82, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -46,7 +46,8 @@ storing a secret that could impersonate them, and without a password.
 
 Concretely, after a successful handshake the daemon issues a short-lived
 **login code**; the site exchanges that code over a local socket for an opaque
-**session token** which it sets as a cookie. The site's own session mechanics
+**session token** which it keeps in its own server-side session; the cookie
+carries only the site's session id (erratum 124). The site's own session mechanics
 are unchanged and out of scope.
 
 ## 2. Scope
@@ -113,13 +114,18 @@ The **server identity key** is pinned by every client. A client MUST reject a
 `ServerHello` that is not signed by the pinned key (spec-v2 §6.3, responder
 identity binding) — this is what makes the deployment phishing-resistant, and
 it is cryptographic, not string matching against an origin.
+Logins, that is: a recovery code is typed by its user, so a look-alike page
+can collect one, and a username and one code recover the account and enroll
+a device of the collector's choosing (erratum 124, audit F453).
 
 Clients obtain the server's public key **out of band over a channel already
 trusted by other means** (spec-v2 §6.2) — in practice, fetched from the site
 over TLS at enrollment and pinned thereafter (TOFU-over-TLS).
 
-What a **compromised site process** can do: enroll devices for any user, read
-tokens it is given, revoke anything. What it cannot do: obtain any device or
+What a **compromised site process** can do (erratum 124): enroll devices for
+any non-operator user, read tokens it is given, revoke any non-operator
+device, and end or list any user's tokens and devices, operators' included
+(audit F419, open). What it cannot do: obtain any device or
 server secret, or mint a token without a completed handshake — a token exists
 only after `EXCHANGE` of a login code that only a successful handshake
 produces. What **root on the host** can do: everything; see
@@ -2301,3 +2307,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 123 | 8, 15 | Every local-API request answered `internal` writes `error event=local-internal` with the command and the peer; a `RECOVERY-USE` refusal whose Argon2id cannot be computed answers `internal` and logs `recovery-use detail=kdf-failed` at ERROR | A full disk or a locked store left a local-API request with one INFO line and nothing at ERROR, where errata 99 and 117 had put store failures on the handshake and rotation paths. And the one computation a refusal spends ignored its own failure, so when Argon2id could not get its memory an unknown user was refused at once as `invalid` while a user with codes was answered `internal`: the answer, and the time, by who was named (audit F432, F433) |
+
+### Revision v1.82 (V4-278)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 124 | 1, 4 | A compromised site cannot revoke an operator's device, and can end and list any user's tokens and devices; the session token is kept server-side, not set as a cookie; phishing resistance is stated for logins, not recovery codes | §4 said a compromised site can "revoke anything", which V4-82 (erratum 65) ended for operators' devices, and left out what it can still do to operators (F419). §1 said the site "sets [the token] as a cookie", where §14 and the reference site keep it server-side and the cookie holds a session id. And "phishing-resistant" was said of the deployment, where a recovery code given to a look-alike page recovers the account (audit F452, F453) |

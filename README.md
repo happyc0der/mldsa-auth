@@ -39,14 +39,16 @@ by systemd's own analysers rather than by review, an offline dependency cache
 that still enforces every pin (proven by a build with the network switched
 off), a daemon that warns when its locked-memory limit is too small to keep
 secrets off disk, and [deploy/RUNBOOK.md](deploy/RUNBOOK.md) — a numbered
-checklist from an empty VPS to a first login. What does not exist is a running
-deployment: nobody has executed that checklist against a real host, and until
-someone does, the runbook is where the remaining risk lives. See
+checklist from an empty VPS to a first login, which CI rehearses top to bottom
+on fresh Ubuntu hosts under systemd on every push. What does not exist is a
+running deployment: no production host has run that checklist, and until one
+does, the runbook is where the remaining risk lives. See
 *The authentication daemon* below for what works today and what does not.
 
-Since `v2.0.0` the verification has been **automated rather than changed**: the
-library, the reference apps and the build are byte-identical to the `v2.0.0`
-tag, and what was a one-off retrospective now runs on every push and every
+Since `v2.0.0` the verification has been **automated** and the library has
+changed only where the daemon needed it (V4-12) and for two fixes (F149: the
+responder checks the X25519 key before signing; F250); there is no new version
+number for it. What was a one-off retrospective now runs on every push and every
 night (see *How this is verified*). That work carries its own `v3-step*` tags
 and deliberately **no version bump** — a new number would advertise a change
 to the code that does not exist.
@@ -439,7 +441,8 @@ code**, which the site exchanges over a local Unix socket for an opaque
 never holds a device's secret. It is specified in
 [docs/mldsa-authd-spec.md](docs/mldsa-authd-spec.md).
 
-Milestone A is operators with a command-line client. Browsers are milestone B.
+Milestone A is operators with a command-line client; milestone B, the browser
+client, is built (*The browser client (WebAssembly)* above).
 
 ```sh
 # 0. Build, and work somewhere with a short path: a Unix socket path must fit
@@ -580,8 +583,10 @@ Three things are worth knowing before you build a page around it:
   it hashes is its own canonical form. A site that normalises differently locks
   its users out of their own codes.
 * **Issuing invalidates the previous generation.** That is what keeps the
-  verification loop bounded, and the loop is not cheap: one code costs ~52 ms,
-  so a worst-case `RECOVERY-USE` blocks the single-threaded daemon for ~0.8 s.
+  verification loop bounded: since V4-76 an attempt costs one Argon2id
+  computation (~50 ms; codes issued before V4-76 cost one each until they
+  are re-issued), and the site socket's attempts share a daemon-wide budget,
+  answered `busy` past it (F155).
   Five wrong attempts lock recovery for an hour; put your own rate limit in
   front of it anyway.
 * **An operator's recovery is not reachable from `site.sock`** — it answers
@@ -650,9 +655,9 @@ proves the disconnection by requiring DNS to fail, builds from the cache alone,
 and then stages three ways the cache could be wrong — unreadable, one byte
 changed, moved off the pinned commit — and requires each to be refused.
 
-What does not exist is a running deployment. Nobody has executed that checklist
-against a real host, so this is **installable, not deployed**, and the runbook
-is where the remaining risk lives.
+What does not exist is a running deployment. CI rehearses the checklist on
+fresh hosts; no production host has run it, so this is **installable, not
+deployed**, and the runbook is where the remaining risk lives.
 
 
 ## Dependencies
@@ -719,6 +724,13 @@ available, so these are real measurements on a different architecture rather
 than a literal verification of that requirement.
 
 ## What this protects against, and what it does not
+
+This section describes the protocol library and its demo. For the daemon,
+the site and the browser client, read [the threat model](docs/v4/threat-model.md)
+and the open findings on [the review page](docs/review/README.md): in
+particular, a browser trusts the site's TLS for the page's own code (F137),
+a script present while a passphrase is typed takes the key (F144), and the
+operator's loopback listener is outside the rate limiter (F309, open).
 
 ### Protects against
 

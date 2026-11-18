@@ -49,9 +49,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 451 findings (F0–F451), with severity, evidence and
+   register](../v4/audit.md). 454 findings (F0–F454), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 123 errata, each
+3. The two specifications. The deployment spec's §20 lists 124 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -97,7 +97,7 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Seventeen more are open in the register, each with its reasons there. This list
+Eighteen more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
@@ -121,6 +121,7 @@ no row here:
 | F437 | Info | A long system-wide descriptor shortage stops the watchdog ping; recommended: one notification socket, kept |
 | F450 | Low | `listener-peer-rejected` names neither the uid nor the listener; recommended: `uid=` and a `detail=` naming the listener |
 | F451 | Low | The three tools word the same faults differently, and `authd_client` exits 1 for an unusable key; recommended: one word per fault, exit 3 |
+| F453 | Low | A recovery code can be phished: a username and one code, given to a look-alike page, recover the account; recommended: tell the account's other sessions |
 
 The other four were closed in V4-14d. **F95** and **F96** were wording:
 Req 3 now states its one exception (secret hashes are found by SQLite
@@ -593,7 +594,7 @@ device or user is no longer active (erratum 60). It also fixed F158 (Low: a
 handshake begun under a key rotated away mid-handshake got a code; erratum
 61) and F159 (Med: V4-76's limiter keyed on the client-supplied end of
 `X-Forwarded-For`; erratum 62). F160 (Info) records the WebSocket upgrade's
-missing Origin check. F157's fix is on a branch until the owner reviews it.
+missing Origin check.
 
 V4-80 took the third round's findings. **F161 (High):** a recovery ticket
 stayed valid for its ten minutes through a re-issue and through the
@@ -649,7 +650,8 @@ into the journal.
 
 ## Frozen at
 
-The annotated tag `v2.1.0-review.1` froze this packet: read it at that tag to
+The annotated tags `v2.1.0-review.1` and `v2.1.0-review.2` froze this packet;
+`v2.1.0-review.2` (`cf4981c`, after V4-15c) is the latest. Read it at a tag to
 review exactly what was frozen. On `main` the packet moves with the tree --
-V4-15a's changes above are there and not in the tag -- until a later tag
+every step since review.2 is there and not in the tag -- until a later tag
 freezes it again.
