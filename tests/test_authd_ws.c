@@ -332,7 +332,10 @@ static void test_split_upgrade(void)
         "Sec-WebSocket-Version: 13\r\n\r\n";
     const size_t n = sizeof req - 1u;
 
-    for (size_t split = 1u; split < n; split += 7u) {
+    /* V4-294, F497: EVERY offset, as the message says and F50's register row
+     * claims. It was one in seven, and none fell inside the final CRLFCRLF,
+     * where a split is most likely to break the end-of-headers search. */
+    for (size_t split = 1u; split < n; split++) {
         static conn_io_t io;
         conn_io_reset(&io);
         conn_io_set_mode(&io, CONN_IO_MODE_WS);

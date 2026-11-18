@@ -632,6 +632,13 @@ try {
     const s = await client.login({ ...params, envelope: (await store.get(params.handle)).envelope, keepForRotate: true });
     const next = client.newIdentity(PASS, params.handle);
     const find = () => { const hay = Buffer.from(M.HEAPU8.buffer, M.HEAPU8.byteOffset, M.HEAPU8.length); return hay.indexOf(marker); };
+    // V4-294, F499: the scan can see a copy that IS in the module's memory.
+    // The control below only showed the marker absent before the rotation.
+    { const probe = client.put(new TextEncoder().encode(marker));
+      const seen = find();
+      client.drop(probe, marker.length);
+      check(seen >= 0 && find() === -1,
+            `rotate: the scan finds the passphrase when a copy is in the module, and not once it is wiped (found at ${seen}) (the control, F499)`); }
     const before = find();
     s.tick = () => { throw new Error('clock refused'); };
     let threw = null;
@@ -756,6 +763,7 @@ try {
     check(said.every((x) => x === null) && heap[0] === 0xfeedface,
           `out of memory: every allocation is refused by name and nothing is written at address 0 (${said.filter(Boolean).join('; ') || 'ok'}) (F463)`);
     const ok = new AuthdClient({ _malloc: () => 8, _free: () => {}, HEAPU32: heap, HEAPU8: new Uint8Array(16) });
+    heap[2] = 0xdeadbeef;     // V4-294, F498: so the zeroing can be seen (a fresh array is 0 already)
     check(ok.u32Slot() === 8 && heap[2] === 0, 'out of memory: a malloc that succeeds gives its slot, zeroed (the control)'); }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);

@@ -20298,3 +20298,30 @@ each a page saying or doing the wrong thing with an answer.
 Counts: 712 mutations, 131 campaigns, 757 anchors; 495 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.
+
+## V4-294 — the tests, read for what each one proves (F496 to F499)
+
+The fifty-eighth review read the suites asking whether each check can
+pass without its subject. It extracted every `CHECK` in the C suites
+mechanically and found no trivially true condition and no nested check
+left unguarded; the log-hygiene absence checks have present canaries,
+and `web_pages` and `site_sessions`' newer legs were sound. Four
+findings in older checks, one more suspected.
+
+- **F496.** The one with consequence: a site that ignored the proxy's
+  header would have passed. The new check sends a different rightmost
+  entry from the same socket.
+- **F497 to F499.** As recommended. Each new or changed check was shown
+  to fail on the defect it is about: the header ignored, the zeroing
+  removed, the passphrase copy kept.
+- **Not changed, recorded:** `test_localcli_split_list` relies on a 200 ms
+  sleep to put a reply into two writes; on a stalled machine both writes
+  may arrive in one read and the check passes without the split. Making
+  it deterministic needs the client to say when it has read, which only a
+  hook in `localcli` could; not added for one check.
+
+No campaign: no product code changed.
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 499 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.

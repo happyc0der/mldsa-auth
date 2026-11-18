@@ -350,6 +350,16 @@ try {
                    'X-Forwarded-For': `198.51.100.${i + 1}, 203.0.113.9` } })).status);
     }
     check(tst[2] === 429, `recover: a client rotating the X-Forwarded-For entries it prepends is still limited (${tst.join(', ')})`);
+    // V4-294, F496: and the key IS that entry. Every request above came from
+    // 127.0.0.1 with one rightmost entry, so a site that ignored the header
+    // and keyed on the socket passed too -- and behind a proxy that puts every
+    // client in the proxy's one bucket. Another rightmost entry, from the
+    // same socket, is another client.
+    const other = (await fetch(`${tbase}/api/recover`, { method: 'POST',
+      body: JSON.stringify({ user: 'nobody-by-this-name', code: '0000000000000000' }),
+      headers: { Origin: tbase, 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.1, 203.0.113.10' } })).status;
+    check(other !== 429,
+          `recover: a different rightmost X-Forwarded-For entry, from the same socket, is not in the limited bucket (${other}) (F496)`);
   }
 
   // V4-129, F212: the invite is the site's signup secret and was compared with
