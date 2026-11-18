@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.88, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287)
+# mldsa-authd — deployment specification (v1.89, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -214,7 +214,11 @@ content = op (1 byte) || body
 
 Decoding is **strict**, exactly as spec-v2 §6.3.4: exact lengths, full
 consumption, no trailing bytes, one op per record. Any violation is a terminal
-error; the daemon replies `ERROR` where it can and closes.
+error; the daemon replies `ERROR` where it can and closes. One case on the
+client's side is not (erratum 131): an authenticated reply to `ROTATE` that is
+neither `ROTATE_ACK` nor `ERROR` is an unanswered rotation (§10.2 keeps the
+staged key), and the session stays open only so the client can say `BYE`; the
+old key is already released, so a second `ROTATE` cannot be built.
 
 | op | name | direction | when |
 |---|---|---|---|
@@ -2399,3 +2403,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 130 | 7.1 | A bare `state` counts as a `state`; a query with `%`, `+` or a fragment is refused; the upgrade request's lines end CRLF and its four WebSocket headers appear once each | `?state&state=X` and `?%73tate=A&state=B` bound one value where `URLSearchParams` reads two (F478); a bare LF ended the request here and not in the reader that framed it, and a repeated header was read as its last (F479) |
+
+### Revision v1.89 (V4-288)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 131 | 6 | An authenticated reply to `ROTATE` that is neither `ROTATE_ACK` nor `ERROR` leaves the client's session open for `BYE` only, the rotation unanswered | §6 called every strict-decode violation terminal; the client core returns to LIVE there on purpose, which the text did not say (F481) |

@@ -20115,3 +20115,31 @@ All five `KILLED | restored=byte-exact | rebuilt=ok` with
 Counts: 712 mutations, 131 campaigns, 757 anchors; 479 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.88, 130 errata; 65 tests.
+
+## V4-288 — the protocol core, read whole again (F480, F481)
+
+The fifty-fourth review read `src/protocol`, `src/crypto`, `src/util`
+and the client core's handshake whole, against spec-v2 and §5 and §6
+here, and built the real record layer, key schedule and handshake against
+libsodium with the post-quantum primitives stubbed: sixteen checks, all
+as the spec says (a v1-length ClientHello refused, a second ClientAuth
+refused, a replayed record ending the session, bucket-256 records 281
+bytes). It found the transcript, labels, key schedule, nonces, sequence
+limits, wiping, constant-time comparisons, decoders, state machines and
+library returns sound. Nothing Medium or Low; two Info items.
+
+- **F480.** Compile-time asserts, as `mlkem_wrap.c` has. No campaign:
+  a mutant of a `_Static_assert` is a compile failure by construction,
+  and the runtime check in `mldsa_verify` cannot be reached with the
+  pinned liboqs; both are recorded as checked by compiling, native and
+  wasm.
+- **F481.** Text, not code. Making the client core fail there would
+  stop it sending `BYE` after a daemon's unrecognised reply, which buys
+  nothing: the daemon wrote the reply, and the old key is already gone
+  from the core.
+
+Spec v1.89, erratum 131.
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 481 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.

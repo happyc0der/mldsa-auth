@@ -7,6 +7,12 @@
 
 #define MLDSA_ALG_NAME "ML-DSA-65"
 
+/* V4-288, F480: a liboqs bump that changes ML-DSA-65's sizes must fail here,
+ * at compile time, as mlkem_wrap.c's does -- not at run time in a handshake. */
+_Static_assert(OQS_SIG_ml_dsa_65_length_public_key == MLDSA_PUBLIC_KEY_BYTES, "ML-DSA-65 pk size");
+_Static_assert(OQS_SIG_ml_dsa_65_length_secret_key == MLDSA_SECRET_KEY_BYTES, "ML-DSA-65 sk size");
+_Static_assert(OQS_SIG_ml_dsa_65_length_signature == MLDSA_SIGNATURE_MAX_BYTES, "ML-DSA-65 sig size");
+
 int mldsa_keypair_generate(mldsa_keypair_t *kp) {
     if (kp == NULL) {
         return -1;
@@ -101,6 +107,13 @@ int mldsa_verify(const uint8_t *msg, size_t msg_len,
         return -1;
     }
 
+    /* F480: the instance's own sizes are the ones verify reads the key and
+     * bounds the signature with, so they are checked here too, as keygen and
+     * sign check theirs. */
+    if (sig->length_public_key != MLDSA_PUBLIC_KEY_BYTES || sig->length_signature != MLDSA_SIGNATURE_MAX_BYTES) {
+        OQS_SIG_free(sig);
+        return -1;
+    }
     OQS_STATUS rc = OQS_SIG_verify(sig, msg, msg_len, sig_bytes, sig_len, public_key);
     OQS_SIG_free(sig);
 
