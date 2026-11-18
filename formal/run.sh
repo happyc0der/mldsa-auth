@@ -75,7 +75,12 @@ broken ctl_kdf_nokem   controls/kdf_nokem.pv  "event(initEstablished(a,b,s,nb,k)
 broken ctl_siga        controls/siga.pv       "inj-event(respEstablished(a,b,s,nb,k)) ==> inj-event(initEstablished(a,b,s,nb,k))"
 broken ctl_conf        controls/conf.pv       "inj-event(initConfirmed(a,b,s,nb,k)) ==> inj-event(respEstablished(a,b,s,nb,k))"
 broken ctl_codeplain   controls/codeplain.pv  "event(codeIssued(d,st_1,cd)) && attacker(cd))"
-broken ctl_state       controls/state.pv      "event(siteLoggedIn(d,st_1,cd)) ==> event(loginStart(d,st_1))"
+# V4-297 (F506): without the state comparison, a code issued under the
+# attacker's state (a ClientHello relayed into a connection the attacker
+# opened) lands in the page's own session -- the code accepted is not the one
+# issued under that state. The session control is the login-CSRF itself.
+broken ctl_state       controls/state.pv      "event(siteLoggedIn(d,st_1,cd)) ==> event(codeIssued(d,st_1,cd))"
+broken ctl_session     controls/session.pv    "event(siteLoggedIn(d,st_1,cd)) ==> event(loginStart(d,st_1))"
 broken ctl_code        controls/code.pv       "event(siteLoggedIn(d,st_1,cd)) ==> event(codeIssued(d,st_1,cd))"
 broken ctl_rot_hsid    controls/rot_hsid.pv   "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"
 broken ctl_rot_sigold  controls/rot_sigold.pv "inj-event(rotated(d,po,pn,h)) ==> inj-event(rotateRequested(d,po,pn,h))"

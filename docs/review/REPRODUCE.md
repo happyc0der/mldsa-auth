@@ -137,11 +137,11 @@ formal/run.sh path/to/proverif
 It runs in the nightly job `ProVerif model + controls`. Since V4-204 it has
 also been run on the machine that wrote this page, in a container holding
 the same pinned ProVerif 2.05 tarball the nightly builds (2026-11-14, and
-again for V4-265 on 2026-11-17). Its output: `ok the base model gives 13
+again for V4-265 on 2026-11-17 and for V4-297 on 2026-11-18). Its output: `ok the base model gives 13
 results, each named below`, `ok base`, `ok reachable`, `ok leak_kem`, `ok
 leak_dh`, `ok leak_c2s`, and `no longer provable (is false)` for each of
-eleven controls: `ctl_sigb`, `ctl_peerid`, `ctl_kdf_nodh`, `ctl_kdf_nokem`,
-`ctl_siga`, `ctl_conf`, `ctl_codeplain`, `ctl_state`, `ctl_code`,
+twelve controls: `ctl_sigb`, `ctl_peerid`, `ctl_kdf_nodh`, `ctl_kdf_nokem`,
+`ctl_siga`, `ctl_conf`, `ctl_codeplain`, `ctl_state`, `ctl_session`, `ctl_code`,
 `ctl_rot_hsid` and `ctl_rot_sigold`. (Before V4-204 the model had six
 controls for seven queries and no reachability check, audit F281; before
 V4-265 three controls answered "cannot be proved" and the script accepted

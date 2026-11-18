@@ -110,7 +110,12 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   let epkA = exp(g, x) in let ekA = kempub(dk) in
   let ch = (A, epkA, ekA, sid, nA) in
   event loginStart(A, state);
-  out(c, ch); out(ws, (ch, state));
+  out(c, ch);
+  (* V4-297: asynchronous, as V4-265 made the daemon's private sends (F406):
+     with a connection the attacker opens, the page's own connection need not
+     be the one that answers, and a send that waited for its reader kept
+     ProVerif from rebuilding the trace of the attack ctl_state exhibits. *)
+  ( out(ws, (ch, state)) |
   in(c, (shu: bitstring, sigB: bitstring));
   let (bid: id, epkB: G, ct: bitstring, nB: nonce, =sid) = shu in
   if bid = B then                                             (* CONTROL:peerid *)
@@ -129,16 +134,21 @@ let initiator(A: id, skA: skey, B: id, pkB: pkey, state: bitstring) =
   in(c, rec: bitstring);
   let (=opLOGIN, code: bitstring) = sdec(rec, ks2c) in                  (* CONTROL:conf *)
   event initConfirmed(A, B, sid, nB, kc2s);
-  ( out(form, code) |                                        (* the page posts the code; asynchronous, as above *)
+  ( out(form, (code, state)) |                               (* the page posts the code IN ITS OWN session (V4-297) *)
   new skNew: skey; let pkNew = pk(skNew) in
   let mrot = (hsid, A, pk2b(pk(skA)), pk2b(pkNew)) in
   event rotateRequested(A, pk(skA), pkNew, hsid);
-  out(c, senc((opROTATE, A, pkNew, sign(hash((rotold,mrot)),skA), sign(hash((rotnew,mrot)),skNew)), kc2s)) ).
+  out(c, senc((opROTATE, A, pkNew, sign(hash((rotold,mrot)),skA), sign(hash((rotnew,mrot)),skNew)), kc2s)) ) ).
 
 (* daemon, client-facing session: handshake -> issue code -> accept ROTATE.
    ROTATE is gated on the handshake only, never on the site's EXCHANGE. *)
-let responder(B: id, skB: skey, A: id, pkA: pkey) =
-  in(c, ch: bitstring); in(ws, (=ch, state: bitstring));
+(* V4-297 (F506): on `wsch`. The honest page's connection is `ws`, paired
+   with the ClientHello it carries; and anyone may open a connection of their
+   own (spec 7.1: the proxy forwards an upgrade with no Origin), so a second
+   copy reads the ClientHello AND the state from the attacker. Until V4-297
+   only the page ever opened one, and P4 held because nobody else could. *)
+let responder(B: id, skB: skey, A: id, pkA: pkey, wsch: channel) =
+  in(c, ch: bitstring); in(wsch, (=ch, state: bitstring));
   let (=A, epkA: G, ekA: kempk, sid: nonce, nA: nonce) = ch in
   new y: exponent; new nB: nonce; new ssk: kemss;
   let epkB = exp(g, y) in let ct = encaps(ekA, ssk) in
@@ -179,8 +189,13 @@ let responder(B: id, skB: skey, A: id, pkA: pkey) =
    binding (code -> the state it was issued under); EXCHANGE must present it. *)
 let site(post: channel) =
   in(ls, (code: bitstring, dev: id, boundstate: bitstring));  (* daemon's stored binding *)
-  in(post, excode: bitstring);                                (* the code: from the page that holds it, or (V4-265) from anyone *)
-  in(c, exstate: bitstring);                                  (* the session it lands in: the web attacker's choice (login-CSRF) *)
+  (* V4-297 (F506): the code and the session it lands in come TOGETHER, from
+     whoever posts them -- the honest page posts its own code in its own
+     session (server.mjs exchanges with s.state); anyone else (V4-265) posts
+     a pair of their choosing, the web attacker's login-CSRF. They were read
+     apart, the session from the attacker, which with connections the
+     attacker can open lets a relayed code land in the attacker's session. *)
+  in(post, (excode: bitstring, exstate: bitstring));
   if excode = code then                                       (* CONTROL:code *)
   if exstate = boundstate then                                (* CONTROL:state *)
   event siteLoggedIn(dev, exstate, excode).
@@ -190,7 +205,8 @@ process
   out(c, (A, B, C, pk(skA), pk(skB), pk(skC)));
   insert pins(B, pk(skB)); insert pins(C, pk(skC));
   ( !(new st: bitstring; out(c, st); initiator(A, skA, B, pk(skB), st))
-  | !responder(B, skB, A, pk(skA))
-  | !responder(C, skC, A, pk(skA))
+  | !responder(B, skB, A, pk(skA), ws)
+  | !responder(B, skB, A, pk(skA), c)    (* V4-297: a connection the attacker opened *)
+  | !responder(C, skC, A, pk(skA), ws)
   | !site(form)       (* the honest page posts the code it was given *)
   | !site(c) )        (* V4-265: and anyone may post a code of their choosing *)

@@ -71,6 +71,15 @@ make("codeplain",
 make("state",
      ("  if exstate = boundstate then                                (* CONTROL:state *)\n", ""))
 
+# V4-297 (F506): and the code must arrive in the session that holds it. A
+# site that took the session from the request apart from the code -- the
+# model before V4-297 -- lets a ClientHello relayed into a connection the
+# attacker opened, under the attacker's state, log the device in there; the
+# login-CSRF property must break.
+make("session",
+     ("  in(post, (excode: bitstring, exstate: bitstring));\n",
+      "  in(post, (excode: bitstring, posted: bitstring)); in(c, exstate: bitstring);\n"))
+
 # V4-265 (F404): the site must compare the code it is given with the code the
 # daemon issued. Without the comparison any posted value logs the device in
 # under the state the daemon bound; "the code accepted is the code issued"

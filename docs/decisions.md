@@ -20390,3 +20390,38 @@ rebuilt=ok` with `tools/hand_control.py`.
 Counts: 716 mutations, 132 campaigns, 761 anchors; 505 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.
+
+## V4-297 — the formal model, read against the code: an attacker who opens connections (F506 to F511)
+
+The sixtieth review read `formal/` against both specifications and the
+code it claims to model, and ran ProVerif 2.05 on mutants of it. The
+handshake, the KDF inputs, ROTATE's once-per-session and `run.sh`'s
+counting and controls were as the README says. One Low finding in the
+model, four in its README, and one suspected about the CLI.
+
+- **F506.** The fix is the review's second model, written without a
+  second copy of the responder: the responder takes the channel its
+  connection arrives on, `ws` for the page's own and `c` for one the
+  attacker opened. With that, removing the site's state comparison no
+  longer breaks P4 (a relayed code lands in the page's own session, the
+  page's own state) but breaks P4b; and the attack is exhibited as a run
+  only once the page's send on `ws` is asynchronous, the cause V4-265
+  found for the daemon's sends (F406). The old modelling, the site taking
+  the session from the attacker apart from the code, is kept as a control,
+  `ctl_session`, which makes P4 false with the relay. Run in a container
+  with the pinned ProVerif: 13 results, all twelve controls false.
+- **F507 to F510.** README text: what each query agrees on, every check
+  with no control and why, what is not modelled.
+- **F511 (open).** Not run, and a design question: the CLI's flow is a
+  pasted code, which binds to whatever state it is given, like a device
+  code. The threat model now names it beside F453. What to do -- name the
+  site in the CLI's output, show the session on the site's paste form,
+  or keep the CLI to operators who supply their own state -- is the
+  owner's.
+
+No campaign: no C changed; the model's own controls are its mutations.
+
+Counts: 716 mutations, 132 campaigns, 761 anchors; 511 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.89, 131 errata; 66
+tests.
