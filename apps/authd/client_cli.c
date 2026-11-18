@@ -1047,6 +1047,16 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
         (void)unlink(pub_tmp);   /* F118 */
+        /* F438: a session that failed before ClientAuth was sent -- no
+         * daemon, no upgrade, a ServerHello that did not verify -- never
+         * showed the daemon this device's key, let alone a ROTATE, so the
+         * .ek.next this run just wrote cannot be live: it is removed on that
+         * proof. Kept, every later login reported an interrupted rotation and
+         * probed with both keys. A failure AFTER ClientAuth keeps it: the
+         * daemon has seen the key and the rule of spec 10.2 applies. */
+        if (!g_open_judged && unlink(next_path) == 0) {
+            fprintf(stderr, "%s rotate: the daemon was not reached, so the new key was never sent; it is not kept\n", prog);
+        }
         return rc;
     }
 

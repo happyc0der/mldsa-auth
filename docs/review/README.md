@@ -49,7 +49,7 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 437 findings (F0–F437), with severity, evidence and
+   register](../v4/audit.md). 438 findings (F0–F438), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
 3. The two specifications. The deployment spec's §20 lists 123 errata, each
    citing the finding that forced it.
@@ -62,7 +62,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 65 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 691 committed defects in 125 campaigns, each of which must be
+- **Mutations**: 692 committed defects in 126 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -97,7 +97,7 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Sixteen more are open in the register, each with its reasons there. This list
+Fifteen more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
@@ -115,7 +115,6 @@ no row here:
 | F419 | Low | `REVOKE-TOKENS` and `LIST-DEVICES` on the site socket have no operator check; recommended: `not-permitted` there, as for `REVOKE-DEVICE` |
 | F420 | Low | Nothing refuses a uid that is in both `site_uids` and `proxy_uids`; recommended: a warning from `--check-config` |
 | F421 | Info | A site that keeps every local slot busy keeps the administrative socket from being served; recommended: one slot reserved for it |
-| F430 | Low | A request the site gave up on still runs at the daemon; a late `RECOVERY-ISSUE` replaces the user's codes unseen; recommended: the page says so on a 503 |
 | F431 | Low | A login the daemon could not record is read by the client as a refusal of the key; recommended: `ERROR(0x05)` before closing |
 | F435 | Low | A failed allocation in liboqs's SHA-3 exits the daemon; recommended: a runbook entry for its line |
 | F436 | Low | A recovery lockout can be cleared only by editing the store; recommended: an administrative `RECOVERY-ISSUE` clears it |

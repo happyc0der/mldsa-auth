@@ -492,14 +492,17 @@ try {
   { const answers = [{ code: 502, type: 'text/html', body: '<html>bad gateway</html>' },
                      { code: 200, type: 'text/html', body: '<html>maintenance</html>' }];
     let answer = answers[0];
+    let codesOnly = false;      // F430's leg: /api/me goes to the site, only the codes request is answered here
     const onPaused = (m, prm) => {
       if (m !== 'Fetch.requestPaused') { return; }
+      const isCodes = /\/api\/recovery-codes/.test(prm.request?.url ?? '');
+      if (codesOnly !== isCodes) { b.send('Fetch.continueRequest', { requestId: prm.requestId }).catch(() => {}); return; }
       b.send('Fetch.fulfillRequest', { requestId: prm.requestId, responseCode: answer.code,
                                        responseHeaders: [{ name: 'Content-Type', value: answer.type }],
                                        body: Buffer.from(answer.body).toString('base64') }).catch(() => {});
     };
     b.on(onPaused);
-    await b.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/me' }] });
+    await b.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/me' }, { urlPattern: '*/api/recovery-codes' }] });
     for (answer of answers) {
       await b.navigate(`${origin}/account.html`);
       await b.waitFor("document.body.dataset.ready === '1'", 'account.html ready');
@@ -507,6 +510,15 @@ try {
       check(!/Not logged in|Logged in as/.test(who) && who.includes(`did not answer as this page expects (HTTP ${answer.code})`),
             `account: an /api/me answered ${answer.code} by something that is not the site is not "Not logged in" ("${who}") (F410)`);
     }
+    // V4-273 (F430): a 503 for new recovery codes is not "nothing happened":
+    // the daemon may have issued them after the site stopped waiting, which
+    // replaces the codes the user holds. The page used to say only that the
+    // service was not answering.
+    answer = { code: 503, type: 'application/json', body: '{"error":"unavailable"}' };
+    codesOnly = true;
+    { const rc = await act(b, 'account.html', { passphrase: PASS }, 'codes');
+      check(rc.result !== 'ok' && /may no longer work/.test(rc.status),
+            `account: a 503 for new recovery codes says the codes held may have been replaced ("${rc.status}") (F430)`); }
     await b.send('Fetch.disable');
     b.listeners.splice(b.listeners.indexOf(onPaused), 1);
     await b.navigate(`${origin}/account.html`);

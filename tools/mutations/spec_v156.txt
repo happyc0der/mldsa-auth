@@ -1,0 +1,1 @@
+TN1|^test_authd_cli$|no daemon: a rotation that reaches no daemon fails, keeps .ek as it was and leaves no .ek.next (F438)

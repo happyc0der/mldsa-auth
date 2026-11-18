@@ -47,7 +47,18 @@ action('codes', async () => {
   const s = await flows.login(client, store, loginParams(sess, me.handle, passphrase));
   const code = b64url(s.code);
   await s.close();
-  const { codes } = await post('/api/recovery-codes', { code });
+  let codes;
+  try {
+    ({ codes } = await post('/api/recovery-codes', { code }));
+  } catch (e) {
+    // F430: an answer that is not the site's refusal (a 503, no answer at
+    // all) does not say nothing happened. The daemon may have issued the
+    // codes after the site stopped waiting, and issuing replaces every code
+    // the user already holds.
+    if (e.status >= 400 && e.status < 500) { throw e; }
+    throw new Error('the site did not confirm new recovery codes, and they may have been issued anyway: ' +
+                    'any codes you already hold may no longer work. Issue codes again before relying on them');
+  }
   document.getElementById('codelist').textContent = codes.join('\n');
   report(true, 'Write these down now: they are shown once and cannot be retrieved');
 });

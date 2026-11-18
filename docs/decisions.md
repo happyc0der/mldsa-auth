@@ -19609,3 +19609,28 @@ Spec v1.81, erratum 123.
 Counts: 691 mutations, 125 campaigns, 736 anchors; 437 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F430, F431,
 F435, F436 and F437 open); spec v1.81, 123 errata; 65 tests.
+
+## V4-273 — what the page says when new recovery codes are not confirmed; a rotation that reached no daemon keeps no staged key (F430, F438)
+
+Two of the forty-fourth review's items that did not need the owner.
+
+- **F430.** The page now says that codes may have been issued, and that
+  the ones the user holds may no longer work, on any answer that is not
+  the site's own refusal. The other half of F430, a daemon that skips a
+  mutating request whose peer has hung up, changes F308's rule and is
+  added to the owner's questions.
+- **F438.** The proof is `g_open_judged`, the same flag that tells a
+  recovery probe "the daemon was not asked" (F225, F402): before
+  ClientAuth the daemon has not seen the key. V4-272 left this alone
+  because removing the file on every session failure would have removed
+  the one the stale-rotate leg scans for the new key's windows; that
+  leg is refused after ClientAuth and keeps it.
+
+No spec text changes: spec 10.2 says when `.ek.next` must be kept, and
+this is not such a case.
+
+Campaign v156, one mutant, tried with `tools/hand_control.py`.
+
+Counts: 692 mutations, 126 campaigns, 737 anchors; 438 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436 and F437 open); spec v1.81, 123 errata; 65 tests.

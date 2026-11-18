@@ -1824,6 +1824,16 @@ static void test_rotate_on_disk(void)
           "stale rotate: no window of any of the three keys in any file (Req 10)");
     CHECK(!any_name_contains(dev, ".newpub."), "stale rotate: no .newpub temp file is left behind (F118)");
 
+    /* V4-273 (F438): a rotation that reaches no daemon at all writes its
+     * .ek.next and then cannot send ROTATE; that file cannot be live, and is
+     * not kept. The stale leg above, refused AFTER ClientAuth, keeps its own. */
+    { (void)unlink(next);
+      rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                             "--passphrase-file", pass, "--server-id", "authd",
+                                             "--server-pub", spub, "--port", "1", NULL });
+      CHECK(rc == 1 && access(next, F_OK) != 0 && same_bytes(ek, sealed_a, na),
+            "no daemon: a rotation that reaches no daemon fails, keeps .ek as it was and leaves no .ek.next (F438)"); }
+
     mldsa_keypair_free(&a);
     mldsa_keypair_free(&b);
     mldsa_keypair_free(&c);
