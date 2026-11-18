@@ -20595,3 +20595,22 @@ Counts: 718 mutations, 134 campaigns, 763 anchors; 530 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.92, 134 errata; 66
 tests.
+
+## V4-304: cleanup after V4-301 to V4-303
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `759fda6` (V4-302): CI
+  44384268812 (16/16), nightly 44384274552 (149/149, 134 campaigns); and
+  `3210d34` (V4-303, now main), the specification's text only, with CI
+  44386341928 (16/16).
+- Before it: `4ab646d` (V4-301) had CI 44376770710 (16/16); `d47d79d`
+  (V4-300) had CI 44363747175 and nightly 44363781663 (149/149).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451, F453 and F511, and the questions in V4-246's,
+  V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+Counts: unchanged by this step (718 mutations, 134 campaigns, 763
+anchors; 530 findings, the 19 above open; spec v1.92, 134 errata; 66
+tests).
