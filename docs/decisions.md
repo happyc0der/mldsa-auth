@@ -20614,3 +20614,46 @@ No code.
 Counts: unchanged by this step (718 mutations, 134 campaigns, 763
 anchors; 530 findings, the 19 above open; spec v1.92, 134 errata; 66
 tests).
+
+## V4-305 — the wasm boundary, and Argon2id's memory cleared at its root (F531)
+
+The sixty-fifth review read `client_wasm.c`, the exports, the link flags
+and every JS caller, and ran the built module. Pointer and length
+handling, handle lifetimes, the core's wiping, status mapping, the clock's
+refusals and the random source were sound. One Low finding, which also
+reaches back to F512.
+
+- **F531.** The browser's form of F512, and worse: there the residue lasts
+  the page's lifetime. Fixed where both live, in libsodium's build: a
+  patch applied by `ExternalProject` after `URL_HASH` has verified the
+  archive sets Argon2's default flags to clear the memory, which
+  libsodium's own `free_instance` already honours. The patch refuses if
+  the line it changes is not there exactly once, so a libsodium bump fails
+  the build rather than ship unpatched. The test was made red first on
+  the unpatched module (one block after a seal, two after an unlock) and
+  is green on the patched one; the key is computed by node's own Argon2id,
+  not by the code under test. The native daemon gets the same patched
+  library; its residue window is now the KDF's own second, which the
+  runbook's encrypted-swap rule covers.
+- **Spec 12 repaired.** V4-300's wall-clock paragraph had been inserted
+  inside erratum 132's sentence about this very memory; the paragraph is
+  whole again (erratum 135 says so).
+- **Not changed, recorded:** `-sSTACK_OVERFLOW_CHECK` and an explicit
+  `-sMAXIMUM_MEMORY` (the stack grows into the data segment with no check,
+  and the ceiling is an implicit 2 GiB; neither is reachable by a known
+  input, and each changes the module the KAT golden pins); `login()`'s
+  `u32Slot` leaking the handle on out-of-memory (no secret held yet);
+  `newHandle()` not checking its call's return (init failure already
+  throws); a header comment on `ccw_on_record`'s `NULL` handle; the
+  random source being a writable property of the module object, which
+  only the module's owner can set.
+
+No campaign: no C source of the project changed; the build's patch is
+shown by the residue check both ways.
+
+Spec v1.93, erratum 135.
+
+Counts: 718 mutations, 134 campaigns, 763 anchors; 531 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.93, 135 errata; 66
+tests.

@@ -321,6 +321,7 @@ ExternalProject_Add(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_DIR        ${LIBSODIUM_BUILD_DIR}
   UPDATE_COMMAND    ""
+  PATCH_COMMAND     ${CMAKE_COMMAND} -DSOURCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_LIST_DIR}/PatchLibsodiumArgon2.cmake
   CONFIGURE_COMMAND ${_mldsa_sodium_configure}
   BUILD_COMMAND     ${_mldsa_sodium_make} ${_mldsa_sodium_jobs}
   INSTALL_COMMAND   ${_mldsa_sodium_make} install

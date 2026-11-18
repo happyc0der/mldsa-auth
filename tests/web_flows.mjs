@@ -24,7 +24,11 @@
 // And, since V4-159 (F235), that a rotation which never got a session leaves
 // nothing pending, while one whose ACK was lost keeps its key.
 // The IndexedDB store itself (its transactions) is tested in a real browser.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { argon2Sync } from 'node:crypto';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -765,6 +769,44 @@ try {
     const ok = new AuthdClient({ _malloc: () => 8, _free: () => {}, HEAPU32: heap, HEAPU8: new Uint8Array(16) });
     heap[2] = 0xdeadbeef;     // V4-294, F498: so the zeroing can be seen (a fresh array is 0 already)
     check(ok.u32Slot() === 8 && heap[2] === 0, 'out of memory: a malloc that succeeds gives its slot, zeroed (the control)'); }
+
+  // V4-305 (F531, and F512's root): Argon2id's working memory is cleared.
+  // libsodium unmapped (natively) or freed (in wasm) it uncleared, and with
+  // p = 1 the envelope key is BLAKE2b-256(LE32(32) || its last block): in the
+  // module's heap, which never shrinks, the key stayed recoverable for the
+  // page's lifetime. The key is computed here independently (node's own
+  // Argon2id, from the envelope's salt and parameters) and the heap scanned
+  // for a block that hashes to it, after a seal and after an unlock.
+  { const pass = 'residue-check-Qx7!vB9#pL2$wz';
+    const id = client.newIdentity(pass);
+    const env = id.envelope;
+    const dv = new DataView(env.buffer, env.byteOffset);
+    const ops = dv.getUint32(10), mem = Number(dv.getBigUint64(14)), salt = env.slice(22, 38);
+    check(ops === 3 && mem === 64 * 1024 * 1024,
+          `argon2 residue: the envelope's parameters parse as the browser's 3 / 64 MiB (${ops} / ${mem}) (the control)`);
+    const kek = argon2Sync('argon2id', { message: Buffer.from(pass), nonce: salt, parallelism: 1,
+                                         tagLength: 32, memory: mem / 1024, passes: ops });
+    const dir = mkdtempSync(join(tmpdir(), 'mldsa-residue-'));
+    const scan = (tag) => {
+      const f = join(dir, `${tag}.bin`);
+      writeFileSync(f, client.M.HEAPU8);
+      const py = spawnSync('python3', ['-I', '-c', `
+import hashlib, sys
+kek = bytes.fromhex(sys.argv[1]); h = open(sys.argv[2], 'rb').read(); pre = (32).to_bytes(4, 'little')
+print(sum(1 for o in range(0, len(h) - 1024, 64) if hashlib.blake2b(pre + h[o:o + 1024], digest_size=32).digest() == kek))
+`, kek.toString('hex'), f], { encoding: 'utf8' });
+      rmSync(f, { force: true });
+      return py.status === 0 ? Number(py.stdout.trim()) : `python3 failed: ${py.stderr}`;
+    };
+    const afterSeal = scan('seal');
+    const s = await client.login({ url: `ws://127.0.0.1:9/authd/v1`, serverId: info.server_id, serverPub,
+                                   handle: id.handle, passphrase: pass, envelope: env, timeoutMs: 200 })
+      .then(() => 'logged in', (e) => e.message);
+    const afterOpen = scan('open');
+    rmSync(dir, { recursive: true, force: true });
+    kek.fill(0);
+    check(afterSeal === 0 && afterOpen === 0,
+          `argon2 residue: no block of the module's heap gives the envelope key, after a seal (${afterSeal}) or an unlock (${afterOpen}; ${s}) (F531)`); }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

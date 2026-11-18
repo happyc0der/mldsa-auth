@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.92, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303)
+# mldsa-authd — deployment specification (v1.93, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1058,21 +1058,22 @@ a format change.
 regular file, owner == euid, `mode & 077 == 0`) → size bounds → magic and
 version → algorithm ids → parameter bounds → KDF → AEAD open into
 `secure_mem` → `MLDSASK2` parse with its digest and id checks → sign/verify
-self-test. The passphrase and derived key are wiped immediately.
+self-test. The passphrase and derived key are wiped immediately, and so,
+since erratum 135, is Argon2id's own working memory: the pinned libsodium is
+built with `ARGON2_FLAG_CLEAR_MEMORY` as its default, where it unmapped (or,
+in the browser module, freed) the region uncleared and the key could be
+recomputed from its last block (errata 132, 135). While the KDF runs, about
+a second, the region is ordinary memory, so a deployment still runs with
+encrypted swap or none, and with core dumps off (`LimitCORE=0` in the unit).
+A stored recovery code is computed at the daemon's own Argon2id parameters
+and no other (erratum 132): a row whose parameters differ matches nothing and
+costs no Argon2id of its own.
 
 **The wall clock** dates every code, token, ticket and lockout. A read that
 fails (erratum 133) keeps the last good time, advanced by the monotonic
 clock; it was used as the time, -1, which is before every expiry. A daemon
 that cannot read it at all at start logs `clock-unreadable` at ERROR and does
-not start. Argon2id's
-own working memory is not (erratum 132): libsodium unmaps it without
-clearing it, and it is an ordinary mapping, so during the second or so of
-the KDF it can be swapped, or written into a core dump on Linux, and the key
-can be recomputed from its last block. A deployment runs with encrypted swap
-or none, and with core dumps off (`LimitCORE=0` in the unit); the window is
-the unseal, not the daemon's lifetime. A stored recovery code is computed at
-the daemon's own Argon2id parameters and no other (erratum 132): a row whose
-parameters differ matches nothing and costs no Argon2id of its own.
+not start.
 
 A path that is not a regular file is refused **without waiting on it**
 (erratum 105): a sealed key, a passphrase file and the configuration file are
@@ -2468,3 +2469,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 134 | 6.3, 8, 9.2, 9.3, 10.3, 11, 12, 15, 17, 20 | The body brought back into agreement with itself after 133 errata: the journal publication of the head MAC (shipped since erratum 76), the sockets' group and `admin_uids`, `AUDIT-TAIL`'s bound, which §17 rows are operator policy, the token lifetimes as fixed, what §15's status lines carry, the `.pub` rename beside the `.ek.next` clobber, which `ROTATE` refusals are `0x03`, rotation as one multi-row case of several, the one-Argon2id rule's scope; errata 83's and 105's § columns corrected | A later erratum had changed one place and not another (F522 to F530) |
+
+### Revision v1.93 (V4-305)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 135 | 12, 14 | libsodium is built so that Argon2id clears its working memory when it ends; §12's paragraph on it, which erratum 133's insertion had split mid-sentence, is whole again | Unmapped or freed uncleared, it held what the envelope key is recomputed from: in the daemon for the second of the unseal (F512), in the browser module's heap, which never shrinks, for the page's lifetime (F531) |
