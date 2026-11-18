@@ -1,0 +1,4 @@
+QS1|^test_authd_ws$|upgrade: a percent-encoded `state` name is refused, not read as another parameter (F478)
+QS2|^test_authd_ws$|upgrade: a bare `state` before a second one is two states, refused (F478)
+OR1|^test_authd_ws$|upgrade: a bare-LF line is refused: one framing of the request (F479)
+OR2|^test_authd_ws$|upgrade: two Sec-WebSocket-Key headers are refused (RFC 6455 11.3.1, F479)

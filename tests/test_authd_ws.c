@@ -1709,6 +1709,55 @@ static void test_client_reader(void)
           "client reader: a stream that ends inside a header or a payload reports IO");
 }
 
+/* V4-287 (F478, F479): one URL, one request -- what the fifty-third review
+ * found. Every row was accepted before; the controls still are. */
+#define V287_TAIL "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+static void test_one_request_v287(void)
+{
+    static const struct { const char *name, *req; } bad[] = {
+        { "upgrade: a bare `state` before a second one is two states, refused (F478)",
+          "GET /a?state&state=X HTTP/1.1" V287_TAIL },
+        { "upgrade: a bare `state` after one is two states, refused (F478)",
+          "GET /a?state=X&state HTTP/1.1" V287_TAIL },
+        { "upgrade: a percent-encoded `state` name is refused, not read as another parameter (F478)",
+          "GET /a?%73tate=A&state=B HTTP/1.1" V287_TAIL },
+        { "upgrade: ...and after the real one too (F478)",
+          "GET /a?state=A&%73tate=B HTTP/1.1" V287_TAIL },
+        { "upgrade: a `+` in the query is refused (F478)",
+          "GET /a?state=A+B HTTP/1.1" V287_TAIL },
+        { "upgrade: a fragment in the target is refused, not kept in the state (F478)",
+          "GET /a?state=A#frag HTTP/1.1" V287_TAIL },
+        { "upgrade: a bare-LF line is refused: one framing of the request (F479)",
+          "GET /a?state=A HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\n\nGARBAGE\r\n\r\n" },
+        { "upgrade: a bare-LF request line is refused (F479)",
+          "GET /a?state=A HTTP/1.1\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+        { "upgrade: two Sec-WebSocket-Key headers are refused (RFC 6455 11.3.1, F479)",
+          "GET /a HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+        { "upgrade: Upgrade: h2c then Upgrade: websocket is refused, not read as the last (F479)",
+          "GET /a HTTP/1.1\r\nUpgrade: h2c\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+        { "upgrade: two Connection headers are refused (F479)",
+          "GET /a HTTP/1.1\r\nUpgrade: websocket\r\nConnection: close\r\nConnection: Upgrade\r\n"
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+        { "upgrade: two Sec-WebSocket-Version headers are refused (F479)",
+          "GET /a HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+          "Sec-WebSocket-Version: 8\r\nSec-WebSocket-Version: 13\r\n\r\n" },
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        ws_t w;
+        CHECK(upgrade_of(bad[i].req, &w) == WS_ERR_PROTOCOL, bad[i].name);
+    }
+    ws_t w;
+    CHECK(upgrade_of("GET /authd/v1?state=00ff HTTP/1.1" V287_TAIL, &w) == WS_OK &&
+          w.state_len == 4u && memcmp(w.state, "00ff", 4) == 0,
+          "upgrade: a hex state, CRLF throughout, each header once, is accepted (the control)");
+    CHECK(upgrade_of("GET /authd/v1?state HTTP/1.1" V287_TAIL, &w) == WS_OK && w.state_len == 0u,
+          "upgrade: one bare `state` is the empty state, as URLSearchParams reads it (F478)");
+}
+
 int main(void)
 {
     /* Unbuffered, so every PASS/FAIL line already reported survives even if a
@@ -1738,6 +1787,7 @@ int main(void)
     test_listener_paths();
     test_client_reader();
     test_client_check_101();
+    test_one_request_v287();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

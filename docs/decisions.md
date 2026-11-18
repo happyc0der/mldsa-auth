@@ -20083,3 +20083,35 @@ No code.
 Counts: unchanged by this step (V4-285's: 708 mutations, 130 campaigns,
 753 anchors; 477 findings, the 18 above open; spec v1.87, 129 errata;
 65 tests).
+
+## V4-287 — the transport, read whole again: one URL, one request (F478, F479)
+
+The fifty-third review read the daemon's transport whole: the upgrade
+parser, the frame decoder, PROXY v2, the event loop's connection
+states, deadlines, admission and rate limits, close and wipe. It drove
+the frame decoder with 20,000 random valid streams, whole and in 1-7
+byte pieces, and found the state the same every time. Two Info
+findings, both a parser reading what another parser reads differently.
+
+- **F478.** Refused rather than decoded: the daemon has no reason to
+  decode a query, and decoding it would be a third reading. `%`, `+` and
+  `#` cannot appear in the site's hex state or in any URL this
+  deployment's clients make.
+- **F479.** CRLF is required, not LF accepted in both places: the
+  request reaches the daemon from Caddy, the reference site's relay or
+  the CLI, all of which send CRLF; making `end_of_headers` accept a bare
+  LF would loosen the reader the 4096-byte bound depends on.
+- **Not changed:** the review's suspected 429/503-as-502 (a refusal
+  closed with the proxy's request still unread may reset the proxy's
+  write); it needs Linux and Caddy to see, and changes only which
+  refusal a client is shown. Recorded here, not in the register.
+
+Campaign v161: QS1, QS2, OR1, OR2; v150 US2 re-anchored.
+
+Spec v1.88, erratum 130.
+All five `KILLED | restored=byte-exact | rebuilt=ok` with
+`tools/hand_control.py`.
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 479 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.88, 130 errata; 65 tests.

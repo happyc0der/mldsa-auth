@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.87, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285)
+# mldsa-authd — deployment specification (v1.88, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -376,7 +376,13 @@ same value (Req 5). This is what prevents a login-CSRF at the exchange step.
 
 The query holds at most one `state` (erratum 117). The daemon takes the first
 parameter of that name, empty or not, and refuses the upgrade if there is a
-second: one URL must not read as two values to two parsers.
+second: one URL must not read as two values to two parsers. A bare `state`
+(no `=`) is one, with the empty value, and a query holding `%`, `+` or a
+fragment is refused (erratum 130): a URL parser decodes those, and the site's
+state is hex. The upgrade request ends every line CRLF, and has each of
+`Upgrade`, `Connection`, `Sec-WebSocket-Key` and `Sec-WebSocket-Version`
+once (erratum 130), so where the request ends and what it says are read one
+way.
 
 The proxy forwards to the daemon only a WebSocket upgrade, and from a
 browser only one whose `Origin` is the site's own (erratum 122); a request
@@ -2387,3 +2393,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 129 | 8, 15 | A refused `RECOVERY-ISSUE` writes a `recovery-issue` line with the user and one of `invalid`, `not-permitted`, `user-disabled`; `user-disabled` names the user and a new `user-enabled` event records an enable; a `locked` `RECOVERY-USE` names its user; an `ENROLL via=recovery` answered `ticket-invalid` still logs a different key on a known handle (Req 7); a command name longer than any command answers `not-permitted` | A site minting an operator's codes left no line (F474); the journal could not say who was disabled, and an enable was not in it (F475); a locked attempt's line had no user (F476); the ticket was checked before the handle, so Req 7 went unlogged (F473); a long name answered `malformed` (F477) |
+
+### Revision v1.88 (V4-287)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 130 | 7.1 | A bare `state` counts as a `state`; a query with `%`, `+` or a fragment is refused; the upgrade request's lines end CRLF and its four WebSocket headers appear once each | `?state&state=X` and `?%73tate=A&state=B` bound one value where `URLSearchParams` reads two (F478); a bare LF ended the request here and not in the reader that framed it, and a repeated header was read as its last (F479) |

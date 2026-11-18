@@ -102,18 +102,28 @@ static ws_status_t take_state(ws_t *w, const uint8_t *target, size_t n)
      * URL must not have two readings. */
     int taken = 0;
     size_t i = (size_t)(q - target) + 1u;
+    /* V4-287, F478: what a URL parser decodes, refused rather than read
+     * literally. `%73tate=A` is a second `state` to URLSearchParams and none
+     * at all here, and `+` and `#` change a value; the site's state is hex,
+     * so no URL a client of this deployment makes holds any of the three. */
+    for (size_t k = i; k < n; k++) {
+        if (target[k] == '%' || target[k] == '+' || target[k] == '#') { return WS_ERR_PROTOCOL; }
+    }
     while (i < n) {
         size_t s = i;
         while (i < n && target[i] != '&') { i++; }
         size_t e = i;
         if (i < n) { i++; }
-        if (e - s >= 6u && memcmp(target + s, "state=", 6) == 0) {
+        /* F478: a bare `state` is a `state` too, with an empty value, as
+         * URLSearchParams reads it: `?state&state=X` is two of them. */
+        const int bare = (e - s == 5u && memcmp(target + s, "state", 5) == 0);
+        if (bare || (e - s >= 6u && memcmp(target + s, "state=", 6) == 0)) {
             if (taken) {
                 return WS_ERR_PROTOCOL;     /* a second `state` */
             }
             taken = 1;
-            const uint8_t *v = target + s + 6u;
-            const size_t vn = (e - s) - 6u;
+            const uint8_t *v = target + s + (bare ? 5u : 6u);
+            const size_t vn = bare ? 0u : (e - s) - 6u;
             if (vn > WS_STATE_MAX) {
                 return WS_ERR_PROTOCOL;     /* §7.1 bounds it at 64 */
             }
@@ -136,10 +146,13 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
     }
 
     /* Request line: METHOD SP target SP HTTP/1.1 */
+    /* V4-287, F479: every line ends CRLF. A bare LF ended a line here and
+     * not in conn_io's end_of_headers, which takes the request up to the
+     * first CRLFCRLF: `...\n\nGARBAGE\r\n\r\n` was two framings of one
+     * request, the bytes between them dropped without a word. */
     const uint8_t *eol = memchr(req, '\n', len);
-    if (eol == NULL) { return WS_ERR_PROTOCOL; }
-    size_t line_len = (size_t)(eol - req);
-    if (line_len > 0u && req[line_len - 1u] == '\r') { line_len--; }
+    if (eol == NULL || eol == req || eol[-1] != '\r') { return WS_ERR_PROTOCOL; }
+    size_t line_len = (size_t)(eol - req) - 1u;
 
     if (line_len < 14u || memcmp(req, "GET ", 4) != 0) { return WS_ERR_PROTOCOL; }
     const uint8_t *tgt = req + 4;
@@ -153,6 +166,7 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
     /* Headers. Only the four RFC 6455 requires are read; everything else is
      * ignored rather than rejected, because a proxy legitimately adds its own. */
     int have_upgrade = 0, have_connection = 0, have_version = 0;
+    int n_upgrade = 0, n_connection = 0, n_version = 0, n_key = 0;   /* F479 */
     const char *key = NULL;
     size_t key_len = 0;
 
@@ -161,7 +175,8 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
         const uint8_t *e = memchr(req + off, '\n', len - off);
         if (e == NULL) { return WS_ERR_PROTOCOL; }
         size_t hl = (size_t)(e - (req + off));
-        if (hl > 0u && req[off + hl - 1u] == '\r') { hl--; }
+        if (hl == 0u || req[off + hl - 1u] != '\r') { return WS_ERR_PROTOCOL; }   /* F479: CRLF only */
+        hl--;
         if (hl == 0u) { break; }                       /* end of the header block */
 
         const uint8_t *h = req + off;
@@ -175,13 +190,20 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
         const uint8_t *v = h + vs;
         const size_t vn = ve - vs;
 
+        /* F479: each of the four once. The last of a repeated one used to
+         * win, so `Upgrade: h2c` then `Upgrade: websocket` was accepted, and
+         * two keys gave a 101 for the second; RFC 6455 11.3.1 allows one key. */
         if (ci_eq(h, nlen, "Upgrade")) {
+            n_upgrade++;
             have_upgrade = has_token(v, vn, "websocket");
         } else if (ci_eq(h, nlen, "Connection")) {
+            n_connection++;
             have_connection = has_token(v, vn, "Upgrade");
         } else if (ci_eq(h, nlen, "Sec-WebSocket-Version")) {
+            n_version++;
             have_version = (vn == 2u && v[0] == '1' && v[1] == '3');
         } else if (ci_eq(h, nlen, "Sec-WebSocket-Key")) {
+            n_key++;
             key = (const char *)v;
             key_len = vn;
         }
@@ -189,6 +211,9 @@ ws_status_t ws_upgrade(ws_t *w, const uint8_t *req, size_t len)
     }
 
     if (!have_upgrade || !have_connection || !have_version || key == NULL) {
+        return WS_ERR_PROTOCOL;
+    }
+    if (n_upgrade != 1 || n_connection != 1 || n_version != 1 || n_key != 1) {
         return WS_ERR_PROTOCOL;
     }
 

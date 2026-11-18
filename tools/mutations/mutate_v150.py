@@ -25,8 +25,8 @@ M = {
     "RS3": [(CN, D, "            const int declined = (rs == STORE_ERR_NOT_FOUND || rs == STORE_ERR_STATE); /* MUTATION RS3 */\n")],
     "US1": [(WS, "            if (taken) {\n                return WS_ERR_PROTOCOL;     /* a second `state` */\n",
              "            if (0 && taken) { /* MUTATION US1 */\n                return WS_ERR_PROTOCOL;     /* a second `state` */\n")],
-    "US2": [(WS, "        if (e - s >= 6u && memcmp(target + s, \"state=\", 6) == 0) {\n",
-             "        if (e - s > 6u && memcmp(target + s, \"state=\", 6) == 0) { /* MUTATION US2 */\n")],
+    "US2": [(WS, "        if (bare || (e - s >= 6u && memcmp(target + s, \"state=\", 6) == 0)) {\n",
+             "        if (bare || (e - s > 6u && memcmp(target + s, \"state=\", 6) == 0)) { /* MUTATION US2 */\n")],
 }
 
 def main():
