@@ -20244,3 +20244,25 @@ No campaign: no C source changed.
 Counts: 712 mutations, 131 campaigns, 757 anchors; 490 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.
+
+## V4-292: cleanup after V4-289 to V4-291
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `146ce6a` (V4-287), now
+  main: CI 44284940897 (16/16), nightly 44284944989 (146/146, 131
+  campaigns).
+- Before it: `29aae13` (V4-285) had CI 44274074594 and nightly
+  44274088562 (145/145); `7ba326b` (V4-286) had CI 44284936542. Stacked
+  under this and not landed when it was written, each with CI 16/16:
+  V4-288 `dcf5158` (CI 44288708487), V4-289 `f68a8b4` (CI 44291965634),
+  V4-290 `a43d2f0` (CI 44291969966), V4-291 `9726533`; their nightlies
+  were still running behind a runner backlog. The next cleanup cites them.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451 and F453, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's and V4-291's entries (the site's uid).
+
+Counts: unchanged by this step (V4-291's: 712 mutations, 131 campaigns,
+757 anchors; 490 findings, the 18 above open; spec v1.89, 131 errata;
+65 tests).
