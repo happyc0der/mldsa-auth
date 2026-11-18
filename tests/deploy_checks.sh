@@ -22,7 +22,8 @@
 #   the score move.
 set -eu
 
-IMAGE=ubuntu:24.04
+# By digest, as tests/caddy_proxy.sh pins it (V4-290, F487): a tag can move.
+IMAGE=ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 NAME=mldsa-deploy-$$
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 UNIT=deploy/mldsa-authd.service

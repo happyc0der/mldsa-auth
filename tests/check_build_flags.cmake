@@ -11,7 +11,7 @@
 #
 #   1. what the build was TOLD. Every project translation unit in
 #      compile_commands.json carries -Wall -Wextra -Werror and
-#      -fstack-protector-strong, and -D_FORTIFY_SOURCE=2 exactly when the tree
+#      -fstack-protector-strong, and -D_FORTIFY_SOURCE=<level> exactly when the tree
 #      is neither a sanitizer nor a fuzz tree (CMakeLists.txt skips it there).
 #   2. what the compiler DID with the canary flag: the project's own static
 #      archives, which hold project objects only, import __stack_chk_fail.
@@ -33,9 +33,13 @@
 # that is present and silently ignored would pass here.
 
 cmake_minimum_required(VERSION 3.20)
-foreach(_v COMPILE_COMMANDS SOURCE_DIR EXPECT_FORTIFY EXPECT_ASAN EXPECT_UBSAN ARCHIVES NM)
+# V4-290: FORTIFY_LEVEL is the level the configure chose (F483: 3 where the
+# compiler can, not a fixed 2), and the vendored translation units -- liboqs
+# and the SQLite amalgamation -- are checked for the canary and FORTIFY too
+# (F482), though not for the project's warnings.
+foreach(_v COMPILE_COMMANDS SOURCE_DIR EXPECT_FORTIFY FORTIFY_LEVEL EXPECT_ASAN EXPECT_UBSAN ARCHIVES NM)
   if(NOT DEFINED ${_v})
-    message(FATAL_ERROR "usage: cmake -DCOMPILE_COMMANDS=... -DSOURCE_DIR=... -DEXPECT_FORTIFY=ON|OFF -DEXPECT_ASAN=ON|OFF -DEXPECT_UBSAN=ON|OFF -DARCHIVES=\"a|b\" -DNM=... -P check_build_flags.cmake")
+    message(FATAL_ERROR "usage: cmake -DCOMPILE_COMMANDS=... -DSOURCE_DIR=... -DEXPECT_FORTIFY=ON|OFF -DFORTIFY_LEVEL=2|3 -DEXPECT_ASAN=ON|OFF -DEXPECT_UBSAN=ON|OFF -DARCHIVES=\"a|b\" -DNM=... -P check_build_flags.cmake")
   endif()
 endforeach()
 
@@ -54,6 +58,7 @@ if(_err)
 endif()
 
 set(_project 0)
+set(_vendor 0)
 set(_required -Wall -Wextra -Werror -fstack-protector-strong)
 math(EXPR _last "${_n} - 1")
 foreach(_i RANGE 0 ${_last})
@@ -79,6 +84,21 @@ foreach(_i RANGE 0 ${_last})
     endif()
   endforeach()
   if(NOT _is_project)
+    string(FIND "${_file}" "/_deps/liboqs-src/" _oqs)
+    string(FIND "${_file}" "/_deps/sqlite3_amalg-src/" _sql)
+    if(_oqs EQUAL -1 AND _sql EQUAL -1)
+      continue()
+    endif()
+    math(EXPR _vendor "${_vendor} + 1")
+    set(_vpadded " ${_cmd} ")
+    string(FIND "${_vpadded}" " -fstack-protector-strong " _vcan)
+    if(_vcan EQUAL -1)
+      gate_fail("vendored ${_file} is compiled without -fstack-protector-strong (F482)")
+    endif()
+    string(FIND "${_vpadded}" " -D_FORTIFY_SOURCE=${FORTIFY_LEVEL} " _vfort)
+    if(EXPECT_FORTIFY AND _vfort EQUAL -1)
+      gate_fail("vendored ${_file} is compiled without -D_FORTIFY_SOURCE=${FORTIFY_LEVEL} (F482)")
+    endif()
     continue()
   endif()
   math(EXPR _project "${_project} + 1")
@@ -89,10 +109,11 @@ foreach(_i RANGE 0 ${_last})
       gate_fail("${_file} is compiled without ${_flag}")
     endif()
   endforeach()
-  string(FIND "${_padded}" " -D_FORTIFY_SOURCE=2 " _fort)
+  string(FIND "${_padded}" " -D_FORTIFY_SOURCE=${FORTIFY_LEVEL} " _fort)
+  string(FIND "${_padded}" " -D_FORTIFY_SOURCE=" _fort_any)
   if(EXPECT_FORTIFY AND _fort EQUAL -1)
-    gate_fail("${_file} is compiled without -D_FORTIFY_SOURCE=2")
-  elseif(NOT EXPECT_FORTIFY AND NOT _fort EQUAL -1)
+    gate_fail("${_file} is compiled without -D_FORTIFY_SOURCE=${FORTIFY_LEVEL}")
+  elseif(NOT EXPECT_FORTIFY AND NOT _fort_any EQUAL -1)
     gate_fail("${_file} defines _FORTIFY_SOURCE in a sanitizer or fuzz tree, where it collides")
   endif()
   # The sanitizers, by the tree's intent (V4-24b).
@@ -128,6 +149,9 @@ endforeach()
 if(_project EQUAL 0)
   gate_fail("no project translation unit found in ${COMPILE_COMMANDS} -- wrong SOURCE_DIR, or the scan broke")
 endif()
+if(_vendor EQUAL 0)
+  gate_fail("no vendored translation unit (liboqs, sqlite) found in ${COMPILE_COMMANDS} -- the vendored check would pass by having nothing to check")
+endif()
 
 string(REPLACE "|" ";" _archives "${ARCHIVES}")
 set(_n_arch 0)
@@ -145,8 +169,9 @@ if(_failed)
   message(FATAL_ERROR "build_flags FAILED")
 endif()
 message(STATUS "PASS: every one of ${_project} project translation units is compiled with -Wall -Wextra -Werror -fstack-protector-strong")
+message(STATUS "PASS: and every one of ${_vendor} vendored translation units (liboqs, sqlite) with -fstack-protector-strong")
 if(EXPECT_FORTIFY)
-  message(STATUS "PASS: and with -D_FORTIFY_SOURCE=2 (not a sanitizer or fuzz tree)")
+  message(STATUS "PASS: and with -D_FORTIFY_SOURCE=${FORTIFY_LEVEL} (not a sanitizer or fuzz tree)")
 else()
   message(STATUS "PASS: and without _FORTIFY_SOURCE, as a sanitizer or fuzz tree must be")
 endif()

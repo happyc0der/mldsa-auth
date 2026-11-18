@@ -203,7 +203,9 @@ jobs:
           cmake --build build-fuzz -j
 
       - name: Standing rule 3 + fuzz-labelled tests
-        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --output-on-failure
+        # --no-tests=error (V4-290, F485): a label that stopped registering
+        # its tests used to pass here with "No tests were found".
+        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --no-tests=error --output-on-failure
 
       # V4-172 (F245): pipefail, so run_fuzz.sh's own exit status counts and
       # not tee's; and the gate asks for evidence that every target RAN, not
@@ -336,7 +338,7 @@ jobs:
           emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CROSSCOMPILING_EMULATOR="$RUNNER_TEMP/node/bin/node"
           cmake --build build-wasm -j4
-          tools/check_build_current.sh build-wasm && ctest --test-dir build-wasm --output-on-failure
+          tools/check_build_current.sh build-wasm && ctest --test-dir build-wasm --no-tests=error --output-on-failure   # F485
 
       # Chrome for Testing, pinned like Node (V4-13c): by version from Google's
       # own bucket, verified by SHA-256 before it runs. The runner's

@@ -85,8 +85,14 @@ jobs:
           done
           exit $rc
 
+      # V4-290, F486: the dispatch input reaches the shell through the
+      # environment, never pasted into the script, and must be digits.
       - name: Run the benchmarks
-        run: bench/run_bench.sh build-bench "${{ github.event.inputs.repetitions || '5' }}"
+        env:
+          REPS: ${{ github.event.inputs.repetitions || '5' }}
+        run: |
+          case "$REPS" in ''|*[!0-9]*) echo "repetitions must be a number, not '$REPS'" >&2; exit 2 ;; esac
+          bench/run_bench.sh build-bench "$REPS"
 
       - name: Upload results
         if: always()

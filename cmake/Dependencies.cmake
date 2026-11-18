@@ -176,6 +176,36 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(liboqs)
 # Provides the `oqs` static library target.
 
+# V4-290, F482: the canary and FORTIFY for vendored code too. The project's
+# hardening is applied to its own targets only (CMakeLists.txt), and liboqs
+# adds neither, so under a compiler that does not turn them on by default --
+# Ubuntu's clang -- liboqs, the code that verifies signatures and
+# decapsulates attacker-supplied bytes, shipped without canaries. Not
+# -Werror: that stays the project's own. Every library target under liboqs's
+# source tree, the per-algorithm OBJECT libraries included, since `oqs`
+# alone is linked from them. Not in the wasm build, which has no canary.
+set(MLDSA_VENDOR_HARDENING_FLAGS "")
+set(MLDSA_VENDOR_HARDENING_DEFS "")
+if(NOT EMSCRIPTEN)
+  set(MLDSA_VENDOR_HARDENING_FLAGS -fstack-protector-strong)
+  set(MLDSA_VENDOR_HARDENING_DEFS ${MLDSA_HARDENING_DEFS})
+endif()
+function(mldsa_harden_vendor_dir dir)
+  get_property(_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(_t IN LISTS _targets)
+    get_target_property(_type ${_t} TYPE)
+    if(_type MATCHES "^(OBJECT|STATIC|SHARED|MODULE)_LIBRARY$")
+      target_compile_options(${_t} PRIVATE ${MLDSA_VENDOR_HARDENING_FLAGS})
+      target_compile_definitions(${_t} PRIVATE ${MLDSA_VENDOR_HARDENING_DEFS})
+    endif()
+  endforeach()
+  get_property(_subs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  foreach(_s IN LISTS _subs)
+    mldsa_harden_vendor_dir("${_s}")
+  endforeach()
+endfunction()
+mldsa_harden_vendor_dir("${liboqs_SOURCE_DIR}")
+
 # Check 2: re-verify on EVERY configure, not only on population. The
 # PATCH_COMMAND runs once, when the source is first fetched; this catches a
 # tree that was modified, re-checked-out or swapped afterwards. The script
@@ -334,12 +364,30 @@ get_filename_component(MLDSA_SQLITE_INCLUDE_DIR "${MLDSA_SQLITE_H}" DIRECTORY)
 if(NOT MLDSA_SQLITE_C OR NOT EXISTS "${MLDSA_SQLITE_C}")
   message(FATAL_ERROR "sqlite3.c not found under ${sqlite3_amalg_SOURCE_DIR}")
 endif()
+# V4-290, F484: the two files compiled are re-hashed on EVERY configure, as
+# liboqs's tree is (its check 2). URL_HASH checks the archive once, when it is
+# extracted: an edited sqlite3.c, a cache archive changed after the first
+# configure, or a FETCHCONTENT_SOURCE_DIR_SQLITE3_AMALG override reached the
+# compiler unchecked. The digests are the members of the archive pinned above,
+# taken from the archive itself.
+set(MLDSA_SQLITE_C_SHA3 67f423e9ebbbdc473cbc4772c872ee6b89f31fde4ed0279a5c25d5f65c043a16)
+set(MLDSA_SQLITE_H_SHA3 89d0de498b1012938bb78dc18b68fea52e26f7f7b6db6347d126a2e58b86a05c)
+file(SHA3_256 "${MLDSA_SQLITE_C}" _mldsa_sqlite_c_have)
+file(SHA3_256 "${MLDSA_SQLITE_H}" _mldsa_sqlite_h_have)
+if(NOT _mldsa_sqlite_c_have STREQUAL MLDSA_SQLITE_C_SHA3 OR NOT _mldsa_sqlite_h_have STREQUAL MLDSA_SQLITE_H_SHA3)
+  message(FATAL_ERROR "sqlite: ${MLDSA_SQLITE_C} or sqlite3.h is not the pinned amalgamation's "
+                      "(SHA3-256 ${_mldsa_sqlite_c_have} / ${_mldsa_sqlite_h_have}): refusing to build it. "
+                      "Delete the build tree's _deps/sqlite3_amalg-* and configure again.")
+endif()
+message(STATUS "sqlite sources match the pinned amalgamation")
 
 # Build options (spec 9): no threading (the daemon is single event loop),
 # no extension loading (no dlopen surface), no double-quoted string literals
 # (DQS=0 makes a mistyped identifier an error, not a silent string), foreign
 # keys on by default. Third-party code, so the project's -Wall -Wextra -Werror
-# is NOT applied: it is compiled with warnings off and its own hardening only.
+# is NOT applied: it is compiled with warnings off. It has no hardening of its
+# own (F482 -- the comment here said it did): the vendored canary and FORTIFY
+# set above for liboqs are applied to it too.
 add_library(sqlite3 STATIC "${MLDSA_SQLITE_C}")
 target_include_directories(sqlite3 PUBLIC "${MLDSA_SQLITE_INCLUDE_DIR}")
 target_compile_definitions(sqlite3 PRIVATE
@@ -349,5 +397,6 @@ target_compile_definitions(sqlite3 PRIVATE
   SQLITE_DEFAULT_MEMSTATUS=0
   SQLITE_DEFAULT_FOREIGN_KEYS=1
 )
-target_compile_options(sqlite3 PRIVATE -w)
+target_compile_options(sqlite3 PRIVATE -w ${MLDSA_VENDOR_HARDENING_FLAGS})
+target_compile_definitions(sqlite3 PRIVATE ${MLDSA_VENDOR_HARDENING_DEFS})
 set_target_properties(sqlite3 PROPERTIES POSITION_INDEPENDENT_CODE ON)

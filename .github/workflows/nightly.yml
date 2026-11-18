@@ -280,7 +280,8 @@ jobs:
           cmake --build build-fuzz -j
 
       - name: Standing rule 3 + fuzz-labelled tests
-        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --output-on-failure
+        # --no-tests=error (V4-290, F485): zero tests is not a pass.
+        run: tools/check_build_current.sh build-fuzz && ctest --test-dir build-fuzz -L fuzz --no-tests=error --output-on-failure
 
       # V4-172 (F245): pipefail, so run_fuzz.sh's own exit status counts and
       # not tee's (it DOES exit nonzero on a crash; the comment here said it

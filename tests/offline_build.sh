@@ -42,7 +42,8 @@ trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
 fail() { echo "FAIL: OFFLINE: $1"; exit 1; }
 inc()  { docker exec "$NAME" sh -c "$1"; }
 
-docker run -d --name "$NAME" ubuntu:24.04 sleep 7200 > /dev/null || fail "cannot start a container"
+# The image by digest, as tests/caddy_proxy.sh pins it (V4-290, F487).
+docker run -d --name "$NAME" ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55 sleep 7200 > /dev/null || fail "cannot start a container"
 inc "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -qq -y clang cmake git make file >/dev/null 2>&1" \
   || fail "cannot install the toolchain"
 inc "mkdir -p /src /cache"

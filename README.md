@@ -109,11 +109,13 @@ Two things that will otherwise cost you an afternoon:
 | Coverage | `-DMLDSA_COVERAGE=ON` + clang, in a tree of its own | `tools/audit/coverage.sh <tree>`: line, region and branch coverage of the project's own code ([docs/v4/coverage.md](docs/v4/coverage.md)); never a campaign or currency tree |
 
 Project sources are compiled with `-Wall -Wextra -Werror
--fstack-protector-strong` and `-D_FORTIFY_SOURCE=2` (spec §4 req 8), and linked
-with `-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack` and PIE where the toolchain
-accepts them. Both sets apply to this project's own targets only, never to the
-vendored dependencies — which is why they are set per target rather than
-globally.
+-fstack-protector-strong` and `-D_FORTIFY_SOURCE=3` where the compiler supports
+level 3, `=2` otherwise (spec §4 req 8; V4-290), and linked with
+`-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack` and PIE where the toolchain
+accepts them. The warnings and the link flags apply to this project's own
+targets only, never to the vendored dependencies — which is why they are set
+per target rather than globally. The vendored liboqs and SQLite get the stack
+protector and the same FORTIFY level, without `-Werror` (V4-290, F482).
 
 The link flags are **probed, not assumed**: `check_linker_flag()` and
 `check_pie_supported()` decide, so a toolchain that rejects one simply does not

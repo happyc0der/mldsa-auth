@@ -20164,3 +20164,43 @@ No code.
 Counts: unchanged by this step (V4-288's: 712 mutations, 131 campaigns,
 757 anchors; 481 findings, the 18 above open; spec v1.89, 131 errata;
 65 tests).
+
+## V4-290 — the build and the supply chain, read through (F482 to F487)
+
+The fifty-fifth review read the dependency pins, the CMake build, the
+three workflows, the release path and the gate scripts. It found every
+action pinned by full SHA, `contents: read` everywhere, no
+`pull_request_target` and no secrets, every pin applied to every tree,
+every `| tee` gate guarded, and nothing test-only compiled into the
+release binaries. Three Low findings, three Info; none is a way in for
+someone without write access to the build tree or the repository.
+
+- **F482.** Applied per target, never by `add_compile_options`, for the
+  reason the hardening block gives: the project's `-Werror` stays its
+  own. The function walks liboqs's directories, since `oqs` is linked
+  from per-algorithm object libraries that carry their own options.
+  Shown on Linux, where it matters, in an Ubuntu 24.04 container with
+  clang 18 and gcc 13. That container also failed `test_authd_evloop`'s
+  F62 check and `authd_e2e`'s F369 check, and main built in the same
+  container failed the same two: it runs as root. Not this step's; not
+  pursued.
+- **F483.** A feature test, not a compiler-version list: level 3 needs
+  `__builtin_dynamic_object_size`, and a C library that does not know
+  level 3 treats it as 2.
+- **F484.** The digests are of the archive's own members, read from an
+  archive whose SHA3-256 matches the pin. libsodium's tree is left as it
+  is (a configure-built tree, its archive checked at unpacking) and the
+  runbook now says so.
+- **F485 to F487.** As recommended.
+- **Not changed:** CI's emsdk download is verified by emsdk alone
+  (already noted); the apt packages inside the Docker gates are unpinned.
+
+No campaign: no C source changed; the build gate's new checks were
+shown by the container runs and by the edited-SQLite control.
+
+Spec unchanged (§16's hardening requirement is met more fully, and its
+text names no FORTIFY level).
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 487 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.

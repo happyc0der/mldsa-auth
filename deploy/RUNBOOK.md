@@ -68,11 +68,14 @@ cmake -S . -B build-release -DMLDSA_DEPS_CACHE=/opt/mldsa-deps ...
 The `chown` is not housekeeping. git refuses to read a repository owned by
 another user, so a cache fetched as you and built as root stops the build
 dead — the configure step says so by name and tells you this command, but it
-is cheaper to get right the first time. Three things are still checked on
-every offline configure, and none of them is relaxed by being offline: the
-cache holds the pinned liboqs commit, the populated tree holds it too, and
-both archives match their hashes. A cache that has drifted is refused before
-anything is unpacked.
+is cheaper to get right the first time. What is checked, and when (V4-290,
+F484), none of it relaxed by being offline: on every configure, the cache
+holds the pinned liboqs commit, the populated liboqs tree holds it too, and
+the two SQLite source files compiled are the pinned amalgamation's; when an
+archive is first unpacked, it matches its hash, so a cache that has drifted
+is refused before anything is unpacked. The libsodium tree, once built, is
+not checked again: an archive changed after the first configure is not
+re-read until the tree that unpacked it is deleted.
 
 ## 2. Check what you built
 

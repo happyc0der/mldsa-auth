@@ -117,12 +117,25 @@ endif()
 # _FORTIFY_SOURCE is skipped under ASan/UBSan builds: Apple Clang (and GCC)
 # auto-define _FORTIFY_SOURCE=0 whenever -fsanitize=address is active
 # (fortification needs optimization the sanitizer build forgoes, and the two
-# checks overlap), so our own -D_FORTIFY_SOURCE=2 collides with the
+# checks overlap), so our own -D_FORTIFY_SOURCE=N collides with the
 # compiler's own definition under -Werror,-Wmacro-redefined. Verified with a
 # real -DENABLE_ASAN=ON build, not assumed.
+#
+# V4-290, F483: level 3 where the compiler has __builtin_dynamic_object_size
+# (GCC 12+, Clang 9+), 2 otherwise. A fixed 2 LOWERED Ubuntu GCC's own
+# default of 3, so the project's code was less fortified than the vendored
+# code in the same binary. C libraries without level 3 treat it as 2.
+include(CheckCSourceCompiles)
+check_c_source_compiles("int main(void) { char b[4]; return (int)__builtin_dynamic_object_size(b, 0) - 4; }"
+                        MLDSA_HAVE_DYNAMIC_OBJECT_SIZE)
+if(MLDSA_HAVE_DYNAMIC_OBJECT_SIZE)
+  set(MLDSA_FORTIFY_LEVEL 3)
+else()
+  set(MLDSA_FORTIFY_LEVEL 2)
+endif()
 set(MLDSA_HARDENING_DEFS "")
 if(NOT ENABLE_ASAN AND NOT ENABLE_UBSAN AND NOT MLDSA_FUZZ)
-  list(APPEND MLDSA_HARDENING_DEFS _FORTIFY_SOURCE=2)
+  list(APPEND MLDSA_HARDENING_DEFS _FORTIFY_SOURCE=${MLDSA_FORTIFY_LEVEL})
 endif()
 
 # --- liboqs optimisation target (Security Req 4.10) -----------------------
