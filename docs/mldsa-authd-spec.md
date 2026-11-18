@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.91, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300)
+# mldsa-authd — deployment specification (v1.92, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -325,7 +325,9 @@ this session authenticated with, `pk_new` ≠ `pk_old`, `pk_new` unused by any
 device in any state.
 
 Both signatures come **before** anything is asked of the store about
-`pk_new`. Every refusal answers the same `ERROR(0x03)`. A refusal is one of
+`pk_new`. Every refusal after the strict decode answers the same `ERROR(0x03)`
+(erratum 134: a malformed `ROTATE` is `0x01`, a second one `0x02`, a store
+that fails `0x05`, as below). A refusal is one of
 the store's three verdicts on the request: the handle is gone, the session's
 key is no longer its active key, `pk_new` is already enrolled. A store that
 fails instead (erratum 117) is answered `ERROR(0x05)` and logged
@@ -571,7 +573,9 @@ operation failed is answered `internal` and with no other code, so a valid
 token is never called `unknown` and a wrong recovery code that was not counted
 is never called `invalid`; §14 says what a site does with it.
 
-**`site.sock`** — mode 0660, group = the site's group, uid allowlist:
+**`site.sock`** — mode 0660, group `mldsa-authd` (the daemon's; the site's
+and the proxy's users are added to it, §16), uid allowlist `site_uids`, which
+is what separates the site from the proxy (erratum 134):
 
 | Request | Response |
 |---|---|
@@ -628,13 +632,15 @@ reachable only by someone who has already presented a valid recovery code.
 Every one, however many (erratum 128): a recovery that cannot revoke them
 all fails whole, and is never answered `OK` with some left active.
 
-**`admin.sock`** — mode 0600, root only: everything above plus
+**`admin.sock`** — mode 0600, reached by the uids in `admin_uids` (root by
+default; erratum 134 corrected "root only"): everything above plus
 `ENROLL-OPERATOR user= handle= pk= [label=] via=site`,
 `DISABLE-USER user= [reason=]`, `ENABLE-USER user=`, `LIST-USERS`,
 `AUDIT-TAIL n=`, `BACKUP path=`.
 
-`AUDIT-TAIL` and `LIST-USERS` are lists and carry the same 24-item bound and
-the same `too-many`. `DISABLE-USER`'s `reason=` may be left out on the
+`LIST-USERS` is a list and carries the same 24-item bound and the same
+`too-many`. `AUDIT-TAIL n=` takes 1 to 24, and a larger `n` is `malformed`
+(erratum 134: this said it answered `too-many`, which it cannot). `DISABLE-USER`'s `reason=` may be left out on the
 socket; `authd_admin disable-user` requires `--reason` (erratum 80). So
 may `REVOKE-DEVICE`'s `reason=` and the `label=` of `ENROLL` and
 `ENROLL-OPERATOR` (erratum 113): a missing one is an empty one, and when
@@ -655,7 +661,8 @@ that file before setting its mode on it (erratum 128); a path that has become
 anything else fails the backup and is left as it is.
 
 **The proxy-facing listener** (§7.1) is the third Unix socket: mode **0660**,
-group = the proxy's group, with its own uid allowlist (`proxy_uids`). It
+group `mldsa-authd`, as `site.sock` (erratum 134), with its own uid allowlist
+(`proxy_uids`). It
 carries the protocol, not this line protocol, and nothing on it is a local-API
 request.
 
@@ -720,15 +727,18 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    it prints the store's path and `audit-chain-corrupt`, exits 1 and serves
    nothing, so it never appends to a chain its key did not write. This is
    one row and one MAC, not `audit-verify`: an entry altered anywhere but
-   the end, and a chain cut short, pass it. **Periodic publication of the head MAC to the system journal —
-   the second trust domain — is not implemented** (§18): an operator who wants
-   one runs `audit-verify` on a timer and keeps its output.
+   the end, and a chain cut short, pass it. **The daemon does not publish the
+   head MAC itself**; the install ships `mldsa-authd-audit.timer`, which runs
+   `audit-verify` hourly and puts the head MAC and entry count in the journal
+   (§18, erratum 76). Getting it off the host -- the second trust domain -- is
+   the deployment's (erratum 134: this said publication was not implemented).
 
 ### 9.3 One transaction per operation
 
 Enrollment, rotation, revocation, disable/enable, code issue and code use are
-each exactly one SQLite transaction (Req 14). Rotation, the only multi-row
-case, inserts the new key `active`, sets the old to `superseded` with
+each exactly one SQLite transaction (Req 14). Several change many rows --
+revocation, disable, a re-issue and `revoke=all` too (§10.3; erratum 134
+dropped "the only multi-row case"). Rotation inserts the new key `active`, sets the old to `superseded` with
 `valid_to` and `superseded_by_hsid`, optionally deletes the handle's other
 tokens, and appends the audit row — all or nothing.
 
@@ -914,7 +924,8 @@ KDF bounds server memory per verification), `$mrc1$<ops>$<mem>$<salt>$<hash>`,
 code **once** and compares it with every unused code, marks the match used
 (never deletes it), and returns a single-use **enrollment ticket**
 valid 10 minutes, which the site presents to `ENROLL … via=recovery`. **Every
-`RECOVERY-USE` costs exactly one Argon2id computation**, whatever the user's
+`RECOVERY-USE` costs exactly one Argon2id computation** for codes issued since
+erratum 57 (erratum 134), whatever the user's
 state: an unknown, disabled or locked user, an operator on `site.sock`, and a
 typed string that is not a code each spend one, so the time of an answer says
 nothing about whether the user exists, its role or how many codes it holds
@@ -968,7 +979,7 @@ an ML-DSA implementation in the site's language, and would lose instant
 revocation, for no gain — the credential is a bearer either way.
 
 Bound to `{user_id, handle, handshake_id, issued_at, expires_at,
-idle_expires_at}`. Defaults: absolute lifetime 12 h (operators 8 h); idle
+idle_expires_at}`. Lifetimes (fixed; erratum 134): absolute 12 h (operators 8 h); idle
 lifetime 1 h (operators 30 min), refreshed on each successful `VERIFY`.
 Expired rows are swept periodically and the count logged.
 
@@ -1094,7 +1105,9 @@ Writing follows V2-9's rules: a temporary file with `O_EXCL`, `fsync`, then
 
 **One exception, documented rather than implicit:** completing a rotation
 (§10.2) renames `<handle>.ek.next` over `<handle>.ek`. That is a clobber, it
-is deliberate, and it is the only one — the rule above exists so that a key
+is deliberate, and it is the only one for a sealed key (erratum 134: the
+device's `.pub` is also replaced by a rename when a rotation completes, its
+second, a public file) — the rule above exists so that a key
 file is never *created* over something that already exists, and the promotion
 is the one operation whose whole purpose is to replace a key the server has
 already stopped accepting. It has its own function so it cannot be reached by
@@ -1396,7 +1409,10 @@ buffer, so there is nothing correct to call that would emit one.
 
 **Always logged**: every enrollment and every Req 7 rejection (with both key
 fingerprints), every rotation (`handle` via `id`, `fp_old` and `fp_new` via
-`fp`), every revocation and user status change with actor and reason, recovery
+`fp`), every revocation and user status change with whom it was about
+(erratum 134: the actor is the request's own `local-request` line, with its
+uid and pid, and the reason is in the store's audit row, not the journal),
+recovery
 issue and use (success or failure, never the code), login-code issue and
 exchange, logout, and the sweep counts.
 
@@ -1720,9 +1736,13 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
 | The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
-The last four are **operator policy with a documented default**, not protocol
-constants: this document fixes no rate limit, and a deployment that wants
-different numbers sets them. The rest are normative.
+`rotation_due_age_s`, `max_conns_per_addr`, `rate_per_min` and `rate_burst`,
+and `rate_global_per_sec` are **operator policy with a documented default**,
+not protocol constants: this document fixes no rate limit, and a deployment
+that wants different numbers sets them. The rest are normative, the pin's
+time floor and the token lifetimes among them, which no configuration key
+changes (erratum 134: this said "the last four", which since erratum 53
+included the floor and left out the rotation cadence).
 
 ## 18. Known limitations (document, do not silently fix)
 
@@ -2141,7 +2161,7 @@ From the defensive review of the reference site:
 
 | # | § | Change | Why |
 |---|---|---|---|
-| 83 | 7.1 | A PROXY v2 source in `::ffff:0:0/96` is treated as the IPv4 address in its last four bytes, for the limiter and for `src=` | as an IPv6 address it was limited by its /64, and the first 64 bits of every IPv4-mapped address are zero, so every IPv4 client a proxy reported that way shared one bucket of 5 a minute (F202) |
+| 83 | 7.2 | A PROXY v2 source in `::ffff:0:0/96` is treated as the IPv4 address in its last four bytes, for the limiter and for `src=` | as an IPv6 address it was limited by its /64, and the first 64 bits of every IPv4-mapped address are zero, so every IPv4 client a proxy reported that way shared one bucket of 5 a minute (F202) |
 
 ### Revision v1.42 (V4-115)
 
@@ -2273,7 +2293,7 @@ From the defensive review of the reference site:
 
 | # | § | Change | Why |
 |---|---|---|---|
-| 105 | 5, 8 | A sealed key, a passphrase file and the configuration file are opened without blocking, so a path that is a FIFO is refused as not a regular file instead of waited on. `authd_admin` treats a reply whose first line is neither `OK` (alone or followed by a space) nor `ERR code=` as a failure, exit 1, and prints none of it. It refuses with exit 2, naming the bound, a `--user` that is not 1 to 64 bytes of printable ASCII and a `--reason` that is not 1 to 256 bytes | A FIFO at any of those paths blocked the tool in `open` with no message and no exit. Any first line that did not begin `ERR code=` — `ERR`, `ERR internal`, an HTTP status line from another program on that path — was printed and the command exited 0. A `--user` or `--reason` the daemon was bound to refuse came back as `refused: malformed`, naming neither the argument nor the limit (audit F297, F299, F300) |
+| 105 | 8, 12 | A sealed key, a passphrase file and the configuration file are opened without blocking, so a path that is a FIFO is refused as not a regular file instead of waited on. `authd_admin` treats a reply whose first line is neither `OK` (alone or followed by a space) nor `ERR code=` as a failure, exit 1, and prints none of it. It refuses with exit 2, naming the bound, a `--user` that is not 1 to 64 bytes of printable ASCII and a `--reason` that is not 1 to 256 bytes | A FIFO at any of those paths blocked the tool in `open` with no message and no exit. Any first line that did not begin `ERR code=` — `ERR`, `ERR internal`, an HTTP status line from another program on that path — was printed and the command exited 0. A `--user` or `--reason` the daemon was bound to refuse came back as `refused: malformed`, naming neither the argument nor the limit (audit F297, F299, F300) |
 
 ### Revision v1.64 (V4-221)
 
@@ -2442,3 +2462,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 133 | 10.2, 12, 15 | The daemon's own handshake deadline is named as a close a client cannot tell from a refusal, and `handshake_timeout_ms` is to stay well above the slowest round trip; a failed wall-clock read keeps the last good time, and a daemon with none does not start (`clock-unreadable`) | A deadline close read as a refusal, F402's wrong advice by another route (F514); `time()` failing was used as -1, before every expiry, admitting expired tokens, codes and tickets (F515) |
+
+### Revision v1.92 (V4-303)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 134 | 6.3, 8, 9.2, 9.3, 10.3, 11, 12, 15, 17, 20 | The body brought back into agreement with itself after 133 errata: the journal publication of the head MAC (shipped since erratum 76), the sockets' group and `admin_uids`, `AUDIT-TAIL`'s bound, which §17 rows are operator policy, the token lifetimes as fixed, what §15's status lines carry, the `.pub` rename beside the `.ek.next` clobber, which `ROTATE` refusals are `0x03`, rotation as one multi-row case of several, the one-Argon2id rule's scope; errata 83's and 105's § columns corrected | A later erratum had changed one place and not another (F522 to F530) |

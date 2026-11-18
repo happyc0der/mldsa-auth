@@ -20566,3 +20566,32 @@ Counts: 718 mutations, 134 campaigns, 763 anchors; 521 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.91, 133 errata; 66
 tests.
+
+## V4-303 — the specification read against itself (F522 to F530)
+
+The sixty-fourth review read `mldsa-authd-spec.md` against itself after
+133 errata, each of which edited the body where it applied and sometimes
+not where else the same thing was said, and checked about thirty concrete
+statements against the code. None of those is contradicted in a way that
+matters; the code was right each time and the text had fallen behind it.
+Nine places, one erratum.
+
+- **One erratum, not nine.** Each is a sentence a later erratum should
+  have carried and did not; none changes what the daemon does. Errata 83's
+  and 105's section columns are corrected in place, which is the one edit
+  to the revision table itself, and erratum 134 says so.
+- **F525** is the one marked Low: §15's "with actor and reason" is the
+  kind of sentence an auditor relies on to know where to look, and it
+  pointed at the wrong place. The fix says where each part is.
+- Two the review did not count, already recorded: §7.3's "every
+  connection pays one token" on the raw loopback listener (F63, F309
+  open) and §4's account of a compromised site (F419 open).
+
+No code changed.
+
+Spec v1.92, erratum 134.
+
+Counts: 718 mutations, 134 campaigns, 763 anchors; 530 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.92, 134 errata; 66
+tests.
