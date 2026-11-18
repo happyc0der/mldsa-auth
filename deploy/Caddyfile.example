@@ -36,6 +36,40 @@
 # nothing else -- no inline script, no eval. Caddy serves `.wasm` as
 # application/wasm by itself, which streaming compilation needs.
 
+# Global options. What Caddy itself logs (V4-291, F488's neighbour F489): no
+# access log is configured, but its error logger writes the request of every
+# failed proxying -- a 502 while the daemon restarts (step 22, step 23, a
+# watchdog kill) or while the site does -- with the client's full address,
+# the login URL's `state` and every header but the cookie. The daemon's own
+# lines keep a /24 or /48 under `log_client_ip = prefix` (step 15); this
+# keeps the proxy's lines to the same, and drops the `state` and the
+# browser's identifying headers. Merge it with your own global block if you
+# have one: there can be only one, first in the file.
+{
+	log default {
+		format filter {
+			wrap console
+			fields {
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>client_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>uri query {
+					delete state
+				}
+				request>headers>User-Agent delete
+				request>headers>Origin delete
+				request>headers>Referer delete
+				request>headers>Sec-Websocket-Key delete
+			}
+		}
+	}
+}
+
 # One upstream, used twice below.
 (authd_upstream) {
 	reverse_proxy unix//run/mldsa-authd/p.sock {

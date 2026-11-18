@@ -231,6 +231,18 @@ POST = {
          "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.before",
          "sudo systemctl kill -s KILL mldsa-authd; sudo systemctl stop mldsa-authd; "
          "sudo ls -l /var/lib/mldsa-authd/ | sed 's/^/  /'",
+         # V4-291 (F489): with the daemon down, a login's upgrade is a 502,
+         # and Caddy's error logger writes the request. The example's log
+         # filter keeps the client to a /24 or /48 and drops the state: the
+         # caddy unit's journal, read as step 18 reads the daemon's.
+         "curl -sk --http1.1 --max-time 3 -o /dev/null -w 'down-upgrade %{http_code}\\n' "
+         "-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' "
+         "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Origin: https://localhost' -H 'User-Agent: RehearsalAgent/1' "
+         "'https://localhost/authd/v1?state=REHEARSALSTATE' || true; sleep 1",
+         "sudo journalctl -u caddy --no-pager > /tmp/jc.txt; "
+         "echo \"caddy-502=$(grep -cE '\"status\": ?502' /tmp/jc.txt) caddy-state=$(grep -c REHEARSALSTATE /tmp/jc.txt) "
+         "caddy-agent=$(grep -c RehearsalAgent /tmp/jc.txt) "
+         "caddy-full-ip=$(grep -cE '\"(remote|client)_ip\": ?\"(::1|127\\.0\\.0\\.1)\"' /tmp/jc.txt)\"",
          # The runbook's OWN restore and audit-verify blocks (step 12), not a
          # copy of them: @runbook:STEP:MARKER is that step's block holding
          # MARKER, with the step's substitutions applied.
@@ -244,7 +256,15 @@ POST = {
          "sudo authd_admin list-users --socket /run/mldsa-authd/admin.sock | tee /tmp/users.after",
          # list-users prints ids in hex
          "U=$(printf browser-user | od -An -tx1 | tr -d ' \\n'); "
-         "echo \"browser-user-before=$(grep -c \"user=$U \" /tmp/users.before) after-restore=$(grep -c \"user=$U \" /tmp/users.after)\""],
+         "echo \"browser-user-before=$(grep -c \"user=$U \" /tmp/users.before) after-restore=$(grep -c \"user=$U \" /tmp/users.after)\"",
+         # V4-291 (F488): the same restore block a second time, with the first
+         # restore's copy still aside, must refuse and change nothing -- it
+         # used to move the restored backup over the original's only copy.
+         "sudo sha256sum /var/lib/mldsa-authd/store.sqlite3.before-restore > /tmp/br.before",
+         "@runbook:12:sudo systemctl stop mldsa-authd",
+         "sudo sha256sum /var/lib/mldsa-authd/store.sqlite3.before-restore > /tmp/br.after; "
+         "echo \"second-restore-kept-original=$(cmp -s /tmp/br.before /tmp/br.after && echo yes || echo NO) "
+         "active=$(systemctl is-active mldsa-authd)\""],
     9: ["sleep 1; journalctl -u mldsa-authd --no-pager -n 30 | tee /tmp/j9.txt",
         # V4-193: a MEASUREMENT, not yet a claim. What does this unit do when
         # the configuration is refused (exit 3, from ExecStartPre and from the
@@ -327,6 +347,13 @@ EXPECT = {
          # the bucket may start below 5 (the browser's recovery spends from
          # it), so only the sixth is certain: refused, whatever it claims.
          r"(?m)^recover 6 429$",
+         # V4-291 (F489): Caddy logged the 502, and neither the state, the
+         # browser's agent nor the full address
+         r"(?m)^down-upgrade 502$",
+         r"(?m)^caddy-502=[1-9][0-9]* caddy-state=0 caddy-agent=0 caddy-full-ip=0$",
+         # V4-291 (F488): the second restore refused, the original's copy kept
+         r"an earlier restore's \.before-restore copy is still here",
+         r"(?m)^second-restore-kept-original=yes active=active$",
          # V4-244: the crashed store and its log were moved aside, not removed
          r"(?m)^kept-aside=[23]$",
          r"event=login-code-issued slot=\d+ idh=[0-9a-f]{16}",
@@ -372,8 +399,8 @@ ALLOW_NONZERO = {16: ["grep"], 23: ["grep"], 24: ["grep"]}
 # ```bash (V4-177, F251).
 NOT_COMMANDS = {
     (15, "log_identities = hashed"): "two configuration lines, quoted from authd.conf.example",
-    (22, "sudo cp -p /usr/local/lib/mldsa-authd-previous/* /usr/local/bin/"): "the rollback, for an upgrade that did not start; "
-                                                  "the rehearsal's upgrade starts (V4-275)",
+    (22, "P=/usr/local/lib/mldsa-authd-previous"): "the rollback, for an upgrade that did not start; "
+                                                  "the rehearsal's upgrade starts (V4-275; rewritten in V4-291)",
 }
 
 

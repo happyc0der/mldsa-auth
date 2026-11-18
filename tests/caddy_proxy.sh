@@ -120,9 +120,11 @@ inc "rm -rf /deps/_deps && cp -a /src/b/_deps /deps/_deps" || true
 # reverse_proxy, the Unix upstream, `proxy_protocol v2` -- is used verbatim, so
 # an example that drifted from what works would fail this leg.
 inc "mkdir -p /run/mldsa-authd"
-inc "printf '{\\n\\tadmin off\\n\\tauto_https off\\n}\\n' > /etc/Caddyfile"
-inc "sed 's/^authd.example.com {/:8080 {/' /src/deploy/Caddyfile.example >> /etc/Caddyfile"
-inc "grep -q '^:8080 {' /etc/Caddyfile && grep -q 'proxy_protocol v2' /etc/Caddyfile" \
+# The example has a global options block of its own since V4-291 (its log
+# filter, F489), and Caddy takes one, first in the file: the test's two
+# options go into it rather than into a second block before it.
+inc "sed -e 's/^\\tlog default {/\\tadmin off\\n\\tauto_https off\\n&/' -e 's/^authd.example.com {/:8080 {/' /src/deploy/Caddyfile.example > /etc/Caddyfile"
+inc "grep -q '^:8080 {' /etc/Caddyfile && grep -q 'proxy_protocol v2' /etc/Caddyfile && grep -q 'auto_https off' /etc/Caddyfile" \
     || { inc "cat /etc/Caddyfile"; fail "deploy/Caddyfile.example did not adapt as expected"; }
 
 inc "caddy validate --config /etc/Caddyfile --adapter caddyfile > /tmp/val.log 2>&1" \

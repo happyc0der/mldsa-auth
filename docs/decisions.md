@@ -20204,3 +20204,43 @@ text names no FORTIFY level).
 Counts: 712 mutations, 131 campaigns, 757 anchors; 487 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.
+
+## V4-291 — the deployment, read as an operator follows it: a second restore, the proxy's own log, a rollback that rolls back (F488 to F490)
+
+The fifty-sixth review read the units, the Caddyfile, the runbook end to
+end, `fetch-deps.sh` and the configuration parser, and ran what it could
+in `ubuntu:24.04` containers. The unit and what the daemon needs agree,
+the sockets have no world-reachable window, the configuration parser is
+strict, the credential never reaches argv. Three Low findings, all in the
+runbook and the example Caddyfile.
+
+- **F488.** A refusal, not a dated name: a dated `.before-restore` would
+  keep every copy and leave the operator to pick the right three files,
+  which is the decision the block exists to take away. The rehearsal now
+  runs the block twice.
+- **F489.** The filter is in the example's global block, so an operator
+  with a global block of their own is told to merge it. Raising the
+  logger's level instead would have hidden the errors an operator needs
+  to see during an upgrade; masking keeps them. Shown with the pinned
+  Caddy both ways. The rehearsal's new check reads the caddy unit's
+  journal while the daemon is down.
+- **F490.** One saved copy, made only when none exists and removed when
+  the upgrade has worked, rather than a dated directory per attempt: the
+  copy that matters is the one from before the first attempt. The
+  rollback stays a `text` block the rehearsal does not run (its upgrade
+  starts); its commands are each shown to work by the review's `install`
+  over a running binary.
+- **Not changed, recorded:** `SystemCallArchitectures=native`,
+  `IPAddressDeny=any` with `IPAddressAllow=localhost` and `ProcSubset=pid`,
+  which `systemd-analyze security` flags as missing and which need a
+  rehearsal of their own before they are added (`PrivateUsers=` must not
+  be: it would map peers' uids to nobody and break `site_uids`). And,
+  **for the owner**: the reference deployment runs the site as `www-data`,
+  so every service on the host running as `www-data` is in `site_uids`;
+  a dedicated `mldsa-site` user would contain that (F420's neighbour).
+
+No campaign: no C source changed.
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 490 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 65 tests.

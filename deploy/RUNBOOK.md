@@ -464,21 +464,29 @@ done again after the restore (steps 19 and 20), before the service is
 reachable from outside if any of them was for a stolen key.
 
 Then stop the service, move the old store and its write-ahead log aside, put
-the backup in place and start it:
+the backup in place and start it. The block does nothing while an earlier
+restore's `.before-restore` copy is still there (V4-291, F488): run a second
+time — another backup after the first proved wrong — it would have moved the
+first backup over the only copy of the original store, and left the
+original's log beside it.
 
 ```bash
-sudo systemctl stop mldsa-authd
-for f in store.sqlite3 store.sqlite3-wal store.sqlite3-shm; do
-    sudo sh -c "[ ! -e /var/lib/mldsa-authd/$f ] || mv /var/lib/mldsa-authd/$f /var/lib/mldsa-authd/$f.before-restore"
-done
-sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
-sudo systemctl start mldsa-authd
+if sudo sh -c 'ls /var/lib/mldsa-authd/*.before-restore' >/dev/null 2>&1; then
+    echo "an earlier restore's .before-restore copy is still here: move it back, or keep it off this directory, first" >&2
+else
+    sudo systemctl stop mldsa-authd
+    for f in store.sqlite3 store.sqlite3-wal store.sqlite3-shm; do
+        sudo sh -c "[ ! -e /var/lib/mldsa-authd/$f ] || mv /var/lib/mldsa-authd/$f /var/lib/mldsa-authd/$f.before-restore"
+    done
+    sudo install -o mldsa-authd -g mldsa-authd -m 0600 "$BACKUP" /var/lib/mldsa-authd/store.sqlite3
+    sudo systemctl start mldsa-authd
+fi
 ```
 
 Run `audit-verify` (above) on the restored store before you trust it. If the
-daemon does not come up, or the `install` failed on a full disk, stop it and
-move the three `.before-restore` files back to their names: that is the store
-as it was. Once a login has worked and the revocations are back, remove them:
+daemon does not come up, the `install` failed on a full disk, or the backup
+was the wrong one, stop it and move the three `.before-restore` files back to
+their names: that is the store as it was. Then try another backup. Once a login has worked and the revocations are back, remove them:
 
 ```bash
 sudo rm -f /var/lib/mldsa-authd/store.sqlite3.before-restore \
@@ -854,15 +862,23 @@ An upgrade is the daemon, the browser module, the site and the proxy's
 configuration together: fixes land in all four, and installing the daemon
 alone leaves the others as they were first installed (V4-275, F439).
 
-First a backup, and a copy of the binaries that are running, so there is a
-way back:
+First a backup, and a copy of what is running — the binaries, the unit and
+the site — so there is a way back (V4-291, F490). The copy is made only when
+there is none: after an attempt that went wrong, running this block again
+must not copy the new, broken binaries over the ones that worked. The last
+block of this step removes the copy once the upgrade has worked.
 
 ```bash
 sudo authd_admin backup --socket /run/mldsa-authd/admin.sock \
      --path /var/lib/mldsa-authd/backups/$(date +%F-%H%M)-before-upgrade.sqlite3
-sudo install -d -o root -g root -m 0755 /usr/local/lib/mldsa-authd-previous
-sudo cp -p /usr/local/bin/mldsa-authd /usr/local/bin/authd_admin /usr/local/bin/authd_client \
-     /usr/local/lib/mldsa-authd-previous/
+if sudo test -e /usr/local/lib/mldsa-authd-previous; then
+    echo "/usr/local/lib/mldsa-authd-previous is still there: an earlier upgrade's copy, kept" >&2
+else
+    sudo install -d -o root -g root -m 0755 /usr/local/lib/mldsa-authd-previous
+    sudo cp -p /usr/local/bin/mldsa-authd /usr/local/bin/authd_admin /usr/local/bin/authd_client \
+         /etc/systemd/system/mldsa-authd.service /usr/local/lib/mldsa-authd-previous/
+    sudo cp -a /opt/mldsa-site /usr/local/lib/mldsa-authd-previous/site
+fi
 ```
 
 Then the daemon. Build the new source as in step 1, check it as in step 2,
@@ -876,6 +892,9 @@ tools/audit/check_hardening.sh build-release --require
 sudo cmake --install build-release --prefix /usr/local --component mldsa-authd
 sudo diff -u /etc/systemd/system/mldsa-authd.service \
      /usr/local/share/mldsa-authd/mldsa-authd.service && echo "the unit is unchanged"
+for u in mldsa-authd-audit.service mldsa-authd-audit.timer; do
+    sudo diff -u /etc/systemd/system/$u /usr/local/share/mldsa-authd/$u && echo "$u is unchanged"
+done
 sudo systemctl restart mldsa-authd
 journalctl -u mldsa-authd -n 5 --no-pager
 ```
@@ -892,12 +911,24 @@ should show `event=started` again, and an existing device logs in as before.
 If it does not start, the unit's `ExecStartPre` has run the new build's
 `--check-config` on your configuration, and the journal names what it
 refused: a newer build can be stricter about a file an older one accepted.
-Fix the file, or go back to the binaries that were running:
+Fix the file, or go back to what was running. The daemon is stopped first:
+a running binary cannot be copied over (`Text file busy`), and a `restart`
+after a copy that failed restarted the new build. The unit goes back with
+the binaries, since an old binary under a newer unit may not do what that
+unit asks of it (its watchdog, say):
 
 ```text
-sudo cp -p /usr/local/lib/mldsa-authd-previous/* /usr/local/bin/
-sudo systemctl restart mldsa-authd
+sudo systemctl stop mldsa-authd
+P=/usr/local/lib/mldsa-authd-previous
+for b in mldsa-authd authd_admin authd_client; do sudo install -m 0755 "$P/$b" /usr/local/bin/$b; done
+sudo install -m 0644 "$P/mldsa-authd.service" /etc/systemd/system/mldsa-authd.service
+sudo systemctl daemon-reload
+sudo systemctl start mldsa-authd
 ```
+
+And the site, if the new one will not start (it refuses a command line it
+does not know, F457): `sudo rm -rf /opt/mldsa-site && sudo cp -a
+/usr/local/lib/mldsa-authd-previous/site /opt/mldsa-site`, then restart it.
 
 Then the browser module, the pages and the site, which step 14 copied and
 nothing since has replaced:
@@ -920,6 +951,14 @@ sessions are in its memory, not the daemon's store. A visitor in the middle
 of a recovery starts it again, with another recovery code. The `diff`
 against the example Caddyfile always shows your hostname; read the rest, and
 if the example has changed, apply the change and `sudo systemctl reload caddy`.
+
+When an existing device has logged in, a browser has logged in through the
+site and the journal shows nothing new at ERROR, the upgrade has worked:
+remove the copy, so that the next upgrade makes its own.
+
+```bash
+sudo rm -rf /usr/local/lib/mldsa-authd-previous
+```
 
 ## 23. Change the server passphrase
 
