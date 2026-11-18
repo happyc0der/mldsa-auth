@@ -470,6 +470,11 @@ if(MLDSA_NODE)
   # with the same origin and the same module, and were never looked at.
   add_test(NAME web_no_crypto COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_no_crypto.mjs
                                       ${PROJECT_SOURCE_DIR}/web/client ${PROJECT_SOURCE_DIR}/web/pages)
+  # V4-293 (F491 to F495): the pages themselves, under node, in a fake DOM,
+  # with the site played by the test -- what each page says and does with
+  # what it is answered. Needs node only: the module and IndexedDB are stubs.
+  add_test(NAME web_pages COMMAND ${MLDSA_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/web_pages.mjs ${PROJECT_SOURCE_DIR})
+  set_tests_properties(web_pages PROPERTIES TIMEOUT 120)
 endif()
 set(MLDSA_WASM_DIR "" CACHE PATH "An Emscripten build tree (web/mldsa_client.mjs) for the wasm interop test")
 if(MLDSA_WASM_DIR)

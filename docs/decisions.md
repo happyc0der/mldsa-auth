@@ -20266,3 +20266,35 @@ No code.
 Counts: unchanged by this step (V4-291's: 712 mutations, 131 campaigns,
 757 anchors; 490 findings, the 18 above open; spec v1.89, 131 errata;
 65 tests).
+
+## V4-293 — the browser pages, read whole again, and now tested under node (F491 to F495)
+
+The fifty-seventh review read `web/pages/` whole with `flows.mjs` and the
+site's routes, and ran the real pages under node in a fake DOM. No HTML
+sinks, no open redirect, one run per button, secrets emptied before the
+first await, the enroll order right. Three Low findings and two Info,
+each a page saying or doing the wrong thing with an answer.
+
+- **A test for the pages.** Until now only `browser_e2e` ran them, in a
+  real browser against a real site, which cannot easily stall a request
+  or block storage. `web_pages` is the review's harness made permanent:
+  the real pages and `flows.mjs`, the wasm client and IndexedDB stubbed,
+  the site played by the test. It needs node only. Every fix was shown
+  to be checked by reverting it in the page: six reverts, six named
+  failures, each restored byte-exact (no campaign: the campaigns mutate C
+  only).
+- **F491.** The deadline is shortened by the test itself
+  (`AbortSignal.timeout`), not by a hook in the page.
+- **F492.** `boot()`, as the other pages: it also loads the module, which
+  the recovery page did not need before; the cost is a page load.
+- **F493.** The message tells the user to use the next code rather than
+  retry, since the daemon counts a retry of a spent code as a wrong one.
+  Changing that counting is the daemon's and is not done here.
+- **Not changed, recorded:** the enroll page does not say a recovery is in
+  progress or that no invitation is needed; there is no `<noscript>`; the
+  30 s deadline is shorter than `/api/recovery-codes`' three daemon calls
+  of up to 10 s (both paths end at F430's message, so the outcome is safe).
+
+Counts: 712 mutations, 131 campaigns, 757 anchors; 495 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.

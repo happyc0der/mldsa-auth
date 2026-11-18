@@ -74,7 +74,18 @@ action('go', async () => {
     await s.close();
     // THE HAND-OFF: the code travels in a same-origin POST body, never a URL.
     const me = await post('/api/login', { code });
-    report(true, `Logged in as ${me.user}` + (events.length ? ` (${events.join('; ')})` : ''));
+    // V4-293, F494: a login the daemon accepted confirms the key (F220), and
+    // the list says so: it kept "(enrollment not confirmed)" and offered to
+    // forget a key the account now uses, warning that the site never had it.
+    const now = await store.get(list.value).catch(() => null);
+    const shown = list.selectedOptions[0];
+    if (now && now.unconfirmed !== true && shown && shown.dataset.unconfirmed === '1') {
+      shown.text = now.handle;
+      delete shown.dataset.unconfirmed;
+      offer();
+    }
+    report(true, `Logged in as ${typeof me.user === 'string' ? me.user : '(the site did not say)'}` +
+                 (events.length ? ` (${events.join('; ')})` : ''));
   } catch (e) {
     report(false, e.message + (events.length ? ` (${events.join('; ')})` : ''));
   }
