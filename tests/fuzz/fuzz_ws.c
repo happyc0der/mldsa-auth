@@ -123,6 +123,25 @@ static void run(const uint8_t *data, size_t size, size_t chunk, int proxy, run_t
             FUZZ_ASSERT(conn_io_client_addr(&io)->family == 0u,
                         "a client address appeared before the PROXY preamble completed");
         }
+        /* V4-296, F502: and the address handed on is the preamble's SOURCE
+         * address -- the rate limiter's key and the log's -- read here
+         * independently from the input: family in byte 13's high nibble,
+         * the source at byte 16, ::ffff:a.b.c.d as the IPv4 address it is
+         * (F202). Nothing compared it: a parser that handed on the
+         * DESTINATION passed every input. */
+        if (proxy && conn_io_proxy_settled(&io) && conn_io_client_addr(&io)->family != 0u && size >= 16u &&
+            size >= 16u + ((data[13] >> 4) == 0x2u ? 16u : 4u)) {
+            static const uint8_t MAPPED[12] = { 0,0,0,0, 0,0,0,0, 0,0,0xffu,0xffu };
+            const authd_addr_t *got = conn_io_client_addr(&io);
+            const uint8_t fam = (uint8_t)(data[13] >> 4);
+            uint8_t want_family = 0u, want[16] = { 0 };
+            if (fam == 0x1u) { want_family = 4u; memcpy(want, data + 16, 4); }
+            else if (fam == 0x2u && memcmp(data + 16, MAPPED, sizeof MAPPED) == 0) { want_family = 4u; memcpy(want, data + 28, 4); }
+            else if (fam == 0x2u) { want_family = 6u; memcpy(want, data + 16, 16); }
+            FUZZ_ASSERT(got->family == want_family &&
+                            memcmp(got->addr, want, want_family == 4u ? 4u : 16u) == 0,
+                        "the PROXY preamble's client address is not its source address");
+        }
     } else {
         /* (2) sticky: once poisoned, nothing is ever accepted again. */
         const uint8_t probe[1] = { 0x00u };
@@ -337,6 +356,31 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
         memcpy(tlv + 16, v4, 12);
         memset(tlv + 28, 0xabu, 16u);
         emit(ctx, "proxy-tlv", tlv, 44u); }
+
+      /* V4-296, F502: IPv6, IPv4-mapped IPv6 (F202) and AF_UNIX preambles,
+       * each before an upgrade. */
+      { static const uint8_t v6src[16] = { 0x20u,0x01u,0x0du,0xb8u, 0,1,0,2, 0,3,0,4, 0,5,0,6 };
+        static const uint8_t mapped[16] = { 0,0,0,0, 0,0,0,0, 0,0,0xffu,0xffu, 198u,51u,100u,7u };
+        const uint8_t *srcs[2] = { v6src, mapped };
+        const char *const names[2] = { "proxy-v6-upgrade", "proxy-v4mapped-upgrade" };
+        for (int k = 0; k < 2; k++) {
+          uint8_t six[64];
+          memcpy(six, sig, 12);
+          six[12] = 0x21u; six[13] = 0x21u; six[14] = 0u; six[15] = 36u;
+          memcpy(six + 16, srcs[k], 16);
+          memset(six + 32, 0x11u, 16);                       /* the destination: never handed on */
+          six[48] = 0x9cu; six[49] = 0x40u; six[50] = 0u; six[51] = 80u;
+          memcpy(b, six, 52u);
+          memcpy(b + 52u, UPGRADE, u);
+          emit(ctx, names[k], b, 52u + u);
+        }
+        uint8_t ux[16u + 216u];
+        memcpy(ux, sig, 12);
+        ux[12] = 0x21u; ux[13] = 0x31u; ux[14] = 0u; ux[15] = 216u;
+        memset(ux + 16, 0x2fu, 216u);
+        memcpy(b, ux, sizeof ux);
+        memcpy(b + sizeof ux, UPGRADE, u);
+        emit(ctx, "proxy-unix-upgrade", b, sizeof ux + u); }
 
       /* a declared body length far past the ceiling */
       { uint8_t huge[64];

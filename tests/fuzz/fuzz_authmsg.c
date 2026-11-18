@@ -105,6 +105,23 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         FUZZ_ASSERT(a.handle >= in && a.handle + a.handle_len <= in + size, "ack handle out of bounds");
         FUZZ_ASSERT(size == AUTHMSG_ROTATE_ACK_CONTENT_LEN(a.handle_len),
                     "ack accepted at the wrong length");
+        /* V4-296, F501: the two fields the client acts on -- the key the
+         * daemon says it committed and when -- against the spec's layout
+         * (op, version, handle_len, handle, fp_new 32, rotated_at 8 big-
+         * endian), and the whole message by re-encoding. Only the handle and
+         * the length were checked: a decoder that read fp_new one byte early
+         * and always said rotated_at 0 passed. */
+        FUZZ_ASSERT(memcmp(a.fp_new, in + 3u + a.handle_len, AUTHMSG_FP_BYTES) == 0,
+                    "ack fp_new is not the 32 bytes after the handle");
+        uint64_t at = 0;
+        for (size_t k = 0; k < 8u; k++) { at = (at << 8) | in[3u + a.handle_len + AUTHMSG_FP_BYTES + k]; }
+        FUZZ_ASSERT(a.rotated_at == at, "ack rotated_at is not the big-endian 8 bytes after fp_new");
+        static uint8_t again_ack[AUTHMSG_ROTATE_ACK_CONTENT_LEN(255u)];
+        size_t an = 0;
+        FUZZ_ASSERT(authmsg_encode_rotate_ack(again_ack, sizeof again_ack, &an, a.handle, a.handle_len,
+                                              a.fp_new, a.rotated_at) == AUTHMSG_OK &&
+                        an == size && memcmp(again_ack, in, size) == 0,
+                    "re-encoding a decoded ROTATE_ACK changed the bytes");
     } else {
         FUZZ_ASSERT(a.handle == NULL && a.handle_len == 0u,
                     "a failed ROTATE_ACK decode left fields behind");

@@ -149,6 +149,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                     "OK with a site socket but no site_uids");
         FUZZ_ASSERT(!cfg.proxy_protocol_v2 || cfg.n_proxy_uids > 0u,
                     "OK believing PROXY v2 preambles from no named proxy uid");
+        /* V4-296, F500: the rest of what the parser enforces, which this
+         * oracle did not check -- a mutant parser that widened both ranges
+         * and dropped the site/admin clash passed every input. */
+        FUZZ_ASSERT(printable_cstr(cfg.key_passphrase_file, sizeof cfg.key_passphrase_file) &&
+                        printable_cstr(cfg.site_socket, sizeof cfg.site_socket) &&
+                        printable_cstr(cfg.admin_socket, sizeof cfg.admin_socket),
+                    "a passphrase-file or socket path is not a printable NUL-terminated string on OK");
+        FUZZ_ASSERT(cfg.max_local_slots >= AUTHD_LOCAL_SLOTS_MIN && cfg.max_local_slots <= AUTHD_LOCAL_SLOTS_MAX,
+                    "max_local_slots out of range on OK");
+        FUZZ_ASSERT(cfg.rotation_due_age_s <= AUTHD_ROTATION_AGE_MAX, "rotation_due_age_s out of range on OK");
+        FUZZ_ASSERT(cfg.n_site_uids <= AUTHD_MAX_UIDS && cfg.n_admin_uids >= 1u && cfg.n_admin_uids <= AUTHD_MAX_UIDS,
+                    "a uid list is empty where it may not be, or too long, on OK");
+        FUZZ_ASSERT((cfg.listen_unix[0] == '\0' || (strcmp(cfg.listen_unix, cfg.site_socket) != 0 &&
+                                                     strcmp(cfg.listen_unix, cfg.admin_socket) != 0)) &&
+                        (cfg.site_socket[0] == '\0' || strcmp(cfg.site_socket, cfg.admin_socket) != 0),
+                    "OK with two sockets on one path (F236)");
     } else {
         /* a failed parse must leave nothing half-applied */
         authd_config_t def;
@@ -204,6 +220,24 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
              "handshake_timeout_ms = 100\n"
              "idle_timeout_ms = 600000\n"
              "pad_bucket = 4096\n");
+    /* V4-296, F505: the local API's keys and the rotation hint, valid and at
+     * each bound, and the socket-path clashes (F236). */
+    emit_str(emit, ctx, "local-api-full",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n"
+             "site_socket = /run/s.sock\nadmin_socket = /run/a.sock\nsite_uids = 33,1001\nadmin_uids = 0\n"
+             "max_local_slots = 64\nrotation_due_age_s = 315360000\n");
+    emit_str(emit, ctx, "local-slots-over",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n"
+             "max_local_slots = 65\n");
+    emit_str(emit, ctx, "rotation-age-over",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n"
+             "rotation_due_age_s = 315360001\n");
+    emit_str(emit, ctx, "site-admin-clash",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\nlisten_port = 1\n"
+             "site_socket = /run/x.sock\nadmin_socket = /run/x.sock\nsite_uids = 33\n");
+    emit_str(emit, ctx, "listen-site-clash",
+             "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
+             "listen_unix = /run/x.sock\nsite_socket = /run/x.sock\nsite_uids = 33\n");
     emit_str(emit, ctx, "proxy-v2-full",
              "store_path = /s\nkey_path = /k\nkey_passphrase_file = /p\nserver_id = s\n"
              "listen_unix = /run/p.sock\nproxy_protocol = v2\nproxy_uids = 33,1001\n"

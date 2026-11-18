@@ -37,7 +37,13 @@
 #include "frame.h"
 
 const char *const fuzz_target_name = "client";
-const size_t fuzz_target_max_len = 8192;
+/* V4-296, F504: the selector byte and the largest frame a reader accepts.
+ * The bound was 8192, and cc_rotate_on_reply takes frames up to
+ * FRAME_MAX_RECORD: every size from 8188 bytes up, and the refusal one past
+ * the largest, were never fed -- server-controlled input, the browser
+ * client's included. tests/fuzz/CMakeLists.txt states the same number. */
+const size_t fuzz_target_max_len = 65566;   /* a literal: tools/run_fuzz.sh reads it */
+_Static_assert(1u + FRAME_BUF_BYTES == 65566u, "the bound is 1 + FRAME_BUF_BYTES; move it, and FUZZ_MAXLEN_client, with the frame limit");
 
 int fuzz_target_command(int argc, char **argv) {
     (void)argc; (void)argv;
@@ -228,6 +234,16 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx) {
         buf[1u + gl / 2u] ^= 0x01u;
         snprintf(name, sizeof name, "%s-bitflip", names[at]);
         emit(ctx, name, buf, 1u + gl);
+        if (at == AT_ROTATE_REPLY) {
+            /* F504: the largest record the reader accepts, and one past it. */
+            static uint8_t big[1u + FRAME_BUF_BYTES];
+            memset(big, 0x5a, sizeof big);
+            big[0] = (uint8_t)at;
+            put_len(big + 1, FRAME_MAX_RECORD);
+            emit(ctx, "rotate-reply-largest", big, 1u + FRAME_HEADER_BYTES + FRAME_MAX_RECORD);
+            put_len(big + 1, FRAME_MAX_RECORD + 1u);
+            emit(ctx, "rotate-reply-one-past", big, 1u + FRAME_BUF_BYTES);
+        }
         buf[1] = 0; buf[2] = 0; buf[3] = 0; buf[4] = 0;
         snprintf(name, sizeof name, "%s-empty-frame", names[at]);
         emit(ctx, name, buf, 5u);

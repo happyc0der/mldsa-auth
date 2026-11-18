@@ -1,0 +1,4 @@
+FC1|^fuzz_replay_authd_config$|max_local_slots out of range on OK
+FC2|^fuzz_replay_authd_config$|OK with two sockets on one path (F236)
+FA1|^fuzz_replay_authmsg$|ack fp_new is not the 32 bytes after the handle
+FP1|^fuzz_replay_ws$|the PROXY preamble's client address is not its source address

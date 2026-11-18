@@ -47,7 +47,7 @@ set(FUZZ_MAXLEN_handshake 16384)
 set(FUZZ_MAXLEN_session 140000)
 set(FUZZ_MAXLEN_frame 140000)
 set(FUZZ_MAXLEN_keys 8192)
-set(FUZZ_MAXLEN_client 8192)
+set(FUZZ_MAXLEN_client 65566)   # V4-296, F504: 1 + FRAME_BUF_BYTES
 
 # Under UBSan, undefined behavior must FAIL the replay test, not just print.
 set(FUZZ_REPLAY_EXTRA_FLAGS "")

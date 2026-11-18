@@ -20349,3 +20349,44 @@ No code.
 Counts: unchanged by this step (712 mutations, 131 campaigns, 757
 anchors; 499 findings, the 18 above open; spec v1.89, 131 errata; 66
 tests).
+
+## V4-296 — the fuzz targets, read for what their oracles can see (F500 to F505)
+
+The fifty-ninth review read every fuzz target, its dictionary, its seeds
+and how CI runs it, and built mutants of the code each target is named
+for. The handshake, session, frame, envelope, keys and client targets
+have independent models of the right answer; state is rebuilt per input;
+the CI gate fails on a crash, a timeout, an out-of-memory or a target
+that did not run. Six findings, all in the targets themselves.
+
+- **F500 to F502.** Each the same shape: an oracle that checked less
+  than the parser decides, so a mutant of the parser passed. Each fix is
+  shown by campaign v162, whose four mutants are the review's own and
+  must now fail their target's replay by name.
+- **F503.** The seed check applied to regressions; a regression the
+  harness does not run is not one.
+- **F504.** The bound follows `FRAME_BUF_BYTES` by a static assert, so a
+  later change to the frame limit moves the fuzz bound or fails the build.
+- **F505.** As recommended.
+- **What a gate caught on the way.** The first F504 bound was written as
+  `1u + FRAME_BUF_BYTES`; `fuzz_log_gate` failed it in every tree, because
+  `tools/run_fuzz.sh` reads each target's bound as a literal and compares it
+  with CMake's. It is the literal 65566 now, and the static assert ties
+  that literal to the frame limit.
+- **Not changed, recorded:** the connection target can only fuzz three
+  post-login plaintexts (records after login are sealed, and a mutated
+  record fails decryption); an inner mode that seals the fuzzer's chunk
+  with the genuine session, as `fuzz_session` has, is a larger change.
+  The local-API target cuts a line at its first `\r`, where the real
+  reassembler strips only one before the LF. Invariant 3 ("an ERR never
+  moves the audit head") cannot see the token and login-code tables,
+  which write no audit row. The CI gate does not check run time or a
+  minimum run count. Each is a gap in what is exercised, not a defect in
+  what is shipped.
+
+Campaign v162: FC1, FC2, FA1, FP1, each `KILLED | restored=byte-exact |
+rebuilt=ok` with `tools/hand_control.py`.
+
+Counts: 716 mutations, 132 campaigns, 761 anchors; 505 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.89, 131 errata; 66 tests.

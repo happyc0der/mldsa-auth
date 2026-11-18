@@ -369,6 +369,14 @@ static size_t run_regressions(const char *dir) {
             die("cannot read a regression input");
         }
         printf("fuzz_%s_replay: regression %s (%zu bytes)\n", fuzz_target_name, names[i], len);
+        /* V4-296, F503: as for a seed. Every harness returns at once on an
+         * input over its bound, so a regression that outgrew it -- or a bound
+         * lowered later -- was reported ok without being run. */
+        if (len > fuzz_target_max_len) {
+            fprintf(stderr, "fuzz_%s_replay: regression %s is %zu bytes, over fuzz_target_max_len %zu\n",
+                    fuzz_target_name, names[i], len, fuzz_target_max_len);
+            die("regression longer than fuzz_target_max_len (raise it; a regression that is not run is not one)");
+        }
         run_one(data, len);
         free(data);
         free(names[i]);
