@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.84, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281)
+# mldsa-authd — deployment specification (v1.85, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -751,7 +751,9 @@ Specified in §6.3. The client writes the sealed new key to `<handle>.ek.next`
 (erratum 119): a client stopped between the two then leaves `.ek.next`, which
 the recovery below promotes, replacing the `.pub` again. In the other order
 it left the new key under a `.pub` that named the old one, and nothing
-compares the two.
+compares the two. The recovery keeps the same order (erratum 127): the
+`.pub` first, then the promote, so a run stopped between them still leaves
+`.ek.next` for the next.
 
 **Recovering an interrupted rotation.** If `.ek.next` exists at startup the
 client probes with `<handle>.ek` first, and the rule is stated in the only
@@ -812,7 +814,9 @@ promotes the envelope its caller staged and no other (erratum 92).
 The CLI is one process per run, and **two runs on one key file** are the same
 hazard (erratum 104). A rotation holds an exclusive advisory lock on the
 directory that holds the key, from before it reads the key until it exits,
-and a run that finds `.ek.next` holds it while it decides what that file is. A
+and a run that finds `.ek.next` holds it while it decides what that file is;
+a `.ek.next` that appears after a run looked is a rotation in progress, and
+that run uses `.ek` and decides nothing about it (erratum 127). A
 run that finds the lock taken says so and waits; one that cannot take the lock
 does neither thing. And a rotation discards `.ek.next` only when this run
 asked the daemon and `.ek` authenticated — never because the file is there.
@@ -1100,7 +1104,12 @@ Never argv, never the environment. `keygen` holds a **new** passphrase to §14's
 policy whichever way it arrives, explaining a refusal in the enrollment page's
 words, and the prompt asks for it twice. `rotate` re-seals under the same
 passphrase and does not re-check it, so an identity that predates the policy
-can still rotate.
+can still rotate. A new passphrase from a file that ends in a carriage return
+is refused by name (erratum 127): one trailing newline is stripped from a
+file and the prompt also drops a carriage return, so a key made from a CRLF
+file would open from that file and never from the prompt. An existing key's
+file is read as before. A `keygen` whose `.pub` cannot be written removes the
+key it just sealed.
 
 Exit codes: 0 success, 1 operation failed, 2 usage error, 3 configuration
 error. Every failure prints a status name from the same enums the daemon logs.
@@ -2345,3 +2354,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 126 | 10.2, 14 | A rotation whose `ROTATE` was never handed to the transport discards its staged key, as one whose login opened no session does; a page without a cross-tab lock does not forget an unconfirmed key; the enroll page asks for persistent storage before the sign-up; a page gives up on the site after 30 s, as no answer | A socket that closed between the rotation's login and its `ROTATE` kept the key pending, and every later login ran the interrupted-rotation probe (F460); the enrollment's lock was held for as long as a stalled front end held `/api/enroll` (F461); without Web Locks a Forget's lock spanned one tab only (F462); `persist()` was awaited after the invitation was used (F464) |
+
+### Revision v1.85 (V4-282)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 127 | 10.2, 13 | The login that completes an interrupted rotation replaces the `.pub` before it promotes the key; a run decides only about a `.ek.next` it saw before taking the directory's lock; `keygen` refuses a new passphrase from a file ending in a carriage return, and removes its key if the `.pub` cannot be written; the CLI's rotate discards its staged key whenever no `ROTATE` was sent, as erratum 126 says | The recovery promoted first, the order erratum 119 removed from rotate (F466); a `.ek.next` linked between a run's two looks was decided about unlocked (F468); a CRLF file sealed a passphrase the prompt could not give (F465); a failed `keygen` left an orphan key (F469); the CLI kept `.ek.next` after a refused login and an unbuilt `ROTATE` (F467) |

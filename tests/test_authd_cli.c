@@ -1825,28 +1825,26 @@ static void test_rotate_on_disk(void)
           "interrupted rotation: after the login that completes it, no window of either key in any file (Req 10)");
 
     /* 3. A device that still holds the superseded key tries to rotate: the new
-     *    key C is sealed to .ek.next first (spec 10.2), the daemon refuses A,
-     *    and .ek.next must be KEPT -- still sealed. */
+     *    key C is sealed to .ek.next first (spec 10.2) and the daemon refuses
+     *    A. No ROTATE can have been sent on a session that never opened, so
+     *    .ek.next is REMOVED (V4-282, F467, erratum 126); it used to be kept.
+     *    A .ek.next kept after ROTATE left is scanned by the V4-35 tests. */
     CHECK(write_bytes(ek, sealed_a, na) == 0, "stale rotate: .ek is the superseded key again");
     rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
                                            "--passphrase-file", pass, "--server-id", "authd",
                                            "--server-pub", spub, "--port", port, NULL });
-    const int c_ok = keyfile_open(next, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &c, NULL)
-                     == KEYFILE_OK;
-    CHECK(rc != 0 && rc != -1 && c_ok && a.public_key != NULL && b_ok &&
-          memcmp(c.public_key, a.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 &&
-          memcmp(c.public_key, b.public_key, MLDSA_PUBLIC_KEY_BYTES) != 0 && same_bytes(ek, sealed_a, na),
-          "stale rotate: the session is refused and .ek.next is kept, sealed");
-    CHECK(a.secret_key != NULL && b_ok && c_ok &&
+    CHECK(rc != 0 && rc != -1 && access(next, F_OK) != 0 && same_bytes(ek, sealed_a, na),
+          "stale rotate: the session is refused, .ek is as it was and no .ek.next is left (F467)");
+    CHECK(a.secret_key != NULL && b_ok &&
           !any_file_has_key_window(root, a.secret_key, NULL) &&
-          !any_file_has_key_window(root, b.secret_key, NULL) &&
-          !any_file_has_key_window(root, c.secret_key, NULL),
-          "stale rotate: no window of any of the three keys in any file (Req 10)");
+          !any_file_has_key_window(root, b.secret_key, NULL),
+          "stale rotate: no window of either earlier key in any file (Req 10)");
     CHECK(!any_name_contains(dev, ".newpub."), "stale rotate: no .newpub temp file is left behind (F118)");
 
     /* V4-273 (F438): a rotation that reaches no daemon at all writes its
      * .ek.next and then cannot send ROTATE; that file cannot be live, and is
-     * not kept. The stale leg above, refused AFTER ClientAuth, keeps its own. */
+     * not kept. (Since V4-282 neither is the stale leg's, refused after
+     * ClientAuth, F467.) */
     { (void)unlink(next);
       rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
                                              "--passphrase-file", pass, "--server-id", "authd",
@@ -1854,10 +1852,56 @@ static void test_rotate_on_disk(void)
       CHECK(rc == 1 && access(next, F_OK) != 0 && same_bytes(ek, sealed_a, na),
             "no daemon: a rotation that reaches no daemon fails, keeps .ek as it was and leaves no .ek.next (F438)"); }
 
+    /* V4-282 (F466): the login that completes an interrupted rotation
+     * replaces the .pub BEFORE it promotes the key, as rotate does (erratum
+     * 119). Here the promote is made to fail -- .ek is a directory, so the
+     * rename over it is refused -- after the probe has proved .ek.next (B)
+     * live. The .pub, set to name the old key A, must already name B, and
+     * .ek.next must still be there for the next run, which completes it. */
+    { uint8_t got[MLDSA_PUBLIC_KEY_BYTES];
+      (void)unlink(pubp);
+      (void)unlink(ek);
+      CHECK(a.public_key != NULL && b_ok &&
+            demo_keys_write_public(pubp, (const uint8_t *)handle, hlen, a.public_key) == DEMO_KEYS_OK &&
+            write_bytes(next, sealed_b, nb) == 0 && mkdir(ek, 0700) == 0,
+            "promote order: .pub names the old key, .ek.next the live one, and .ek is a directory (F466)");
+      rc = run_client_pumped(&d, (char *[]){ "authd_client", "login", "--handle", handle, "--key", ek,
+                                             "--passphrase-file", pass, "--server-id", "authd",
+                                             "--server-pub", spub, "--port", port, NULL });
+      CHECK(rc == 1 && access(next, F_OK) == 0 &&
+            demo_keys_load_public(pubp, (const uint8_t *)handle, hlen, got) == DEMO_KEYS_OK &&
+            memcmp(got, b.public_key, sizeof got) == 0,
+            "promote order: a promote that fails leaves .ek.next, and the .pub already names the live key (F466)");
+      (void)rmdir(ek);
+      rc = run_client_pumped(&d, (char *[]){ "authd_client", "login", "--handle", handle, "--key", ek,
+                                             "--passphrase-file", pass, "--server-id", "authd",
+                                             "--server-pub", spub, "--port", port, NULL });
+      CHECK(rc == 0 && access(next, F_OK) != 0 && same_bytes(ek, sealed_b, nb) &&
+            demo_keys_load_public(pubp, (const uint8_t *)handle, hlen, got) == DEMO_KEYS_OK &&
+            memcmp(got, b.public_key, sizeof got) == 0,
+            "promote order: the next login completes it -- .ek holds the live key and .pub names it (F466)"); }
+
     mldsa_keypair_free(&a);
     mldsa_keypair_free(&b);
     mldsa_keypair_free(&c);
     h_stop(&d);
+}
+
+/* --------------------------- V4-282 (F465): a CRLF passphrase file at keygen */
+
+static void test_keygen_crlf(void)
+{
+    char dir[256], pass[256], err[2048];
+    (void)snprintf(dir, sizeof dir, "%s/crlf", g_dir);
+    (void)snprintf(pass, sizeof pass, "%s/crlfpass", g_dir);
+    CHECK(write_file(pass, "device passphrase words\r\n", 0600) == 0, "crlf: a passphrase file with a CRLF ending");
+    const int rc = run_client_capture((char *[]){ "authd_client", "keygen", "--dir", dir,
+                                                  "--passphrase-file", pass, NULL }, err, sizeof err);
+    CHECK(rc == 3 && strstr(err, "passphrase-ends-in-cr") != NULL && !any_name_contains(dir, ".ek"),
+          "crlf: keygen refuses a NEW passphrase ending in a carriage return, by name, and writes no key (F465)");
+    CHECK(write_file(pass, "device passphrase words\n", 0600) == 0 &&
+          RUN_CLIENT("keygen", "--dir", dir, "--passphrase-file", pass) == 0 && any_name_contains(dir, ".ek"),
+          "crlf: the same words with a plain newline make a key (the control)");
 }
 
 /* --------------------------- a rotation whose reply is refused or lost (V4-35) */
@@ -2349,6 +2393,7 @@ int main(void)
     test_stdfds();
     test_sd_notify();
     test_sd_watchdog();
+    test_keygen_crlf();
 
     char cmd[512];
     (void)snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);

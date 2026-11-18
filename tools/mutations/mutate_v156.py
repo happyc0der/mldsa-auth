@@ -12,8 +12,8 @@ import sys, pathlib
 CL = "apps/authd/client_cli.c"
 
 M = {
-    "TN1": [(CL, "        if (!g_open_judged && unlink(next_path) == 0) {\n",
-             "        if (0 && !g_open_judged && unlink(next_path) == 0) { /* MUTATION TN1 */\n")],
+    "TN1": [(CL, "        if (unlink(next_path) == 0) {\n",
+             "        if (0 && unlink(next_path) == 0) { /* MUTATION TN1 */\n")],
 }
 
 def main():

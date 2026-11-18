@@ -409,6 +409,11 @@ static int client_seal_new_identity(const char *prog, const char *sub, const cha
     }
     const demo_keys_status_t ps = demo_keys_write_public(pub_path, hid, hid_len, pk);
     if (ps != DEMO_KEYS_OK) {
+        /* V4-282, F469: the key this run just sealed is nobody's yet -- no
+         * daemon has seen it, and the run fails without naming it -- so it
+         * is not left behind: an orphan .ek beside no .pub after keygen, a
+         * staged .ek.next every later login probed after rotate. */
+        (void)unlink(ek_path);
         return failed(prog, sub, pub_path, demo_keys_status_name(ps));
     }
     if (pk_out != NULL) {
@@ -426,7 +431,23 @@ static int get_pass(const char *prog, const char *sub, const char *path, int pro
                     const char *what, int fresh, uint8_t **out, size_t *out_len)
 {
     if (!prompt) {
-        return read_pass(prog, sub, path, out, out_len);
+        const int r = read_pass(prog, sub, path, out, out_len);
+        /* V4-282, F465: one trailing newline is stripped from a file; a
+         * CRLF file kept the carriage return, which the prompt drops. A key
+         * made from such a file then opened from that file only, never from
+         * --passphrase-prompt with the same words. A NEW passphrase is refused
+         * by name; an existing key's file is read as it always was, since a
+         * key already sealed under it opens with nothing else. */
+        if (r == EX_OK && fresh && *out_len > 0u && (*out)[*out_len - 1u] == '\r') {
+            authd_secret_free(*out, *out_len);
+            *out = NULL;
+            *out_len = 0;
+            fprintf(stderr, "%s %s: %s: passphrase-ends-in-cr (a CRLF line ending; --passphrase-prompt "
+                            "would not give the same passphrase -- remove the carriage return)\n",
+                    prog, sub, path);
+            return EX_CONFIG;
+        }
+        return r;
     }
     const int fd = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (fd < 0) {
@@ -711,9 +732,14 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
  * with a .ek.next present: the one proof that lets the caller delete it. */
 static int client_resolve_key_locked(const char *prog, const char *sub, const client_args_t *a,
                               const char *pass, size_t pass_len, const uint8_t *server_pk,
-                              const char *next_path, mldsa_keypair_t *kp_out, int *stale_next)
+                              const char *next_path, int next_seen, mldsa_keypair_t *kp_out,
+                              int *stale_next)
 {
-    const int next_present = path_exists(next_path);
+    /* V4-282, F468: only a .ek.next the caller saw -- and so holds the
+     * directory's lock for -- is decided about. One that appeared after the
+     * caller looked is a rotation in progress, and this run, unlocked, uses
+     * .ek and leaves it alone. */
+    const int next_present = next_seen && path_exists(next_path);
 
     /* The ordinary case: no interrupted rotation, so open .ek and go. */
     if (!next_present) {
@@ -782,12 +808,18 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
         rc = EX_OK;
         break;
     case KEY_PLAN_PROMOTE_NEXT:
-        /* The server committed and the rename was interrupted. Finish it. */
+        /* The server committed and the rename was interrupted. Finish it --
+         * the .pub first and the key second, the order erratum 119 gave
+         * rotate (V4-282, F466): stopped between the two, .ek.next is still
+         * there and the next run promotes it again. In the other order a
+         * run stopped between them left the new .ek under a .pub naming the
+         * old key, with no .ek.next to say so. next_ok is the proof, as the
+         * ACK is for rotate. */
+        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);
         if (keyfile_promote(next_path, a->key_path) != KEYFILE_OK) {
             (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
             break;
         }
-        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);
         fprintf(stderr, "%s %s: completed the interrupted rotation; %s now holds the live key\n",
                 prog, sub, a->key_path);
         memcpy(kp_out, &next_kp, sizeof next_kp);
@@ -848,14 +880,15 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
         return failed(prog, sub, a->key_path, "path-too-long");
     }
     int lock_fd = -1;
-    if (!have_lock && path_exists(next_path)) {
+    const int next_seen = have_lock || path_exists(next_path);
+    if (!have_lock && next_seen) {
         lock_fd = client_key_lock(prog, sub, a->key_path);
         if (lock_fd < 0) {
             return failed(prog, sub, a->key_path, "cannot-lock-key-directory");
         }
     }
     const int rc = client_resolve_key_locked(prog, sub, a, pass, pass_len, server_pk,
-                                             next_path, kp_out, stale_next);
+                                             next_path, next_seen, kp_out, stale_next);
     if (lock_fd >= 0) {
         (void)close(lock_fd);
     }
@@ -1034,6 +1067,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (ks != KEYFILE_OK) {
         mldsa_keypair_free(&old_kp);
         (void)unlink(pub_tmp);   /* F118: every exit after the seal, not only `out:` */
+        (void)unlink(next_path); /* F467: nothing was sent */
         return failed(prog, "rotate", next_path, keyfile_status_name(ks));
     }
 
@@ -1052,10 +1086,13 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * showed the daemon this device's key, let alone a ROTATE, so the
          * .ek.next this run just wrote cannot be live: it is removed on that
          * proof. Kept, every later login reported an interrupted rotation and
-         * probed with both keys. A failure AFTER ClientAuth keeps it: the
-         * daemon has seen the key and the rule of spec 10.2 applies. */
-        if (!g_open_judged && unlink(next_path) == 0) {
-            fprintf(stderr, "%s rotate: the daemon was not reached, so the new key was never sent; it is not kept\n", prog);
+         * probed with both keys. V4-282, F467: so is one refused AFTER
+         * ClientAuth. ROTATE is built only on a live session, so none was
+         * sent either way (erratum 126); the file was kept, before, only
+         * because a test scanned it. */
+        if (unlink(next_path) == 0) {
+            fprintf(stderr, "%s rotate: %s, so the new key was never sent; it is not kept\n", prog,
+                    g_open_judged ? "the daemon refused the session" : "the daemon was not reached");
         }
         return rc;
     }
@@ -1068,11 +1105,13 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     const cc_status_t bs = cc_rotate_build(cs.cc, &new_kp, 0u, tx, sizeof tx, &n);
     mldsa_keypair_free(&old_kp);   /* both signatures are made */
     mldsa_keypair_free(&new_kp);
-    if (bs != CC_OK && bs != CC_ERR_SESSION) {
-        (void)failed(prog, "rotate", next_path, "cannot-build-rotate");
+    if (bs != CC_OK) {
+        /* F467: ROTATE was not built, so it was not sent: the staged key goes. */
+        (void)unlink(next_path);
+        (void)failed(prog, "rotate", next_path, bs == CC_ERR_SESSION ? "cannot-send-rotate" : "cannot-build-rotate");
         goto out;
     }
-    if (bs != CC_OK || cs_send(&cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) {
+    if (cs_send(&cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) {
         (void)failed(prog, "rotate", next_path, "cannot-send-rotate");
         goto out;
     }

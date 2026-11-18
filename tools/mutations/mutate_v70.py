@@ -48,9 +48,9 @@ M = {
           (void)!fwrite(new_kp.secret_key, 1u, MLDSA_SECRET_KEY_BYTES, rf); (void)fclose(rf); } }
     /* CC_KEEP_FOR_ROTATE: the old key signs ROTATE after the session exists,
 """)],
-    "RK3": [(CLI, """        /* The server committed and the rename was interrupted. Finish it. */
+    "RK3": [(CLI, """         * ACK is for rotate. */
 """,
-                  """        /* The server committed and the rename was interrupted. Finish it. */
+                  """         * ACK is for rotate. */
         { char sv[PATH_MAX + 16]; FILE *sf; /* MUTATION RK3: the superseded key, raw */
           const int svn = snprintf(sv, sizeof sv, "%s.superseded", a->key_path);
           if (svn > 0 && (size_t)svn < sizeof sv && ek_kp.secret_key != NULL && (sf = fopen(sv, "wb")) != NULL) {

@@ -19906,3 +19906,42 @@ Spec v1.84, erratum 126.
 Counts: 696 mutations, 127 campaigns, 741 anchors; 464 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.84, 126 errata; 65 tests.
+
+## V4-282 — the CLI client, read whole again: the recovery's order, a staged key nothing sent, a CRLF passphrase (F465 to F469)
+
+The fiftieth review read `client_cli.c` and `client_core.c` whole, with
+the key-file code and the directory lock, for the first time since
+V4-263 and V4-273 changed them: the `.ek` / `.ek.next` / `.pub` states
+under a stop at each step, passphrase sources, deadlines, exit codes.
+One Low; the rest Info; nothing loses a live key.
+
+- **F465.** Refused for a NEW passphrase only. Stripping the `\r` from
+  every file read would have changed the passphrase of every key already
+  sealed from a CRLF file, and those open from their file and nothing
+  else today: the fix would have locked them out. Refusing at `keygen`
+  stops new ones. The rotation re-seals under the passphrase that opened
+  the key, from the same source, so it is consistent either way.
+- **F466.** The order rotate has had since erratum 119. A promote that
+  fails is the reproduction: `.ek` made a directory, so the rename over it
+  is refused after the probe has proved `.ek.next` live.
+- **F467.** The file was kept after a refused login only because a test
+  scanned it for the new key's windows (V4-273's entry). That scan is
+  covered by the V4-35 tests, which scan a `.ek.next` kept after `ROTATE`
+  left; the stale leg now checks the file is gone. Erratum 126 already
+  stated the rule; the CLI now follows it.
+- **F468, F469.** As recommended. Neither can be reached from a test:
+  F468's window is between two system calls, and nothing makes the
+  `.pub` writer fail after the key writer succeeded.
+
+Anchors rotted by the change and re-anchored, each tried again by hand:
+v156 TN1 (the F438 unlink's condition), v132 KL4 (the lock decision),
+v70 RK3 (the promote's comment, now longer: the mutant goes after its
+end). Campaign v158: CR1, PO1, SR1.
+All six `KILLED | restored=byte-exact | rebuilt=ok` with
+`tools/hand_control.py` on build-asan-p.
+
+Spec v1.85, erratum 127.
+
+Counts: 699 mutations, 128 campaigns, 744 anchors; 469 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.85, 127 errata; 65 tests.

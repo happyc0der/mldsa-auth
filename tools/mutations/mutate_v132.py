@@ -25,8 +25,8 @@ M = {
              "            r = flock(fd, LOCK_EX);\n",
              "            r = 0; /* MUTATION KL3 */\n")],
     "KL4": [(CC,
-             "    if (!have_lock && path_exists(next_path)) {\n",
-             "    if (!have_lock && path_exists(next_path) && prog == NULL) { /* MUTATION KL4 */\n")],
+             "    if (!have_lock && next_seen) {\n",
+             "    if (!have_lock && next_seen && prog == NULL) { /* MUTATION KL4 */\n")],
 }
 
 def main():

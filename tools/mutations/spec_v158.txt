@@ -1,0 +1,3 @@
+CR1|^test_authd_cli$|crlf: keygen refuses a NEW passphrase ending in a carriage return, by name, and writes no key (F465)
+PO1|^test_authd_cli$|promote order: a promote that fails leaves .ek.next, and the .pub already names the live key (F466)
+SR1|^test_authd_cli$|stale rotate: the session is refused, .ek is as it was and no .ek.next is left (F467)
