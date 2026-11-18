@@ -200,6 +200,18 @@ int recovery_find_match(const store_t *s, const uint8_t *user_id, size_t user_id
             size_t m = 0;
             uint8_t salt[crypto_pwhash_SALTBYTES], want[MRC1_HASH_BYTES];
             if (mrc1_parse(col.str[i], &o, &m, salt, want) == 0) {
+                /* V4-299, F513: a row is computed at the parameters every
+                 * code is issued at, and no other. They were used exactly as
+                 * stored: a row naming 1 pass and 8 KiB verified at no cost
+                 * (cheap to search offline, and F143's equal-cost refusal an
+                 * oracle again), and one naming 400 passes stalled the daemon.
+                 * Such a row came from a store written with other parameters,
+                 * or tampered with; it can match nothing. */
+                if (o != ops || m != mem) {
+                    sodium_memzero(salt, sizeof salt);
+                    sodium_memzero(want, sizeof want);
+                    continue;
+                }
                 size_t g = nd;
                 for (size_t k = 0; k < nd; k++) {
                     if (done_ops[k] == o && done_mem[k] == m &&
@@ -223,7 +235,9 @@ int recovery_find_match(const store_t *s, const uint8_t *user_id, size_t user_id
                 }
             } else {
                 /* A code issued before V4-76: its own salt, so its own
-                 * verification. Re-issuing replaces the generation. */
+                 * verification. Re-issuing replaces the generation. F513:
+                 * at the same parameters only, as above. */
+                if (crypto_pwhash_str_needs_rehash(col.str[i], ops, mem) != 0) { continue; }
                 tried++;
                 if (crypto_pwhash_str_verify(col.str[i], canonical,
                                              (unsigned long long)BASE32_CODE_CHARS) == 0 && !found) {

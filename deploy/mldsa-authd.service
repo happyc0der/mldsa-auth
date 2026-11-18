@@ -129,6 +129,10 @@ LimitCORE=0
 # a zero limit, others need not. What covers the keys under any handler is
 # that they live in libsodium's sodium_malloc regions, which it marks
 # MADV_DONTDUMP on Linux. No directive below adds to this (F154, V4-74).
+# One exception (V4-299, F512): Argon2id's working memory, a plain mapping
+# libsodium unmaps without clearing, holds what the envelope key can be
+# recomputed from for the second or so of the unseal at start. Run with
+# encrypted swap or none (RUNBOOK step 9).
 ProtectHostname=yes
 ProtectClock=yes
 RestrictRealtime=yes

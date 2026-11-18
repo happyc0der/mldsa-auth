@@ -2953,6 +2953,43 @@ static void test_spec_clauses_v285(void)
     h_stop(&d);
 }
 
+/* V4-299 (F513): a stored code is computed at the daemon's own parameters
+ * and no other. The codes below are issued at this harness's parameters;
+ * the daemon is then told other ones, as a store written with different
+ * parameters (or edited) would present them. The same right code must
+ * match nothing, at no Argon2id cost beyond the one every refusal spends;
+ * told its own parameters again, it works. */
+static void test_recovery_params_v299(void)
+{
+    h_daemon_t d;
+    CHECK(h_start(&d, g_dir, "recovery299.sqlite3", 1) == 0, "params: daemon starts");
+    int fd = h_dial_unix(d.site_path);
+    CHECK(fd >= 0, "params: connect to site.sock");
+    mldsa_keypair_t kp;
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    char uh[160], req[8192], resp[16384];
+    hx(uh, sizeof uh, U1, sizeof U1);
+    snprintf(req, sizeof req, "RECOVERY-ISSUE user=%s count=2", uh);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK codes="), "params: codes issued");
+    char code[BASE32_CODE_CHARS + 1u];
+    first_code(resp, code);
+
+    const unsigned long long ops = d.app.recovery_ops;
+    d.app.recovery_ops = ops + 1u;                 /* not the parameters the rows were written at */
+    const uint64_t before = d.app.recovery_kdf_calls;
+    snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, code);
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
+          "params: a code whose stored parameters are not the daemon's matches nothing (F513)");
+    CHECK(d.app.recovery_kdf_calls - before == 1u,
+          "params: and costs the one Argon2id every refusal costs, not one at the stored parameters (F513)");
+    d.app.recovery_ops = ops;
+    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK ticket="),
+          "params: the same code at the daemon's own parameters works (the control)");
+    (void)close(fd);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 static void test_recovery_kdf_failure(void)
 {
     h_daemon_t d;
@@ -2975,14 +3012,16 @@ static void test_recovery_kdf_failure(void)
           strstr(log, "detail=kdf-failed") != NULL,
           "kdf-failure: when Argon2id cannot be computed an unknown user is internal, logged at error, not invalid (F433)");
     free(log);
-    /* A user with codes is verified at the cost recorded in each code's hash,
-     * not at recovery_mem, so this setting cannot make that verification
-     * fail; a real shortage of memory fails both, and the matcher already
-     * answers `internal` for its own failure. Here the control is that the
-     * real verification still runs and refuses the wrong code. */
+    /* Since V4-299 (F513) a user's codes are computed only at the daemon's
+     * own parameters: with them broken, the codes match nothing and the one
+     * Argon2id every refusal spends cannot be computed either, so a user
+     * with codes is `internal`, logged at ERROR (the matcher's own failure,
+     * F432's local-internal) -- not verified at a cost the stored row chose. */
     snprintf(req, sizeof req, "RECOVERY-USE user=%s code=0000000000000000", uh);
-    CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
-          "kdf-failure: a user with codes is still verified at the codes' own cost (the control)");
+    { char *log2 = logged_cmd(&d, fd, req, resp, sizeof resp);
+      CHECK(starts(resp, "ERR code=internal") && log2 != NULL && strstr(log2, "error event=local-internal") != NULL,
+            "kdf-failure: a user with codes fails as the unknown user does, at the daemon's parameters (F433, F513)");
+      free(log2); }
     d.app.recovery_mem = saved;
     (void)close(fd); (void)close(adm);
     h_stop(&d);
@@ -3036,6 +3075,7 @@ int main(void)
     test_spec_clauses_v262();
     test_recovery_kdf_failure();
     test_spec_clauses_v285();
+    test_recovery_params_v299();
 
     { char cmd[512]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", g_dir);
       if (system(cmd) != 0) { /* best-effort cleanup */ } }

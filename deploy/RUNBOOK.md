@@ -254,7 +254,10 @@ is a passing check and a broken deployment (audit finding F63). Then you want
 `event=memlock-limit`. **If `memlock-limit` is at `warn`**, the limit is below
 the requirement and the daemon's secrets can be swapped to disk — fix
 `LimitMEMLOCK` and restart. Nothing else reports this: libsodium hands back
-unlocked memory without an error.
+unlocked memory without an error. **Run the host with encrypted swap, or
+none** (V4-299, F512): the locked regions cover the keys, but Argon2id's
+working memory during the unseal at start is ordinary memory, unmapped
+uncleared, and the envelope key can be recomputed from it.
 
 `event=fd-limit` is the same check for open files: the daemon needs
 `max_slots + max_local_slots + 32` of them and raises its own soft limit to

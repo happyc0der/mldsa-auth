@@ -20446,3 +20446,37 @@ No code.
 Counts: unchanged by this step (716 mutations, 132 campaigns, 761
 anchors; 511 findings, the 19 above open; spec v1.89, 131 errata; 66
 tests).
+
+## V4-299 — secrets followed from where they are made to where they are wiped (F512, F513)
+
+The sixty-first review followed every long-term secret through its
+lifetime: the server key and its envelope, the store root key, the audit
+and log keys, device keys, passphrases, recovery codes and tickets, login
+codes and tokens, the pseudonym key. Each is read under custody into
+secure memory, wiped on every path, compared in constant time, and never
+logged; the constant-time and secure-memory inventories match the code.
+Nothing Medium or Low; two Info items, both shown by experiment.
+
+- **F512.** Libsodium's, not the code's: the KDF's own memory is a plain
+  mapping freed uncleared. Recorded in the spec, the unit and the
+  runbook, with what covers it (encrypted swap or none, no core dumps).
+  **Not changed, recorded:** making the process undumpable around the
+  unseal (`prctl(PR_SET_DUMPABLE, 0)`, restored afterwards) would close the
+  core-dump half on Linux; V4-74 found that undumpable breaks LeakSanitizer,
+  which a window restored before exit avoids, but it is untested.
+- **F513.** Refused, not bounded: every code is issued at the daemon's
+  parameters, so a row at any other was not issued by this daemon as it
+  is configured, and there is no range of "acceptable other" parameters
+  worth defending. A store migrated across a change of the parameters
+  would need its codes re-issued; the parameters have not changed since
+  V4-76. F433's test changed with it: with Argon2id broken, a user with
+  codes now fails as the unknown user does, which is the equal-cost rule.
+
+Campaign v163: RP1, `KILLED | restored=byte-exact | rebuilt=ok`.
+
+Spec v1.90, erratum 132.
+
+Counts: 717 mutations, 133 campaigns, 762 anchors; 513 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451, F453 and F511 open); spec v1.90, 132 errata; 66
+tests.
