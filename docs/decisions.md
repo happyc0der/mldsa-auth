@@ -19634,3 +19634,27 @@ Campaign v156, one mutant, tried with `tools/hand_control.py`.
 Counts: 692 mutations, 126 campaigns, 737 anchors; 438 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436 and F437 open); spec v1.81, 123 errata; 65 tests.
+
+## V4-274: cleanup after V4-271 to V4-273 landed
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `6d2a404` (V4-273), now
+  main: CI 44205020447 (16/16), nightly 44205024805 (141/141, 126
+  campaigns).
+- Before it: `bdb6cfc` (V4-272) had CI 44197346726 (16/16), nightly
+  44197351433 (140/140) and main's push CI 44207953534 (16/16);
+  `b087ca1` (V4-271) had CI 44197302946 (16/16) and main's push CI
+  44203011474 (16/16). The first waiter for V4-271 and V4-272 was killed
+  (exit 144) after it had reported both CI runs; the nightly was then
+  waited for by its run ID.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436
+  and F437, and the questions listed in V4-246's entry; and, from F430,
+  whether the daemon should skip a mutating local request whose peer
+  has already hung up.
+
+Counts: 692 mutations, 126 campaigns, 737 anchors; 438 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436 and F437 open); spec v1.81, 123 errata; 65 tests (unchanged by this
+step).
