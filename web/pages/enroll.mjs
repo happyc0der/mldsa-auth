@@ -29,6 +29,11 @@ action('go', async () => {
     if (!client.checkPassphrase(passphrase).ok) {
       throw Object.assign(new Error('passphrase-policy'), { statusName: 'passphrase-policy' });
     }
+    // Asked before anything is sent (F413, and V4-281's F464): after the
+    // signup it ran with the invitation already used, and a browser that
+    // holds persist() until its prompt is answered held the page there.
+    let persisted = false;
+    try { persisted = await IdentityStore.persist(); } catch { /* the browser's answer is "no" */ }
     const sess = await session();
     // V4-188, F267: with a recovery in progress the key goes to the account
     // being recovered -- the site holds that account's ticket -- and the name
@@ -45,11 +50,9 @@ action('go', async () => {
     // A 4xx is the site's refusal: the key was not enrolled, and flows.enroll
     // removes it. Anything else -- no answer, a 5xx -- says nothing about
     // whether it was, and the key is kept, marked unconfirmed (F220).
-    // Asked before the key is made (F413), not after the site said yes: an
-    // enrollment the site never answers leaves a key that may be the
-    // account's only one, and that is the one case that was never asked for.
-    let persisted = false;
-    try { persisted = await IdentityStore.persist(); } catch { /* the browser's answer is "no" */ }
+    // persist() was asked above, before the key is made (F413), not after
+    // the site said yes: an enrollment the site never answers leaves a key
+    // that may be the account's only one, the case that most needs it.
     const { handle, answer: r } = await flows.enroll(client, store,
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {

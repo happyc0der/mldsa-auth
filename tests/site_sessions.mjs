@@ -1060,6 +1060,41 @@ try {
     catch (e) { refused = e.message; }
     check(refused !== null && /authdSite/.test(refused), `argv: startSite with no daemon site socket refuses to start (${refused}) (F457)`);
   }
+  // V4-281, F461: a page's request to the site has a deadline. A front end
+  // that accepts and never answers -- before the headers, or in the middle
+  // of the body -- is given up on as no answer (no status), so an
+  // enrollment awaiting it releases the identity's lock.
+  {
+    const { siteFetch, SITE_TIMEOUT_MS } = await import(pathToFileURL(`${repo}/web/pages/site-fetch.mjs`).href);
+    const { createServer: httpServer } = await import('node:http');
+    const held = [];
+    const stall = httpServer((req, res) => {
+      held.push(res);
+      if (req.url === '/half') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.write('{"user":'); }
+      if (req.url === '/quick') { res.end('{"ok":true}'); }
+    });
+    await new Promise((r) => stall.listen(0, '127.0.0.1', r));
+    servers.push(stall);
+    const at = `http://127.0.0.1:${stall.address().port}`;
+    const timed = async (path) => {
+      const t0 = Date.now();
+      try { const { r, j } = await siteFetch(`${at}${path}`, { method: 'POST', body: '{}' }, 300); return { ok: r.status, j, ms: Date.now() - t0 }; }
+      catch (e) { return { err: e, ms: Date.now() - t0 }; }
+    };
+    const quick = await timed('/quick');
+    check(quick.ok === 200 && quick.j?.ok === true, `deadline: an answer in time is the answer (the canary) (${JSON.stringify(quick)})`);
+    for (const path of ['/never', '/half']) {
+      const w = await timed(path);
+      check(w.err instanceof Error && w.err.status === undefined && /did not answer in/.test(w.err.message) && w.ms >= 250 && w.ms < 3000,
+            `deadline: ${path === '/never' ? 'no headers' : 'a body that stops'}: given up on in ${w.ms} ms, as no answer ` +
+            `(${w.err && w.err.message}) (F461)`);
+    }
+    check(SITE_TIMEOUT_MS === 30000, `deadline: the pages wait ${SITE_TIMEOUT_MS} ms, longer than the site waits for the daemon (F461)`);
+    for (const res of held) { res.destroy(); }
+    const common = readFileSync(join(repo, 'web/pages/common.mjs'), 'utf8');
+    check(!/\bawait fetch\(/.test(common) && (common.match(/siteFetch\(/g) || []).length === 2,
+          'deadline: common.mjs\'s session() and post() both go through siteFetch, and nothing there fetches without it (F461)');
+  }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {

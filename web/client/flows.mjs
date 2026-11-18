@@ -84,6 +84,13 @@ const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i
 // the person forgets it here without having logged in with it, that account
 // needs a recovery code. The page says so before it calls this.
 export async function forgetUnconfirmed(store, handle) {
+  // The lock that keeps a Forget from removing a key another tab is enrolling
+  // or logging in with must span tabs (F303, F409); without Web Locks it is
+  // this page's only, so a Forget is refused, as a rotation is (V4-281, F462).
+  if (!store.sharedLock) {
+    throw new ForgetRefused('this browser cannot keep another tab from using this key while it is removed ' +
+                            '(no Web Locks); it was not removed');
+  }
   return store.exclusive(handle, async () => {
     const r = await store.get(handle);
     if (!r) { throw new ForgetRefused(`no identity for ${handle} on this device`); }
@@ -309,9 +316,18 @@ async function rotateHeld(client, store, params, events) {
   try {
     await s.rotate(next.envelope, params.passphrase);
   } catch (e) {
+    await s.close();
+    // A ROTATE that never left this page (the socket closed before it could
+    // be sent, or the module could not build it) cannot have been committed:
+    // the staged key goes, as when no session was opened (V4-281, F460).
+    // It stayed, and every later login ran the interrupted-rotation probe.
+    if (e && e.notSent === true) {
+      try { await store.discardPending(params.handle); } catch { /* it stays pending; the next login resolves it */ }
+      events('the rotation was never sent, so the new key is not kept');
+      throw e;
+    }
     // No ACK is not proof that nothing happened: the daemon may have committed
     // and failed to answer. The pending key STAYS; the next login resolves it.
-    await s.close();
     events('the rotation was not acknowledged; the new key is kept pending');
     throw e;
   }

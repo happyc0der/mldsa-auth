@@ -4,6 +4,7 @@
 import createMldsaClient from '/module/mldsa_client.mjs';
 import { AuthdClient } from '/client/authd-client.mjs';
 import { IdentityStore } from '/client/store.mjs';
+import { siteFetch } from './site-fetch.mjs';
 
 export const hexToBytes = (h) => Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
 export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
@@ -35,8 +36,7 @@ export async function boot() {
 // JSON parse error, and a refusal -- valid JSON, no state in it -- as "Cannot
 // read properties of undefined", thrown from inside the login that followed.
 export async function session() {
-  const r = await fetch('/api/session', { cache: 'no-store' });
-  const j = await r.json().catch(() => null);
+  const { r, j } = await siteFetch('/api/session', { cache: 'no-store' });   // a deadline (F461)
   if (!r.ok) {
     throw new Error(j && typeof j.error === 'string' ? `the site refused: ${j.error}`
                                                      : `the site did not answer (HTTP ${r.status}); try again in a moment`);
@@ -54,9 +54,10 @@ export function loginParams(sess, handle, passphrase) {
 }
 
 export async function post(path, obj) {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(obj ?? {}) });
-  const j = await r.json().catch(() => null);
+  // A deadline (V4-281, F461): given up on, the error has no status, which
+  // every caller reads as no answer at all.
+  const { r, j } = await siteFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                           body: JSON.stringify(obj ?? {}) });
   if (!r.ok) { throw Object.assign(new Error((j && j.error) || `HTTP ${r.status}`), { status: r.status }); }
   // F302: a 2xx that is not the site's JSON is not the site's answer. A
   // front end's catch-all or maintenance page, served 200, was read as `{}`:

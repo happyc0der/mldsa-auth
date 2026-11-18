@@ -55,7 +55,14 @@ export class AuthdClient {
   drop(p, len) {
     if (p) { this.M.HEAPU8.fill(0, p, p + len); this.M._free(p); }
   }
-  u32Slot() { const p = this.M._malloc(8); this.M.HEAPU32[p >> 2] = 0; return p; }
+  // Every allocation is checked (V4-281, F463), as put() has been since
+  // F305: u32Slot wrote HEAPU32[0] when malloc returned 0, F305's shape.
+  alloc(n) {
+    const p = this.M._malloc(n);
+    if (!p) { throw new Error('the client module is out of memory'); }
+    return p;
+  }
+  u32Slot() { const p = this.alloc(8); this.M.HEAPU32[p >> 2] = 0; return p; }
   u32(p) { return this.M.HEAPU32[p >> 2]; }
   str(p) { return this.M.UTF8ToString(p); }
 
@@ -86,7 +93,7 @@ export class AuthdClient {
   }
 
   newHandle() {
-    const p = this.M._malloc(64);
+    const p = this.alloc(64);
     this.M._ccw_new_handle(p);
     const s = this.str(p);
     this.drop(p, 64);
@@ -100,10 +107,11 @@ export class AuthdClient {
     const hid = te.encode(handle ?? this.newHandle());
     const pass = te.encode(passphrase);
     const ekCap = M._ccw_sealed_len(hid.length), pubCap = M._ccw_public_len(hid.length);
-    const ph = this.put(hid), pp = this.put(pass);
-    const pe = M._malloc(ekCap), pu = M._malloc(pubCap);
-    const el = this.u32Slot(), ul = this.u32Slot();
+    let ph = 0, pp = 0, pe = 0, pu = 0, el = 0, ul = 0;
     try {
+      ph = this.put(hid); pp = this.put(pass);
+      pe = this.alloc(ekCap); pu = this.alloc(pubCap);
+      el = this.u32Slot(); ul = this.u32Slot();
       const st = M._ccw_seal_new_identity(ph, hid.length, pp, pass.length, pe, ekCap, el, pu, pubCap, ul);
       if (st !== 0) { throw this.fail(0, st, 0); }
       return {
@@ -125,7 +133,8 @@ export class AuthdClient {
     const h = M._ccw_new();
     if (!h) { throw new Error('ccw_new failed'); }
     const tick = () => { if (M._ccw_set_now_ms(h, now()) !== 0) { throw new Error('clock refused'); } };
-    const frame = M._malloc(M._ccw_frame_buf_bytes());
+    let frame;
+    try { frame = this.alloc(M._ccw_frame_buf_bytes()); } catch (e) { M._ccw_free(h); throw e; }
     const cap = M._ccw_frame_buf_bytes();
     const outLen = this.u32Slot();
     let sent = 0;
@@ -151,7 +160,7 @@ export class AuthdClient {
       if (st !== 0) { throw this.fail(h, st, session.sent); }
       session.send(); sent = session.sent;
 
-      const code = M._malloc(32), flags = this.u32Slot(), exp = M._malloc(8);
+      const code = this.alloc(32), flags = this.u32Slot(), exp = this.alloc(8);
       try {
         st = await session.feed((p, n) => M._ccw_on_record(h, p, n, code, flags, exp));
         if (st !== 0) { throw this.fail(h, st, session.sent); }
@@ -254,18 +263,30 @@ export class Session {
     this.live();
     const c = this.client, M = c.M;
     const pass = te.encode(passphrase);
-    const pe = c.put(newEnvelope), pp = c.put(pass);
     let st;
-    // The copies are wiped whatever tick() does (V4-187, F266): it throws on
-    // a refused clock, and it used to run between the copy and the wipe.
+    // A failure before the frame was handed to the socket says so: `notSent`
+    // (V4-281, F460). It is the proof F235 and F438 act on -- a ROTATE that
+    // never left cannot have been committed -- and flows.rotate discards the
+    // staged key on it. Every failure after that proves nothing.
+    const before = this.sent;
     try {
-      this.tick();
-      st = M._ccw_rotate_build(this.h, pe, newEnvelope.length, pp, pass.length, this.frame, this.cap, this.outLen);
+      const pe = c.put(newEnvelope), pp = c.put(pass);
+      // The copies are wiped whatever tick() does (V4-187, F266): it throws on
+      // a refused clock, and it used to run between the copy and the wipe.
+      try {
+        this.tick();
+        st = M._ccw_rotate_build(this.h, pe, newEnvelope.length, pp, pass.length, this.frame, this.cap, this.outLen);
+      } finally {
+        c.drop(pe, newEnvelope.length); c.drop(pp, pass.length);
+      }
+      if (st !== 0) { throw c.fail(this.h, st, this.sent); }
+      this.send();
+    } catch (e) {
+      if (this.sent === before && e !== null && typeof e === 'object') { e.notSent = true; }
+      throw e;
     } finally {
-      c.drop(pe, newEnvelope.length); c.drop(pp, pass.length); pass.fill(0);
+      pass.fill(0);
     }
-    if (st !== 0) { throw c.fail(this.h, st, this.sent); }
-    this.send();
     const ec = c.u32Slot();
     try {
       st = await this.feed((p, n) => M._ccw_rotate_on_reply(this.h, p, n, ec));

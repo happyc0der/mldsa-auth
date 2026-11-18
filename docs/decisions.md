@@ -19860,3 +19860,49 @@ Counts: 696 mutations, 127 campaigns, 741 anchors; 459 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451 and F453 open); spec v1.83, 125 errata; 65 tests
 (unchanged by this step).
+
+## V4-281 — the browser client, read whole again: a rotation that never left, a request with no deadline, a Forget without a shared lock (F460 to F464)
+
+The forty-ninth review read `web/client/` whole and how the pages use
+it, for the first time since V4-266, V4-273 and V4-275 changed it a
+piece at a time: transaction lifetimes, the lock across awaits, a
+rotation stopped at each await, wiping, error mapping, timeouts. No
+Medium; its experiments drove the real `flows.mjs` and `Session` with a
+stub socket.
+
+- **F460.** Fixed for the proof F235 and F438 already use: nothing was
+  handed to the socket. **Not changed:** the review also proposed
+  discarding on an authenticated `ERROR(0x03)`, which §6.3 says comes
+  before anything is written. §10.2 states the rule the other way — no
+  outcome but `ROTATE_ACK` proves anything once the frame has left —
+  and erratum 126 now says so in as many words. Widening it is a
+  protocol decision; the cost of not widening is one extra probe after
+  a refused rotation, which is rare. Moving `confirmQuietly` after the
+  rotation (the review's other suggestion) is not needed once a closed
+  socket costs nothing: it stays where F411 put it.
+- **F461.** A small module with no imports, so the Node test runs the
+  code the pages run. 30 s: longer than the site's 10 s on the daemon,
+  so the site's own 503 still arrives first.
+- **F462, F463, F464.** As recommended. F464 is not tested: headless
+  Chromium grants `persist()` at once, and only the order changed.
+- **Considered, not recorded:** the review's S2, the recorded F218
+  window reached by a timed-out ROTATE in the same tab and an immediate
+  second press. It needs the daemon to serve a later connection's probe
+  before an earlier connection's ROTATE; the daemon is one thread and
+  serves frames as they arrive, which, as the review noted, makes it
+  unlikely. Not reproduced.
+
+Each fix was shown to be checked: seven hand mutants, six killed by their
+named check and restored byte-exact. The seventh, `sent === before` in
+`Session.rotate`, survives and is equivalent: a failure after the frame
+left is thrown outside the `try` that sets the mark, so the guard can
+only matter if `ws.send` itself throws, which the count after it
+already covers.
+
+No campaign: no compiled code changed.
+
+Spec v1.84, erratum 126.
+
+Counts: 696 mutations, 127 campaigns, 741 anchors; 464 findings (F148,
+F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
+F436, F437, F450, F451 and F453 open); spec v1.84, 126 errata; 65 tests.

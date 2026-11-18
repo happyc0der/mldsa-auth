@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.83, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279)
+# mldsa-authd — deployment specification (v1.84, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -769,6 +769,14 @@ server never committed" asks the client to branch on a distinction Req 6
 exists to destroy. Never deleting on ambiguity costs one confusing file; the
 other way costs a permanently unusable identity.
 
+**A rotation that knows its `ROTATE` never left** discards the staged key
+itself (erratum 126): when its login opened no session, or when the frame
+was never handed to the transport (the connection had closed, or the client
+could not build it), nothing was sent, so nothing can have been committed.
+That is the only proof besides the current key authenticating; from the
+moment the frame has left, no outcome but `ROTATE_ACK` proves anything,
+an authenticated `ERROR` included, and the staged key stays.
+
 A probe is the daemon's refusal of a key only if it failed after `ClientAuth`
 was sent and before the client's deadline (erratum 119). The daemon closes at
 once on a `ClientAuth` it does not accept (§7.3), so a probe that waited out
@@ -797,7 +805,8 @@ only copy of the key the daemon is about to accept. So a page rotates, and
 resolves a pending envelope, only while holding a lock on that identity that
 every tab of the origin shares (the Web Locks API; the browser releases it
 when a tab dies), and reads the record again once it holds it. A page that
-cannot take such a lock does not rotate. And the promoting transaction
+cannot take such a lock does not rotate, and does not forget a key the site
+never confirmed (erratum 126). And the promoting transaction
 promotes the envelope its caller staged and no other (erratum 92).
 
 The CLI is one process per run, and **two runs on one key file** are the same
@@ -1163,6 +1172,11 @@ answered. The account page says "Not logged in" only when the site says so
 
 The enroll page asks the passphrase policy before it asks the site for
 anything (erratum 116): a passphrase the policy refuses causes no sign-up.
+It asks for persistent storage before the sign-up too (erratum 126), so a
+browser that holds that request until its prompt is answered holds the page
+before the invitation is used. A page gives up on a request to the site
+after 30 s, as no answer (erratum 126): the enrollment holds the identity's
+lock while it waits, and a front end that never answers held it for good.
 
 The enrollment holds that lock too (erratum 106), from before the record is
 written until the site's answer has been acted on: a key cannot be forgotten
@@ -2325,3 +2339,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 125 | 14 | A site clears only its own session's cookie: a request carrying an id rotated away in the last 60 s gets no session and no cookie (409), and a refused `VERIFY` of a session already rotated away clears nothing | Since V4-253 (F366) a login, signup or recovery ends the old token before rotating, so the account page's `/api/me` racing a login in another tab was refused and cleared the cookie by name — the new session's — leaving that session orphaned and a fresh recovery ticket lost (F456) |
+
+### Revision v1.84 (V4-281)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 126 | 10.2, 14 | A rotation whose `ROTATE` was never handed to the transport discards its staged key, as one whose login opened no session does; a page without a cross-tab lock does not forget an unconfirmed key; the enroll page asks for persistent storage before the sign-up; a page gives up on the site after 30 s, as no answer | A socket that closed between the rotation's login and its `ROTATE` kept the key pending, and every later login ran the interrupted-rotation probe (F460); the enrollment's lock was held for as long as a stalled front end held `/api/enroll` (F461); without Web Locks a Forget's lock spanned one tab only (F462); `persist()` was awaited after the invitation was used (F464) |

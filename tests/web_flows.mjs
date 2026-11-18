@@ -694,6 +694,69 @@ try {
       check(threw !== null && threw.name !== 'AuthdError' && shut.s.sent === 0 && shut.ws.n === 0,
             `send: on a socket that is ${state === 2 ? 'closing' : 'closed'} nothing is counted as sent, and the caller is told (sent ${shut.s.sent}) (F354)`);
     } }
+
+  // V4-281, F460: a ROTATE that never left the page cannot have been
+  // committed, so the staged key goes -- as when no session was opened
+  // (F235). Here the socket closes after the rotation's login and before
+  // ROTATE is handed to it, the window F411's await on the store widened.
+  { const { store, params } = await fresh();
+    const before = await store.get(params.handle);
+    let frames = -1;
+    const cut = new Proxy(client, { get: (t, k) => (k === 'login'
+      ? async (...a) => { const s = await t.login(...a); const real = s.rotate.bind(s);
+                          s.rotate = async (...b) => { s.ws.close(); frames = s.sent;
+                                                       try { return await real(...b); } finally { frames = s.sent - frames; } };
+                          return s; }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    let err = null;
+    const said = [];
+    try { await flows.rotate(cut, store, params, (e) => said.push(e)); } catch (e) { err = e; }
+    const after = await store.get(params.handle);
+    check(err !== null && err.notSent === true && frames === 0,
+          `rotate, socket closed before ROTATE: it fails, says it was not sent, and no frame left (${err && err.message}; ${frames} frames) (F460)`);
+    check(after.pending === null && isDeepStrictEqual(after, before) && said.includes('the rotation was never sent, so the new key is not kept'),
+          'rotate, socket closed before ROTATE: no key is left pending, and the store is exactly as it was (F460)');
+    const next = [];
+    const s = await flows.login(client, store, params, (e) => next.push(e));
+    check(s.code.length === 32 && next.length === 0,
+          `rotate, socket closed before ROTATE: the next login is an ordinary one, with no interrupted rotation to resolve (${next.join('; ')}) (F460)`);
+    await s.close(); }
+  // ...while a ROTATE that DID leave keeps proving nothing: the ACK-lost case
+  // above keeps its key, and its error carries no notSent.
+  { const { id, params } = await fresh();
+    const s = await client.login({ ...params, envelope: id.envelope, keepForRotate: true });
+    const next = client.newIdentity(PASS, params.handle);
+    let err = null;
+    const realFeed = s.feed.bind(s);
+    s.feed = async () => { s.ws.close(); return realFeed(() => 3); };   // ROTATE sent, then no reply
+    try { await s.rotate(next.envelope, PASS); } catch (e) { err = e; }
+    check(err !== null && err.notSent !== true && s.sent >= 3,
+          `rotate, sent and not answered: the error does not say "not sent" (sent ${s.sent}, notSent ${err && err.notSent}) (F460, not vacuous)`);
+    await s.close().catch(() => {}); }
+
+  // V4-281, F462: without Web Locks the lock that keeps a Forget from
+  // removing a key another tab is using is this page's only, so a Forget is
+  // refused, as a rotation is, and nothing is removed.
+  { const st = new MemoryStore();
+    await st.create({ handle: 'f462', serverId: 's', serverPub: new Uint8Array(1), envelope: new Uint8Array(4), unconfirmed: true });
+    const pageOnly = new Proxy(st, { get: (t, k) => (k === 'sharedLock' ? false : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    let err = null;
+    try { await flows.forgetUnconfirmed(pageOnly, 'f462'); } catch (e) { err = e; }
+    check(err !== null && err.name === 'ForgetRefused' && /no Web Locks/.test(err.message) && (await st.get('f462')) !== null,
+          `no cross-tab lock: forgetting an unconfirmed key is refused and the key stays (${err && err.message}) (F462)`);
+    await flows.forgetUnconfirmed(st, 'f462');
+    check((await st.get('f462')) == null, 'with the lock shared: the same Forget removes the key (the control)'); }
+
+  // V4-281, F463: every allocation is checked. A module whose malloc fails
+  // (returns 0) is refused by name; u32Slot used to write HEAPU32[0].
+  { const heap = new Uint32Array(4); heap[0] = 0xfeedface;
+    const oom = new AuthdClient({ _malloc: () => 0, _free: () => {}, HEAPU32: heap, HEAPU8: new Uint8Array(16) });
+    const tries = [['u32Slot', () => oom.u32Slot()], ['alloc', () => oom.alloc(32)], ['newHandle', () => oom.newHandle()]];
+    const said = tries.map(([n, f]) => { try { f(); return `${n}: no error`; } catch (e) { return /out of memory/.test(e.message) ? null : `${n}: ${e.message}`; } });
+    check(said.every((x) => x === null) && heap[0] === 0xfeedface,
+          `out of memory: every allocation is refused by name and nothing is written at address 0 (${said.filter(Boolean).join('; ') || 'ok'}) (F463)`);
+    const ok = new AuthdClient({ _malloc: () => 8, _free: () => {}, HEAPU32: heap, HEAPU8: new Uint8Array(16) });
+    check(ok.u32Slot() === 8 && heap[2] === 0, 'out of memory: a malloc that succeeds gives its slot, zeroed (the control)'); }
 } catch (e) {
   check(false, `unexpected: ${e.stack || e}`);
 } finally {
