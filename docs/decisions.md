@@ -20425,3 +20425,24 @@ Counts: 716 mutations, 132 campaigns, 761 anchors; 511 findings (F148,
 F156, F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435,
 F436, F437, F450, F451, F453 and F511 open); spec v1.89, 131 errata; 66
 tests.
+
+## V4-298: cleanup after V4-295 to V4-297
+
+No code.
+
+- `docs/review/REPRODUCE.md` cites the runs on `0a3d5b0` (V4-297), now
+  main: CI 44342950272 (16/16), nightly 44342991290 (147/147, 132
+  campaigns, the `formal` job on the model with twelve controls). That
+  nightly landed V4-296 (CI 44339013472) with it; V4-296's own nightly
+  was cancelled a third of the way in, since V4-297's covered it and also
+  ran the model V4-297 changed.
+- Before it: `522cd6b` (V4-295) had CI 44332176402 (16/16).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F403, F419, F420, F421, F431, F435, F436,
+  F437, F450, F451, F453 and F511 (new in V4-297: the CLI's pasted login
+  code), and the questions in V4-246's, V4-274's, V4-281's, V4-284's,
+  V4-285's and V4-291's entries.
+
+Counts: unchanged by this step (716 mutations, 132 campaigns, 761
+anchors; 511 findings, the 19 above open; spec v1.89, 131 errata; 66
+tests).

@@ -191,8 +191,8 @@ is not compiled). ADVISORIES.md accounts for every one.
   headless-browser job, `caddy proxy (Linux, Docker)`, and the runbook
   rehearsed top to bottom under systemd (V4-99; on two Ubuntus since
   V4-103). 16 jobs; run
-  44313117669 on `00300e5` (V4-294, now main): 16/16.
+  44342950272 on `0a3d5b0` (V4-297, now main): 16/16.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
-  ProVerif model and its controls. Run 44313121620 on `00300e5`: 146/146, all
-  131 campaigns among them.
+  ProVerif model and its controls. Run 44342991290 on `0a3d5b0`: 147/147, all
+  132 campaigns among them.
