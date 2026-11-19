@@ -257,10 +257,17 @@ export async function enroll(client, store, { serverId, serverPub, passphrase },
     try {
       answer = await submit({ handle: id.handle, publicImage: id.publicImage });
     } catch (e) {
-      if (e instanceof EnrollRefused) { await store.remove(id.handle); throw e; }
+      // F578: the site's refusal is what the caller is told, whatever the
+      // store then does. A remove that failed threw in its place, and the
+      // page showed a store error for an enrollment the site had refused.
+      if (e instanceof EnrollRefused) { await store.remove(id.handle).catch(() => {}); throw e; }
       throw new EnrollUnconfirmed(id.handle, e);
     }
-    await store.confirm(id.handle);
+    // F578: the site said yes, so the enrollment succeeded. A store that
+    // cannot record the confirmation says so at the next login, which clears
+    // the mark (F220), as login itself has always done. Thrown from here it
+    // told the user their enrollment had failed, with the invitation spent.
+    await confirmQuietly(store, id.handle);
     return { handle: id.handle, answer };
   });
 }

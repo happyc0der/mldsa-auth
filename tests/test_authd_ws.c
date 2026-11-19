@@ -920,6 +920,57 @@ static void test_login_over_ws(void)
 
 /* ------------------------------------------------------- the limiter alone */
 
+/* V4-321, V4-322: one flood against a table of `n` entries, for the search in
+ * test_ratelimit. `sl` addresses each keep a connection open. Then the global
+ * budget is spent on new addresses for `bu` hold-times, k tokens to an
+ * address: shape 0 takes k from the burst down to 1, a hold-time each; 1 the
+ * other way up; 2 a random k an address; 3 as 0, after a second in which
+ * nothing is spent and the global bucket fills. Returns how many addresses
+ * were refused for the table; with `first_only` it returns at the first, since
+ * every refusal at a full table scans all of it and a control needs only one. */
+static uint64_t limiter_flood(uint32_t pm, uint32_t bu, uint32_t gl, uint32_t sl, int shape,
+                              ratelimit_entry_t *table, size_t n, uint32_t *x, int first_only)
+{
+    static ratelimit_t f;
+    ratelimit_init(&f, table, n, pm, bu, gl, 4096u, 0u);
+    const uint64_t hold = ratelimit_hold_ms(pm);
+    uint64_t t = 0;
+    uint32_t next = 1u, taken = 0u, kcur = 1u;
+    authd_addr_t c = { 4u, { 11u, 0u, 0u, 0u } };
+    for (uint32_t s = 0; s < sl; s++) {                    /* the slots: one open connection each */
+        c.addr[2] = (uint8_t)(s >> 8); c.addr[3] = (uint8_t)s;
+        while (ratelimit_admit(&f, &c, t) == RATELIMIT_DENY_GLOBAL) { t++; }
+    }
+    if (shape == 3) { t += 1000u; }                        /* the global bucket fills: its burst is spent first */
+    c.addr[0] = 10u;
+    for (uint32_t ph = 0; ph < bu; ph++) {
+        const uint32_t k = (shape == 1) ? ph + 1u : bu - ph;
+        for (const uint64_t end = t + hold; t < end; t++) {
+            for (;;) {
+                if (taken == 0u) {
+                    *x ^= *x << 13; *x ^= *x >> 17; *x ^= *x << 5;
+                    kcur = (shape == 2) ? 1u + *x % bu : k;
+                }
+                c.addr[1] = (uint8_t)(next >> 16); c.addr[2] = (uint8_t)(next >> 8); c.addr[3] = (uint8_t)next;
+                const ratelimit_verdict_t v = ratelimit_admit(&f, &c, t);
+                if (first_only && f.denied_table != 0u) { return f.denied_table; }
+                if (v != RATELIMIT_ALLOW) { if (v != RATELIMIT_DENY_GLOBAL) { next++; taken = 0u; } break; }
+                ratelimit_release(&f, &c);
+                if (++taken >= kcur) { taken = 0u; next++; }
+            }
+        }
+    }
+    for (int i = 0; i < 3; i++, t++) {                     /* and what the global bucket still holds */
+        for (;;) {
+            next++;
+            c.addr[0] = 12u; c.addr[1] = (uint8_t)(next >> 16); c.addr[2] = (uint8_t)(next >> 8); c.addr[3] = (uint8_t)next;
+            if (ratelimit_admit(&f, &c, t) != RATELIMIT_ALLOW) { break; }
+            ratelimit_release(&f, &c);
+        }
+    }
+    return f.denied_table;
+}
+
 static void test_ratelimit(void)
 {
     static ratelimit_t r;
@@ -1205,65 +1256,41 @@ static void test_ratelimit(void)
     /* V4-321: the bound, searched and not only derived. Four corrections to
      * this size (F544, F548, F556, F563) were each found by building the
      * limiter and flooding it in a shape the derivation had not thought of.
-     * This runs the shapes found so far over a grid of rates, bursts and
-     * held slots, sizing each table as the daemon would: none may ever be
-     * full. Shape 0 spends k tokens an address for k from the burst down to
-     * 1, a hold-time each; 1 the other way up; 2 a random k an address; 3 as
-     * 0, with the global bucket left to fill for the last second. */
+     * This runs the shapes found so far (limiter_flood) over a grid of rates,
+     * bursts and held slots, sizing each table as the daemon would: none may
+     * ever be full.
+     *
+     * V4-322, F581: and the control. A search that cannot fail says nothing,
+     * and review 73 measured that this one could not see a table a tenth too
+     * small. So each configuration sized above the 1024 floor is flooded
+     * again with HALF its table, and those must fill: if they did not, the
+     * floods would not be reaching the sizes they are meant to test. */
     { static const uint32_t SP[] = { 2u, 5u, 7u, 17u, 30u, 60u, 97u }, SB[] = { 1u, 2u, 3u, 10u, 20u },
                             SG[] = { 10u, 50u, 200u }, SS[] = { 0u, 256u };
       static ratelimit_entry_t st[RATELIMIT_ENTRIES_MAX];
-      unsigned runs = 0, full = 0;
+      unsigned runs = 0, full = 0, controls = 0, controls_full = 0;
       uint32_t x = 12345u;
       for (size_t a = 0; a < 7u; a++) { for (size_t b = 0; b < 5u; b++) { for (size_t g = 0; g < 3u; g++) { for (size_t d = 0; d < 2u; d++) {
           const uint32_t pm = SP[a], bu = SB[b], gl = SG[g], sl = SS[d];
-          const uint64_t hold = ratelimit_hold_ms(pm);
-          if (ratelimit_entries_wanted(pm, bu, gl, sl) > (uint64_t)RATELIMIT_ENTRIES_MAX || hold * bu > 150000u) { continue; }
+          if (ratelimit_entries_wanted(pm, bu, gl, sl) > (uint64_t)RATELIMIT_ENTRIES_MAX ||
+              ratelimit_hold_ms(pm) * bu > 150000u) { continue; }
+          const size_t n = ratelimit_entries_for(pm, bu, gl, sl);
           for (int shape = 0; shape < 4; shape++) {
-              const size_t n = ratelimit_entries_for(pm, bu, gl, sl);
-              ratelimit_init(&r, st, n, pm, bu, gl, 4096u, 0u);
-              uint64_t t = 0;
-              uint32_t next = 1u, taken = 0u, kcur = 1u;
-              authd_addr_t c = { 4u, { 10u, 0u, 0u, 0u } };
-              for (uint32_t s = 0; s < sl; s++) {                    /* the slots: one open connection each */
-                  c.addr[0] = 11u; c.addr[2] = (uint8_t)(s >> 8); c.addr[3] = (uint8_t)s;
-                  while (ratelimit_admit(&r, &c, t) == RATELIMIT_DENY_GLOBAL) { t++; }
-              }
-              c.addr[0] = 10u;
-              for (uint32_t ph = 0; ph < bu; ph++) {
-                  const uint32_t k = (shape == 1) ? ph + 1u : bu - ph;
-                  for (const uint64_t end = t + hold; t < end; t++) {
-                      if (shape == 3 && ph == bu - 1u && end - t > 1u && end - t <= 1001u) { continue; }
-                      for (;;) {
-                          if (taken == 0u) {
-                              x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-                              kcur = (shape == 2) ? 1u + x % bu : k;
-                          }
-                          c.addr[1] = (uint8_t)(next >> 16); c.addr[2] = (uint8_t)(next >> 8); c.addr[3] = (uint8_t)next;
-                          const ratelimit_verdict_t v = ratelimit_admit(&r, &c, t);
-                          if (v != RATELIMIT_ALLOW) { if (v != RATELIMIT_DENY_GLOBAL) { next++; taken = 0u; } break; }
-                          ratelimit_release(&r, &c);
-                          if (++taken >= kcur) { taken = 0u; next++; }
-                      }
-                  }
-              }
-              for (int i = 0; i < 3; i++, t++) {                     /* and what the global bucket still holds */
-                  for (;;) {
-                      next++;
-                      c.addr[0] = 12u; c.addr[1] = (uint8_t)(next >> 16); c.addr[2] = (uint8_t)(next >> 8); c.addr[3] = (uint8_t)next;
-                      if (ratelimit_admit(&r, &c, t) != RATELIMIT_ALLOW) { break; }
-                      ratelimit_release(&r, &c);
-                  }
-              }
               runs++;
-              if (r.denied_table != 0u) {
+              if (limiter_flood(pm, bu, gl, sl, shape, st, n, &x, 0) != 0u) {
                   full++;
                   printf("  table full: per_min=%u burst=%u global=%u slots=%u shape=%d table=%zu\n", pm, bu, gl, sl, shape, n);
               }
           }
+          if (n > (size_t)RATELIMIT_ENTRIES) {                 /* the formula, not the floor, sized it */
+              controls++;
+              if (limiter_flood(pm, bu, gl, sl, 0, st, n / 2u, &x, 1) != 0u) { controls_full++; }
+          }
       } } } }
       CHECK(runs == 744u && full == 0u,
-            "limiter size: over a grid of rates, bursts and held slots, no flood shape found so far fills the table (F563, F570)"); }
+            "limiter size: over a grid of rates, bursts and held slots, no flood shape found so far fills the table (F563, F570)");
+      CHECK(controls == 56u && controls_full == controls,
+            "limiter size: and every one of those tables above the floor, halved, is filled by the same flood (the control, F581)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

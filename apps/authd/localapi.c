@@ -222,10 +222,29 @@ static void resp_hex(resp_t *r, const uint8_t *p, size_t n)
     r->len += n * 2u;
 }
 
+/* The command being served, for the ERROR line an `internal` answer writes
+ * (one request at a time: the event loop serves one slot's line to its end
+ * before the next). */
+static const char *g_serving_cmd = "?";
+
+/* F432: an `internal` answer is the daemon failing -- a full disk, a store
+ * another process holds locked, an allocation -- and was written to the
+ * journal nowhere: the only line such a request left was its `local-request`
+ * at INFO. Every one is an ERROR line naming the command and the peer. */
+static void log_internal(const authd_slot_t *slot)
+{
+    authd_log_local(AUTHD_LOG_ERROR, "local-internal", g_serving_cmd, slot->peer.uid, slot->peer.pid,
+                    slot->is_admin ? "admin" : "site");
+}
+
 static ev_action_t send_resp(authd_slot_t *slot, resp_t *r)
 {
     if (r->overflow || r->len == 0u) {
+        /* F582: logged like every other `internal` (spec 8, erratum 123);
+         * this one was written with no line. No reply today is long enough
+         * to reach it: a list is capped well inside the buffer. */
         static const char e[] = "ERR code=internal\n";
+        log_internal(slot);
         (void)conn_io_queue(&slot->io, (const uint8_t *)e, sizeof e - 1u);
         return EV_ACTION_CONTINUE;
     }
@@ -233,20 +252,10 @@ static ev_action_t send_resp(authd_slot_t *slot, resp_t *r)
     return EV_ACTION_CONTINUE;
 }
 
-/* The command being served, for send_err's ERROR line (one request at a time:
- * the event loop serves one slot's line to its end before the next). */
-static const char *g_serving_cmd = "?";
-
 static ev_action_t send_err(authd_slot_t *slot, const char *code)
 {
-    /* F432: an `internal` answer is the daemon failing -- a full disk, a
-     * store another process holds locked, an allocation -- and was written
-     * to the journal nowhere: the only line such a request left was its
-     * `local-request` at INFO. Every one is now an ERROR line naming the
-     * command and the peer. */
     if (strcmp(code, "internal") == 0) {
-        authd_log_local(AUTHD_LOG_ERROR, "local-internal", g_serving_cmd, slot->peer.uid, slot->peer.pid,
-                        slot->is_admin ? "admin" : "site");
+        log_internal(slot);
     }
     resp_t r;
     resp_init(&r);

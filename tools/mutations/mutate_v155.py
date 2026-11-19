@@ -16,8 +16,8 @@ LA = "apps/authd/localapi.c"
 RC = "apps/authd/recovery.c"
 
 M = {
-    "LI1": [(LA, "    if (strcmp(code, \"internal\") == 0) {\n        authd_log_local(AUTHD_LOG_ERROR, \"local-internal\",",
-             "    if (0 && strcmp(code, \"internal\") == 0) { /* MUTATION LI1 */\n        authd_log_local(AUTHD_LOG_ERROR, \"local-internal\",")],
+    "LI1": [(LA, "    if (strcmp(code, \"internal\") == 0) {\n        log_internal(slot);\n",
+             "    if (0 && strcmp(code, \"internal\") == 0) { /* MUTATION LI1 */\n        log_internal(slot);\n")],
     "KF1": [(RC, "    return (r == 0) ? 0 : -1;\n",
              "    (void)r; return 0; /* MUTATION KF1 */\n")],
 }

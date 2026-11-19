@@ -597,6 +597,25 @@ try {
             `checkPassphrase: the passphrase's array is zeroed and its copy dropped all the same (${held2.size} left) (F557)`);
       check(client.checkPassphrase(PASS).ok === true, 'checkPassphrase: and it still answers afterwards (the canary)'); } }
 
+  // F578 (V4-322): what the site answered is what enroll reports, whatever
+  // the browser's store then does. A store that could not record the
+  // confirmation threw, and the page said the enrollment had failed with the
+  // site enrolled and the invitation spent; one that could not remove a
+  // refused key threw its own error in place of the refusal.
+  { const store = new MemoryStore();
+    const want = { serverId: info.server_id, serverPub, passphrase: PASS };
+    store.confirm = async () => { throw new Error('transaction aborted'); };
+    const yes = await flows.enroll(client, store, want, async () => ({ user: 'u' }))
+      .then((r) => `resolved ${typeof r.handle}`, (e) => `rejected: ${e.name}: ${e.message}`);
+    check(yes === 'resolved string',
+          `enroll: an enrollment the site accepted succeeds though the store cannot record the confirmation (${yes}) (F578)`);
+    const store2 = new MemoryStore();
+    store2.remove = async () => { throw new Error('transaction aborted'); };
+    const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })
+      .then(() => 'resolved', (e) => e.name);
+    check(no === 'EnrollRefused',
+          `enroll: a refusal by the site is reported as that though the store cannot remove the key (${no}) (F578)`); }
+
   // F572 (V4-321): close() is a courtesy and cannot reject. A clock that
   // refused threw out of it, and a caller's next step -- posting the login
   // code, promoting a key the daemon had acknowledged -- did not happen.

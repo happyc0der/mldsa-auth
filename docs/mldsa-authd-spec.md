@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.102, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321)
+# mldsa-authd — deployment specification (v1.103, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -869,7 +869,7 @@ run that finds the lock taken says so and waits; one that cannot take the lock
 does neither thing. And a rotation discards `.ek.next` only when this run
 asked the daemon and `.ek` authenticated — never because the file is there.
 A key path too long for its `.ek.next` name to fit the platform's path limit
-is refused before anything is read (errata 104, 146).
+is refused before the key is read or anything is sent (errata 104, 146, 151).
 
 **On the server there is no overlap window**: `one_active_key` makes two
 simultaneously-active keys for a handle unrepresentable, and that is enforced
@@ -2594,3 +2594,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 150 | 8, 10.1, 10.2, 13, 14, 16, 17 | The body is brought into agreement with the errata again: the journal lines of erratum 123, `ticket-invalid` among the refusals that still log Req 7 (129), "whatever its `via`" now that there are three (56), the path too long for `.ek.next` (104), `ticket-invalid` as what drops a ticket from the site's session (106), the one word for both enrollment conflicts (122), paths directly under `/` (112) and `daemon-busy` (149). §13 says what `timeout` from `authd_admin` means: the request was sent, and a busy daemon still carries it out. §17's rate share is the burst's sum rounded up once, not a term at a time | The seventy-second review compared 144 errata with the body and found these nine stated only in the table (F574). `authd_admin` printed a bare `timeout` for every command but `backup`, and the runbook said `daemon-busy` is what any command says during a long backup, when the first sixteen connect, send and time out, and are then carried out (F569). Rounding each of the burst's terms up made the table at least `rate_burst` entries and warned of a ceiling the rates could not reach (F570) |
+
+### Revision v1.103 (V4-322)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 151 | 10.2 | A key path too long for its `.ek.next` name is refused before the key is read or anything is sent, not "before anything is read" | Erratum 150's sentence said more than the code does: the server's public key and the passphrase are read first, and `rotate` takes the directory's lock, before the name is built (F579) |

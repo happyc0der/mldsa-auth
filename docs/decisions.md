@@ -21425,3 +21425,69 @@ Spec v1.102: erratum 150 (8, 10.1, 10.2, 13, 14, 16, 17).
 Counts: 771 mutations, 145 campaigns, 816 anchors; 577 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
 open); spec v1.102, 150 errata; 66 tests.
+
+## V4-322: cleanup after V4-320 and V4-321, and what the seventy-third review found (F578 to F582)
+
+**Cleanup.**
+- `docs/review/REPRODUCE.md` now cites the runs on `5b9d74a` (V4-318): CI
+  44498753818 (16/16) and nightly 44498760442 (158/158, 143 campaigns).
+  Main is `d8eb87c` (V4-319, documents only; CI 44501550694, 16/16).
+- `3030576` (V4-320): CI 44508182074 16/16; nightly 44508188353 158 of
+  159. The one failure was campaign v157's job, which stopped in its
+  `Install ccache` step when the runner's package index would not download;
+  the campaign did not run. The job was run again.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511 and F549. Also open: whether F420's overlap should be refused
+  rather than warned of, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+**The seventy-third review** was an independent read of the code V4-321
+changed and of what the seventy-second had not reached: the rest of the
+store (rotation, sweep, backup, the audit chain, open), the passphrase
+file reader, the policy, the terminal prompt, the key loaders, the rest of
+the browser's flows and store, requirements 1, 2, 3 and 8, and five
+errata. It found all of that sound: every multi-statement change to the
+store is one transaction, rolled back on each error path. Five findings,
+two Low and three Info, all closed here.
+
+- **F578 (Low).** An enrollment the site accepted succeeds though the
+  browser's store cannot record the confirmation, and a refusal is reported
+  as a refusal though the store cannot remove the key.
+- **F579 (Low).** Erratum 150's sentence about the over-long key path said
+  "before anything is read". Erratum 151 says what is true.
+- **F580 (Info).** The runbook's sixteen is seventeen, counted over the
+  whole backup. Run in a container: the eighteenth connect to a backlog of
+  16 is refused.
+- **F581 (Info).** The limiter search has a control: every table above the
+  floor, halved, must fill. The review measured that the search as written
+  could not see a table a tenth too small; with the control it at least
+  shows the floods reach the sizes they test.
+- **F582 (Info).** The one `internal` answer that wrote no journal line
+  writes it.
+
+Three of these five correct sentences or tests that V4-321 wrote. The
+pattern of the last four steps is the same: each review's first findings
+are in the step before it. Reviews of the steps' own changes are worth
+their cost, and are kept in the loop.
+
+Also from the review, with no finding: Req 3's sentence on identities is
+wider than the code in four places that compare public identifiers with
+`memcmp`; audit row 4.3 already records that. `demo_keys_load_public`
+checks neither owner nor mode of the pinned `--server-pub`; it is a public
+key, read by its user's own tool.
+
+Not tested, kept here: F582's branch, which cannot be reached; a caller of
+`close()` after a BYE that failed (F572); the `daemon-busy` hint being
+absent after a `timeout`.
+
+No campaign. v155 LI1 moved with F582's change and was killed again. Hand
+controls with `tools/hand_control.py --interpreted` against `web_flows`,
+each KILLED by its named check:
+- EN1: the confirmation is awaited, not recorded quietly.
+- EN2: a failed removal replaces the refusal.
+
+Spec v1.103: erratum 151 (10.2).
+
+Counts: 771 mutations, 145 campaigns, 816 anchors; 582 findings (the 13
+above open); spec v1.103, 151 errata; 66 tests.
