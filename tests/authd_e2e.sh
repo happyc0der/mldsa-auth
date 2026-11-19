@@ -2201,6 +2201,56 @@ while ! grep -q 'event=started' "$TMP/hs.log" 2>/dev/null; do
     [ "$i" -gt 400 ] && fail "the short-handshake daemon never logged event=started"
     sleep 0.05
 done
+# V4-328 (F609): first, one connection whose place in the daemon's sleep is
+# MEASURED. The seven logins below land where the client's own start-up (a
+# key derivation) puts them, and on a noisy machine the two or three meant
+# for the refusing 400 ms could all miss it; a daemon with a stale clock then
+# passed (campaign v103, CK4 and CK5). This asks the admin socket, waits
+# 0.8 s, connects to the proxy-facing socket and sends one byte. If the wait
+# really was 0.65 to 0.95 s the daemon was asleep throughout, and a stale
+# clock has the connection's 600 ms already spent: it is closed at once. A
+# fresh clock leaves it open 300 ms later. A wait outside that band says
+# nothing and is taken again.
+python3 - "$TMP/a.sock" "$TMP/p.sock" > "$TMP/hs-probe.txt" 2>&1 <<'PYEOF' || { cat "$TMP/hs-probe.txt" "$TMP/hs.log"; fail "a login 0.8s into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)"; }
+import socket, sys, time
+admin, proxy = sys.argv[1], sys.argv[2]
+for attempt in range(12):
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    a.settimeout(5)
+    a.connect(admin)
+    a.sendall(b"PING\n")
+    if not a.recv(256).startswith(b"OK"):
+        print("the admin socket did not answer PING"); sys.exit(1)
+    a.close()
+    t0 = time.monotonic()
+    time.sleep(0.8)
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.connect(proxy)
+    phase = time.monotonic() - t0
+    # One byte, the first of the PROXY v2 preamble this socket expects: the
+    # daemon wakes to read it, and that is when it looks at the deadline. A
+    # connection that sends nothing is not looked at until the deadline the
+    # daemon itself computed, stale or not, and the first form of this probe
+    # passed both mutants for that reason.
+    c.sendall(b"\r")
+    c.settimeout(0.3)
+    try:
+        closed = (c.recv(1) == b"")
+    except socket.timeout:
+        closed = False
+    c.close()
+    time.sleep(0.7)                      # let that connection's own deadline pass before the next try
+    if not 0.65 <= phase <= 0.95:
+        print(f"attempt {attempt}: connected {phase:.3f}s in, outside the band; again")
+        continue
+    if closed:
+        print(f"a connection made {phase:.3f}s into the daemon's sleep was closed within 300 ms")
+        sys.exit(1)
+    print(f"a connection made {phase:.3f}s into the daemon's sleep was still open 300 ms later")
+    sys.exit(0)
+print("no attempt landed 0.65 to 0.95 s into the sleep in twelve tries")
+sys.exit(1)
+PYEOF
 for gap in 0 0.15 0.3 0.45 0.6 0.75 0.9; do
     "$ADMIN" list-users --socket "$TMP/a.sock" > /dev/null || fail "the short-handshake daemon's admin socket does not answer"
     sleep "$gap"

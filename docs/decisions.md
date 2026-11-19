@@ -21771,3 +21771,53 @@ Spec v1.107: erratum 156 (7.1).
 Counts: 777 mutations, 148 campaigns, 822 anchors; 610 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585 and F609 open); spec v1.107, 156 errata; 66 tests.
+
+## V4-328: cleanup after V4-326 and V4-327, and the rest of the kills by chance that could be fixed (F609)
+
+**F609, three of its four groups.**
+- **v103 CK4 and CK5** (the daemon's clock is stale after its sleep). The
+  seven logins that were meant to cover the daemon's one-second sleep land
+  where the client's own start-up puts them. A probe now asks the admin
+  socket, waits 0.8 s, connects to the proxy-facing socket and sends one
+  byte, and MEASURES how long the wait really was. Between 0.65 and
+  0.95 s the daemon was asleep throughout: a stale clock closes the
+  connection at once, a fresh one leaves it open 300 ms later. Outside
+  that band the attempt says nothing and is made again, up to twelve times.
+  - The probe as first written sent nothing, and passed both mutants: the
+    daemon does not look at a silent connection until the deadline it
+    computed itself. The hand control showed it, by naming the OLD check
+    as the one that had failed. One byte makes the daemon read, and look.
+    The control is now run against the probe's own message.
+- **v129 LW2** (the loop spins while a peer waits). The check is still a
+  lower bound on time, because a spinning turn and a sleeping one differ in
+  nothing else the loop reports. It is taken three times and the shortest
+  is used, so it takes three stalls, one in each, to make spinning look
+  like sleeping.
+- **v71 EI1, EI2, EI4, EI5** are left. Three runs in a hundred thousand
+  each. The remedy would have the tests choose secrets that the daemon
+  itself draws at random, and that is a larger change than the chance
+  deserves.
+- **v101 DR3** stays open: its remedy is a new log field, the owner's.
+
+**Cleanup.**
+- `docs/review/REPRODUCE.md` now cites the runs on `d2dfa48` (V4-321,
+  main): CI 44519640641 (16/16) and nightly 44519645574 (160/160, 145
+  campaigns), each on its second attempt after the runners' package
+  archive outage of 2026-11-19.
+- The nightlies dispatched for V4-323 to V4-326 were cancelled while still
+  queued, each when the next step was pushed, since each step's nightly
+  runs everything the one before it would have. V4-322's nightly
+  (44525282364) ended in failure on its first attempt for F596 and again on
+  the rerun of that one job; the second was not read, GitHub's API
+  answering 502 at the time, and F596's fix is in V4-325.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585 and F609 (DR3). Also open: whether F420's overlap should
+  be refused rather than warned of, and the questions in V4-246's,
+  V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+No campaign and no spec change. v103 CK4 and CK5 and v129 LW2 were killed
+by hand by the new checks, CK4 twice, with v129 LW1.
+
+Counts: 777 mutations, 148 campaigns, 822 anchors; 610 findings (the 15
+above open); spec v1.107, 156 errata; 66 tests.

@@ -2354,11 +2354,19 @@ static void test_local_pool_full_waits(void)
 
     int late = h_dial_unix(d.site_path);
     CHECK(late >= 0 && write(late, "PING\n", 5) == 5, "localwait: one more peer connects and asks");
-    struct timespec w0, w1;
-    (void)clock_gettime(CLOCK_MONOTONIC, &w0);
-    for (int i = 0; i < 40; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
-    (void)clock_gettime(CLOCK_MONOTONIC, &w1);
-    const long waited_ms = (long)(w1.tv_sec - w0.tv_sec) * 1000L + (w1.tv_nsec - w0.tv_nsec) / 1000000L;
+    /* V4-328 (F609): measured three times, and the SHORTEST is what is
+     * checked. A loop that spins returns from 40 turns at once; one stall
+     * of 100 ms inside a single measurement made that look like sleeping
+     * (campaign v129, LW2). Three stalls, one in each, would be needed now. */
+    long waited_ms = 0;
+    for (int m = 0; m < 3; m++) {
+        struct timespec w0, w1;
+        (void)clock_gettime(CLOCK_MONOTONIC, &w0);
+        for (int i = 0; i < 40; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
+        (void)clock_gettime(CLOCK_MONOTONIC, &w1);
+        const long one = (long)(w1.tv_sec - w0.tv_sec) * 1000L + (w1.tv_nsec - w0.tv_nsec) / 1000000L;
+        if (m == 0 || one < waited_ms) { waited_ms = one; }
+    }
     /* 40 turns of a 5 ms poll with nothing to do are about 200 ms. A listener
      * left in the poll set while it cannot be accepted from stays readable,
      * and the 40 turns return at once: the loop would spin a core for as long
