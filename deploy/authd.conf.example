@@ -117,10 +117,12 @@ log_client_ip = prefix
 # the HARD limit is lower than that (systemd's default is not), and then
 # holds fewer connections than max_slots so the admin socket keeps working.
 max_slots = 256
-# max_local_slots is shared by the site and the operator. A local peer that
-# finds them all in use waits (it is not refused); a site that opens one
-# connection per request wants this at least as large as the number of
-# requests it has in flight during a tenth of a second.
+# max_local_slots is shared by the site and the operator, less ONE that only
+# the admin socket may take (V4-309): the site can hold max_local_slots - 1,
+# so a busy or stuck site cannot keep authd_admin out. A local peer that
+# finds its slots all in use waits (it is not refused); a site that opens one
+# connection per request wants this one larger than the number of requests it
+# has in flight during a tenth of a second.
 max_local_slots = 8
 
 # Keep it well above the slowest client's round trip (spec 10.2, erratum 133):

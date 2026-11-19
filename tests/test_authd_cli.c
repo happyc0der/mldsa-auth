@@ -13,6 +13,7 @@
  */
 #include <dirent.h>
 #include <errno.h>
+#include <sys/resource.h>
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
@@ -2261,6 +2262,36 @@ static void test_sd_notify(void)
     { char got[64] = {0};
       const ssize_t n = rs >= 0 ? recv(rs, got, sizeof got - 1u, MSG_DONTWAIT) : -1;
       CHECK(n == 7 && memcmp(got, "READY=1", 7u) == 0, "sd_notify: systemd's socket receives exactly READY=1"); }
+    /* F437 (V4-309): the socket READY=1 opened is KEPT, so a ping still goes
+     * out when no descriptor can be opened. Staged with RLIMIT_NOFILE at 0:
+     * the canary is that socket() itself now fails. */
+    { struct rlimit saved, none;
+      if (getrlimit(RLIMIT_NOFILE, &saved) == 0) {
+          none = saved; none.rlim_cur = 0;
+          if (setrlimit(RLIMIT_NOFILE, &none) == 0) {
+              const int probe = socket(AF_UNIX, SOCK_DGRAM, 0);
+              const int probe_errno = errno;
+              const int sent = authd_sd_notify("WATCHDOG=1");
+              (void)setrlimit(RLIMIT_NOFILE, &saved);
+              if (probe >= 0) { (void)close(probe); }
+              CHECK(probe < 0 && (probe_errno == EMFILE || probe_errno == ENFILE),
+                    "sd_notify: with RLIMIT_NOFILE at 0 no socket can be opened (the canary)");
+              CHECK(sent == 1, "sd_notify: a ping is still sent when no descriptor can be opened: the socket is kept (F437)");
+              char got[64] = {0};
+              const ssize_t n = rs >= 0 ? recv(rs, got, sizeof got - 1u, MSG_DONTWAIT) : -1;
+              CHECK(n == 10 && memcmp(got, "WATCHDOG=1", 10u) == 0,
+                    "sd_notify: and systemd's socket receives exactly WATCHDOG=1 (F437)");
+          } else {
+              printf("SKIP: sd_notify: this platform will not lower RLIMIT_NOFILE to 0; the kept socket is not staged (F437)\n");
+          }
+      } }
+    /* Closed, the next notification opens one again. */
+    authd_sd_notify_close();
+    authd_sd_notify_close();                    /* twice is harmless */
+    CHECK(authd_sd_notify("READY=1") == 1, "sd_notify: after authd_sd_notify_close the next call opens a socket again");
+    { char got[64] = {0};
+      const ssize_t n = rs >= 0 ? recv(rs, got, sizeof got - 1u, MSG_DONTWAIT) : -1;
+      CHECK(n == 7, "sd_notify: and that READY=1 arrives"); }
     (void)setenv("NOTIFY_SOCKET", "relative/notify", 1);
     CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a relative NOTIFY_SOCKET is refused (-1), not guessed at");
     { char longp[200]; memset(longp, 'x', sizeof longp - 1u); longp[0] = '/'; longp[sizeof longp - 1u] = '\0';
@@ -2285,6 +2316,7 @@ static void test_sd_notify(void)
       if (as >= 0) { (void)close(as); } }
 #endif
     (void)unsetenv("NOTIFY_SOCKET");
+    authd_sd_notify_close();
     if (rs >= 0) { (void)close(rs); }
     (void)unlink(sp);
 }

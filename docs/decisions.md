@@ -20788,3 +20788,46 @@ Spec v1.95, erratum 138.
 Counts: 731 mutations, 136 campaigns, 776 anchors; 531 findings (F148,
 F156, F273, F288, F309, F398, F419, F421, F431, F435, F436, F437, F451,
 F453 and F511 open); spec v1.95, 138 errata; 66 tests.
+
+## V4-309 — one local slot is the administrator's; the watchdog's socket is kept (F421, F437)
+
+Two more of the open findings review 66 marked as needing no owner
+decision. Both are fixed as their rows recommended.
+
+- **F421.** A site connection is not given the last free local slot while
+  an administrative listener is registered. The site can hold
+  `max_local_slots` − 1; an administrator may take any free slot. The rule
+  is applied in three places: before `accept()`, when the slot is taken, and
+  when the poll set is built. The last is per listener, so a waiting site
+  peer leaves its listener out of the set and the loop does not spin. A
+  one-slot pool has nothing to reserve and is shared as before, so the
+  configuration's minimum of 1 did not have to change.
+- **What it costs the site.** One slot: at the default 8 it holds 7. The
+  example and spec 16 say to size `max_local_slots` one larger.
+- **The tests that changed.**
+  - `test_local_pool_full_waits` fills the site's share, not the pool. It
+    then serves an administrative `PING` while a site peer waits, and shows
+    the waiting peer never gets that slot.
+  - `test_listener_turns` had staged F307's turns with one freed slot and
+    both listeners waiting. That slot is no longer contested: it is the
+    administrator's. The turns are contested when two slots are free, and
+    the test stages that twice, once with each listener having accepted
+    last. v135's LT1 and LT2 keep their check names and are killed by the
+    new staging.
+  - v129's LW1 and LW2 are re-anchored to `take_slot_for`.
+- **F437.** The notification socket is opened by the first datagram and
+  kept. The earlier decision to open one per ping stayed inside the
+  process's descriptor reserve, but a system-wide shortage (ENFILE) is
+  outside it. The test sets `RLIMIT_NOFILE` to 0, shows `socket()` fails,
+  and shows the ping still arrives.
+- **Not done here:** F309's per-listener cap for the loopback listener. It
+  is a Medium whose threat-model sentence is the owner's, and it stays open
+  with its recommendation.
+
+Campaign v167: three mutations (NS1, RS1, RS2).
+
+Spec v1.96, erratum 139.
+
+Counts: 734 mutations, 137 campaigns, 779 anchors; 531 findings (F148,
+F156, F273, F288, F309, F398, F419, F431, F435, F436, F451, F453 and F511
+open); spec v1.96, 139 errata; 66 tests.

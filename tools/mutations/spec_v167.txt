@@ -1,0 +1,3 @@
+NS1|^test_authd_cli$|sd_notify: a ping is still sent when no descriptor can be opened: the socket is kept (F437)
+RS1|^test_authd_localapi$|localwait: with the site holding every slot it may, the administrative socket is still served (F421)
+RS2|^test_authd_localapi$|localwait: with the site holding every slot it may, the administrative socket is still served (F421)

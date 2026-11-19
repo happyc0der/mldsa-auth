@@ -1548,7 +1548,13 @@ static size_t admin_slots(const authd_slot_t *local, size_t n)
 
 static void test_listener_turns(void)
 {
-    enum { NLOCAL = 2 };
+    /* F421 (V4-309) changed what this stages: a site connection may not take
+     * the LAST free local slot (it is the administrator's), so a single freed
+     * slot is no longer contested -- it is the admin listener's or nobody's.
+     * F307's turns are contested when TWO slots are free and both listeners
+     * have a peer waiting, and that is staged twice, once with each listener
+     * having accepted last. */
+    enum { NLOCAL = 5 };
     static authd_slot_t proto[1];
     static authd_slot_t local[NLOCAL];
     evloop_t ev;
@@ -1561,37 +1567,68 @@ static void test_listener_turns(void)
     CHECK(listener_open_unix(spath, 8, LISTENER_MODE_PRIVATE, &sfd) == LISTENER_OK &&
           listener_open_unix(apath, 8, LISTENER_MODE_PRIVATE, &afd) == LISTENER_OK, "turns: site and admin listeners");
     CHECK(evloop_init(&ev, proto, 1u, 5000u, 20000u, on_frame, f219_on_close, NULL) == 0, "turns: init");
-    CHECK(evloop_set_local(&ev, local, NLOCAL, f308_on_line) == 0, "turns: a local pool of two");
+    CHECK(evloop_set_local(&ev, local, NLOCAL, f308_on_line) == 0, "turns: a local pool of five");
     /* Registered as the daemon registers them: site first, then admin. */
     CHECK(evloop_add_local_listener(&ev, sfd, me, 1u, 0) == 0 &&
           evloop_add_local_listener(&ev, afd, me, 1u, 1) == 0, "turns: both registered, site first");
 
+    /* Two site connections, then one admin: three held, two free, and the
+     * ADMIN listener accepted last. */
     const int s1 = dial_unix_plain(spath), s2 = dial_unix_plain(spath);
     (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 2u);
-    CHECK(s1 >= 0 && s2 >= 0 && evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 0u,
-          "turns: two site connections fill the local pool");
-    /* Waiting in the queues: two more from the site, two from the admin tool. */
-    const int s3 = dial_unix_plain(spath), s4 = dial_unix_plain(spath);
-    const int a1 = dial_unix_plain(apath), a2 = dial_unix_plain(apath);
-    CHECK(s3 >= 0 && s4 >= 0 && a1 >= 0 && a2 >= 0, "turns: two site connections and two admin connections wait");
-    for (int i = 0; i < 5; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
-    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 0u,
-          "turns: none of them is accepted while the pool is full (the canary)");
-
-    /* One slot is freed. The site accepted last, so the admin listener is first. */
-    (void)close(s1);
-    (void)PUMP_UNTIL(&ev, 1000, admin_slots(local, NLOCAL) == 1u || evloop_local_active(&ev) == 2u);
-    for (int i = 0; i < 5; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
-    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 1u,
-          "turns: the freed slot goes to the admin connection, not to the site's next one (F307)");
-    /* The next freed slot is the site's turn again, though an admin
-     * connection is still waiting: neither listener keeps the front. */
-    (void)close(s2);
+    const int a0 = dial_unix_plain(apath);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 3u);
+    CHECK(s1 >= 0 && s2 >= 0 && a0 >= 0 && evloop_local_active(&ev) == 3u && admin_slots(local, NLOCAL) == 1u,
+          "turns: two site connections and one admin are held, the admin accepted last (the canary)");
+    /* One peer on each listener, before the loop turns. The admin listener
+     * accepted last, so the site's is first: it takes one of the two free
+     * slots and the admin's takes the other. A loop that always began with
+     * the admin listener would give it the first, and the site's peer would
+     * then be looking at the last free slot, which it may not have. */
+    const int s3 = dial_unix_plain(spath);
+    const int a1 = dial_unix_plain(apath);
+    CHECK(s3 >= 0 && a1 >= 0, "turns: a site peer and an admin peer arrive in one turn");
     for (int i = 0; i < 20; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
-    CHECK(evloop_local_active(&ev) == 2u && admin_slots(local, NLOCAL) == 1u,
+    CHECK(evloop_local_active(&ev) == 5u && admin_slots(local, NLOCAL) == 2u,
           "turns: and the one after it goes to the site (F307)");
 
-    (void)close(s3); (void)close(s4); (void)close(a1); (void)close(a2);
+    /* Now with the SITE listener having accepted last. Make room: the second
+     * admin goes, a site connection goes, and a new site peer takes one of
+     * the two free slots -- the site accepted last, four held, one free. */
+    (void)close(a1);
+    (void)close(s1);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 3u);
+    const int s4 = dial_unix_plain(spath);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 4u);
+    CHECK(s4 >= 0 && evloop_local_active(&ev) == 4u && admin_slots(local, NLOCAL) == 1u,
+          "turns: three site connections and one admin are held, the site accepted last (the canary)");
+    /* F421: a site peer does not take the last free slot, however long it waits. */
+    const int s5 = dial_unix_plain(spath);
+    for (int i = 0; i < 10; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    CHECK(s5 >= 0 && evloop_local_active(&ev) == 4u,
+          "turns: a site peer is not given the last free local slot (F421)");
+    /* A second slot is freed, and an admin peer arrives. Two free, a peer on
+     * each listener, the site accepted last: the admin listener is first and
+     * takes one; the site's peer is again looking at the last. A loop that
+     * always began with the site listener would have given s5 a slot and
+     * the admin the other: five held. */
+    (void)close(s2);
+    for (int i = 0; i < 20; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    /* s5 was waiting when s2's slot came free, with two free and no admin
+     * peer: it takes one. That is the site's turn honestly had; it leaves
+     * four held, one free, and the site having accepted last. */
+    CHECK(evloop_local_active(&ev) == 4u && admin_slots(local, NLOCAL) == 1u,
+          "turns: with two slots free and no admin peer, the waiting site peer is served");
+    (void)close(s3);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_local_active(&ev) == 3u);
+    const int a2 = dial_unix_plain(apath);
+    const int s6 = dial_unix_plain(spath);
+    CHECK(a2 >= 0 && s6 >= 0, "turns: an admin peer and a site peer arrive in one turn");
+    for (int i = 0; i < 20; i++) { (void)evloop_run_once(&ev, 10, 1000u); }
+    CHECK(evloop_local_active(&ev) == 4u && admin_slots(local, NLOCAL) == 2u,
+          "turns: the freed slot goes to the admin connection, not to the site's next one (F307)");
+
+    (void)close(s4); (void)close(s5); (void)close(s6); (void)close(a0); (void)close(a2);
     evloop_close_all(&ev);
     listener_close(&sfd, spath);
     listener_close(&afd, apath);

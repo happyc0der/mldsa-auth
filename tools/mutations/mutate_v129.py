@@ -14,11 +14,11 @@ EV = "apps/authd/evloop.c"
 
 M = {
     "LW1": [(EV,
-             "        if (kind == SLOT_KIND_LOCAL && take_slot(ev, kind) == NULL) {\n            return;\n",
-             "        if (0 && kind == SLOT_KIND_LOCAL && take_slot(ev, kind) == NULL) { /* MUTATION LW1 */\n            return;\n")],
+             "        if (kind == SLOT_KIND_LOCAL && take_slot_for(ev, li) == NULL) {\n            return;\n",
+             "        if (0 && kind == SLOT_KIND_LOCAL && take_slot_for(ev, li) == NULL) { /* MUTATION LW1 */\n            return;\n")],
     "LW2": [(EV,
-             "                                       take_slot(ev, SLOT_KIND_LOCAL) == NULL;\n",
-             "                                       0 && take_slot(ev, SLOT_KIND_LOCAL) == NULL; /* MUTATION LW2 */\n")],
+             "                                       take_slot_for(ev, i) == NULL;   /* F421: per listener */\n",
+             "                                       0 && take_slot_for(ev, i) == NULL; /* MUTATION LW2 */\n")],
 }
 
 def main():

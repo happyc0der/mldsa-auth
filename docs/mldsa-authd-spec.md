@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.95, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308)
+# mldsa-authd — deployment specification (v1.96, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1605,7 +1605,10 @@ is acted on when it arrives and a ping is not delayed by one. A daemon given no 
 daemon whose loop stops turning therefore stops pinging; systemd kills it
 when the interval passes and `Restart=on-failure` starts it again. The
 watchdog begins when the daemon has said `READY=1`, so the unseal at start is
-not timed by it. Nothing is logged for a ping, and the daemon cannot log its
+not timed by it. The socket `READY=1` was sent on is kept and every ping uses
+it (erratum 139), so a shortage of descriptors, the process's or the
+system's, does not stop the pings of a loop that is still turning. Nothing is
+logged for a ping, and the daemon cannot log its
 own hang: systemd's journal line for the unit (`Watchdog timeout`) is the
 record.
 
@@ -1665,15 +1668,19 @@ its cap: with a limit of 64 and the defaults that is 24 connections.
 
 **A local peer that finds every local slot taken waits; it is not refused**
 (erratum 103). The site's and the operator's connections share
-`max_local_slots`. One that arrives while they are all in use is left in its
+`max_local_slots`, **less one that only the administrative socket may take**
+(erratum 139): a site connection is not given the last free local slot, so a
+site that keeps every slot it has busy cannot keep an administrator from
+being served. With `max_local_slots = 1` there is nothing to keep and the
+one slot is shared. One that arrives while they are all in use is left in its
 socket's listen queue and accepted when a slot is released, which is
 normally within the time one request takes. The site socket's queue holds
 128 connections (fewer if `net.core.somaxconn` is lower); beyond that the
 peer's `connect()` fails, and that is the site's signal that the daemon is
 not keeping up. A site that opens a connection for each request should
-therefore set `max_local_slots` to the number of requests it expects to
-have in flight while the daemon is busy for a tenth of a second (one
-recovery computation), not leave it at 8.
+therefore set `max_local_slots` to one more than the number of requests it
+expects to have in flight while the daemon is busy for a tenth of a second
+(one recovery computation), not leave it at 8.
 
 **Listeners are served in turn, a bounded number of connections each**
 (erratum 108). One turn of the loop takes at most 16 connections from a
@@ -2495,3 +2502,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 138 | 15, 17 | The limiter's table is sized at start from the configuration, between 1024 and 16384 entries, and the start logs `limiter-table count=`; §17 gains the row | It was a fixed 1,024. An address holds its entry until its bucket refills, so `rate_global_per_sec` × 60 / `rate_per_min` are held at once: 1,500 at `rate_per_min = 2`, where every address not already tracked was answered 503, and `max_slots` above 1,024 could not be filled by distinct addresses (F338) |
+
+### Revision v1.96 (V4-309)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 139 | 16 | One local slot is the administrative socket's: a site connection is not given the last free one (with `max_local_slots = 1` the one slot is shared). The notification socket is opened once and kept, and every `WATCHDOG=1` uses it | A site holding every local slot, a `PING` on each inside the idle timeout, kept `authd_admin` from being served, and root's remedy was to stop the site (F421). The ping opened a socket each time, so a system-wide shortage of file-table entries lasting the watchdog interval got a daemon killed whose loop was still turning (F437) |

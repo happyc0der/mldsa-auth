@@ -721,6 +721,7 @@ int main(int argc, char **argv)
     authd_log_num(AUTHD_LOG_INFO, "stopped", "accepted", ev.accepted);
     authd_log_num(AUTHD_LOG_INFO, "stopped", "logins", app.logins_issued);
     evloop_close_all(&ev);
+    authd_sd_notify_close();   /* the kept notification socket (F437) */
     listener_close(&tcp_fd, NULL);
     listener_close(&unix_fd, unix_path);
     listener_close(&site_fd, site_path);

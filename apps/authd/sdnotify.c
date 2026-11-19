@@ -10,6 +10,23 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+/* F437: ONE socket, opened by the first notification that needs it (READY=1,
+ * at start, when descriptors are plentiful) and kept. It was opened for each
+ * datagram, so a system-wide shortage of file-table entries (ENFILE) lasting
+ * the watchdog's 30 seconds stopped the pings of a loop that was still
+ * turning, and systemd killed it -- where spec 16 says accepting resumes by
+ * itself. Unconnected: each datagram names $NOTIFY_SOCKET afresh. One
+ * descriptor, inside the reserve fdlimit keeps (F207). */
+static int g_notify_fd = -1;
+
+void authd_sd_notify_close(void)
+{
+    if (g_notify_fd >= 0) {
+        (void)close(g_notify_fd);
+        g_notify_fd = -1;
+    }
+}
+
 int authd_sd_notify(const char *msg)
 {
     const char *p = getenv("NOTIFY_SOCKET");
@@ -33,14 +50,15 @@ int authd_sd_notify(const char *msg)
     } else {
         alen = (socklen_t)(alen + 1u);         /* and its NUL */
     }
-    const int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        return -1;
+    if (g_notify_fd < 0) {
+        g_notify_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (g_notify_fd < 0) {
+            return -1;
+        }
+        (void)fcntl(g_notify_fd, F_SETFD, FD_CLOEXEC);
     }
-    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     const size_t ml = strlen(msg);
-    const ssize_t w = sendto(fd, msg, ml, 0, (const struct sockaddr *)&a, alen);
-    (void)close(fd);
+    const ssize_t w = sendto(g_notify_fd, msg, ml, 0, (const struct sockaddr *)&a, alen);
     return (w == (ssize_t)ml) ? 1 : -1;
 }
 

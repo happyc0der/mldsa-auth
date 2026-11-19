@@ -20,8 +20,13 @@
  * Returns 1 when the datagram was sent, 0 when $NOTIFY_SOCKET is unset or
  * empty (not under systemd -- nothing to do), -1 when it is set and the
  * notification could not be sent.
+ *
+ * The socket is opened by the first call that sends and KEPT (F437), so a
+ * later shortage of descriptors, the process's or the system's, cannot stop
+ * the watchdog ping. authd_sd_notify_close() closes it: at exit, and in tests.
  */
 int authd_sd_notify(const char *msg);
+void authd_sd_notify_close(void);
 
 /*
  * systemd's watchdog (F209, V4-126). A unit with WatchdogSec= expects

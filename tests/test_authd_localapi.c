@@ -2308,14 +2308,19 @@ static void test_local_pool_full_waits(void)
 {
     h_daemon_t d;
     CHECK(h_start(&d, g_dir, "localwait.sqlite3", 1) == 0, "localwait: daemon starts");
+    /* F421 (V4-309): the site may hold every local slot but ONE, which is
+     * kept for the administrative socket. So the pool is "full" to the site
+     * at H_MAX_LOCAL - 1, and that is where its next peer waits. */
+    enum { SITE_MAX = H_MAX_LOCAL - 1u };
     int held[H_MAX_LOCAL];
     int all = 1;
-    for (size_t i = 0; i < H_MAX_LOCAL; i++) {
+    for (size_t i = 0; i < H_MAX_LOCAL; i++) { held[i] = -1; }
+    for (size_t i = 0; i < SITE_MAX; i++) {
         held[i] = h_dial_unix(d.site_path);
         all = all && held[i] >= 0;
     }
-    CHECK(all && H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == H_MAX_LOCAL),
-          "localwait: every local slot is held by an idle connection (the canary)");
+    CHECK(all && H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == SITE_MAX),
+          "localwait: every local slot the site may hold is held by an idle connection (the canary)");
 
     int late = h_dial_unix(d.site_path);
     CHECK(late >= 0 && write(late, "PING\n", 5) == 5, "localwait: one more peer connects and asks");
@@ -2334,7 +2339,32 @@ static void test_local_pool_full_waits(void)
     const int ready = poll(&pf, 1, 0);
     CHECK(ready == 0,
           "localwait: with the pool full the late peer is neither answered nor closed: it waits (F282)");
-    CHECK(evloop_local_active(&d.ev) == H_MAX_LOCAL, "localwait: and the pool still holds exactly its own connections (F282)");
+    CHECK(evloop_local_active(&d.ev) == SITE_MAX, "localwait: and the pool still holds exactly its own connections (F282)");
+
+    /* F421: the slot the site could not take is the administrator's. With the
+     * site holding all it may and a site peer waiting, authd_admin is served. */
+    { const int adm = h_dial_unix(d.admin_path);
+      CHECK(adm >= 0 && write(adm, "PING\n", 5) == 5, "localwait: an administrative peer connects and asks");
+      struct pollfd af = { adm, POLLIN, 0 };
+      ssize_t an = 0;
+      char ab[256];
+      for (int i = 0; i < 400 && an <= 0; i++) {
+          (void)evloop_run_once(&d.ev, 5, d.app.now_ms);
+          af.revents = 0;
+          if (poll(&af, 1, 0) == 1) { an = read(adm, ab, sizeof ab - 1u); }
+      }
+      ab[(an > 0) ? an : 0] = '\0';
+      CHECK(an > 0 && starts(ab, "OK version="),
+            "localwait: with the site holding every slot it may, the administrative socket is still served (F421)");
+      pf.revents = 0;
+      CHECK(poll(&pf, 1, 0) == 0,
+            "localwait: and the waiting site peer did not get the administrator's slot (F421)");
+      (void)close(adm);
+      CHECK(H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == SITE_MAX), "localwait: the administrative slot is free again");
+      for (int i = 0; i < 10; i++) { (void)evloop_run_once(&d.ev, 5, d.app.now_ms); }
+      pf.revents = 0;
+      CHECK(poll(&pf, 1, 0) == 0 && evloop_local_active(&d.ev) == SITE_MAX,
+            "localwait: nor does the site peer take it once the administrator has gone (F421)"); }
 
     (void)close(held[0]);
     held[0] = -1;
@@ -2355,9 +2385,9 @@ static void test_local_pool_full_waits(void)
     /* Two peers in ONE turn of the loop, with one slot left: the accept loop
      * takes the first and must stop there. The poll set cannot help -- the
      * pool was not full when the turn began. */
-    for (size_t i = 0; i + 1u < H_MAX_LOCAL; i++) { held[i] = h_dial_unix(d.site_path); }
-    CHECK(H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == H_MAX_LOCAL - 1u),
-          "localwait: all local slots but one are held (the canary)");
+    for (size_t i = 0; i + 1u < SITE_MAX; i++) { held[i] = h_dial_unix(d.site_path); }
+    CHECK(H_PUMP_UNTIL(&d, evloop_local_active(&d.ev) == SITE_MAX - 1u),
+          "localwait: all the site's slots but one are held (the canary)");
     int two[2];
     two[0] = h_dial_unix(d.site_path);
     two[1] = h_dial_unix(d.site_path);

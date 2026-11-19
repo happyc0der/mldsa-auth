@@ -271,6 +271,40 @@ static authd_slot_t *take_slot(evloop_t *ev, slot_kind_t kind)
     return NULL;
 }
 
+/* The slot a new connection on listener `li` may have, or NULL.
+ *
+ * F421: one local slot is kept for the ADMINISTRATIVE listener. The site and
+ * the administrative socket share the local pool, and a site holding every
+ * slot -- a PING on each inside the idle timeout frees none -- kept an
+ * administrator from being served at all; root's only remedy was to stop the
+ * site. So a site connection may not take the LAST free local slot while an
+ * administrative listener is registered. An administrator may take any.
+ * A one-slot pool has nothing to reserve and is left as it was. */
+static authd_slot_t *take_slot_for(evloop_t *ev, size_t li)
+{
+    const slot_kind_t kind = ev->listen_kind[li];
+    authd_slot_t *s = take_slot(ev, kind);
+    if (s == NULL || kind != SLOT_KIND_LOCAL || ev->listen_is_admin[li] || ev->n_local_slots < 2u) {
+        return s;
+    }
+    int has_admin = 0;
+    for (size_t i = 0; i < ev->n_listeners; i++) {
+        if (ev->listen_kind[i] == SLOT_KIND_LOCAL && ev->listen_is_admin[i] && ev->listen_fd[i] >= 0) {
+            has_admin = 1;
+        }
+    }
+    if (!has_admin) {
+        return s;
+    }
+    size_t free_slots = 0;
+    for (size_t i = 0; i < ev->n_local_slots; i++) {
+        if (ev->local_slots[i].state == SLOT_FREE) {
+            free_slots++;
+        }
+    }
+    return (free_slots >= 2u) ? s : NULL;
+}
+
 static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
 {
     for (unsigned taken = 0; taken < EVLOOP_ACCEPT_BURST; taken++) {   /* F306 */
@@ -285,7 +319,7 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
          * daemon is single-threaded, a recovery KDF holds it for 0.1 s, and
          * every site request that arrived beyond the pool in that time was
          * answered with a closed connection -- a 503 to somebody's browser. */
-        if (kind == SLOT_KIND_LOCAL && take_slot(ev, kind) == NULL) {
+        if (kind == SLOT_KIND_LOCAL && take_slot_for(ev, li) == NULL) {
             return;
         }
         int cfd = -1;
@@ -325,7 +359,7 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
             ev->accept_retry_ms[li] = now_ms + (uint64_t)EVLOOP_ACCEPT_RETRY_MS;
             return;
         }
-        authd_slot_t *s = take_slot(ev, kind);
+        authd_slot_t *s = take_slot_for(ev, li);
         if (s == NULL) {
             /* The PROTOCOL pool is full (a local peer was not accepted at
              * all: F282, above). Refusing is the correct behaviour for a
@@ -542,7 +576,7 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
                 /* Nor does a local listener while the local pool is full
                  * (F282): it stays readable, and polling it would spin. */
                 const int local_full = ev->listen_kind[i] == SLOT_KIND_LOCAL &&
-                                       take_slot(ev, SLOT_KIND_LOCAL) == NULL;
+                                       take_slot_for(ev, i) == NULL;   /* F421: per listener */
                 all[npfd].events = (now_ms < ev->accept_retry_ms[i] || local_full) ? 0 : POLLIN;
                 all[npfd].revents = 0;
                 npfd++;
