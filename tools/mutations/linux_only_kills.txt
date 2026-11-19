@@ -15,3 +15,4 @@ v65 RU1 the peer check compares the daemon's own uid: only a real second user (n
 v75 KC5 keyfile_open ignores the owner: only root can make another user's key file readable to the client
 v79 PF6 authd_secret_read ignores the owner: only root can make another user's passphrase file readable to the client
 v99 LF1 a loop that fails is staged with prlimit on the running daemon (F208): Linux has it, nothing portable does, and the leg is skipped elsewhere
+v173 NE1 a full Unix backlog answers EAGAIN on Linux only (macOS refuses the connection), so the test that stages one is compiled on Linux only (F561)

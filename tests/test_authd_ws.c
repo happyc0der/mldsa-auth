@@ -1075,8 +1075,16 @@ static void test_ratelimit(void)
     CHECK(ratelimit_entries_wanted(30u, 100u, 1024u) == 1324u && ratelimit_entries_wanted(30u, 1000u, 256u) == 3256u &&
           ratelimit_entries_wanted(15u, 1000u, 0u) == 5000u && ratelimit_entries_wanted(16u, 1000u, 0u) == 4750u,
           "limiter size: the global bucket's burst is counted when it is more than the quarter (F548)");
-    CHECK(ratelimit_entries_for(7u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 0u) == 10715u,
-          "limiter size: a rate that does not divide is rounded up (8572 held, 10715 wanted) (F338)");
+    /* F556 (V4-318): the hold is the refill's, in its whole steps. 7 a
+     * minute is 7 milli-tokens every 60 ms: 143 steps, 8580 ms, not 8571.4. */
+    CHECK(ratelimit_hold_ms(5u) == 12000u && ratelimit_hold_ms(2u) == 30000u && ratelimit_hold_ms(30u) == 2000u &&
+          ratelimit_hold_ms(16u) == 3750u && ratelimit_hold_ms(1u) == 60000u,
+          "limiter hold: a rate that divides the minute holds an entry 60000 / rate ms (the canary)");
+    CHECK(ratelimit_hold_ms(7u) == 8580u && ratelimit_hold_ms(17u) == 3540u && ratelimit_hold_ms(9973u) == 60u,
+          "limiter hold: a rate that does not divide holds it until the refill's next whole step (F556)");
+    CHECK(ratelimit_entries_for(7u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 0u) == 10725u &&
+          ratelimit_entries_wanted(17u, 1000u, 0u) == 4540u,
+          "limiter size: a rate that does not divide is sized from that hold (8580 held, 10725 wanted; 4540 at 17) (F556)");
     CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750256u &&
           ratelimit_entries_for(1u, 10000u, 256u) == 16384u,
           "limiter size: 750256 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)");
@@ -1137,6 +1145,23 @@ static void test_ratelimit(void)
       }
       CHECK(nb == 3000u && admitted == 3000u && r.denied_table == 0u,
             "limiter size: the addresses the global bucket's burst admits find room too (F548)"); }
+    /* F556: the same flood at 17 a minute, where an entry is held 3540 ms
+     * and not 60000 / 17. Sized from the quotient the table was 4530 and ten
+     * addresses were refused for it at 3.53 s. */
+    { static ratelimit_entry_t odd[4608];
+      const size_t nb = ratelimit_entries_for(17u, 1000u, 0u);
+      size_t admitted = 0;
+      authd_addr_t c = { 4u, { 10u, 6u, 0u, 0u } };
+      if (nb <= 4608u) {
+          ratelimit_init(&r, odd, nb, 17u, 5u, 1000u, 4u, 0u);
+          for (size_t i = 0; i < 1000u + 4000u; i++) {
+              const uint64_t t_ms = (i < 1000u) ? 0u : (uint64_t)(i - 999u);
+              c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+              if (ratelimit_admit(&r, &c, t_ms) == RATELIMIT_ALLOW) { admitted++; ratelimit_release(&r, &c); }
+          }
+      }
+      CHECK(nb == 4540u && admitted == 5000u && r.denied_table == 0u,
+            "limiter size: at a rate that does not divide the minute the flood still finds room (F556)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

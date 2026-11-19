@@ -227,6 +227,9 @@ net_status_t net_connect_loopback(uint16_t port, uint64_t deadline_ms, net_conn_
     return NET_OK;
 }
 
+/* How long to wait before asking a Unix listener with a full backlog again. */
+#define NET_UNIX_BACKLOG_RETRY_MS 10
+
 net_status_t net_connect_unix(const char *path, uint64_t deadline_ms, net_conn_t *out) {
     if (out == NULL || path == NULL || path[0] == '\0') {
         return NET_ERR_INVALID_ARG;
@@ -253,7 +256,22 @@ net_status_t net_connect_unix(const char *path, uint64_t deadline_ms, net_conn_t
         net_close_fd(&fd);
         return NET_ERR_IO;
     }
-    if (connect(fd, (const struct sockaddr *)&sa, sizeof(sa)) != 0) {
+    /* F561 (V4-318): on Linux a non-blocking connect to a Unix socket whose
+     * backlog is full fails at once with EAGAIN. That is a listener that is
+     * busy, not one that is absent: a daemon in the middle of a long BACKUP
+     * accepts nothing, and the tools said "cannot connect" and "nothing is
+     * listening there" of a daemon that was running. It is tried again until
+     * the deadline, and then it is a timeout. */
+    while (connect(fd, (const struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        if (errno == EAGAIN) {
+            const uint64_t now = net_now_ms();
+            if (deadline_ms != NET_NO_DEADLINE && (now == UINT64_MAX || now >= deadline_ms)) {
+                net_close_fd(&fd);
+                return NET_TIMEOUT;
+            }
+            (void)poll(NULL, 0, NET_UNIX_BACKLOG_RETRY_MS);
+            continue;
+        }
         if (errno == EINTR) {
             out->stats.eintr_retries++;
         } else if (errno != EINPROGRESS) {
@@ -271,6 +289,7 @@ net_status_t net_connect_unix(const char *path, uint64_t deadline_ms, net_conn_t
             net_close_fd(&fd);
             return NET_ERR_IO;
         }
+        break;
     }
     out->fd = fd;
     return NET_OK;

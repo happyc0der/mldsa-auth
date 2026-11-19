@@ -21199,3 +21199,65 @@ Spec v1.99: errata 144 (13) and 145 (17).
 Counts: 761 mutations, 142 campaigns, 806 anchors; 555 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
 open); spec v1.99, 145 errata; 66 tests.
+
+## V4-318 — what the seventieth review found (F556 to F562)
+
+The seventieth review was an independent read of the code V4-317 changed
+and of the files the sixty-ninth had not reached: `localcli.c`, `net_io.c`,
+`frame.c`, `keyfile.c`, `demo_keys.c`, the rest of `client_core.c`, the
+browser's identity store and its pages. It found no High or Medium defect
+and found those files sound. Seven findings, three Low and four Info, all
+closed here.
+
+- **F556 (Low).** The limiter's table is sized from the time a token really
+  takes to come back. The refill works in whole steps, so at a rate that
+  does not divide the minute an entry is held a little longer than
+  60000 / rate. This is the third correction to V4-308's formula (F544,
+  F548, F556); each was found by building the limiter and flooding it, and
+  the test now does the same at a rate that does not divide.
+- **F561 (Low).** A full backlog on Linux is a busy daemon, and the tools
+  wait for it until their deadline. The review could not confirm it on this
+  machine. A container did: errno 11 from the tenth connect to a backlog of
+  8. The test is compiled on Linux only, and it and its mutant were run in
+  the container before the push.
+- **F558 (Low).** Erratum 144 overstated what exit 1 excludes. `path-too-long`
+  is now 3, and the sentence names its three files.
+- **F557 (Info).** `checkPassphrase` and four other places in the browser
+  client allocate inside the block that frees.
+- **F559, F560, F562 (Info).** `errno` read before the passphrase is freed;
+  `init` lists a key only if its seal wrote it; the login page reads its
+  selection once.
+
+**Gaps in V4-317's tests that the review named, closed here.**
+- The repeated-flag walk skips a value when it looks back as well as when
+  it goes forward, and only the second was tested. A case with the value
+  before the flag it is spelled like; campaign v173 RF3.
+- F555's test refused a copy made before the passphrase's own, so nothing
+  showed that copy being dropped. An ordinary login is now watched for a
+  copy left in the module; hand control BP2.
+- The three controls V4-317 loosened to "not usage and not success" pin
+  exit 3.
+- Still without a test, as their rows say: `rotate`'s reasons other than
+  `cannot connect` (F553), the lock failing inside the tool (F551), and the
+  two races (F554, F560).
+
+Checking the Linux behaviour pulled the `gcc:latest` image from Docker Hub,
+a download this step had not planned. It is the official image and is what
+the container run used.
+
+Campaign v173: four mutations (HM1, RF3, PL1, NE1), the first three killed
+by hand in build-asan-p; NE1 is a Linux-only kill, listed as one, and was
+killed in the container. v166 TS1 moved with F556's change and was killed
+again. Every older `authd_e2e` mutation of the C client was run again
+after the new leg, each killed by the check it names.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, each KILLED by its named check:
+- BP2: the passphrase's copy is not dropped after `login_begin`.
+- CP1: `checkPassphrase` allocates before its `try`.
+
+Spec v1.100: errata 146 (13) and 147 (17).
+
+Counts: 765 mutations, 143 campaigns, 810 anchors; 562 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
+open); spec v1.100, 147 errata; 66 tests.

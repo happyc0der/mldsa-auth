@@ -178,7 +178,7 @@ static void init_leftovers(const char *prog, const char *pass_path, const char *
     const char *paths[4] = { pass_path, ek, pub, db };
     int n = 0;
     for (size_t i = 0; i < 4u; i++) {
-        if (!path_exists(paths[i])) {
+        if (paths[i] == NULL || !path_exists(paths[i])) {
             continue;
         }
         if (n == 0) {
@@ -275,7 +275,10 @@ static int cmd_init(int argc, char **argv, const char *prog)
                            KDF_OPS_SERVER, KDF_MEM_256MIB, NULL);
     if (rc != EX_OK) {
         authd_secret_free(pass, pass_len);
-        init_leftovers(prog, pass_path, ek, pub, db);
+        /* F560: a key at `ek` that this seal did not write is not this run's
+         * to list (one another run made between the check above and the
+         * seal). The seal says whether it left one. */
+        init_leftovers(prog, pass_path, g_seal_left_key ? ek : NULL, pub, db);
         return rc;
     }
 

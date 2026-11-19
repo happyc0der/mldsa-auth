@@ -67,9 +67,13 @@ action('go', async () => {
   // Read, and emptied, before anything can fail (F237): a failure to reach
   // the site used to leave the passphrase sitting in the field.
   const passphrase = secret('passphrase');
+  // F562: the identity this login is for, read once. The list can be changed
+  // while the login runs, and what follows is about the key that logged in.
+  const chosen = list.value;
+  const shownAtStart = list.selectedOptions[0];
   try {
     const sess = await session();
-    const s = await flows.login(client, store, loginParams(sess, list.value, passphrase), (e) => events.push(e));
+    const s = await flows.login(client, store, loginParams(sess, chosen, passphrase), (e) => events.push(e));
     const code = b64url(s.code);
     await s.close();
     // THE HAND-OFF: the code travels in a same-origin POST body, never a URL.
@@ -77,8 +81,8 @@ action('go', async () => {
     // V4-293, F494: a login the daemon accepted confirms the key (F220), and
     // the list says so: it kept "(enrollment not confirmed)" and offered to
     // forget a key the account now uses, warning that the site never had it.
-    const now = await store.get(list.value).catch(() => null);
-    const shown = list.selectedOptions[0];
+    const now = await store.get(chosen).catch(() => null);
+    const shown = shownAtStart;
     if (now && now.unconfirmed !== true && shown && shown.dataset.unconfirmed === '1') {
       shown.text = now.handle;
       delete shown.dataset.unconfirmed;

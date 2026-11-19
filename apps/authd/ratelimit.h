@@ -131,6 +131,10 @@ void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
  * is more (F548). The sum, since both are held together (F544); never less
  * than RATELIMIT_ENTRIES. Uncapped (F338). */
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
+/* How long one connection's entry is held, in ms: the time the bucket takes
+ * to refill one token in the whole steps refill() uses (F556). `held` above
+ * is ceil(global_per_sec x this / 1000). */
+uint64_t ratelimit_hold_ms(uint32_t per_min);
 /* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
 size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
 

@@ -976,7 +976,8 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
      * "leftover .ek.next" rotate then deleted was the live key. */
     const int nn = snprintf(next_path, next_cap, "%s.next", a->key_path);
     if (nn < 0 || (size_t)nn >= next_cap) {
-        return failed(prog, sub, a->key_path, "path-too-long");
+        (void)failed(prog, sub, a->key_path, "path-too-long");
+        return EX_CONFIG;   /* F558: a --key whose names do not fit is a path that cannot be used */
     }
     int lock_fd = -1;
     const int next_seen = have_lock || path_exists(next_path);
@@ -1098,8 +1099,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     /* F293: from here to the exit this run is the only one beside this key. */
     *lock_fd = client_key_lock(prog, "rotate", a.key_path);
     if (*lock_fd < 0) {
+        const int lock_err = errno;   /* F559: read before anything else can set it */
         authd_secret_free(pass, pass_len);
-        const int lock_err = errno;
         (void)failed(prog, "rotate", a.key_path, "cannot-lock-key-directory");   /* F543 */
         return client_lock_exit(lock_err);
     }
@@ -1139,7 +1140,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (client_pub_path(a.key_path, pub_path, sizeof pub_path) != 0) {
         authd_secret_free(pass, pass_len);
         mldsa_keypair_free(&old_kp);
-        return failed(prog, "rotate", a.key_path, "path-too-long");
+        (void)failed(prog, "rotate", a.key_path, "path-too-long");
+        return EX_CONFIG;   /* F558: a --key whose names do not fit is a path that cannot be used */
     }
     /* snprintf's return is CHECKED, not discarded: gcc refuses the discard at
      * both optimisation levels (-Werror=format-truncation), and it is right to
@@ -1150,7 +1152,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         if (pn < 0 || (size_t)pn >= sizeof pub_tmp) {
             authd_secret_free(pass, pass_len);
             mldsa_keypair_free(&old_kp);
-            return failed(prog, "rotate", next_path, "path-too-long");
+            (void)failed(prog, "rotate", next_path, "path-too-long");
+        return EX_CONFIG;   /* F558: a --key whose names do not fit is a path that cannot be used */
         }
     }
     /* F298: a rotation that was KILLED after its seal left this file, and the

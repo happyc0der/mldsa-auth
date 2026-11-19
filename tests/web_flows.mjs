@@ -559,7 +559,43 @@ try {
           `put refused: every copy that was made is dropped (${held.size} left in the module) (F555)`);
     const s = await flows.login(client, store, params);
     check(s.code.length === 32, 'put refused: the same identity then logs in (the canary)');
-    await s.close(); }
+    await s.close();
+    // Review 70: the refusal above comes before the passphrase's own copy is
+    // made, so nothing there shows that copy being dropped. An ordinary
+    // login, watched the same way: every copy put into the module is dropped
+    // by the time the session is closed.
+    const left = new Set();
+    client.put = (bytes) => { const at = realPut(bytes); left.add(at); return at; };
+    client.drop = (p, len) => { left.delete(p); return realDrop(p, len); };
+    let ok2;
+    try {
+      const s2 = await client.login({ ...params, envelope: rec.envelope });
+      ok2 = s2.code.length === 32;
+      await s2.close();
+    } finally { delete client.put; delete client.drop; }
+    check(ok2 && left.size === 0,
+          `login: every copy an ordinary login puts into the module is dropped, the passphrase's included (${left.size} left) (F555)`);
+    // F557: checkPassphrase, the same shape. A slot refused after the
+    // passphrase was copied in: the copy is dropped and the array zeroed.
+    { let seen = null, mallocs = 0;
+      const realMalloc = client.M._malloc;
+      const held2 = new Set();
+      TextEncoder.prototype.encode = function (str) {
+        const a = realEncode.call(this, str);
+        if (str === PASS) { seen = a; }
+        return a;
+      };
+      client.M._malloc = (n) => { mallocs += 1; return mallocs === 2 ? 0 : realMalloc(n); };
+      client.put = (bytes) => { const at = realPut(bytes); held2.add(at); return at; };
+      client.drop = (p, len) => { held2.delete(p); return realDrop(p, len); };
+      let threw = null;
+      try { client.checkPassphrase(PASS); } catch (e) { threw = e; }
+      finally { client.M._malloc = realMalloc; delete client.put; delete client.drop; TextEncoder.prototype.encode = realEncode; }
+      check(threw !== null && /out of memory/.test(threw.message) && seen !== null,
+            `checkPassphrase: a slot refused after the passphrase is copied in is reported (${threw?.message}) (the control)`);
+      check(seen !== null && seen.every((b) => b === 0) && held2.size === 0,
+            `checkPassphrase: the passphrase's array is zeroed and its copy dropped all the same (${held2.size} left) (F557)`);
+      check(client.checkPassphrase(PASS).ok === true, 'checkPassphrase: and it still answers afterwards (the canary)'); } }
 
   // F305: a peer that answers the upgrade and then sends one message far
   // larger than any frame. It is refused as a frame error without being

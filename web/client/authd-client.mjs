@@ -83,8 +83,13 @@ export class AuthdClient {
   checkPassphrase(passphrase) {
     const M = this.M;
     const pass = te.encode(passphrase);
-    const pp = this.put(pass), cps = this.u32Slot(), bits = this.u32Slot(), rs = this.u32Slot();
+    // F557: allocated INSIDE the try, as login() does since F555. A slot
+    // that was refused after the passphrase had been copied in left the copy
+    // in the module and the array unzeroed; the enrollment page calls this
+    // on every keystroke.
+    let pp = 0, cps = 0, bits = 0, rs = 0;
     try {
+      pp = this.put(pass); cps = this.u32Slot(); bits = this.u32Slot(); rs = this.u32Slot();
       const verdict = M._ccw_passphrase_check(pp, pass.length, cps, bits, rs);
       return { verdict, ok: verdict === 0, codePoints: this.u32(cps), bits: this.u32(bits), reasons: this.u32(rs) };
     } finally {
@@ -136,15 +141,20 @@ export class AuthdClient {
     let frame;
     try { frame = this.alloc(M._ccw_frame_buf_bytes()); } catch (e) { M._ccw_free(h); throw e; }
     const cap = M._ccw_frame_buf_bytes();
-    const outLen = this.u32Slot();
+    let outLen;
+    try { outLen = this.u32Slot(); } catch (e) { this.drop(frame, cap); M._ccw_free(h); throw e; }   // F557
     let sent = 0;
     const session = new Session(this, h, frame, cap, outLen, tick, timeoutMs);
     try {
       tick();
       const sid = te.encode(serverId);
-      const ps = this.put(serverPub), pi = this.put(sid);
-      let st = M._ccw_pin_server_pub(h, ps, serverPub.length, pi, sid.length);
-      this.drop(ps, serverPub.length); this.drop(pi, sid.length);
+      let ps = 0, pi = 0, st;
+      try {
+        ps = this.put(serverPub); pi = this.put(sid);
+        st = M._ccw_pin_server_pub(h, ps, serverPub.length, pi, sid.length);
+      } finally {
+        this.drop(ps, serverPub.length); this.drop(pi, sid.length);   // F557: the first copy too, when the second is refused
+      }
       if (st !== 0) { throw this.fail(h, st, sent); }
 
       const hid = te.encode(handle), pass = te.encode(passphrase);
@@ -168,8 +178,9 @@ export class AuthdClient {
       if (st !== 0) { throw this.fail(h, st, session.sent); }
       session.send(); sent = session.sent;
 
-      const code = this.alloc(32), flags = this.u32Slot(), exp = this.alloc(8);
+      let code = 0, flags = 0, exp = 0;
       try {
+        code = this.alloc(32); flags = this.u32Slot(); exp = this.alloc(8);   // F557
         st = await session.feed((p, n) => M._ccw_on_record(h, p, n, code, flags, exp));
         if (st !== 0) { throw this.fail(h, st, session.sent); }
         session.code = M.HEAPU8.slice(code, code + 32);
@@ -278,10 +289,12 @@ export class Session {
     // staged key on it. Every failure after that proves nothing.
     const before = this.sent;
     try {
-      const pe = c.put(newEnvelope), pp = c.put(pass);
+      let pe = 0, pp = 0;
       // The copies are wiped whatever tick() does (V4-187, F266): it throws on
       // a refused clock, and it used to run between the copy and the wipe.
+      // F557: and whatever the second copy does; refused, it left the first.
       try {
+        pe = c.put(newEnvelope); pp = c.put(pass);
         this.tick();
         st = M._ccw_rotate_build(this.h, pe, newEnvelope.length, pp, pass.length, this.frame, this.cap, this.outLen);
       } finally {

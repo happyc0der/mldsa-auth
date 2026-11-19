@@ -1498,6 +1498,14 @@ rc=0
     --unix --ws > /dev/null 2> "$TMP/rec1g.err" || rc=$?
 [ "$rc" -eq 1 ] && grep -q "cannot connect" "$TMP/rec1g.err" \
     || { cat "$TMP/rec1g.err"; fail "a value spelled like a flag was taken for a repeated flag (F552 canary): exit $rc"; }
+# ... in either order (review 70): here the value comes BEFORE the flag it
+# is spelled like. The walk skips a value when it looks back, too.
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" --unix --ws \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --ws > /dev/null 2> "$TMP/rec1g.err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "cannot connect" "$TMP/rec1g.err" \
+    || { cat "$TMP/rec1g.err"; fail "a value spelled like a later flag was taken for a repeated flag (F552 canary): exit $rc"; }
 # F550: --state is held to the daemon's rule, '%', '+' and '#' included.
 for ch in '%' '+' '#'; do
     rc=0

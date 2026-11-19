@@ -13,6 +13,7 @@
  */
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/resource.h>
 #include <poll.h>
 #include <signal.h>
@@ -1537,9 +1538,9 @@ static void test_client_ws_only_options(void)
      * arguments and fail later, at a file that is not there: not usage (2).
      * Since V4-317 (F551) that is the server's public key, exit 3. */
     rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", s64, "--proxy-v2");
-    const int tcp_ok = (rc != 2 && rc != 0 && strstr(err, "--state") == NULL);
+    const int tcp_ok = (rc == 3 && strstr(err, "--state") == NULL);
     rc = CLIENT_LOGIN("--unix", sock, "--state", "s~1", "--proxy-v2");
-    const int unix_ok = (rc != 2 && rc != 0 && strstr(err, "--state") == NULL);
+    const int unix_ok = (rc == 3 && strstr(err, "--state") == NULL);
     /* F550: '%', '+' and '#' are the daemon's to refuse too (F478). */
     int url_chars = 1;
     { static char b0[] = "a%b", b1[] = "a+b", b2[] = "a#b";
@@ -1550,7 +1551,8 @@ static void test_client_ws_only_options(void)
       } }
     CHECK(url_chars, "client: a --state with '%', '+' or '#' is usage, as the daemon refuses it in the URL (F550)");
     rc = CLIENT_LOGIN("--port", "9");
-    CHECK(tcp_ok && unix_ok && rc != 2 && rc != 0 && strstr(err, "--ws") == NULL,
+    /* The exact status (review 70): "not 2 and not 0" let anything else by. */
+    CHECK(tcp_ok && unix_ok && rc == 3 && strstr(err, "--ws") == NULL,
           "client: with --ws or --unix a 64-byte --state and --proxy-v2 pass the arguments, and a bare --port still does");
 #undef CLIENT_LOGIN
 }
@@ -1841,10 +1843,12 @@ static void test_rotate_on_disk(void)
                                                "--server-pub", spub, "--port", port, NULL });
         CHECK(named,
               "long path: the padded path is PATH_MAX - 1 bytes and names the key");
-        /* rc == 1, the refusal (V4-270, F427): `rc != 0` was also met by
-         * -1, which the runner returns for a client that crashed or was
-         * killed after 60 seconds, and the key file is untouched then too. */
-        CHECK(have && rc == 1 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
+        /* An exact status, the refusal (V4-270, F427): `rc != 0` was also
+         * met by -1, which the runner returns for a client that crashed or
+         * was killed after 60 seconds, and the key file is untouched then
+         * too. 3 since V4-318 (F558): a --key whose names do not fit is a
+         * path that cannot be used; it was 1. */
+        CHECK(have && rc == 3 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
               memcmp(before, after, n0) == 0,
               "long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)");
     }
@@ -2437,6 +2441,57 @@ static void test_admin_arguments(void)
  * asked for is harmless, but a period computed from garbage is not. */
 static uint64_t tick_clock(void) { return 2000u; }
 
+#ifdef __linux__
+/* V4-318, F561: on Linux a non-blocking connect to a Unix socket whose
+ * backlog is full fails at once with EAGAIN. The tools read that as nothing
+ * listening. It is a listener that is busy: the connect is tried until its
+ * deadline and is then a timeout, and it succeeds once the listener takes a
+ * connection. Linux only, because only Linux answers so: macOS refuses the
+ * connection, as it does when nothing is there. */
+static void test_unix_backlog_full(void)
+{
+    char sp[600];
+    (void)snprintf(sp, sizeof sp, "%s/backlog.sock", g_dir);
+    struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX;
+    const size_t spn = strlen(sp);
+    if (spn >= sizeof a.sun_path) { CHECK(0, "backlog: the socket path fits"); return; }
+    memcpy(a.sun_path, sp, spn + 1u);
+    const int ls = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(ls >= 0 && bind(ls, (struct sockaddr *)&a, sizeof a) == 0 && listen(ls, 1) == 0,
+          "backlog: a listener that accepts nothing");
+    /* Fill the backlog with raw non-blocking connects until one is EAGAIN. */
+    int held[64], nheld = 0, full = 0;
+    for (int i = 0; i < 64 && !full; i++) {
+        const int c = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (c < 0) { break; }
+        (void)fcntl(c, F_SETFL, O_NONBLOCK);
+        if (connect(c, (struct sockaddr *)&a, sizeof a) != 0) {
+            full = (errno == EAGAIN);
+            (void)close(c);
+        } else {
+            held[nheld++] = c;
+        }
+    }
+    CHECK(full, "backlog: the backlog fills and a raw connect is refused EAGAIN (the staging)");
+    net_conn_t conn;
+    const uint64_t t0 = net_now_ms();
+    const net_status_t busy = net_connect_unix(sp, net_deadline_in(300u), &conn);
+    const uint64_t waited = net_now_ms() - t0;
+    CHECK(busy == NET_TIMEOUT && waited >= 250u,
+          "backlog: a connect to a full backlog waits for its deadline and is a timeout, not an I/O error (F561)");
+    if (busy == NET_OK) { net_close(&conn); }
+    /* The listener takes one: there is room, and the same call connects. */
+    const int got = accept(ls, NULL, NULL);
+    const net_status_t then = net_connect_unix(sp, net_deadline_in(2000u), &conn);
+    CHECK(got >= 0 && then == NET_OK, "backlog: once the listener takes a connection the connect succeeds (F561)");
+    if (then == NET_OK) { net_close(&conn); }
+    if (got >= 0) { (void)close(got); }
+    for (int i = 0; i < nheld; i++) { (void)close(held[i]); }
+    (void)close(ls);
+    (void)unlink(sp);
+}
+#endif
+
 static void test_sd_watchdog(void)
 {
     char pid[32];
@@ -2604,6 +2659,9 @@ int main(void)
     test_stdfds();
     test_sd_notify();
     test_sd_watchdog();
+#ifdef __linux__
+    test_unix_backlog_full();
+#endif
     test_admin_arguments();
     test_keygen_crlf();
 

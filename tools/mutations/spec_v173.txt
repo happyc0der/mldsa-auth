@@ -1,0 +1,4 @@
+HM1|^test_authd_ws$|limiter hold: a rate that does not divide holds it until the refill's next whole step (F556)
+RF3|^authd_e2e$|a value spelled like a later flag was taken for a repeated flag (F552 canary)
+PL1|^test_authd_cli$|long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)
+NE1|^test_authd_cli$|backlog: a connect to a full backlog waits for its deadline and is a timeout, not an I/O error (F561)

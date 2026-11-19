@@ -24,11 +24,29 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
     return v;
 }
 
+/* How long an address that connected once holds its entry: until its bucket
+ * is full again, as refill() fills it (F556). The bucket gains per_min
+ * milli-tokens every 60 ms, reduced to lowest terms, in WHOLE steps, so the
+ * token is back after ceil(1000 / step_tok) steps of step_ms: 60000 / per_min
+ * ms when that divides, and up to one step longer when it does not -- 3540 ms
+ * at 17 a minute, not 3529; 60 ms at 9973 a minute, not 6. */
+uint64_t ratelimit_hold_ms(uint32_t per_min)
+{
+    uint64_t a = (uint64_t)clamp_u32(per_min, 1u, RATELIMIT_PER_MIN_MAX), b = 60u;
+    const uint64_t pm = a;
+    while (b != 0u) {
+        const uint64_t t = a % b;
+        a = b;
+        b = t;
+    }
+    const uint64_t step_tok = pm / a, step_ms = 60u / a;
+    return ((1000u + step_tok - 1u) / step_tok) * step_ms;
+}
+
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots)
 {
-    const uint64_t pm = (uint64_t)clamp_u32(per_min, 1u, RATELIMIT_PER_MIN_MAX);
     const uint64_t gl = (uint64_t)clamp_u32(global_per_sec, 1u, RATELIMIT_GLOBAL_MAX);
-    const uint64_t held = (gl * 60u + pm - 1u) / pm;       /* rounded up */
+    const uint64_t held = (gl * ratelimit_hold_ms(per_min) + 999u) / 1000u;   /* rounded up */
     uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
     /* F548 (V4-317): the global bucket also holds one second's burst, so
      * `gl` more addresses can be admitted on top of the steady `held`. The

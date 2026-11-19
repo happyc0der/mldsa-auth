@@ -16,8 +16,8 @@ RL = "apps/authd/ratelimit.c"
 AM = "apps/authd/authd_main.c"
 
 M = {
-    "TS1": [(RL, "    const uint64_t held = (gl * 60u + pm - 1u) / pm;       /* rounded up */\n",
-             "    const uint64_t held = 0u * (gl + pm); /* MUTATION TS1 */\n")],
+    "TS1": [(RL, "    const uint64_t held = (gl * ratelimit_hold_ms(per_min) + 999u) / 1000u;   /* rounded up */\n",
+             "    const uint64_t held = 0u * (gl + ratelimit_hold_ms(per_min)); /* MUTATION TS1 */\n")],
     "TS2": [(RL, "    uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */\n",
              "    uint64_t want = held; /* MUTATION TS2 */\n")],
     "TS3": [(RL, "    return (want > (uint64_t)RATELIMIT_ENTRIES_MAX) ? (size_t)RATELIMIT_ENTRIES_MAX : (size_t)want;\n",
