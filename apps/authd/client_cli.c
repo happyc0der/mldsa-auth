@@ -1146,8 +1146,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         authd_secret_free(pass, pass_len);
         mldsa_keypair_free(&old_kp);
         fprintf(stderr, "%s rotate: not rotating: %s holds the LIVE key and could not be put in place, "
-                        "because the device's .pub cannot be replaced. Do NOT remove it. Make the .pub "
-                        "replaceable, log in once (that completes the earlier rotation), then rotate\n",
+                        "because the device's .pub could not be updated (the line above says how). Do NOT "
+                        "remove it. Mend that, log in once (which completes the earlier rotation), then "
+                        "rotate\n",
                 prog, next_path);
         return EX_FAIL;
     }

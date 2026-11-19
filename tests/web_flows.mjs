@@ -227,7 +227,11 @@ try {
     let a = null;
     const tabB = tab(async () => { bStaged(); await a; });   // B's ROTATE leaves after A's has been answered
     a = flows.rotate(client, tabA, params).then(() => 'ok', (e) => e.message);
-    await aHasStaged;
+    // Review 76: a wait with its own end. If the rotation fails before it
+    // stages, this used to sit until the fixture's 120 s ran out, and the run
+    // ended with no summary line.
+    check(await Promise.race([aHasStaged.then(() => true), new Promise((r) => setTimeout(() => r(false), 20000))]),
+          'two tabs: the first rotation reaches its staging step (the test can go on)');
     const b = flows.rotate(client, tabB, params).then(() => 'ok', (e) => e.message);
     const [ra, rb] = await Promise.all([a, b]);
     console.log(`  two rotations: A ${ra}; B ${rb}`);
@@ -249,7 +253,8 @@ try {
       ? async (...a) => { atPromote(); await Promise.race([loggedIn, new Promise((r) => setTimeout(r, 1500))]); return t.promote(...a); }
       : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
     const a = flows.rotate(client, tabA, params).then(() => 'ok', (e) => e.message);
-    await reached;
+    check(await Promise.race([reached.then(() => true), new Promise((r) => setTimeout(() => r(false), 20000))]),
+          'login during a rotation: the rotation reaches its promote step (the test can go on)');
     let logged = false;
     try { const s = await flows.login(client, store, params); logged = s.code.length === 32; await s.close(); } catch { logged = false; }
     loginDone();
@@ -631,6 +636,11 @@ try {
     const lost = await flows.enroll(client, gone, want, async () => { asked = true; return { user: 'u' }; });
     check(lost.confirmed === false,
           'enroll: a record that is gone when the site answers is not reported as confirmed (F594)');
+    // V4-326 (F597): and it is told apart from a key that is stored and only
+    // still marked. The page told both users to "log in once"; one of them
+    // has no key to log in with.
+    check(lost.stored === false && got !== null && got.stored === true && fine.stored === true,
+          'enroll: a key that is gone is reported as not stored; one that is only still marked, and one confirmed, as stored (F597)');
     const store2 = new MemoryStore();
     store2.remove = async () => { throw new Error('transaction aborted'); };
     const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })

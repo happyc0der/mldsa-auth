@@ -53,7 +53,7 @@ action('go', async () => {
     // persist() was asked above, before the key is made (F413), not after
     // the site said yes: an enrollment the site never answers leaves a key
     // that may be the account's only one, the case that most needs it.
-    const { handle, answer: r, confirmed } = await flows.enroll(client, store,
+    const { handle, answer: r, confirmed, stored } = await flows.enroll(client, store,
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
         try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
@@ -62,6 +62,16 @@ action('go', async () => {
     // F584: the site enrolled the key and this browser could not record
     // that. The login page would call the key unconfirmed and offer to
     // forget it; one login clears the mark, so the user is told to make one.
+    // F597: the site enrolled the key and this browser no longer has it
+    // (its storage was cleared while the site was being asked). That is not
+    // a success, and "log in once" would send the user to a key that is not
+    // there. The account exists and nothing here can open it.
+    if (!stored) {
+      report(false, `The site enrolled ${r.user}, but this browser lost the key it made (its storage was ` +
+                    'cleared meanwhile). Nothing on this device can log in to that account: use a recovery ' +
+                    'code if you have one, or ask the site\'s administrator');
+      return;
+    }
     report(true, `Enrolled ${r.user} on this device as ${handle}` +
                  (persisted ? '' : ' (the browser did not promise to keep this storage)') +
                  (confirmed ? '' : '. This browser could not record that the site confirmed the key: ' +

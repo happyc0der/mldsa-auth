@@ -607,6 +607,20 @@ export async function startSite(opt) {
     },
   };
 
+  // The URL of a request target that is a plain path, or null (F593, F600).
+  // A target that names a host (`//x/..`, a backslash form, an absolute URI)
+  // parses, and so does one with dot segments (`/x/../api/session`,
+  // `/%2e/api/session`); each was then routed on a path that is not the one
+  // a front end filtering by prefix saw. So the target must BE its own
+  // normal form: what the parser makes of it is what was sent.
+  const plainTarget = (raw) => {
+    if (typeof raw !== 'string' || !/^\/(?![/\\])/.test(raw)) { return null; }
+    let u;
+    try { u = new URL(raw, 'http://x'); } catch { return null; }
+    const q = raw.indexOf('?');
+    return (u.pathname === (q < 0 ? raw : raw.slice(0, q))) ? u : null;
+  };
+
   const server = http.createServer(async (req, res) => {
     try {
       // F588: a target that is not a URL (`//`) threw here and was answered
@@ -615,9 +629,8 @@ export async function startSite(opt) {
       // `/\x/...` and `http://other/api/session` all parsed, and were routed
       // on their pathname alone: a front end that filters by path prefix would
       // have seen a different path from the one served. Only a path is taken.
-      let url;
-      if (!/^\/(?![/\\])/.test(req.url)) { return send(res, 400, { error: 'bad request' }); }
-      try { url = new URL(req.url, 'http://x'); } catch { return send(res, 400, { error: 'bad request' }); }
+      const url = plainTarget(req.url);
+      if (url === null) { return send(res, 400, { error: 'bad request' }); }
       if (!hostAllowed(req.headers.host, opt)) { return send(res, 421, { error: 'unknown host' }); }
       if (req.method === 'POST') {
         const origin = req.headers.origin;
@@ -686,9 +699,13 @@ export async function startSite(opt) {
     // listens for ends the process: a client that reset the connection after
     // reading a refusal did exactly that (V4-130, F213).
     sock.on('error', () => {});
-    let path;
-    try { path = new URL(req.url, 'http://x').pathname; } catch { sock.destroy(); return; }
-    if (!path.startsWith('/authd/v1') || (!opt.authdWsUnix && !opt.authdWs)) { sock.destroy(); return; }
+    // F599: the upgrade is the second way in, and it took any target whose
+    // path BEGAN /authd/v1 once parsed: `//x/authd/v1`, an absolute URI,
+    // `/x/../authd/v1`, `/authd/v1evil`, and by any method. The daemon reads
+    // only the query, so each upgraded. One path, by GET, as a path.
+    const target = plainTarget(req.url);
+    if (target === null || target.pathname !== '/authd/v1' || req.method !== 'GET' ||
+        (!opt.authdWsUnix && !opt.authdWs)) { sock.destroy(); return; }
     // A page on another origin may not open the daemon's socket through this
     // site (V4-84, F160). A browser always sends Origin on a WebSocket; a
     // client that sends none is not a browser, and the cross-site concern is

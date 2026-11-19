@@ -2036,6 +2036,22 @@ static void test_rotate_on_disk(void)
             memcmp(got, now_kp.public_key, sizeof got) == 0,
             "pub blocked: the next login completes that rotation -- .ek holds the new key and .pub names it (F583)");
       mldsa_keypair_free(&now_kp);
+      /* V4-326 (review 76): the other side of F591's stop. A rotation that
+       * finds .ek.next live and CAN promote it does so and then rotates; a
+       * stop that fired whenever .ek.next was promoted, blocked or not,
+       * passed every check above. .ek.next is given the live key and .ek
+       * the superseded one, with nothing in the way. */
+      { static uint8_t live[16384];
+        size_t ln = 0;
+        PUB_BLOCKED_FRESH_LEDGER();
+        CHECK(read_bytes(ek, live, sizeof live, &ln) == 0 && ln > 0u && write_bytes(next, live, ln) == 0 &&
+              write_bytes(ek, sealed_a, na) == 0,
+              "promotable: .ek.next holds the live key, .ek the superseded one, and the .pub can be replaced");
+        rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                               "--passphrase-file", pass, "--server-id", "authd",
+                                               "--server-pub", spub, "--port", port, NULL });
+        CHECK(rc == 0 && access(next, F_OK) != 0 && !same_bytes(ek, live, ln) && !same_bytes(ek, sealed_a, na),
+              "promotable: a rotation that can complete the earlier one does, and then rotates to a new key (F591)"); }
 #undef PUB_BLOCKED_FRESH_LEDGER
     }
 

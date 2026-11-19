@@ -193,6 +193,27 @@ try {
               'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' +
               (origin ? `Origin: ${origin}\r\n` : '') + '\r\n');
     });
+    // V4-326 (F599): the upgrade is a second way in, and took any target
+    // whose path began /authd/v1 once parsed, by any method. Each of these
+    // was relayed to the daemon, which reads only the query and upgraded.
+    const upgradeOf = (method, target) => new Promise((resolve) => {
+      const c = createConnection(port, '127.0.0.1');
+      let buf = '';
+      const done = () => { c.destroy(); resolve(Number(buf.split(' ')[1]) || -1); };
+      c.setTimeout(3000, done);
+      c.on('data', (d) => { buf += d; if (buf.includes('\r\n')) { done(); } });
+      c.on('error', () => resolve(-1));
+      c.on('close', () => resolve(Number(buf.split(' ')[1]) || -1));
+      c.write(`${method} ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+              'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
+    });
+    const odd = [['GET', '//x/authd/v1?state=00'], ['GET', '/x/../authd/v1?state=00'], ['GET', '/authd/v1evil?state=00'],
+                 ['GET', '/authd/v1/?state=00'], ['GET', 'http://other.example/authd/v1?state=00'], ['POST', '/authd/v1?state=00']];
+    const os = [];
+    for (const [m, t] of odd) { os.push(await upgradeOf(m, t)); }
+    check(os.every((x) => x !== 101),
+          `ws: only GET /authd/v1 is relayed; a target that merely begins or folds to it is not (${os.join(', ')}) (F599)`);
+    check(await upgradeOf('GET', '/authd/v1?state=00') === 101, 'ws: GET /authd/v1 itself is upgraded (the canary)');
     const foreign = await upgradeStatus('http://attacker.example');
     const own = await upgradeStatus(`http://127.0.0.1:${port}`);
     const none = await upgradeStatus(null);
@@ -350,6 +371,14 @@ try {
     check(sts.every((x) => x === '400'),
           `bad target: a target that names another host is 400, not routed on its path (${sts.join(', ')}) (F593)`);
     check(await raw('/api/session') === '200', 'bad target: an ordinary path sent the same way is served (the canary)');
+    // V4-326 (F600): nor one with dot segments, which the parser folds away
+    // after the check above has passed. The target must be its own normal form.
+    const dots = ['/x/../api/session', '/x/%2e%2e/api/session', '/./api/session', '/%2e/api/session'];
+    const ds = [];
+    for (const f of dots) { ds.push(await raw(f)); }
+    check(ds.every((x) => x === '400'),
+          `bad target: a target with dot segments is 400, not routed on what it folds to (${ds.join(', ')}) (F600)`);
+    check(await raw('/api/session?x=/../y') === '200', 'bad target: dots in the QUERY are nobody\'s path and are served (the canary)');
   }
   {
     const ghost = await post('/api/recover', { user: 'nobody-by-this-name', code: '0000000000000000' });

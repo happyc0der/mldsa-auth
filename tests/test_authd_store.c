@@ -1192,6 +1192,13 @@ int main(void)
           }
           CHECK(busy == STORE_ERR_DB && waited_ms < 3000,
                 "busy: the daemon's handle waits only briefly, then reports database-error");
+          /* V4-326 (F598): and it does WAIT, a quarter of a second. The lock
+           * is held throughout here, so a handle with no wait at all returns
+           * at once, whatever the scheduler does. The 60 ms leg below was
+           * what killed that mutant (v89 OE6), and only when this process
+           * was not stalled past the 60 ms: the kind of kill F596 was. */
+          CHECK(busy == STORE_ERR_DB && waited_ms >= 200,
+                "busy: the daemon's handle waits about a quarter of a second before it gives up, not no time at all (F598)");
           CHECK(go >= 0 && write(go, "G", 1) == 1, "busy: the holder is told to let go in 1.2 s");
           if (go >= 0) { (void)close(go); }
           CHECK(store_open_existing(dbp, KEK, &t) == STORE_OK && t != NULL,

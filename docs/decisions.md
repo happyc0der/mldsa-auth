@@ -21648,3 +21648,55 @@ No campaign and no spec change. v166 TS7's line names the new check.
 
 Counts: 776 mutations, 147 campaigns, 821 anchors; 596 findings (the 14
 above open); spec v1.105, 154 errata; 66 tests.
+
+## V4-326 — what the seventy-sixth review found (F597 to F602)
+
+The seventy-sixth review was an independent read of the code V4-324 and
+V4-325 changed, the site's route handlers, the handshake's build and verify
+code against spec-v2, spec-v2's module list against the tree, the browser
+flow test as code, and a sample of twenty campaigns for kills that depend
+on chance. It found the routes, the handshake and the sizes sound, and
+F596's new check a property of the test and not of the hash key. Six
+findings, two Low and four Info. All are closed here but one part of the
+last.
+
+- **F597 (Low).** V4-324 made a record that is gone count as not
+  confirmed, and V4-323's page told every user whose key was not confirmed
+  to log in once. A user whose key was gone was told that too, as a
+  success. `enroll` now reports stored and confirmed apart, and the page
+  reports a lost key as a failure that names recovery.
+- **F598 (Low).** Campaign v89's OE6 was killed only if the test was not
+  stalled for 60 ms. The same class as F596, found by asking for it. The
+  check that kills it now is a lower bound on a wait while the lock is
+  held: a handle with no wait returns at once, whatever the scheduler does.
+- **F599, F600 (Info).** The site decides what a request target is in one
+  function, for requests and for upgrades: a plain path that is its own
+  normal form. The upgrade relays one target, `GET /authd/v1`.
+- **F601 (Info).** A rotation that CAN complete the earlier one is tested,
+  so the stop is pinned from both sides.
+- **F602 (Info).** Two waits in `web_flows` are named checks with an end.
+  The Argon2 residue check's standing control is not added; it needs a
+  block planted in the module's memory.
+
+**On kills that depend on chance.** Two have now been found, F596 by a
+nightly and F598 by a review told to look. The review read twenty
+campaigns' specs and traced the tests of five. One other, v101's DR3, is
+driven by timing by design; the review judged its residual chance
+negligible and did not measure it. The other 128 campaigns have not been
+read for this.
+
+Campaign v178: one mutation (KR3), killed by hand in build-asan-p. v89 OE6
+was killed three times running by its new check, and OE7 once.
+
+Hand controls with `tools/hand_control.py --interpreted`, each KILLED by
+its named check:
+- UT1 (`site_sessions`): the upgrade takes any target that begins
+  `/authd/v1`.
+- DT1 (`site_sessions`): a target need not be its own normal form.
+- ST1 (`web_flows`): a key that is gone is reported as stored.
+
+Spec v1.106: erratum 155 (14).
+
+Counts: 777 mutations, 148 campaigns, 822 anchors; 602 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
+F585 open); spec v1.106, 155 errata; 66 tests.

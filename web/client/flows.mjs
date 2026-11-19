@@ -226,15 +226,18 @@ export async function login(client, store, params, events) {
 // The daemon accepted the key, so it was enrolled after all (F220). The
 // login has succeeded either way: a store that cannot record that says so
 // the next time.
-// Resolves to whether the store now says so (F584): false when the mark could
-// not be cleared, for a caller that has something to tell the user.
+// Resolves to what the store now says (F584), for a caller that has something
+// to tell the user: 'confirmed'; 'marked' when the mark could not be cleared;
+// 'gone' when the record is not there at all (F594, F597: storage cleared
+// meanwhile), which is a different thing to tell a user -- the key is lost.
 async function confirmQuietly(store, handle) {
+  let rec;
+  try { rec = await store.get(handle); } catch { return 'marked'; }
+  if (!rec) { return 'gone'; }
   try {
-    const rec = await store.get(handle);
-    if (!rec) { return false; }           // F594: gone (storage cleared meanwhile) is not confirmed
     if (rec.unconfirmed) { await store.confirm(handle); }
-    return true;
-  } catch { return false; /* still unconfirmed */ }
+    return 'confirmed';
+  } catch { return 'marked'; }
 }
 
 // Makes a key and has the site enroll it (V4-138, F220).
@@ -278,8 +281,11 @@ export async function enroll(client, store, { serverId, serverPub, passphrase },
     // page will then list the key as not confirmed and offer to forget it,
     // though the site has it, until one login clears the mark. The caller
     // says so.
-    const confirmed = await confirmQuietly(store, id.handle);
-    return { handle: id.handle, answer, confirmed };
+    // `stored` is false when the key is no longer in this browser at all
+    // (F597). The site has enrolled a key nobody holds: the caller must not
+    // tell the user to log in with it.
+    const state = await confirmQuietly(store, id.handle);
+    return { handle: id.handle, answer, confirmed: state === 'confirmed', stored: state !== 'gone' };
   });
 }
 

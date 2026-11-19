@@ -1,0 +1,1 @@
+KR3|^test_authd_cli$|promotable: a rotation that can complete the earlier one does, and then rotates to a new key (F591)
