@@ -387,10 +387,15 @@ The tool waits up to ten minutes for a backup (since V4-311; every other
 command, ten seconds): the daemon copies the whole store before it answers.
 If it still says `timeout`, the daemon may be finishing the file: look at the
 destination before you retry, and check what is there with `audit-verify`.
-The copy is one piece of work for the daemon: logins wait until it ends, so
-take a large store's backup at a quiet hour. The daemon keeps telling systemd
-it is alive throughout (since V4-315; before it, a copy longer than the
-unit's `WatchdogSec=30s` had the daemon killed and restarted).
+The copy is one piece of work for the daemon: nothing else is served until
+it ends, so take a large store's backup at a quiet hour. The reference site
+gives up on a request after ten seconds and answers 503. A request it gave
+up on has still been sent: when the copy ends the daemon carries it out, with
+nobody left to read the answer. A recovery code typed during a long backup
+can be spent that way, and the visitor's retry is then refused (F549). The
+daemon keeps telling systemd it is alive throughout (since V4-315; before
+it, a copy longer than the unit's `WatchdogSec=30s` had the daemon killed
+and restarted).
 
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
 plain `sudo`. As any other user the socket's own permissions stop the

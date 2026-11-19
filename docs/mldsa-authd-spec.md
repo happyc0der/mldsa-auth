@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.98, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315)
+# mldsa-authd — deployment specification (v1.99, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1188,7 +1188,11 @@ the store was opened and read and the chain did **not** verify (or the store
 itself could not be opened), and 3 means it was never asked.
 `authd_client login` and `rotate` hold their `--key` to it too (erratum 141):
 3 for a device key that is missing, unsafe, malformed, or not opened by the
-passphrase, so 1 means the daemon was asked and the login did not succeed.
+passphrase. So are their `--server-pub` and the directory that holds the key
+(erratum 144): a public-key file that is missing or malformed, and a key
+directory that is missing or may not be opened, are 3. For these two
+commands 1 is then a daemon that refused, could not be reached or did not
+answer, or a failure inside the tool; it is never a path that was mistyped.
 
 ## 14. Browser client *(B)*
 
@@ -1765,7 +1769,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
 | Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded; the rate holds exactly at every value the configuration accepts, however often an address asks (erratum 109) | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
-| Addresses the limiter tracks | sized at start (errata 138, 143): `max_slots` + 1.25 × ⌈`rate_global_per_sec` × 60 / `rate_per_min`⌉, at least 1024 and at most 16384; logged as `limiter-table count=` | §7.2 |
+| Addresses the limiter tracks | sized at start (errata 138, 143, 145): `max_slots` + the larger of 1.25 × H and H + `rate_global_per_sec`, where H = ⌈`rate_global_per_sec` × 60 / `rate_per_min`⌉; at least 1024 and at most 16384; logged as `limiter-table count=` | §7.2 |
 | The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
 `rotation_due_age_s`, `max_conns_per_addr`, `rate_per_min` and `rate_burst`,
@@ -2539,3 +2543,10 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 142 | 16 | While `BACKUP` copies the store the daemon sends `WATCHDOG=1` from inside that turn, at the watchdog's period | The copy is one turn of the loop and the ping came between turns, so a copy longer than `WatchdogSec=30s` had the daemon killed, every session dropped and an unfinished file left that refused the retry, while `authd_admin backup` waits ten minutes for the answer (F541). Logins still wait for the copy |
 | 143 | 17 | The limiter's table holds `max_slots` entries **and** the rate's 1.25 × ⌈`rate_global_per_sec` × 60 / `rate_per_min`⌉, not the larger of the two | An address with a connection open keeps its entry as long as the connection lasts, so the open connections and the refilling buckets are in the table together. With `max_slots = 1024` and most slots held by distinct addresses the table was 1,024 and new addresses were answered `limiter-table-full` with slots and tokens to spare (F544). The defaults still give 1,024 |
+
+### Revision v1.99 (V4-317)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 144 | 13 | `authd_client login` and `rotate` exit 3 for a `--server-pub` they cannot use and for a key directory that is missing or may not be opened; the sentence saying what 1 means is narrowed to what holds | Erratum 141 said 1 means the daemon was asked. A mistyped `--server-pub` exited 1 with nothing sent, and after V4-314 a lock that failed for want of a descriptor exited 3, a failure inside the tool (F551) |
+| 145 | 17 | The limiter's table also has room for the global bucket's one-second burst: the rate's share is the larger of 1.25 × H and H + `rate_global_per_sec` | The global bucket starts full, so `rate_global_per_sec` addresses can be admitted on top of the H whose buckets are refilling. The quarter covered that only up to `rate_per_min = 15`; at 30 a minute and 1000 a second the table was full 1.7 s into a burst with tokens to spare (F548). The defaults still give 1,024 |

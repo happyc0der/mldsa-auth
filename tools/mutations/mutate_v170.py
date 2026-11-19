@@ -20,12 +20,12 @@ AC = "apps/authd/authd_cli.c"
 M = {
     "KX1": [(CL, "            rc = (client_key_exit(ks_ek) == EX_FAIL || client_key_exit(ks_next) == EX_FAIL) ? EX_FAIL : EX_CONFIG;\n",
              "            rc = EX_FAIL; /* MUTATION KX1 */\n")],
-    "KX2": [(CL, "        (void)failed(prog, \"rotate\", a.key_path, \"cannot-lock-key-directory\");   /* F543 */\n        return EX_CONFIG;\n",
-             "        (void)failed(prog, \"rotate\", a.key_path, \"cannot-lock-key-directory\");   /* F543 */\n        return EX_FAIL; /* MUTATION KX2 */\n")],
+    "KX2": [(CL, "        (void)failed(prog, \"rotate\", a.key_path, \"cannot-lock-key-directory\");   /* F543 */\n        return client_lock_exit(lock_err);\n",
+             "        (void)failed(prog, \"rotate\", a.key_path, \"cannot-lock-key-directory\");   /* F543 */\n        return (client_lock_exit(lock_err) == EX_CONFIG) ? EX_FAIL : EX_FAIL; /* MUTATION KX2 */\n")],
     "CW1": [(AC, "    (void)authd_cli_config_warnings(&cfg, prog);   /* F545 */\n",
              "    /* MUTATION CW1 */\n")],
-    "KG1": [(AC, "    } else if (path_exists(key)) {\n",
-             "    } else if (path_exists(key) && !path_exists(pub)) { /* MUTATION KG1 */\n")],
+    "KG1": [(AC, "    } else if (g_seal_left_key) {\n",
+             "    } else if (g_seal_left_key && !path_exists(pub)) { /* MUTATION KG1 */\n")],
 }
 
 def main():

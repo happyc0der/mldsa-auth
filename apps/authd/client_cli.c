@@ -195,6 +195,24 @@ static int client_key_exit(keyfile_status_t ks)
     return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_CONFIG;
 }
 
+/* The same for --server-pub (F551; erratum 144): a file named on the command
+ * line that cannot be used is 3, and only a failure inside this program 1. */
+static int client_pub_exit(demo_keys_status_t ps)
+{
+    return (ps == DEMO_KEYS_ERR_CRYPTO || ps == DEMO_KEYS_ERR_ARG) ? EX_FAIL : EX_CONFIG;
+}
+
+/* And for the key's directory, which a run locks (F551). The directory is
+ * part of the path the operator gave: one that is missing, is not a
+ * directory or may not be opened is 3. Anything else that stops the lock --
+ * no descriptors, no locks left -- is this program's, 1. `err` is errno as
+ * client_key_lock left it. */
+static int client_lock_exit(int err)
+{
+    return (err == ENOENT || err == ENOTDIR || err == EACCES || err == ELOOP || err == ENAMETOOLONG)
+               ? EX_CONFIG : EX_FAIL;
+}
+
 /* Prints a core failure exactly as the pre-core client printed it. */
 static void report(const char *prog, const char *sub, const cc_diag_t *d)
 {
@@ -490,10 +508,54 @@ static int get_pass(const char *prog, const char *sub, const char *path, int pro
     return EX_OK;
 }
 
+/* F552 (V4-317): a flag given twice is a usage error, as it is in
+ * authd_admin (F537). The last one used to win without a word: `rotate --key
+ * A.ek --key B.ek` rotated B. Unlike authd_admin's, some of this tool's flags
+ * take no value, so the arguments are walked: `valued` lists the flags whose
+ * next argument is their value, which is skipped and never compared, so a
+ * value spelled like a flag is still a value. Returns the repeated flag, or
+ * NULL. */
+static const char *client_repeated_flag(int argc, char **argv, const char *const *valued)
+{
+    for (int i = 2; i < argc; i++) {
+        int takes = 0;
+        for (size_t v = 0; valued[v] != NULL; v++) {
+            if (strcmp(argv[i], valued[v]) == 0) { takes = 1; }
+        }
+        for (int j = 2; j < i; j++) {
+            int j_takes = 0;
+            for (size_t v = 0; valued[v] != NULL; v++) {
+                if (strcmp(argv[j], valued[v]) == 0) { j_takes = 1; }
+            }
+            if (strcmp(argv[i], argv[j]) == 0) {
+                return argv[i];
+            }
+            if (j_takes) { j++; }
+        }
+        if (takes) { i++; }
+    }
+    return NULL;
+}
+
+static int client_refuse_repeat(int argc, char **argv, const char *prog, const char *sub,
+                                const char *const *valued)
+{
+    const char *twice = client_repeated_flag(argc, argv, valued);
+    if (twice == NULL) {
+        return EX_OK;
+    }
+    fprintf(stderr, "%s %s: %s is given more than once\n", prog, sub, twice);
+    return EX_USAGE;
+}
+
 static int cmd_client_keygen(int argc, char **argv, const char *prog)
 {
     const char *dir = NULL, *pass_path = NULL;
     int prompt = 0;
+    {
+        static const char *const valued[] = { "--dir", "--passphrase-file", NULL };
+        if (client_refuse_repeat(argc, argv, prog, "keygen", valued) != EX_OK) { return EX_USAGE; }
+    }
     for (int i = 2; i < argc; i++) {
         const int has = (i + 1 < argc);
         if (strcmp(argv[i], "--dir") == 0 && has)                  { dir = argv[++i]; }
@@ -596,6 +658,11 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
 {
     const char *handle = NULL, *server_id = NULL, *port_s = NULL;
     memset(a, 0, sizeof *a);
+    {
+        static const char *const valued[] = { "--handle", "--key", "--passphrase-file", "--server-id",
+                                              "--server-pub", "--unix", "--state", "--port", NULL };
+        if (client_refuse_repeat(argc, argv, prog, sub, valued) != EX_OK) { return EX_USAGE; }
+    }
     for (int i = 2; i < argc; i++) {
         const int has = (i + 1 < argc);
         if (strcmp(argv[i], "--handle") == 0 && has)               { handle = argv[++i]; }
@@ -643,11 +710,13 @@ static int parse_client_args(int argc, char **argv, const char *prog, const char
         int ok = (sl >= 1u && sl <= WS_STATE_MAX);
         for (size_t i = 0; ok && i < sl; i++) {
             const unsigned char ch = (unsigned char)a->state[i];
-            if (ch < 0x21u || ch > 0x7eu || ch == '&') { ok = 0; }
+            /* F550: and '%', '+' and '#', which the daemon has refused in
+             * the URL since V4-287 (F478); this check had not followed. */
+            if (ch < 0x21u || ch > 0x7eu || ch == '&' || ch == '%' || ch == '+' || ch == '#') { ok = 0; }
         }
         if (!ok) {
             fprintf(stderr, "%s %s: --state is 1 to %u printable ASCII characters, "
-                            "with no space and no '&'\n", prog, sub, (unsigned)WS_STATE_MAX);
+                            "with no space and none of '&', '%%', '+', '#'\n", prog, sub, (unsigned)WS_STATE_MAX);
             return EX_USAGE;
         }
     }
@@ -712,6 +781,7 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
     const char *slash = strrchr(key_path, '/');
     const size_t dl = (slash == NULL) ? 0u : (size_t)(slash - key_path);
     if (dl >= sizeof dir) {
+        errno = ENAMETOOLONG;
         return -1;
     }
     if (slash == NULL) {
@@ -728,7 +798,9 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
     }
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
         if (errno != EWOULDBLOCK) {
+            const int e = errno;       /* the caller reads it (F551) */
             (void)close(fd);
+            errno = e;
             return -1;
         }
         fprintf(stderr, "%s %s: another run is using the keys in %s; waiting for it to finish\n",
@@ -738,7 +810,9 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
             r = flock(fd, LOCK_EX);
         } while (r != 0 && errno == EINTR);
         if (r != 0) {
+            const int e = errno;
             (void)close(fd);
+            errno = e;
             return -1;
         }
     }
@@ -910,9 +984,11 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
         lock_fd = client_key_lock(prog, sub, a->key_path);
         if (lock_fd < 0) {
             /* F543: the directory of a --key that cannot be locked is a
-             * path the operator named, 3 (spec 13, erratum 141). */
+             * path the operator named, 3 (spec 13, erratum 141). F551:
+             * unless what stopped the lock is not the path. */
+            const int lock_err = errno;
             (void)failed(prog, sub, a->key_path, "cannot-lock-key-directory");
-            return EX_CONFIG;
+            return client_lock_exit(lock_err);
         }
     }
     const int rc = client_resolve_key_locked(prog, sub, a, pass, pass_len, server_pk,
@@ -937,7 +1013,8 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
     static uint8_t server_pk[MLDSA_PUBLIC_KEY_BYTES];
     const demo_keys_status_t ps = demo_keys_load_public(a.server_pub, a.sid, a.sid_len, server_pk);
     if (ps != DEMO_KEYS_OK) {
-        return failed(prog, "login", a.server_pub, demo_keys_status_name(ps));
+        (void)failed(prog, "login", a.server_pub, demo_keys_status_name(ps));
+        return client_pub_exit(ps);   /* F551 */
     }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
@@ -1010,7 +1087,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     static uint8_t server_pk[MLDSA_PUBLIC_KEY_BYTES];
     const demo_keys_status_t ps = demo_keys_load_public(a.server_pub, a.sid, a.sid_len, server_pk);
     if (ps != DEMO_KEYS_OK) {
-        return failed(prog, "rotate", a.server_pub, demo_keys_status_name(ps));
+        (void)failed(prog, "rotate", a.server_pub, demo_keys_status_name(ps));
+        return client_pub_exit(ps);   /* F551 */
     }
     uint8_t *pass = NULL;
     size_t pass_len = 0;
@@ -1021,8 +1099,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     *lock_fd = client_key_lock(prog, "rotate", a.key_path);
     if (*lock_fd < 0) {
         authd_secret_free(pass, pass_len);
+        const int lock_err = errno;
         (void)failed(prog, "rotate", a.key_path, "cannot-lock-key-directory");   /* F543 */
-        return EX_CONFIG;
+        return client_lock_exit(lock_err);
     }
 
     char next_path[PATH_MAX];
@@ -1120,10 +1199,15 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * sent either way (erratum 126); the file was kept, before, only
          * because a test scanned it. */
         if (unlink(next_path) == 0) {
+            /* F553: when the session failed before the daemon judged the
+             * key, WHY is already known, and "the daemon was not reached" was
+             * said of a daemon that had answered and then gone quiet, and of a
+             * ServerHello the pin refused. */
             fprintf(stderr, "%s rotate: %s, so the new key was never sent; it is not kept\n", prog,
                     g_open_judged ? "the daemon refused the session"
                     : g_open_unanswered ? "the daemon could not record the login"
-                    : "the daemon was not reached");
+                    : (g_open_why[0] != '\0') ? g_open_why
+                    : "the session did not open");
         }
         return rc;
     }

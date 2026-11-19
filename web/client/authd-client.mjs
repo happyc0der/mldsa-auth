@@ -148,10 +148,18 @@ export class AuthdClient {
       if (st !== 0) { throw this.fail(h, st, sent); }
 
       const hid = te.encode(handle), pass = te.encode(passphrase);
-      const ph = this.put(hid), pe = this.put(envelope), pp = this.put(pass);
-      st = M._ccw_login_begin(h, ph, hid.length, pe, envelope.length, pp, pass.length,
-                              keepForRotate ? 1 : 0, frame, cap, outLen);
-      this.drop(ph, hid.length); this.drop(pe, envelope.length); this.drop(pp, pass.length); pass.fill(0);
+      // F555: the copies are dropped and the passphrase's bytes zeroed on
+      // every way out. A put() that was refused (the module out of memory)
+      // used to skip both: the passphrase stayed in this array, and the
+      // copies already made stayed in the module.
+      let ph = 0, pe = 0, pp = 0;
+      try {
+        ph = this.put(hid); pe = this.put(envelope); pp = this.put(pass);
+        st = M._ccw_login_begin(h, ph, hid.length, pe, envelope.length, pp, pass.length,
+                                keepForRotate ? 1 : 0, frame, cap, outLen);
+      } finally {
+        this.drop(ph, hid.length); this.drop(pe, envelope.length); this.drop(pp, pass.length); pass.fill(0);
+      }
       if (st !== 0) { throw this.fail(h, st, sent); }
 
       await session.open(url);

@@ -30,6 +30,13 @@ uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uin
     const uint64_t gl = (uint64_t)clamp_u32(global_per_sec, 1u, RATELIMIT_GLOBAL_MAX);
     const uint64_t held = (gl * 60u + pm - 1u) / pm;       /* rounded up */
     uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
+    /* F548 (V4-317): the global bucket also holds one second's burst, so
+     * `gl` more addresses can be admitted on top of the steady `held`. The
+     * quarter covers that only while per_min <= 15; past it the burst is the
+     * larger and is what the table is given. */
+    if (want < held + gl) {
+        want = held + gl;
+    }
     /* F544 (V4-315): AND an entry for every slot, not the larger of the two.
      * An address with a connection open keeps its entry for as long as the
      * connection lasts, whatever its bucket holds, so the open connections

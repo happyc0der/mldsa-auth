@@ -86,6 +86,10 @@ static int key_failed(const char *prog, const char *sub, const char *ek, keyfile
  * writes one -- cannot be reused here.
  *
  * `pk_out`, when non-NULL, receives the public key. */
+/* Whether the last seal_new_identity wrote the sealed key before it failed
+ * (F554): the one case in which a key is left for the operator to remove. */
+static int g_seal_left_key;
+
 static int seal_new_identity(const char *prog, const char *sub, const char *ek_path,
                              const char *pub_path, const uint8_t *id, size_t id_len,
                              const char *pass, size_t pass_len, uint32_t ops, uint64_t mem,
@@ -93,6 +97,7 @@ static int seal_new_identity(const char *prog, const char *sub, const char *ek_p
 {
     mldsa_keypair_t kp;
     memset(&kp, 0, sizeof kp);
+    g_seal_left_key = 0;
     if (mldsa_keypair_generate(&kp) != 0) {
         return failed(prog, sub, ek_path, "keypair-generation-failed");
     }
@@ -117,6 +122,7 @@ static int seal_new_identity(const char *prog, const char *sub, const char *ek_p
     }
     const demo_keys_status_t ps = demo_keys_write_public(pub_path, id, id_len, kp.public_key);
     if (ps != DEMO_KEYS_OK) {
+        g_seal_left_key = 1;
         (void)failed(prog, sub, pub_path, demo_keys_status_name(ps));
         goto out;
     }
@@ -382,13 +388,15 @@ static int cmd_keygen_server(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (rc == EX_OK) {
         printf("%s keygen-server: wrote %s (MLDSAEK1, mode 0600) and %s\n", prog, key, pub);
-    } else if (path_exists(key)) {
+    } else if (g_seal_left_key) {
         /* The public half could not be written after all (a directory that
-         * cannot be written to): say what is left, as init does. Neither
-         * path existed when this run began, so a key there now is this
-         * run's. Not "and --pub is absent" (F547): two spellings of one path
-         * pass F538's comparison, --pub is then the key itself, and the
-         * sealed key was left with nothing said about it. */
+         * cannot be written to): say what is left, as init does. Not "and
+         * --pub is absent" (F547): two spellings of one path pass F538's
+         * comparison, --pub is then the key itself, and the sealed key was
+         * left with nothing said about it. And not "a key is there" (F554):
+         * one another run made between the check above and the seal is not
+         * this run's to tell anyone to remove. The seal says whether it
+         * wrote one. */
         fprintf(stderr, "%s keygen-server: %s was written and its public half was not; "
                         "remove it before retrying\n", prog, key);
     }

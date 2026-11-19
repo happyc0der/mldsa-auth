@@ -1069,6 +1069,12 @@ static void test_ratelimit(void)
           "limiter size: the slots are added to the rate's share, not compared with it: 4096 + 750, 256 + 1875 (F544)");
     CHECK(ratelimit_entries_for(5u, 50u, 1024u) == 1774u,
           "limiter size: 1024 slots held by 1024 addresses leave the rate's 750 entries free (F544)");
+    /* F548: past rate_per_min = 15 the global bucket's one-second burst is
+     * more than the quarter. 30 a minute at 100 a second: 200 held, 250 with
+     * the quarter, 300 with the burst. 15 is where the two meet. */
+    CHECK(ratelimit_entries_wanted(30u, 100u, 1024u) == 1324u && ratelimit_entries_wanted(30u, 1000u, 256u) == 3256u &&
+          ratelimit_entries_wanted(15u, 1000u, 0u) == 5000u && ratelimit_entries_wanted(16u, 1000u, 0u) == 4750u,
+          "limiter size: the global bucket's burst is counted when it is more than the quarter (F548)");
     CHECK(ratelimit_entries_for(7u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 0u) == 10715u,
           "limiter size: a rate that does not divide is rounded up (8572 held, 10715 wanted) (F338)");
     CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750256u &&
@@ -1112,6 +1118,25 @@ static void test_ratelimit(void)
       }
       CHECK(nb <= 2048u && admitted == 1774u && r.denied_table == 0u,
             "limiter size: with every slot held, the addresses the rate admits still find room in the table (F544)"); }
+    /* F548 (V4-317): and for the burst. At 30 a minute and 1000 a second
+     * the global bucket lets 1000 new addresses in at once and one a
+     * millisecond after that; an entry is held 2 s, so at 2 s the first
+     * 1000 and the 2000 since are all in the table. The quarter alone gave
+     * 2500 entries, and the table was full with tokens to spare. */
+    { static ratelimit_entry_t burst[3072];
+      const size_t nb = ratelimit_entries_for(30u, 1000u, 0u);
+      size_t admitted = 0;
+      authd_addr_t c = { 4u, { 10u, 7u, 0u, 0u } };
+      if (nb <= 3072u) {
+          ratelimit_init(&r, burst, nb, 30u, 5u, 1000u, 4u, 0u);
+          for (size_t i = 0; i < 3000u; i++) {
+              const uint64_t t_ms = (i < 1000u) ? 0u : (uint64_t)(i - 999u);
+              c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+              if (ratelimit_admit(&r, &c, t_ms) == RATELIMIT_ALLOW) { admitted++; ratelimit_release(&r, &c); }
+          }
+      }
+      CHECK(nb == 3000u && admitted == 3000u && r.denied_table == 0u,
+            "limiter size: the addresses the global bucket's burst admits find room too (F548)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

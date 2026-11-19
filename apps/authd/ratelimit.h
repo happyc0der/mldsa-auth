@@ -125,10 +125,11 @@ void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
                     uint32_t global_per_sec, uint32_t max_conns, uint64_t now_ms);
 
 /* The entries a configuration can hold at once: max_slots, for the
- * addresses with a connection open, plus 1.25 x ceil(global_per_sec x 60 /
- * per_min), for those whose bucket is refilling, with a quarter's headroom
- * (F544: the sum, since both are held together); never less than
- * RATELIMIT_ENTRIES. Uncapped (F338). */
+ * addresses with a connection open, plus those whose bucket is refilling:
+ * held = ceil(global_per_sec x 60 / per_min), given a quarter's headroom or
+ * the global bucket's one-second burst (held + global_per_sec), whichever
+ * is more (F548). The sum, since both are held together (F544); never less
+ * than RATELIMIT_ENTRIES. Uncapped (F338). */
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
 /* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
 size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);

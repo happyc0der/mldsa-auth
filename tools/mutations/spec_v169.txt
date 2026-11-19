@@ -5,4 +5,4 @@ LR4|^test_authd_localapi$|nocode: the journal still says login-code-failed, once
 CU1|^test_client_core$|fake: an ERROR as the first record is refused
 CU2|^test_client_core$|fake: ERROR(0x05) as the first record is 'the daemon could not answer', not a refusal (F431)
 CL1|^authd_e2e$|recovery, login not recorded: the client told the user to re-enrol the device (F431)
-CL2|^authd_e2e$|an unusable --key (missing) exits 1, not 3 (F451)
+CL2|^authd_e2e$|recovery, wrong passphrase: neither key file opened and the exit was not 3 (F543)

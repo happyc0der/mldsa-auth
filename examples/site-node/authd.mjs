@@ -152,6 +152,9 @@ export class Authd {
   // in flight at a time, so they answer nothing. The next request is not
   // written behind them -- they would be read as its reply, one user's
   // identity for another's token. True when the connection was ended.
+  // This sees a surplus that has ARRIVED by the time the reply is taken. One
+  // that arrives after the next request is written cannot be told from that
+  // request's reply by anything on this socket.
   #surplus() {
     if (this.#buf.length === 0) { return false; }
     this.#buf = '';

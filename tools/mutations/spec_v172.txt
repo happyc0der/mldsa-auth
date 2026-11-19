@@ -1,0 +1,6 @@
+LB1|^test_authd_ws$|limiter size: the global bucket's burst is counted when it is more than the quarter (F548)
+RF1|^authd_e2e$|login with --key twice was not refused as usage, naming the flag (F552)
+RF2|^authd_e2e$|a value spelled like a flag was taken for a repeated flag (F552 canary)
+ST1|^test_authd_cli$|client: a --state with '%', '+' or '#' is usage, as the daemon refuses it in the URL (F550)
+SP1|^authd_e2e$|login with a --server-pub that is not there did not exit 3 (F551)
+RW1|^authd_e2e$|rotate did not say why the session did not open (F553)

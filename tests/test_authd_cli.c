@@ -1534,13 +1534,23 @@ static void test_client_ws_only_options(void)
     CHECK(amp && space && empty && rc == 2 && strstr(err, "--state is 1 to 64 printable ASCII characters") != NULL,
           "client: a --state the daemon would refuse or cut short is usage, with the rule named (F352)");
     /* The controls: the same options where they do apply get past the
-     * arguments and fail later, at the passphrase file that is not there. */
+     * arguments and fail later, at a file that is not there: not usage (2).
+     * Since V4-317 (F551) that is the server's public key, exit 3. */
     rc = CLIENT_LOGIN("--port", "9", "--ws", "--state", s64, "--proxy-v2");
-    const int tcp_ok = (rc == 1 && strstr(err, "--state") == NULL);
+    const int tcp_ok = (rc != 2 && rc != 0 && strstr(err, "--state") == NULL);
     rc = CLIENT_LOGIN("--unix", sock, "--state", "s~1", "--proxy-v2");
-    const int unix_ok = (rc == 1 && strstr(err, "--state") == NULL);
+    const int unix_ok = (rc != 2 && rc != 0 && strstr(err, "--state") == NULL);
+    /* F550: '%', '+' and '#' are the daemon's to refuse too (F478). */
+    int url_chars = 1;
+    { static char b0[] = "a%b", b1[] = "a+b", b2[] = "a#b";
+      char *const bad[] = { b0, b1, b2 };
+      for (size_t b = 0; b < 3u; b++) {
+          const int brc = CLIENT_LOGIN("--unix", sock, "--state", bad[b]);
+          if (!(brc == 2 && strstr(err, "none of '&', '%', '+', '#'") != NULL)) { url_chars = 0; }
+      } }
+    CHECK(url_chars, "client: a --state with '%', '+' or '#' is usage, as the daemon refuses it in the URL (F550)");
     rc = CLIENT_LOGIN("--port", "9");
-    CHECK(tcp_ok && unix_ok && rc == 1 && strstr(err, "--ws") == NULL,
+    CHECK(tcp_ok && unix_ok && rc != 2 && rc != 0 && strstr(err, "--ws") == NULL,
           "client: with --ws or --unix a 64-byte --state and --proxy-v2 pass the arguments, and a bare --port still does");
 #undef CLIENT_LOGIN
 }

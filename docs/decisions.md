@@ -21125,3 +21125,77 @@ No code.
 Counts: unchanged by this step (755 mutations, 141 campaigns, 800
 anchors; 547 findings, the 12 above open; spec v1.98, 143 errata; 66
 tests).
+
+## V4-317 — what the sixty-ninth review found (F548 to F555)
+
+The sixty-ninth review was an independent read of the code changed in
+V4-314 and V4-315 and of what the sixty-eighth had not reached: the browser
+client's `Session`, the C client's arguments and WebSocket helpers, and
+`authd_log.c`. It found no High or Medium defect and found those parts
+sound, the site's client after V4-314 included. Eight findings: six Low, two
+Info. Seven are closed here.
+
+- **F548 (Low).** The limiter's table has room for the global bucket's
+  one-second burst. The rate's share is the larger of the quarter's headroom
+  and that burst, so the defaults, and every figure at 15 a minute or less,
+  are what they were.
+- **F550 (Low).** `--state` refuses `%`, `+` and `#`, as the daemon does.
+- **F551 (Low).** Exit 3 for a `--server-pub` that cannot be used. A lock
+  that fails is 3 only when the directory is the reason. Spec 13 now says
+  what 1 is, where erratum 141 said more than was true.
+- **F552 (Low).** A repeated flag is a usage error in `authd_client` too.
+- **F553 (Low).** `rotate` gives the reason its session did not open.
+- **F554 (Info).** `keygen-server` names a leftover key only when the seal
+  wrote it. This corrects V4-314's fix of F547.
+- **F555 (Info).** The browser client's `login` drops its copies and zeroes
+  the passphrase's array in a `finally`.
+
+**F549 (Low) is open, and is the owner's.** A request the site gave up on
+during a long backup is carried out when the copy ends. The daemon serving
+input from a peer that has closed is F308's decision, the site's ten
+seconds is F210's, and V4-315 is what lets a backup run past thirty. The
+runbook now says what happens. Refusing a state-changing line whose peer
+has hung up would undo part of F308; copying the store across turns is a
+larger change. Either is a design choice.
+
+Also from the review, with no finding: F542's guard sees a surplus line
+only if it has arrived when the reply is taken; the comment in `authd.mjs`
+now says so. One existing check changed with F551: the controls for
+`--state` in `test_authd_cli` expected exit 1 at a missing passphrase file
+and now meet the missing `--server-pub` first, exit 3; they assert "not
+usage and not success", which is what they were for.
+
+Not tested, kept here: the lock failing for a reason inside the tool
+(F551), `keygen-server`'s race (F554), and login's lock on the recovery
+path exiting 3 (noted by the review against V4-314).
+
+Campaign v172: six mutations (LB1, RF1, RF2, ST1, SP1, RW1), each killed by
+hand in build-asan-p. Older mutations this step's code moved, each
+re-anchored and killed again: v170 KG1 and KX2, v146 CS3, v169 CL2; with
+them v170 KX1 and v166's TS1, TS2 and TS4.
+
+**v169 CL2 has named the wrong check since V4-314.** CL2 makes an unusable
+`--key` exit 1. V4-314 put a check of that status into an earlier leg of
+`authd_e2e` (F543's), which fails first, so CL2's kill was no longer by the
+check its line named. V4-314 did not run v169 again. v104 RK3 (two files
+that will not open are not said to be so) is the same: the status check
+fails before the sentence it named. V4-314's nightly (44469310267) failed
+on exactly those two campaigns, 153 of 155 jobs passing. Both lines name
+the earlier check now, and V4-314 to V4-316 are landed only on this step's
+green nightly.
+
+To find any other, every older `authd_e2e` mutation of the C client was run
+again (28, all killed by the check named), and the seven `test_authd_cli`
+ones whose verdict a first, badly filtered run had cut off. The rule from
+here: a new check in `authd_e2e` means running every older mutation of
+that binary again, not only those of the function touched.
+
+Hand control with `tools/hand_control.py --interpreted` against
+`web_flows`, KILLED: BP1, the passphrase is zeroed only when its own copy
+was made.
+
+Spec v1.99: errata 144 (13) and 145 (17).
+
+Counts: 761 mutations, 142 campaigns, 806 anchors; 555 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
+open); spec v1.99, 145 errata; 66 tests.

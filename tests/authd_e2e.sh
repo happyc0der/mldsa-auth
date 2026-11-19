@@ -1478,8 +1478,56 @@ rc=0
 grep -q "cannot-lock-key-directory" "$TMP/rec1f.err" \
     || { cat "$TMP/rec1f.err"; fail "rotate with a --key in a missing directory did not fail at the lock"; }
 [ "$rc" -eq 3 ] || { cat "$TMP/rec1f.err"; fail "rotate with a --key in a missing directory did not exit 3 (F543)"; }
+# V4-317, review 69. Each of these runs with .ek.next still aside.
+# F552: a flag given twice is usage, naming it; the last one used to win.
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/no-such.ek" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1g.err" || rc=$?
+[ "$rc" -eq 2 ] && grep -q -- "--key is given more than once" "$TMP/rec1g.err" \
+    || { cat "$TMP/rec1g.err"; fail "login with --key twice was not refused as usage, naming the flag (F552): exit $rc"; }
+rc=0
+"$CLIENT" keygen --dir "$TMP/dup-a" --passphrase-file "$TMP/opass" --dir "$TMP/dup-b" > /dev/null 2> "$TMP/rec1g.err" || rc=$?
+[ "$rc" -eq 2 ] && grep -q -- "--dir is given more than once" "$TMP/rec1g.err" && [ ! -e "$TMP/dup-a" ] && [ ! -e "$TMP/dup-b" ] \
+    || { cat "$TMP/rec1g.err"; fail "keygen with --dir twice was not refused as usage with nothing written (F552): exit $rc"; }
+# ... and a value spelled like a flag is a value (the canary): --unix --ws
+# names a socket called --ws, which is not there, and that is what is said.
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" --ws \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix --ws > /dev/null 2> "$TMP/rec1g.err" || rc=$?
+[ "$rc" -eq 1 ] && grep -q "cannot connect" "$TMP/rec1g.err" \
+    || { cat "$TMP/rec1g.err"; fail "a value spelled like a flag was taken for a repeated flag (F552 canary): exit $rc"; }
+# F550: --state is held to the daemon's rule, '%', '+' and '#' included.
+for ch in '%' '+' '#'; do
+    rc=0
+    "$CLIENT" login --handle "$HANDLE" --key "$EK" --state "a${ch}b" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1h.err" || rc=$?
+    [ "$rc" -eq 2 ] && grep -q -- "--state is 1 to 64 printable ASCII characters" "$TMP/rec1h.err" \
+        || { cat "$TMP/rec1h.err"; fail "--state with a '$ch' was not refused as usage, naming --state (F550): exit $rc"; }
+done
+# F551: a --server-pub that cannot be used is 3, like the key.
+for sub in login rotate; do
+    rc=0
+    "$CLIENT" "$sub" --handle "$HANDLE" --key "$EK" \
+        --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/no-such.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1i.err" || rc=$?
+    [ "$rc" -eq 3 ] || { cat "$TMP/rec1i.err"; fail "$sub with a --server-pub that is not there did not exit 3 (F551): exit $rc"; }
+done
+# F553: rotate says why the session did not open. "The daemon was not reached"
+# was its word for every failure before the daemon judged the key.
+rc=0
+"$CLIENT" rotate --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/no-daemon.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1j.err" || rc=$?
+[ "$rc" -eq 1 ] || { cat "$TMP/rec1j.err"; fail "rotate with no daemon did not exit 1: exit $rc"; }
+grep -q "rotate: cannot connect: .*, so the new key was never sent; it is not kept" "$TMP/rec1j.err" \
+    || { cat "$TMP/rec1j.err"; fail "rotate did not say why the session did not open (F553)"; }
+[ ! -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "rotate with no daemon left a staged key or changed .ek"
 mv "$TMP/next.aside" "$NEXT"
 echo "PASS: E2E: a --key that is missing or does not open under the passphrase exits 3, as an unusable passphrase file does (F451, F543)"
+echo "PASS: E2E: authd_client refuses a repeated flag and a --state the daemon would refuse, exits 3 for an unusable --server-pub, and rotate says why its session did not open (F550 to F553)"
 rm -f "$NEXT"
 
 # 2. REFUSE: neither file authenticates. Deleting either would be guessing

@@ -37,8 +37,8 @@ M = {
              "    if (unanswered && 0) { /* MUTATION CU2 */\n")],
     "CL1": [(CL, "            open_failed_before_key(\"the daemon could not record the login (its store failed) at\", io_stage);\n",
              "            /* MUTATION CL1 */\n")],
-    "CL2": [(CL, "    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_CONFIG;\n}\n\n/* Prints a core failure",
-             "    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_FAIL; /* MUTATION CL2 */\n}\n\n/* Prints a core failure")],
+    "CL2": [(CL, "    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_CONFIG;\n}\n\n/* The same for --server-pub",
+             "    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_FAIL; /* MUTATION CL2 */\n}\n\n/* The same for --server-pub")],
 }
 
 def main():

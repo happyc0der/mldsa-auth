@@ -522,6 +522,45 @@ try {
             `rotate: a rotation the daemon accepted clears the unconfirmed mark (rotated: ${rotated}; unconfirmed: ${rec && rec.unconfirmed}) (F411)`);
       check(await logsIn(store, held), 'rotate: and the rotated key logs in'); } }
 
+  // F555 (V4-317): a put() refused while login copies its arguments in. The
+  // passphrase's bytes are zeroed all the same, and the copies already made
+  // are dropped. The encoder is watched for the array the passphrase was
+  // encoded into; put() is made to refuse the envelope, the second of three.
+  { const { store, params } = await fresh();
+    const rec = await store.get(params.handle);
+    const realEncode = TextEncoder.prototype.encode;
+    const realPut = client.put.bind(client), realDrop = client.drop.bind(client);
+    let passBytes = null;
+    const held = new Set();                 // copies put into the module and not yet dropped
+    TextEncoder.prototype.encode = function (s) {
+      const a = realEncode.call(this, s);
+      if (s === PASS) { passBytes = a; }
+      return a;
+    };
+    client.put = (bytes) => {
+      if (bytes === rec.envelope || (bytes.length === rec.envelope.length && bytes.length > 1000)) {
+        throw new Error('the client module is out of memory');
+      }
+      const at = realPut(bytes);
+      held.add(at);
+      return at;
+    };
+    client.drop = (p, len) => { held.delete(p); return realDrop(p, len); };
+    let got;
+    try {
+      got = await client.login({ ...params, envelope: rec.envelope })
+        .then(() => 'resolved', (e) => `rejected: ${e.message}`);
+    } finally { delete client.put; delete client.drop; TextEncoder.prototype.encode = realEncode; }
+    check(got === 'rejected: the client module is out of memory' && passBytes !== null,
+          `put refused: login is rejected for it, and the passphrase's array was seen (${got}) (the control)`);
+    check(passBytes !== null && passBytes.every((b) => b === 0),
+          'put refused: the passphrase\'s bytes are zeroed when a copy into the module is refused (F555)');
+    check(held.size === 0,
+          `put refused: every copy that was made is dropped (${held.size} left in the module) (F555)`);
+    const s = await flows.login(client, store, params);
+    check(s.code.length === 32, 'put refused: the same identity then logs in (the canary)');
+    await s.close(); }
+
   // F305: a peer that answers the upgrade and then sends one message far
   // larger than any frame. It is refused as a frame error without being
   // copied into the module: nothing that large is ever handed to put().
