@@ -1,0 +1,7 @@
+AS1|^test_authd_store$|audit shape: a detail with a NUL and a tail after it is not the row that was written (F643)
+AS2|^test_authd_store$|audit shape: an event stored as bytes, the same bytes, is not the row that was written (F643)
+AS3|^test_authd_store$|audit shape: a time stored as text that begins with the number is not the row that was written (F643)
+AS4|^test_authd_store$|audit shape: a user id stored as text is not the row that was written (F643)
+AS5|^test_authd_store$|audit shape: a MAC stored as text is not the row that was written (F643)
+AS6|^test_authd_store$|audit shape: and the check the daemon makes of the last row at every start refuses it (F643)
+AS7|^test_authd_store$|audit shape: and the rows are shown up to it, not through it (F643)

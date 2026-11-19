@@ -169,7 +169,10 @@ POST = {
     # V4-336 (F639): the read-only place is a directory the SERVICE USER
     # owns. /srv itself is root's, and a backup there is refused for that
     # alone, with or without ProtectSystem=strict.
-    12: ["sudo install -d -o mldsa-authd -m 0700 /srv/probe.d; "
+    # V4-338 (F649): what an earlier, failed rehearsal left is removed
+    # first. A probe file still there is refused for existing.
+    12: ["sudo rm -f /dev/shm/probe.sqlite3; sudo rm -rf /srv/probe.d; "
+         "sudo install -d -o mldsa-authd -m 0700 /srv/probe.d; "
          "for p in /tmp/probe.sqlite3 /var/tmp/probe.sqlite3 /run/mldsa-authd/probe.sqlite3 "
          "/var/run/mldsa-authd/probe2.sqlite3 /dev/shm/probe.sqlite3 /srv/probe.d/probe.sqlite3; do "
          "a=$(sudo authd_admin backup --socket /run/mldsa-authd/admin.sock --path $p 2>&1 | tail -n 1 | tr ' ' '_' || true); "

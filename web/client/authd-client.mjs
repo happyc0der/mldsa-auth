@@ -211,6 +211,8 @@ export class Session {
     this.ws = null;
     this.closed = false;
     this.flooded = false;
+    this.ended = false;                // a close (or an error) has arrived
+    this.told = false;                 // ... and, after a flood, has been queued
   }
 
   // Bounded by the same timeout as each frame (V4-187, F264). A socket that
@@ -254,14 +256,22 @@ export class Session {
   // is held is dropped for one frame error, and the socket is closed.
   wake(msg) {
     const w = this.waiters.shift();
+    if (msg === null) { this.ended = true; }
     if (w) { w(msg); return; }
     // After a flood only the close is still news (F641): dropped with the
     // rest, a second read waited out its whole timeout for a connection
-    // that had already ended.
-    if (this.flooded) { if (msg === null && this.queue.at(-1) !== null) { this.queue.push(null); } return; }
+    // that had already ended. It is told ONCE (F650): `told` and not "the
+    // queue ends with one", which forgot a close that had been read.
+    if (this.flooded) {
+      if (msg === null && !this.told) { this.told = true; this.queue.push(null); }
+      return;
+    }
     if (msg !== null && this.queue.length >= QUEUE_MAX) {
       this.flooded = true;
-      this.queue = [BAD_FRAME];
+      // F650: a close that came BEFORE the flood is kept behind the frame
+      // error; it went with the rest, and the read after the error waited.
+      this.told = this.ended;
+      this.queue = this.ended ? [BAD_FRAME, null] : [BAD_FRAME];
       try { this.ws?.close(); } catch { /* gone */ }
       return;
     }

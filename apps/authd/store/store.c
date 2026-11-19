@@ -228,6 +228,50 @@ static store_status_t copy_blob_col(sqlite3_stmt *st, int col, uint8_t *out, siz
     return STORE_OK;
 }
 
+/* F643 (V4-338): an audit row is what its MAC was made over only if each
+ * column is stored as the type it was written as. The readers below asked
+ * SQLite for an integer or a string and took what its conversions gave: `at`
+ * stored as the text '1795129632 (really 1999)' converts to the same number,
+ * and a `detail` or `event` with a NUL in it reads as far as the NUL. So a
+ * row could be made to SAY something else to every other reader of the file
+ * -- the sqlite3 shell, an export -- and the chain still verified, same
+ * head. Asked BEFORE any column is read: reading one converts it, and the
+ * type reported afterwards is the converted one. `with_macs` is 0 for the
+ * reader that selects the first six columns only. */
+static int audit_text_ok(sqlite3_stmt *st, int col, int may_be_null)
+{
+    const int t = sqlite3_column_type(st, col);
+    if (t == SQLITE_NULL) {
+        return may_be_null;
+    }
+    if (t != SQLITE_TEXT) {
+        return 0;
+    }
+    const unsigned char *p = sqlite3_column_text(st, col);
+    const int n = sqlite3_column_bytes(st, col);
+    return p != NULL && n >= 0 && strlen((const char *)p) == (size_t)n;
+}
+
+static int audit_blob_ok(sqlite3_stmt *st, int col, int may_be_null)
+{
+    const int t = sqlite3_column_type(st, col);
+    return t == SQLITE_BLOB || (may_be_null && t == SQLITE_NULL);
+}
+
+static int audit_row_shape_ok(sqlite3_stmt *st, int with_macs)
+{
+    if (sqlite3_column_type(st, 0) != SQLITE_INTEGER || sqlite3_column_type(st, 1) != SQLITE_INTEGER) {
+        return 0;
+    }
+    if (!audit_blob_ok(st, 3, 1) || !audit_blob_ok(st, 4, 1)) {
+        return 0;
+    }
+    if (with_macs && (!audit_blob_ok(st, 6, 0) || !audit_blob_ok(st, 7, 0))) {
+        return 0;
+    }
+    return audit_text_ok(st, 2, 0) && audit_text_ok(st, 5, 1);
+}
+
 static void be64(uint8_t out[8], int64_t v)
 {
     uint64_t u = (uint64_t)v;
@@ -387,6 +431,7 @@ store_status_t store_audit_verify_report(const store_t *s, int64_t *verified_out
     store_status_t r = STORE_OK;
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        if (!audit_row_shape_ok(st, 1)) { r = STORE_ERR_CORRUPT; break; }   /* F643 */
         int64_t seq = sqlite3_column_int64(st, 0);
         int64_t at = sqlite3_column_int64(st, 1);
         const unsigned char *event = sqlite3_column_text(st, 2);
@@ -445,7 +490,9 @@ store_status_t store_audit_tail_check(const store_t *s)
     }
     store_status_t r = STORE_OK;
     const int rc = sqlite3_step(st);
-    if (rc == SQLITE_ROW) {
+    if (rc == SQLITE_ROW && !audit_row_shape_ok(st, 1)) {
+        r = STORE_ERR_CORRUPT;                                               /* F643 */
+    } else if (rc == SQLITE_ROW) {
         const int64_t seq = sqlite3_column_int64(st, 0);
         const int64_t at = sqlite3_column_int64(st, 1);
         const unsigned char *event = sqlite3_column_text(st, 2);
@@ -2883,6 +2930,9 @@ store_status_t store_audit_tail(const store_t *s, size_t n, store_audit_fn fn, v
         while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
             uint8_t uid[STORE_ID_MAX], h[STORE_ID_MAX];
             size_t ul = 0, hl = 0;
+            /* F643: a row that is not stored as it was written is not shown
+             * as if it were. */
+            if (!audit_row_shape_ok(st, 0)) { r = STORE_ERR_CORRUPT; break; }
             (void)copy_blob_col(st, 3, uid, sizeof uid, &ul);
             (void)copy_blob_col(st, 4, h, sizeof h, &hl);
             if (fn(ctx, sqlite3_column_int64(st, 0), sqlite3_column_int64(st, 1),

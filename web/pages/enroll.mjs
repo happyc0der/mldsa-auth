@@ -59,8 +59,20 @@ action('go', async () => {
     const { handle, answer: r, confirmed, stored } = await flows.enroll(client, store,
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
-        try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
+        let j;
+        try { j = await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
         catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }
+        // F646 (V4-338): an answer without its fields is no answer (F302's
+        // rule, which reached the recovery codes and not this). Any 2xx
+        // object was taken as "the site enrolled the key": a front end's
+        // `{"status":"maintenance"}` confirmed a key the daemon never saw,
+        // the page said "Enrolled undefined", and the key could not then be
+        // forgotten. Thrown as a plain error, it is "no answer": the key is
+        // kept, unconfirmed, and a login settles it.
+        if (typeof j?.user !== 'string' || j.handle !== id.handle) {
+          throw new Error('the site answered, but not with the enrollment it was asked for');
+        }
+        return j;
       });
     // F584: the site enrolled the key and this browser could not record
     // that. The login page would call the key unconfirmed and offer to

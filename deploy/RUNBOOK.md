@@ -786,6 +786,13 @@ one IPv4 address. Every connection pays one token from its address's bucket
 token back**, so people logging in do not spend each other's budget — only
 handshakes that fail do.
 
+An IPv6 address is one bucket per /64. A translator that places IPv4
+clients inside one IPv6 prefix (SIIT-DC, or NAT64's `64:ff9b::/96`) puts
+all of them in one bucket and under one connection cap, as a carrier NAT
+does: the daemon takes apart only the IPv4-mapped form, `::ffff:a.b.c.d`.
+If your proxy sits behind such a translator, size `rate_per_min` and
+`rate_burst` as you would for a NAT.
+
 What it cannot fix: **one prober behind a shared address can empty it, and
 everyone behind that address is refused until it refills** (spec §18). Watch
 for it:

@@ -1600,9 +1600,13 @@ static void test_backup_path_bound(void)
     rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/lock/../mldsa-authd/b.sqlite3", NULL },
                            err, sizeof err);
     const int via_lock = (rc == 1 && strstr(err, "/run is not kept") != NULL);
-    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/run/../var/lib/mldsa-authd/backups/b", NULL },
+    /* V4-338 (F647): and after /var/run. The path that stood here,
+     * /var/run/../var/lib/..., is unwarned whether /var/run is followed or
+     * not, and proved nothing. /var/run/../dev/shm is /dev/shm only if it
+     * is: by its spelling it is /var/dev/shm, and unwarned. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/run/../dev/shm/b.sqlite3", NULL },
                            err, sizeof err);
-    CHECK(via_lock && rc == 1 && strstr(err, "warning") == NULL,
+    CHECK(via_lock && rc == 1 && strstr(err, "/dev/shm is memory") != NULL,
           "backup: a `..` after /var/lock or /var/run leaves /run, as the kernel's does (F640)");
     /* V4-336 (F634): /dev/shm, measured writable under the shipped unit. */
     rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/dev/shm/b.sqlite3", NULL },

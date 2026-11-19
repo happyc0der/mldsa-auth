@@ -1010,6 +1010,19 @@ try {
     const f1 = await five.s.next().catch(() => 'timed out'), f2 = await five.s.next().catch(() => 'timed out');
     check(typeof f1 === 'symbol' && f2 === null && five.s.queue.length === 0,
           'queue: after a flood the frame error is read, and then the close, once (F641)');
+    // V4-338 (F650): "once" holds after the close has been READ too, and a
+    // close that came before the flood is still told.
+    five.s.wake(null);
+    check(five.s.queue.length === 0,
+          'queue: a further close after the flood\'s close was read is not told again (F650)');
+    const early = mk();
+    early.s.onMessage(new Uint8Array([1]).buffer);
+    early.s.wake(null);
+    for (let i = 0; i < 6; i++) { early.s.onMessage(new Uint8Array([i]).buffer); }
+    early.s.timeoutMs = 100;
+    const e1 = await early.s.next().catch(() => 'timed out'), e2 = await early.s.next().catch(() => 'timed out');
+    check(typeof e1 === 'symbol' && e2 === null && early.s.queue.length === 0,
+          `queue: a close that arrived before the flood is read after its frame error (${String(e2)}) (F650)`);
     // F641: only an ArrayBuffer is a message.
     const odd = mk();
     let threw = false;

@@ -1094,6 +1094,27 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
 
 static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_fd);
 
+/* F645 (V4-338): a staged key that was never sent is removed, and when it
+ * cannot be, that is SAID. Three of the four places that remove one did so
+ * without looking (F573 fixed the fourth): the file stayed, and every later
+ * login reported an interrupted rotation and tried both keys, with nothing
+ * to say why. A file that is already gone is not a failure. */
+static void rotate_say_kept(const char *prog, const char *next_path)
+{
+    if (errno == ENOENT) {
+        return;
+    }
+    fprintf(stderr, "%s rotate: %s could not be removed: it is KEPT, though the daemon never had it. "
+                    "Remove it by hand\n", prog, next_path);
+}
+
+static void rotate_drop_unsent(const char *prog, const char *next_path)
+{
+    if (unlink(next_path) != 0) {
+        rotate_say_kept(prog, next_path);
+    }
+}
+
 /* The lock taken inside is dropped on every way out, by the one caller. */
 static int cmd_client_rotate(int argc, char **argv, const char *prog)
 {
@@ -1219,8 +1240,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (ks != KEYFILE_OK) {
         mldsa_keypair_free(&old_kp);
         (void)unlink(pub_tmp);   /* F118: every exit after the seal, not only `out:` */
-        (void)unlink(next_path); /* F467: nothing was sent */
-        return failed(prog, "rotate", next_path, keyfile_status_name(ks));
+        const int rf = failed(prog, "rotate", next_path, keyfile_status_name(ks));
+        rotate_drop_unsent(prog, next_path); /* F467: nothing was sent */
+        return rf;
     }
 
     /* CC_KEEP_FOR_ROTATE: the old key signs ROTATE after the session exists,
@@ -1242,7 +1264,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * ClientAuth. ROTATE is built only on a live session, so none was
          * sent either way (erratum 126); the file was kept, before, only
          * because a test scanned it. */
-        if (unlink(next_path) == 0) {
+        if (unlink(next_path) != 0) {
+            rotate_say_kept(prog, next_path);   /* F645 */
+        } else {
             /* F553: when the session failed before the daemon judged the
              * key, WHY is already known, and "the daemon was not reached" was
              * said of a daemon that had answered and then gone quiet, and of a
@@ -1266,8 +1290,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     mldsa_keypair_free(&new_kp);
     if (bs != CC_OK) {
         /* F467: ROTATE was not built, so it was not sent: the staged key goes. */
-        (void)unlink(next_path);
         (void)failed(prog, "rotate", next_path, bs == CC_ERR_SESSION ? "cannot-send-rotate" : "cannot-build-rotate");
+        rotate_drop_unsent(prog, next_path);
         goto out;
     }
     if (cs_send(&cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) {
@@ -1348,6 +1372,14 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         }
         if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
             (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
+            /* F645 (V4-338): what that leaves, as F583 says it one step
+             * earlier. The line above alone read as a rotation that had not
+             * happened; it has, and the only copy of the live key is the
+             * file a tidy person would now delete. */
+            fprintf(stderr, "%s rotate: the key ROTATED at the daemon, and %s names the new key. %s still "
+                            "holds the old one, which no longer authenticates. %s is KEPT and holds the new "
+                            "key -- do not remove it: the next login completes the rotation\n",
+                    prog, pub_path, a.key_path, next_path);
             goto out;
         }
         printf("%s\n", a.key_path);

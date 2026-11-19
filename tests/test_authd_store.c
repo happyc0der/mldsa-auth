@@ -1309,6 +1309,71 @@ int main(void)
         }
     }
     {
+        /* V4-338 (F643): a row whose bytes are not stored as they were
+         * written. Each edit below leaves what the verifier used to READ
+         * unchanged -- SQLite converts text that begins with a number to that
+         * number, and a C string ends at its first NUL -- so the chain
+         * verified, with the same head, over rows that say something else to
+         * every other reader of the file. Review 84 ran three of these
+         * against the tool: `verify=ok entries=3`. One fresh store for each,
+         * so that each is what fails. */
+        static const struct { const char *sql; const char *what; int last_row; } EDIT[] = {
+            { "UPDATE audit SET detail = detail || char(0) || ' by=someone-else' WHERE seq=1;",
+              "audit shape: a detail with a NUL and a tail after it is not the row that was written (F643)", 0 },
+            { "UPDATE audit SET at = CAST(at AS TEXT) || ' (really 1999-01-01)' WHERE seq=2;",
+              "audit shape: a time stored as text that begins with the number is not the row that was written (F643)", 0 },
+            { "UPDATE audit SET event = CAST(event AS BLOB) || x'00' || x'4142' WHERE seq=3;",
+              "audit shape: an event stored as bytes with a NUL and a tail is not the row that was written (F643)", 1 },
+            { "UPDATE audit SET event = CAST(event AS BLOB) WHERE seq=2;",
+              "audit shape: an event stored as bytes, the same bytes, is not the row that was written (F643)", 0 },
+            { "UPDATE audit SET user_id = CAST(user_id AS TEXT) WHERE seq=1;",
+              "audit shape: a user id stored as text is not the row that was written (F643)", 0 },
+            { "UPDATE audit SET mac = CAST(mac AS TEXT) WHERE seq=3;",
+              "audit shape: a MAC stored as text is not the row that was written (F643)", 2 },
+            { "UPDATE audit SET seq = seq WHERE seq=1; UPDATE audit SET at = at + 0.0 WHERE seq=3 AND 0;",
+              NULL, 0 },                                  /* the control: an edit that changes nothing */
+        };
+        for (size_t e = 0; e < sizeof EDIT / sizeof EDIT[0]; e++) {
+            char name[40];
+            snprintf(name, sizeof name, "shape%zu.sqlite3", e);
+            store_t *s = fresh_store(name, dbp, sizeof dbp);
+            if (s == NULL) { printf("FAIL: open shape\n"); return 1; }
+            const int made = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+                             store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK &&
+                             store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK &&
+                             store_audit_verify(s) == STORE_OK;
+            store_close(s);
+            const int edited = made && raw_sql(dbp, EDIT[e].sql) == 0;
+            store_t *t = NULL;
+            const int opened = edited && store_open(dbp, KEK, &t) == STORE_OK && t != NULL;
+            if (EDIT[e].what == NULL) {
+                audit_clock_t ac;
+                memset(&ac, 0, sizeof ac);
+                CHECK(opened && store_audit_verify(t) == STORE_OK && store_audit_tail_check(t) == STORE_OK &&
+                      store_audit_tail(t, 64, audit_clock_row, &ac) == STORE_OK && ac.n == 3u,
+                      "audit shape: three rows stored as they were written verify, pass the tail check and are all shown (the control)");
+            } else {
+                int64_t verified = -1;
+                uint8_t head[STORE_AUDIT_MAC_BYTES];
+                CHECK(opened && store_audit_verify_report(t, &verified, head) == STORE_ERR_CORRUPT, EDIT[e].what);
+                if (EDIT[e].last_row) {
+                    audit_clock_t ac;
+                    memset(&ac, 0, sizeof ac);
+                    CHECK(opened && store_audit_tail_check(t) == STORE_ERR_CORRUPT,
+                          "audit shape: and the check the daemon makes of the last row at every start refuses it (F643)");
+                    /* The reader that SHOWS rows does not select the MACs:
+                     * a row whose MAC alone is misstored is the two checks
+                     * above's to refuse. */
+                    if (EDIT[e].last_row == 1) {
+                        CHECK(opened && store_audit_tail(t, 64, audit_clock_row, &ac) == STORE_ERR_CORRUPT && ac.n == 2u,
+                              "audit shape: and the rows are shown up to it, not through it (F643)");
+                    }
+                }
+            }
+            if (t != NULL) { store_close(t); }
+        }
+    }
+    {
         /* F229: the tail check the daemon makes at every start. One row, one
          * MAC: it answers "did this key write the end of this chain", which
          * is what a store beside the wrong server key gets wrong. */

@@ -22217,3 +22217,51 @@ No code, test, campaign or spec change.
 
 Counts: 801 mutations, 152 campaigns, 846 anchors; 642 findings (the 16
 above open); spec v1.109, 158 errata; 66 tests.
+
+## V4-338: what the eighty-fourth review found (F643 to F652)
+
+**The eighty-fourth review** read V4-336's commit, the write side of the
+connection buffers, the store's opening, audit, token and list code, the
+client's rotation, and the remaining pages and flows. It ran its own
+programs against the built library and a synthetic store. No High or
+Medium. Three Low, seven Info. The write side, the store's opening, the
+token verdicts, the sweep, the rotation's order of file operations (a
+recoverable state at every point a crash can come) and the pages' use of
+the DOM were found sound.
+
+- **F643 (Low).** The audit chain verified rows that were not stored as
+  they were written. The MAC was right for what the verifier read, and
+  the verifier read through SQLite's conversions. Every column's stored
+  type is now checked first, in all three readers.
+- **F644 (Low), open.** Rotation grows the store without bound, and
+  nothing limits how often a handle rotates. Recorded with a
+  recommendation; each remedy is a rule of the protocol or a migration.
+- **F645 (Low).** Two places in the client's rotation said too little.
+  Fixed; neither failure can be staged from a test, and the row says so.
+- **F646 (Info).** The enroll page requires the answer's fields.
+- **F647, F649, F650 (Info).** A test path that proved nothing; the
+  rehearsal's leftovers; the session's close after a flood.
+- **F648, F652 (Info), not changed.** **F651 (Info), documented.**
+
+**Open for the owner, new here.** F644, above. And F651's other remedy, a
+configured list of translator prefixes to take apart for rate limiting:
+recommended only if a deployment behind one appears.
+
+Campaign v183, all KILLED by hand: AS1 (text may have bytes after a NUL),
+AS2 (text may be stored as bytes), AS3 (the time may be anything that
+converts), AS4 (a user id may be text), AS5 (a MAC may be text), AS6 (the
+check at start does not look), AS7 (the reader that shows rows does not).
+V4-338's change to the rotation moved the anchor of v158's SR1 and of
+v156's TN1 (the same line); both were re-anchored, and SR1, TN1 and v158's
+PO1 killed again. v181's BW7 and BW11 were killed
+again against the corrected path.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, both KILLED: Q9, a close before the flood is dropped; Q10, a
+close is told again.
+
+No spec change.
+
+Counts: 808 mutations, 153 campaigns, 853 anchors; 652 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.109, 158 errata; 66 tests.
