@@ -390,6 +390,68 @@ test('a line the daemon sends unasked ends the connection, it does not answer th
   }
 });
 
+// F540 (V4-314, review 68): destroy() and then connect() at once, with a
+// request in flight. The old socket's 'close' arrives after it has been
+// replaced and is ignored, so the request stayed at the head of the queue,
+// marked sent: it never settled, and nothing asked on the new connection was
+// ever written. A site that reconnects after a hung daemon waited for ever.
+test('destroy() then connect() with a request in flight fails it and the new connection answers (F540)', async () => {
+  const s = await standIn('authd-f540-', (c, l, id) => {
+    if (id === 1) { return; }                       // the first connection never answers
+    if (l.startsWith('PING')) { c.write('OK version=1 schema=1 uptime=1\n'); }
+  });
+  const a = await new Authd(s.path).connect();
+  try {
+    const hung = settled(ping(a));
+    await new Promise((r) => setTimeout(r, 30));    // written, and unanswered
+    a.destroy();
+    await a.connect();
+    assert.equal(await hung, 'connection-closed', 'the request in flight at destroy() is failed, not left waiting (F540)');
+    assert.equal(await settled(ping(a)), 'resolved', 'a request on the new connection is written and answered (F540)');
+  } finally {
+    a.destroy();
+    await s.stop();
+  }
+});
+
+// F542 (V4-314, review 68): F532's guard looked for a line nobody had asked
+// for only when nothing was queued. With a second request waiting, the first
+// reply's surplus line was read as the second's answer.
+test('a surplus line is not the answer to the request queued behind it (F542)', async () => {
+  const s = await standIn('authd-f542-', (c, l) => {
+    if (l.startsWith('PING')) { c.write(`OK version=1 schema=1 uptime=1\nOK user=${hexOf('alice')} handle=68 role=user issued=1 expires=2\n`); }
+    else if (l.startsWith('VERIFY')) { c.write(`OK user=${hexOf('bob')} handle=68 role=user issued=1 expires=2\n`); }
+  });
+  const a = await new Authd(s.path).connect();
+  try {
+    const first = settled(ping(a));
+    const second = whose(verify(a, 'bb'));          // queued behind the PING
+    assert.equal(await first, 'resolved', 'the request that was asked gets its reply (the canary)');
+    assert.equal(await second, 'connection-closed', 'a surplus line ends the connection; it is not the queued request\'s answer (F542)');
+  } finally {
+    a.destroy();
+    await s.stop();
+  }
+});
+
+// F542, after a list: the same surplus behind an END line.
+test('a surplus line after a list is not the answer to the request queued behind it (F542)', async () => {
+  const s = await standIn('authd-f542l-', (c, l) => {
+    if (l.startsWith('LIST-DEVICES')) { c.write(`OK count=0\nEND\nOK user=${hexOf('alice')} handle=68 role=user issued=1 expires=2\n`); }
+    else if (l.startsWith('VERIFY')) { c.write(`OK user=${hexOf('bob')} handle=68 role=user issued=1 expires=2\n`); }
+  });
+  const a = await new Authd(s.path).connect();
+  try {
+    const first = settled(listDevices(a, 'alice'));
+    const second = whose(verify(a, 'bb'));
+    assert.equal(await first, 'resolved', 'the list that was asked for is returned (the canary)');
+    assert.equal(await second, 'connection-closed', 'a surplus line after a list ends the connection; it is not the queued request\'s answer (F542)');
+  } finally {
+    a.destroy();
+    await s.stop();
+  }
+});
+
 // F534: destroy() before the connection is made raised 'close' and no
 // 'error', and connect() never settled.
 test('connect() settles when the socket is destroyed before it connects (F534)', async () => {

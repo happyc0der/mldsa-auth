@@ -861,6 +861,10 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
         if (ks_ek != KEYFILE_OK && ks_next != KEYFILE_OK) {
             fprintf(stderr, "%s %s: neither key file could be opened, so the daemon was not asked. "
                             "NOTHING has been deleted.\n", prog, sub);
+            /* F543: 1 means the daemon was asked (erratum 141). It was not:
+             * these are files that could not be used, 3, unless opening
+             * one failed inside this program. */
+            rc = (client_key_exit(ks_ek) == EX_FAIL || client_key_exit(ks_next) == EX_FAIL) ? EX_FAIL : EX_CONFIG;
         } else if (unasked) {
             fprintf(stderr, "%s %s: cannot ask the daemon which key is live: %s. "
                             "NOTHING has been deleted; run this again when the daemon answers.\n",
@@ -905,7 +909,10 @@ static int client_resolve_key(const char *prog, const char *sub, const client_ar
     if (!have_lock && next_seen) {
         lock_fd = client_key_lock(prog, sub, a->key_path);
         if (lock_fd < 0) {
-            return failed(prog, sub, a->key_path, "cannot-lock-key-directory");
+            /* F543: the directory of a --key that cannot be locked is a
+             * path the operator named, 3 (spec 13, erratum 141). */
+            (void)failed(prog, sub, a->key_path, "cannot-lock-key-directory");
+            return EX_CONFIG;
         }
     }
     const int rc = client_resolve_key_locked(prog, sub, a, pass, pass_len, server_pk,
@@ -1014,7 +1021,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     *lock_fd = client_key_lock(prog, "rotate", a.key_path);
     if (*lock_fd < 0) {
         authd_secret_free(pass, pass_len);
-        return failed(prog, "rotate", a.key_path, "cannot-lock-key-directory");
+        (void)failed(prog, "rotate", a.key_path, "cannot-lock-key-directory");   /* F543 */
+        return EX_CONFIG;
     }
 
     char next_path[PATH_MAX];

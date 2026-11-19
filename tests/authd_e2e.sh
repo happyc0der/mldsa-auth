@@ -189,6 +189,12 @@ if [ -f "$EX" ]; then
     # and is valid with no warning (the canary).
     grep -q "^mldsa-authd: warning: uid $(id -u) is in both site_uids and proxy_uids: " "$TMP/ex.out" \
         || { cat "$TMP/ex.out"; fail "--check-config did not warn that site_uids and proxy_uids share uid $(id -u) (F420)"; }
+    # F545 (V4-314): and so does the administrator's form, which said only
+    # "is valid" of the same file.
+    "$ADMIN" --check-config --config "$TMP/ex.conf" > "$TMP/ex-admin.out" 2>&1 \
+        || { cat "$TMP/ex-admin.out"; fail "authd_admin --check-config refuses the example with one uid"; }
+    grep -q "warning: uid $(id -u) is in both site_uids and proxy_uids: " "$TMP/ex-admin.out" \
+        || { cat "$TMP/ex-admin.out"; fail "authd_admin --check-config did not warn that site_uids and proxy_uids share a uid (F545)"; }
     sed -e "s|/var/lib/mldsa-authd|$TMP/ex|g" \
         -e "s|^key_passphrase_file = .*|key_passphrase_file = $TMP/ex/pass|" \
         -e "s|/run/mldsa-authd|$TMP|g" \
@@ -1390,6 +1396,9 @@ rc=0
     --passphrase-file "$TMP/wpass" --server-id authd --server-pub "$TMP/d/server.pub" \
     --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1b.err" || rc=$?
 [ "$rc" -ne 0 ] || fail "recovery, wrong passphrase: login succeeded"
+# F543 (V4-314): and it is 3, a file that could not be used. 1 means the
+# daemon was asked (erratum 141), and here it was not.
+[ "$rc" -eq 3 ] || fail "recovery, wrong passphrase: neither key file opened and the exit was not 3 (F543)"
 [ -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery, wrong passphrase: a key file was touched"
 if grep -q "re-enrol" "$TMP/rec1b.err"; then
     cat "$TMP/rec1b.err"; fail "recovery, wrong passphrase: the client told the user to re-enrol the device (F225)"
@@ -1459,8 +1468,18 @@ for leg in missing wrongpass; do
     [ "$rc" -eq 3 ] || { cat "$TMP/rec1e.err"; fail "an unusable --key ($leg) exits $rc, not 3 (F451)"; }
     grep -q "$want" "$TMP/rec1e.err" || { cat "$TMP/rec1e.err"; fail "an unusable --key ($leg) is not named $want"; }
 done
+# F543 (V4-314): rotate locks the key's directory before it opens the key, so
+# a --key in a directory that is not there failed at the lock, exit 1, where
+# login with the same path exited 3.
+rc=0
+"$CLIENT" rotate --handle "$HANDLE" --key "$TMP/no-such-dir/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1f.err" || rc=$?
+grep -q "cannot-lock-key-directory" "$TMP/rec1f.err" \
+    || { cat "$TMP/rec1f.err"; fail "rotate with a --key in a missing directory did not fail at the lock"; }
+[ "$rc" -eq 3 ] || { cat "$TMP/rec1f.err"; fail "rotate with a --key in a missing directory did not exit 3 (F543)"; }
 mv "$TMP/next.aside" "$NEXT"
-echo "PASS: E2E: a --key that is missing or does not open under the passphrase exits 3, as an unusable passphrase file does (F451)"
+echo "PASS: E2E: a --key that is missing or does not open under the passphrase exits 3, as an unusable passphrase file does (F451, F543)"
 rm -f "$NEXT"
 
 # 2. REFUSE: neither file authenticates. Deleting either would be guessing
@@ -2185,6 +2204,9 @@ rc=0; "$DAEMON" --config "$TMP/rtmax.conf" --check-config > "$TMP/rt.out" 2>&1 |
 [ "$rc" -eq 0 ] && grep -q ' rate_table=16384 ' "$TMP/rt.out" \
     && grep -q '^mldsa-authd: warning: rate_global_per_sec = 10000 and rate_per_min = 1 can hold 750000 addresses at once and the limiter.s table holds 16384' "$TMP/rt.out" \
     || fail "--check-config did not warn that 750000 addresses exceed the 16384-entry table, and pass (F338): exit $rc, $(cat "$TMP/rt.out")"
+rc=0; "$ADMIN" --check-config --config "$TMP/rtmax.conf" > "$TMP/rt-admin.out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && grep -q 'warning: rate_global_per_sec = 10000 and rate_per_min = 1 can hold 750000 addresses' "$TMP/rt-admin.out" \
+    || fail "authd_admin --check-config did not warn that the rates exceed the limiter's table, and pass (F545): exit $rc, $(cat "$TMP/rt-admin.out")"
 echo "PASS: E2E: the limiter's table is sized from the rates (1024, 1875), the start and --check-config say so, and the ceiling is warned of (F338)"
 # Waits for the journal to count one more refusal than $1; the daemon logs it
 # after closing the socket, so the client can be gone first.

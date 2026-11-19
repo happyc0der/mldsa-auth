@@ -1,0 +1,4 @@
+KX1|^authd_e2e$|recovery, wrong passphrase: neither key file opened and the exit was not 3 (F543)
+KX2|^authd_e2e$|rotate with a --key in a missing directory did not exit 3 (F543)
+CW1|^authd_e2e$|authd_admin --check-config did not warn that site_uids and proxy_uids share a uid (F545)
+KG1|^test_authd_cli$|keygen-server: a key left without its public half is named, two spellings of one path included (F547)

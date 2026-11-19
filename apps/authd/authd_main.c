@@ -35,6 +35,7 @@
 #include "listener.h"
 #include "localapi.h"
 #include "memlock.h"
+#include "authd_cli.h"
 #include "ratelimit.h"
 #include "recovery.h"
 #include "tokens.h"
@@ -234,34 +235,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(probe_key));
             return 3;
         }
-        /* F420: valid, but worth saying. Not a refusal -- a single-user
-         * development setup is this shape -- and on stderr, so the unit's
-         * ExecStartPre puts it in the journal. */
-        {
-            uid_t shared = 0;
-            if (authd_config_shared_uid(&cfg, &shared)) {
-                fprintf(stderr,
-                        "mldsa-authd: warning: uid %lu is in both site_uids and proxy_uids: "
-                        "the site can state any client address to the rate limiter. "
-                        "Give the site and the proxy a user each (F420).\n",
-                        (unsigned long)shared);
-            }
-        }
-        /* F338: the limiter's table is sized from these settings, to a
-         * ceiling; say so when the ceiling is what will refuse. */
-        if (cfg.proxy_protocol_v2) {
-            const uint64_t want = ratelimit_entries_wanted(cfg.rate_per_min, cfg.rate_global_per_sec,
-                                                           cfg.max_slots);
-            if (want > (uint64_t)RATELIMIT_ENTRIES_MAX) {
-                fprintf(stderr,
-                        "mldsa-authd: warning: rate_global_per_sec = %u and rate_per_min = %u can hold "
-                        "%llu addresses at once and the limiter's table holds %u: past that, new "
-                        "addresses are refused limiter-table-full. Raise rate_per_min or lower "
-                        "rate_global_per_sec (F338).\n",
-                        cfg.rate_global_per_sec, cfg.rate_per_min, (unsigned long long)want,
-                        (unsigned)RATELIMIT_ENTRIES_MAX);
-            }
-        }
+        /* F420, F338: valid, but worth saying. One function for both forms
+         * of --check-config (F545). */
+        authd_cli_config_warnings(&cfg, "mldsa-authd");
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
                "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
                "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "

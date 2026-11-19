@@ -26,8 +26,8 @@ M = {
              "    if (want < (uint64_t)max_slots && 0) { /* MUTATION TS4 */\n        want = (uint64_t)max_slots;\n    }\n")],
     "TS5": [(AM, "        ratelimit_init(&limiter, limiter_table, table_n,\n",
              "        ratelimit_init(&limiter, limiter_table, (table_n > 0u) ? (size_t)RATELIMIT_ENTRIES : 0u, /* MUTATION TS5 */\n")],
-    "TS6": [(AM, "            if (want > (uint64_t)RATELIMIT_ENTRIES_MAX) {\n",
-             "            if (want > (uint64_t)RATELIMIT_ENTRIES_MAX && 0) { /* MUTATION TS6 */\n")],
+    "TS6": [("apps/authd/authd_cli.c", "        if (held > (uint64_t)RATELIMIT_ENTRIES_MAX) {\n",
+             "        if (held > (uint64_t)RATELIMIT_ENTRIES_MAX && 0) { /* MUTATION TS6 */\n")],
     "TS7": [(RL, "    for (size_t n = 0; n < r->n_entries; n++) {\n        ratelimit_entry_t *c = &r->e[(b + n) % r->n_entries];\n",
              "    for (size_t n = 0; n < r->n_entries && n < 1024u; n++) { /* MUTATION TS7 */\n        ratelimit_entry_t *c = &r->e[(b + n) % r->n_entries];\n")],
 }

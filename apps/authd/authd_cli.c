@@ -26,6 +26,7 @@
 #include "localcli.h"
 #include "mldsa_wrap.h"
 #include "net_io.h"
+#include "ratelimit.h"
 #include "secure_mem.h"
 #include "session.h"
 #include "store.h"
@@ -381,9 +382,13 @@ static int cmd_keygen_server(int argc, char **argv, const char *prog)
     authd_secret_free(pass, pass_len);
     if (rc == EX_OK) {
         printf("%s keygen-server: wrote %s (MLDSAEK1, mode 0600) and %s\n", prog, key, pub);
-    } else if (path_exists(key) && !path_exists(pub)) {
+    } else if (path_exists(key)) {
         /* The public half could not be written after all (a directory that
-         * cannot be written to): say what is left, as init does. */
+         * cannot be written to): say what is left, as init does. Neither
+         * path existed when this run began, so a key there now is this
+         * run's. Not "and --pub is absent" (F547): two spellings of one path
+         * pass F538's comparison, --pub is then the key itself, and the
+         * sealed key was left with nothing said about it. */
         fprintf(stderr, "%s keygen-server: %s was written and its public half was not; "
                         "remove it before retrying\n", prog, key);
     }
@@ -1068,6 +1073,38 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
 /* Delegates to the SAME authd_config_load() and authd_config_check_paths()
  * the daemon calls. Not a second validator: two validators drift, and the one
  * an operator runs would then approve a config the one that matters rejects. */
+int authd_cli_config_warnings(const authd_config_t *cfg, const char *prog)
+{
+    int said = 0;
+    /* F420. Not a refusal: a single-user development setup is this shape. */
+    uid_t shared = 0;
+    if (authd_config_shared_uid(cfg, &shared)) {
+        fprintf(stderr,
+                "%s: warning: uid %lu is in both site_uids and proxy_uids: "
+                "the site can state any client address to the rate limiter. "
+                "Give the site and the proxy a user each (F420).\n",
+                prog, (unsigned long)shared);
+        said++;
+    }
+    /* F338: the limiter's table is sized from these settings, to a ceiling;
+     * say so when the ceiling is what will refuse. */
+    if (cfg->proxy_protocol_v2) {
+        const uint64_t held = ratelimit_entries_wanted(cfg->rate_per_min, cfg->rate_global_per_sec,
+                                                       cfg->max_slots);
+        if (held > (uint64_t)RATELIMIT_ENTRIES_MAX) {
+            fprintf(stderr,
+                    "%s: warning: rate_global_per_sec = %u and rate_per_min = %u can hold "
+                    "%llu addresses at once and the limiter's table holds %u: past that, new "
+                    "addresses are refused limiter-table-full. Raise rate_per_min or lower "
+                    "rate_global_per_sec (F338).\n",
+                    prog, cfg->rate_global_per_sec, cfg->rate_per_min, (unsigned long long)held,
+                    (unsigned)RATELIMIT_ENTRIES_MAX);
+            said++;
+        }
+    }
+    return said;
+}
+
 static int cmd_check_config(int argc, char **argv, const char *prog)
 {
     const char *path = NULL;
@@ -1109,6 +1146,7 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
         fprintf(stderr, "%s: %s: %s\n", prog, path, detail);
         return EX_CONFIG;
     }
+    (void)authd_cli_config_warnings(&cfg, prog);   /* F545 */
     printf("%s: %s is valid (max_slots=%u handshake_timeout_ms=%u idle_timeout_ms=%u "
            "pad_bucket=%u log_identities=%s log_client_ip=%s)\n", prog, path, cfg.max_slots,
            cfg.handshake_timeout_ms, cfg.idle_timeout_ms, cfg.pad_bucket,

@@ -20990,3 +20990,64 @@ No code.
 Counts: unchanged by this step (746 mutations, 139 campaigns, 791
 anchors; 539 findings, the 12 above open; spec v1.97, 141 errata; 66
 tests).
+
+## V4-314 — what the sixty-eighth review found (F540 to F547)
+
+The sixty-eighth review was an independent read of the code changed in
+V4-306 to V4-312, each changed function whole with its callers. It ran
+probes on copies outside the tree. The daemon's changes it found sound:
+the page-size arithmetic, the admin slot, the notification socket, the
+session made ahead of the store. Eight findings: two Medium, four Low, two
+Info. Six are closed here.
+
+- **F540 (Medium), a regression from V4-311.** `destroy()` then `connect()`
+  with a request in flight left every request waiting for ever. V4-311 made
+  the old socket's `close` do nothing once the socket is replaced, and that
+  `close` was what failed the queue. `connect()` now fails what was waiting
+  on the connection it replaces.
+  - `destroy()` is unchanged. A first version failed the queue there too;
+    with both, neither could be shown to matter by a control, so one was
+    kept.
+- **F542 (Low).** F532's guard against an unasked line missed the case with
+  a request already queued. Bytes left after a reply now end the connection
+  before the next request is written.
+- **F543 (Low).** The two paths on which an unusable `--key` still exited 1.
+- **F545 (Low).** `authd_admin --check-config` now gives the daemon's two
+  warnings; one function prints them for both.
+- **F547 (Info).** `keygen-server` names the key it leaves behind whenever it
+  fails after sealing one.
+- **F546 (Info), no change.** A store that cannot be read at `ClientHello`
+  still looks like a wrong key to the peer. That is erratum 99, and it is
+  right: the alternative answers for handles that are not enrolled.
+
+**Open, for the next bug step.**
+- **F541 (Medium).** A backup longer than the unit's thirty-second watchdog
+  gets the daemon killed, while the tool now waits ten minutes for it. From
+  reading; no store here takes thirty seconds to copy.
+- **F544 (Low).** The limiter's table should hold the open connections and
+  the refilling buckets together. The fix changes figures that spec 17,
+  erratum 138 and several tests state, so it has its own step and erratum.
+
+**F398 is the owner's after all.** It was the next candidate. Answering a
+repeated signup `idempotent=1` when user, handle and key match is safe only
+if a site concludes nothing from it: a handle and a public key are not
+secrets, so anyone can send that line for an existing user. The row says so
+now.
+
+The register's row for F431 had an empty last cell; it reads V4-312.
+
+Campaign v170: four mutations (KX1, KX2, CW1, KG1), each killed by hand in
+build-asan-p. v165 SU2 and v166 TS6 moved with the warnings to
+`authd_cli.c` and were killed again.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`site_node_handler`, each KILLED by its named assertion:
+- SJ1: `connect()` does not fail what was waiting.
+- SJ2: bytes left after a one-line reply are kept.
+- SJ3: bytes left after a list are kept.
+
+No spec change: erratum 141 already states F543's rule.
+
+Counts: 750 mutations, 140 campaigns, 795 anchors; 547 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F541 and
+F544 open); spec v1.97, 141 errata; 66 tests.

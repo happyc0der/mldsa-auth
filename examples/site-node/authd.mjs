@@ -84,6 +84,11 @@ export class Authd {
     // another user's token. Here and not in 'close', which a destroy()
     // followed at once by connect() has not delivered yet.
     this.#buf = '';
+    // Nor is what was asked on it this connection's to answer (F540): the
+    // old socket's 'close' is ignored once it is replaced, so a request still
+    // in flight would stay at the head of the queue, marked sent, and nothing
+    // behind it would ever be written.
+    this.#abandon();
     await new Promise((resolve, reject) => {
       const sock = net.createConnection(this.socketPath);
       this.#sock = sock;
@@ -109,6 +114,14 @@ export class Authd {
     return this;
   }
 
+  // The connection is given up: nothing more is asked on it, and whatever
+  // was waiting is failed now, not at a 'close' that may come after the
+  // socket has been replaced (F540).
+  #abandon() {
+    this.#open = false;
+    this.#failQueue();
+  }
+
   #failQueue() {
     for (const { reject: rj } of this.#queue.splice(0)) {
       rj(new AuthdError('connection-closed'));
@@ -129,9 +142,21 @@ export class Authd {
 
   // For a daemon that has stopped answering (V4-127, F210): end() waits for
   // the peer, and a peer that is hung never lets the descriptor go.
-  // (A request made after destroy() is failed by the 'close' it causes.)
+  // (A request made after destroy() is failed by the 'close' it causes, or
+  // by the connect() that replaces the socket before that 'close': F540.)
   destroy() {
     this.#sock?.destroy();
+  }
+
+  // A reply has been taken and bytes are left over (F542): one request is
+  // in flight at a time, so they answer nothing. The next request is not
+  // written behind them -- they would be read as its reply, one user's
+  // identity for another's token. True when the connection was ended.
+  #surplus() {
+    if (this.#buf.length === 0) { return false; }
+    this.#buf = '';
+    this.destroy();
+    return true;
   }
 
   #onData(chunk) {
@@ -163,6 +188,7 @@ export class Authd {
         this.#buf = this.#buf.slice(nl + 1);
         this.#queue.shift();
         pending.resolve([firstLine]);
+        if (this.#surplus()) { return; }
         this.#sendHead();
         continue;
       }
@@ -173,6 +199,7 @@ export class Authd {
       this.#buf = this.#buf.slice(endAt + 5);
       this.#queue.shift();
       pending.resolve(block.split('\n'));
+      if (this.#surplus()) { return; }
       this.#sendHead();
     }
   }

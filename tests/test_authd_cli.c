@@ -544,6 +544,20 @@ static void test_keys(void)
               "keygen-server: a --pub that already exists is refused up front, by name (F232)");
         CHECK(file_size(ek5) < 0, "keygen-server: and that refusal sealed no key (F232)");
     }
+    /* V4-314, F547: two spellings of one path are not caught by F538's
+     * comparison. The key is sealed, the public half finds it there, and
+     * the run used to end without saying that a key had been left. */
+    {
+        char k7[512], p7[512], err[1024];
+        (void)snprintf(k7, sizeof k7, "%s/two.ek", dir);
+        (void)snprintf(p7, sizeof p7, "%s/./two.ek", dir);
+        CHECK(run_admin_capture((char *[]){ "authd_admin", "keygen-server", "--key", k7, "--pub", p7,
+                                            "--server-id", "srv", "--passphrase-file", pass, NULL },
+                                err, sizeof err) == 1 &&
+              strstr(err, "was written and its public half was not; remove it before retrying") != NULL,
+              "keygen-server: a key left without its public half is named, two spellings of one path included (F547)");
+        (void)unlink(k7);
+    }
 
     /* Req 10: no plaintext secret key is written to disk by any daemon or CLI
      * command. demo_keys_generate_files() writes one, which is exactly why the

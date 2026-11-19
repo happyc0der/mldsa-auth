@@ -34,6 +34,7 @@
  * and the .ek.next decision, key_plan_t / client_key_plan(), in client_core.h.
  * Both are included here so a caller of either tool needs one header. */
 #include "client_core.h"
+#include "authd_config.h"
 #include "client_cli.h"
 
 /* argv[0] is the program name, argv[1] the subcommand. */
@@ -45,5 +46,13 @@ int authd_cli_admin(int argc, char **argv);
  * NULL. Exposed so a test can name both without waiting for either. */
 uint64_t authd_cli_timeout_ms(const char *cmd);
 const char *authd_cli_timeout_hint(const char *cmd);
+
+/* What --check-config says of a configuration that is valid and worth a
+ * word (V4-314, F545): a uid in both site_uids and proxy_uids (F420), and
+ * rates that can hold more addresses than the limiter's table (F338). One
+ * function, because `mldsa-authd --check-config` warned and `authd_admin
+ * --check-config` said only "is valid" of the same file. On stderr, so the
+ * unit's ExecStartPre puts it in the journal. Returns how many it printed. */
+int authd_cli_config_warnings(const authd_config_t *cfg, const char *prog);
 
 #endif /* MLDSA_AUTHD_CLI_H */
