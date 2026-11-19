@@ -513,6 +513,70 @@ static void test_exchange_expiry(void)
     h_stop(&d);
 }
 
+/* V4-329 (F612): the clock is read again after a BACKUP. The daemon reads it
+ * once per pass of its loop, and BACKUP copies the whole store inside one:
+ * what was served after it in that pass was judged at a time as old as the
+ * copy was long, so a code expired by less than that was exchanged. Here the
+ * "copy" takes a hundred seconds: the refresh the daemon would make is
+ * stood in for by one that moves the harness's clock on. */
+static unsigned g_refreshes;
+static void refresh_plus_100(void *ctx)
+{
+    authd_app_t *app = ctx;
+    app->now_unix += 100;
+    g_refreshes++;
+}
+
+static void test_backup_refreshes_clock(void)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    CHECK(h_start(&d, g_dir, "bkclock.sqlite3", 1) == 0, "backup clock: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    const int64_t t0 = d.app.now_unix;
+
+    h_client_t c;
+    uint8_t code[32];
+    CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "backup clock: login");
+    CHECK(h_get_login_code(&d, &c, code) == 0, "backup clock: login code received");
+    const int site = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(site >= 0 && adm >= 0, "backup clock: both sockets connect");
+
+    char hexcode[80], ex[512], bk[1400], path[512], hexpath[1100], resp[16384];
+    hx(hexcode, sizeof hexcode, code, sizeof code);
+    snprintf(ex, sizeof ex, "EXCHANGE code=%s state=", hexcode);
+    snprintf(path, sizeof path, "%s/bkclock.bak", g_dir);
+    (void)unlink(path);
+    hx(hexpath, sizeof hexpath, (const uint8_t *)path, strlen(path));
+    snprintf(bk, sizeof bk, "BACKUP path=%s", hexpath);
+
+    /* One second of the code's life is left when the backup begins. */
+    d.app.now_unix = t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S - 1;
+    g_refreshes = 0;
+    d.app.clock_refresh = refresh_plus_100;
+    CHECK(h_local_cmd(&d, adm, bk, resp, sizeof resp) == 0 && starts(resp, "OK"),
+          "backup clock: the backup is written (the canary)");
+    CHECK(g_refreshes == 1u && d.app.now_unix == t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S + 99,
+          "backup clock: the daemon reads its clock again once a BACKUP has been written (F612)");
+    CHECK(h_local_cmd(&d, site, ex, resp, sizeof resp) == 0 && starts(resp, "ERR code=expired"),
+          "backup clock: a code that expired while the backup was written is refused after it (F612)");
+    /* A backup that FAILS took its time too: the destination exists now. */
+    CHECK(h_local_cmd(&d, adm, bk, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
+          "backup clock: a second backup onto the same file is refused (the canary)");
+    CHECK(g_refreshes == 2u,
+          "backup clock: the clock is read again after a BACKUP that failed as well (F612)");
+    /* No other command asks: the pass's own reading is theirs. */
+    CHECK(h_local_cmd(&d, adm, "LIST-USERS", resp, sizeof resp) == 0 && g_refreshes == 2u,
+          "backup clock: a command that does not block leaves the clock as the pass read it (F612)");
+    d.app.clock_refresh = NULL;
+    (void)unlink(path);
+
+    (void)close(site); (void)close(adm);
+    h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
 /* ------------------------------------------- revocation reaches live sessions */
 
 static void test_revocation_closes_sessions(void)
@@ -3184,6 +3248,7 @@ int main(void)
     test_pipelined();
     test_exchange_verify();
     test_exchange_expiry();
+    test_backup_refreshes_clock();
     test_revocation_closes_sessions();
     test_disable_closes_sessions();
     test_enroll();

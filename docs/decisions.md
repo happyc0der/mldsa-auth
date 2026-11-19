@@ -21821,3 +21821,52 @@ by hand by the new checks, CK4 twice, with v129 LW1.
 
 Counts: 777 mutations, 148 campaigns, 822 anchors; 610 findings (the 15
 above open); spec v1.107, 156 errata; 66 tests.
+
+## V4-329: what the seventy-eighth review found (F611 to F618)
+
+**The seventy-eighth review** read what V4-327 and V4-328 changed and ran
+the browser's store in headless Edge. No High or Medium. One Low
+regression, one Low in the daemon, six Info.
+
+- **F611 (Low).** V4-327's second look at the store (F603) had no end. The
+  review showed it in a browser: behind another tab's blocked delete or
+  upgrade, a fresh `open` gets no event. It is now raced against two
+  seconds, and only `enroll` asks. `login` and `rotate` never used the
+  answer and no longer wait for it. This is the fifth step on the same
+  lines (F584, F594, F597, F603, F611), and the first whose defect the
+  test's stand-in could not have shown without being told what a browser
+  does.
+- **F612 (Low).** The daemon reads its clock again when `BACKUP` returns.
+  The one assignment in `authd_main.c` that wires it has no test that
+  would fail, and its row says so.
+- **F613, F614 (Info).** The probe V4-328 added times its own byte and
+  close and retakes an attempt it was stalled in, and reports only a
+  closed connection as F224.
+- **F615 (Info).** The example compares the request's target as sent.
+  `tests/caddy_proxy.sh` was run in its container (Caddy 2.10.2), twice.
+  With `path_regexp ^/authd/v1$`, which the review proposed from Caddy's
+  documentation, `/AUTHD/V1` was refused and `//authd/v1` was answered
+  101: Caddy cleans the path before a regular expression sees it, as it
+  does for `path`. That run is the new check's control. With an
+  expression on `{http.request.orig_uri}`, the target as it arrived,
+  `/AUTHD/V1`, `//authd/v1` and `/%61uthd/v1` are all refused and the
+  real upgrade is served.
+- **F616 (Info).** Erratum 157.
+- **F617 (Info).** The enroll page trims the name and the invitation.
+- **F618 (Info).** The untested branch has its tests.
+
+Campaign v179, both KILLED by hand: BC1 (no refresh after a backup), BC2
+(only after one that was written).
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, all KILLED: J1, the second look is awaited with no deadline;
+J2, a login takes the second look; J3, a confirmation that threw answers
+"marked" without looking; J4, the wait is 20 ms.
+
+v103 CK4 and CK5 were killed again by hand, each by the probe's F224 line.
+
+Spec v1.108: erratum 157 (7.1).
+
+Counts: 779 mutations, 149 campaigns, 824 anchors; 618 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585 and F609 open); spec v1.108, 157 errata; 66 tests.

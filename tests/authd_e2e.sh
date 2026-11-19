@@ -2211,46 +2211,68 @@ done
 # clock has the connection's 600 ms already spent: it is closed at once. A
 # fresh clock leaves it open 300 ms later. A wait outside that band says
 # nothing and is taken again.
-python3 - "$TMP/a.sock" "$TMP/p.sock" > "$TMP/hs-probe.txt" 2>&1 <<'PYEOF' || { cat "$TMP/hs-probe.txt" "$TMP/hs.log"; fail "a login 0.8s into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)"; }
+HS_PROBE=0
+python3 - "$TMP/a.sock" "$TMP/p.sock" > "$TMP/hs-probe.txt" 2>&1 <<'PYEOF' || HS_PROBE=$?
 import socket, sys, time
 admin, proxy = sys.argv[1], sys.argv[2]
-for attempt in range(12):
-    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    a.settimeout(5)
-    a.connect(admin)
-    a.sendall(b"PING\n")
-    if not a.recv(256).startswith(b"OK"):
-        print("the admin socket did not answer PING"); sys.exit(1)
-    a.close()
-    t0 = time.monotonic()
-    time.sleep(0.8)
-    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    c.connect(proxy)
-    phase = time.monotonic() - t0
-    # One byte, the first of the PROXY v2 preamble this socket expects: the
-    # daemon wakes to read it, and that is when it looks at the deadline. A
-    # connection that sends nothing is not looked at until the deadline the
-    # daemon itself computed, stale or not, and the first form of this probe
-    # passed both mutants for that reason.
-    c.sendall(b"\r")
-    c.settimeout(0.3)
-    try:
-        closed = (c.recv(1) == b"")
-    except socket.timeout:
-        closed = False
-    c.close()
-    time.sleep(0.7)                      # let that connection's own deadline pass before the next try
-    if not 0.65 <= phase <= 0.95:
-        print(f"attempt {attempt}: connected {phase:.3f}s in, outside the band; again")
-        continue
-    if closed:
-        print(f"a connection made {phase:.3f}s into the daemon's sleep was closed within 300 ms")
-        sys.exit(1)
-    print(f"a connection made {phase:.3f}s into the daemon's sleep was still open 300 ms later")
-    sys.exit(0)
-print("no attempt landed 0.65 to 0.95 s into the sleep in twelve tries")
-sys.exit(1)
+# Exit 1: the connection was closed (the defect). Exit 3: the probe could not
+# be made at all -- that is the test's failure, and is not reported as the
+# daemon's (F614).
+try:
+    for attempt in range(12):
+        a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        a.settimeout(5)
+        a.connect(admin)
+        a.sendall(b"PING\n")
+        if not a.recv(256).startswith(b"OK"):
+            print("the admin socket did not answer PING"); sys.exit(3)
+        a.close()
+        t0 = time.monotonic()
+        time.sleep(0.8)
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.connect(proxy)
+        phase = time.monotonic() - t0
+        # One byte, the first of the PROXY v2 preamble this socket expects: the
+        # daemon wakes to read it, and that is when it looks at the deadline. A
+        # connection that sends nothing is not looked at until the deadline the
+        # daemon itself computed, stale or not, and the first form of this probe
+        # passed both mutants for that reason.
+        c.sendall(b"\r")
+        sent = time.monotonic() - t0
+        c.settimeout(0.3)
+        try:
+            closed = (c.recv(1) == b"")
+        except socket.timeout:
+            closed = False
+        c.close()
+        done = time.monotonic() - t0
+        time.sleep(0.7)
+        # F613: an attempt this process was stalled in says nothing either way.
+        # A byte sent late reaches a correct daemon after the real deadline; a
+        # close made late leaves the daemon to end the connection on its own.
+        if not 0.65 <= phase <= 0.95 or sent - phase > 0.2 or done - sent > 0.55:
+            print(f"attempt {attempt}: phase {phase:.3f}s, byte +{sent - phase:.3f}s, close +{done - sent:.3f}s; again")
+            continue
+        if closed:
+            print(f"a connection made {phase:.3f}s into the daemon's sleep was closed within 300 ms")
+            sys.exit(1)
+        print(f"a connection made {phase:.3f}s into the daemon's sleep was still open 300 ms later")
+        sys.exit(0)
+    print("no attempt was clean in twelve tries")
+    sys.exit(3)
+except SystemExit:
+    raise
+except Exception as e:
+    print(f"the probe itself failed: {e!r}")
+    sys.exit(3)
 PYEOF
+case "$HS_PROBE" in
+0) ;;
+1) cat "$TMP/hs-probe.txt" "$TMP/hs.log"; fail "a login 0.8s into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)" ;;
+*) cat "$TMP/hs-probe.txt" "$TMP/hs.log"; fail "the probe of the daemon's sleep could not be made (exit $HS_PROBE): this says nothing about F224" ;;
+esac
+# What the probe may have left in the journal is not the seven logins' (F613).
+HS_DEADLINES0=$(grep -c 'event=closed-deadline' "$TMP/hs.log" || true)
 for gap in 0 0.15 0.3 0.45 0.6 0.75 0.9; do
     "$ADMIN" list-users --socket "$TMP/a.sock" > /dev/null || fail "the short-handshake daemon's admin socket does not answer"
     sleep "$gap"
@@ -2259,8 +2281,8 @@ for gap in 0 0.15 0.3 0.45 0.6 0.75 0.9; do
         --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2>> "$TMP/login.err" \
         || { cat "$TMP/hs.log"; fail "a login ${gap}s into the daemon's sleep was refused at handshake_timeout_ms = 600 (F224)"; }
 done
-grep -q 'event=closed-deadline' "$TMP/hs.log" \
-    && { cat "$TMP/hs.log"; fail "the short-handshake daemon closed a connection on a deadline (F224)"; }
+[ "$(grep -c 'event=closed-deadline' "$TMP/hs.log" || true)" = "$HS_DEADLINES0" ] \
+    || { cat "$TMP/hs.log"; fail "the short-handshake daemon closed a connection on a deadline (F224)"; }
 [ "$(grep -c 'event=login-code-issued' "$TMP/hs.log")" -eq 7 ] \
     || { cat "$TMP/hs.log"; fail "the short-handshake daemon did not issue seven login codes"; }
 echo "PASS: E2E: seven logins spread across the daemon's one-second sleep all succeed at handshake_timeout_ms = 600 (F224)"

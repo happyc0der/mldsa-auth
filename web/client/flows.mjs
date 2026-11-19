@@ -235,10 +235,23 @@ export async function login(client, store, params, events) {
 // is what a browser's store does when the origin's storage is cleared: its
 // connection is closed, and every call fails. It was read as "still marked",
 // so the case F597 was written for was reported as a key to log in with.
-async function confirmQuietly(store, handle) {
+//
+// F611: the second look has an END, and only a caller that will use the
+// answer asks for it (`look`). A fresh connection opened while another tab
+// holds the database through a delete or an upgrade gets no event at all,
+// so reread() never settled: enroll hung, holding the identity's lock, after
+// the site had enrolled the key; and login and rotate, which do not use the
+// answer, hung with it. Two seconds without an answer is "not known".
+const REREAD_MS = 2000;
+async function confirmQuietly(store, handle, look = false) {
   const again = async () => {
-    try { return (typeof store.reread === 'function') ? await store.reread(handle) : undefined; }
-    catch { return undefined; }                // nothing can be read: not known to be gone
+    if (!look || typeof store.reread !== 'function') { return undefined; }
+    let timer;
+    try {
+      return await Promise.race([store.reread(handle),
+                                 new Promise((r) => { timer = setTimeout(() => r(undefined), REREAD_MS); })]);
+    } catch { return undefined; }              // nothing can be read: not known to be gone
+    finally { clearTimeout(timer); }
   };
   let rec;
   try { rec = await store.get(handle); }
@@ -300,7 +313,7 @@ export async function enroll(client, store, { serverId, serverPub, passphrase },
     // `stored` is false when the key is no longer in this browser at all
     // (F597). The site has enrolled a key nobody holds: the caller must not
     // tell the user to log in with it.
-    const state = await confirmQuietly(store, id.handle);
+    const state = await confirmQuietly(store, id.handle, true);
     return { handle: id.handle, answer, confirmed: state === 'confirmed', stored: state !== 'gone' };
   });
 }

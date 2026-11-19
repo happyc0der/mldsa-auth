@@ -1,0 +1,2 @@
+BC1|^test_authd_localapi$|backup clock: the daemon reads its clock again once a BACKUP has been written (F612)
+BC2|^test_authd_localapi$|backup clock: the clock is read again after a BACKUP that failed as well (F612)

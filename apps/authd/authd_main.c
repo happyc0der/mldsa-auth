@@ -100,6 +100,12 @@ static uint64_t loop_clock(void *ctx)
     return app->now_ms;
 }
 
+/* F612: the same reading, for the request that outlasts a pass (BACKUP). */
+static void app_clock_refresh(void *ctx)
+{
+    (void)loop_clock(ctx);
+}
+
 _Static_assert(AUTHD_LOG_PSEUDONYM_BYTES == STORE_PSEUDONYM_BYTES,
                "the log prints exactly the pseudonym the store computes");
 
@@ -394,6 +400,7 @@ int main(int argc, char **argv)
     app.now_ms = now_ms();
     app.now_unix = wall_now(app.now_ms);
     app.started_ms = app.now_ms;
+    app.clock_refresh = app_clock_refresh;
     if (app.now_unix < 0) {
         /* F515: every lifetime is on this clock; with none, nothing can be
          * judged expired, so the daemon does not start. */

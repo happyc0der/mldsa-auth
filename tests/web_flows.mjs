@@ -426,6 +426,25 @@ try {
       check(committed.startsWith('OK') && logged, 'enroll: a key enrolled behind a lost answer still logs in (F220)');
       check(rec !== null && rec.unconfirmed === false, `enroll: and that login confirms it (unconfirmed=${rec && rec.unconfirmed}) (F220)`); }
 
+    // V4-329 (F611): a login does not use what the second look would say, and
+    // so does not take it. It awaited a reread that, behind another tab's
+    // blocked delete, never answered: the login succeeded and its session
+    // was never handed back.
+    { const store = new MemoryStore();
+      let err = null, rereads = 0;
+      try {
+        await flows.enroll(client, store, want, async (id) => {
+          await enroll(id.handle, id.publicImage);
+          throw new Error('HTTP 503');
+        });
+      } catch (e) { err = e; }
+      store.confirm = async () => { throw new Error('The database connection is closing'); };
+      store.reread = () => { rereads++; return new Promise(() => {}); };
+      const logged = err !== null && err.handle !== undefined && await Promise.race([
+        logsIn(store, err.handle), new Promise((r) => setTimeout(() => r('hung'), 6000))]);
+      check(logged === true && rereads === 0,
+            `login: a login whose confirmation cannot be recorded returns its session without a second look (${logged}, ${rereads} looks) (F611)`); }
+
     // A refused passphrase stores nothing and asks the site nothing.
     { const store = new MemoryStore();
       let asked = false, status = null;
@@ -668,6 +687,44 @@ try {
     const c3 = await flows.enroll(client, blind.st, want, async () => { blind.close(); return { user: 'u' }; });
     check(c3.stored === true && c3.confirmed === false,
           'enroll: a store that cannot be read at all is not said to have lost the key (F603)');
+    // V4-329 (F618): the OTHER way to the second look -- the record was read,
+    // and it is the confirmation that threw. Nothing covered it: answering
+    // 'marked' there without looking passed every check.
+    const readable = (after) => {
+      const st = new MemoryStore();
+      st.confirm = async () => { throw new Error('The database connection is closing'); };
+      if (after !== undefined) { st.reread = after; }
+      return st;
+    };
+    const c4 = await flows.enroll(client, readable(async () => null), want, async () => ({ user: 'u' }));
+    check(c4.stored === false && c4.confirmed === false,
+          'enroll: a record that was read, could not be confirmed, and is gone when read afresh is reported as not stored (F618)');
+    const c5 = await flows.enroll(client, readable(async (h) => ({ handle: h, unconfirmed: true })), want, async () => ({ user: 'u' }));
+    check(c5.stored === true && c5.confirmed === false,
+          'enroll: one that is still there when read afresh is stored and not confirmed (F618)');
+    // A store with no reread at all (anything but the browser's): not known
+    // to be gone, in either branch.
+    const c6 = await flows.enroll(client, readable(undefined), want, async () => ({ user: 'u' }));
+    const noLook = closedStore(undefined); delete noLook.st.reread;
+    const c7 = await flows.enroll(client, noLook.st, want, async () => { noLook.close(); return { user: 'u' }; });
+    check(c6.stored === true && c6.confirmed === false && c7.stored === true && c7.confirmed === false,
+          'enroll: a store that cannot be read afresh is not said to have lost the key, whichever call threw (F618)');
+    // V4-329 (F611): the second look ENDS. A fresh connection opened while
+    // another tab holds the database through a delete or an upgrade gets no
+    // event at all (review 78, in a browser: still pending after 5 s), and
+    // enroll never returned, holding the identity's lock, with the site
+    // enrolled.
+    { let rereads = 0;
+      const never = closedStore(() => { rereads++; return new Promise(() => {}); });
+      const t0 = Date.now();
+      const c8 = await Promise.race([
+        flows.enroll(client, never.st, want, async () => { never.close(); return { user: 'u' }; }),
+        new Promise((r) => setTimeout(() => r('hung'), 6000))]);
+      const took = Date.now() - t0;
+      check(c8 !== 'hung' && c8.stored === true && c8.confirmed === false && rereads === 1,
+            `enroll: a second look that never answers ends, and the key is not said to be lost (${c8 === 'hung' ? 'hung' : took + ' ms'}) (F611)`);
+      check(c8 !== 'hung' && took >= 1500,
+            `enroll: and it was waited for, about two seconds (${took} ms) (F611)`); }
     const store2 = new MemoryStore();
     store2.remove = async () => { throw new Error('transaction aborted'); };
     const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })

@@ -160,6 +160,13 @@ typedef struct {
      * not need a signature change to carry the clock into the callback. */
     uint64_t now_ms;
     int64_t  now_unix;
+    /* F612 (V4-329): the one call that can take longer than the clock above
+     * stays true for. BACKUP copies the whole store inside one pass of the
+     * loop, and whatever is served after it in that pass -- a token to
+     * verify, a code to exchange -- was judged at a time as old as the copy
+     * was long: expired by less than that, it was accepted. The daemon sets
+     * this to read its clock again; NULL (tests) leaves the pushed time. */
+    void (*clock_refresh)(void *app);
 
     /* observable counters (tests and operators) */
     uint64_t logins_issued;

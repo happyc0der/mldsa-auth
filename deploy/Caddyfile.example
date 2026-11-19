@@ -104,9 +104,13 @@ authd.example.com {
 	# `/authd/v1evil` and any method, which the reference site's own relay
 	# stopped doing in V4-326. Anything else under that prefix goes to the
 	# site below, which answers it as it does any unknown path.
+	# The request's target AS IT WAS SENT is what is compared (F615), and
+	# neither `path` nor `path_regexp` does that: both match the path after
+	# Caddy has decoded and cleaned it, and `path` ignores case as well, so
+	# `/AUTHD/V1`, `//authd/v1` and `/%61uthd/v1` would be the daemon's too.
 	@authd {
-		path /authd/v1
 		method GET
+		expression `{http.request.orig_uri}.matches("^/authd/v1([?].*)?$")`
 	}
 	handle @authd {
 		@page {

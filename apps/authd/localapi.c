@@ -1086,7 +1086,11 @@ static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *r
         }
     }
     path[path_len] = 0;
-    if (store_backup(app->store, (const char *)path) != STORE_OK) {
+    const store_status_t bs = store_backup(app->store, (const char *)path);
+    if (app->clock_refresh != NULL) {
+        app->clock_refresh(app);          /* F612: the copy took as long as it took */
+    }
+    if (bs != STORE_OK) {
         return send_err(slot, "internal");
     }
     resp_t r;

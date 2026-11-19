@@ -45,7 +45,10 @@ action('go', async () => {
       const problem = flows.recoveryNameProblem(val('user'), sess.recoveringUser);
       if (problem) { throw new Error(problem); }
     } else {
-      await post('/api/signup', { user: val('user'), invite });
+      // F617: trimmed, as the recovery branch above compares it and as the
+      // recover page sends it (F604). A name with a space after it was
+      // refused as "signup refused", with both secret fields already emptied.
+      await post('/api/signup', { user: val('user').trim(), invite: invite.trim() });
     }
     // A 4xx is the site's refusal: the key was not enrolled, and flows.enroll
     // removes it. Anything else -- no answer, a 5xx -- says nothing about
