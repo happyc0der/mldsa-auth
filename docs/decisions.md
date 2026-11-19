@@ -21099,3 +21099,29 @@ Spec v1.98: errata 142 (16) and 143 (17).
 Counts: 755 mutations, 141 campaigns, 800 anchors; 547 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453 and F511 open);
 spec v1.98, 143 errata; 66 tests.
+
+## V4-316: cleanup after V4-314 and V4-315
+
+No code.
+
+- `docs/review/REPRODUCE.md` now cites the runs on `de72a33` (V4-312): CI
+  44465612837 (16/16) and nightly 44465621840 (154/154, 139 campaigns).
+  Main is `8fbb933` (V4-313, documents only; CI 44465739140, 16/16).
+- A sweep of the threat model, CLAIMS, the README, the unit, the example
+  configuration and the runbook for F540 to F547 found nothing that still
+  described the limiter's table as the larger of its two parts, a backup
+  as shorter than the watchdog, or `authd_admin --check-config` as silent.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453 and
+  F511. None of them is left that this loop can close without a decision:
+  F398's row now says what the decision is. Also open: whether F420's
+  overlap should be refused rather than warned of, and the questions in
+  V4-246's, V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and V4-300's
+  entries.
+- Two things V4-315 did not test, kept here so they are not lost: the line
+  in `authd_main.c` that hands the watchdog's callback to the store, and a
+  backup that lasts longer than the watchdog's interval.
+
+Counts: unchanged by this step (755 mutations, 141 campaigns, 800
+anchors; 547 findings, the 12 above open; spec v1.98, 143 errata; 66
+tests).
