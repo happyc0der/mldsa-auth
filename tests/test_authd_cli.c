@@ -2321,6 +2321,90 @@ static void test_sd_notify(void)
     (void)unlink(sp);
 }
 
+/* V4-311, review 67: what authd_admin's argument handling let through. */
+static void test_admin_arguments(void)
+{
+    char err[1024];
+    char nosock[sizeof g_dir + 32u];
+    (void)snprintf(nosock, sizeof nosock, "%s/no-such.sock", g_dir);
+
+    /* F537: a flag given twice is a usage error, not "the last one wins". */
+    int rc = run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", nosock, "--user", "alice",
+                                           "--user", "bob", "--reason", "x", NULL }, err, sizeof err);
+    CHECK(rc == 2 && strstr(err, "disable-user: --user is given more than once") != NULL,
+          "args: disable-user with --user twice is refused as usage, naming the flag (F537)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "list-users", "--socket", nosock, "--socket", nosock, NULL },
+                           err, sizeof err);
+    CHECK(rc == 2 && strstr(err, "--socket is given more than once") != NULL,
+          "args: --socket twice is refused too (F537)");
+    {
+        char d2[sizeof g_dir + 32u], pf[sizeof g_dir + 32u];
+        (void)snprintf(d2, sizeof d2, "%s/twice-init", g_dir);
+        (void)snprintf(pf, sizeof pf, "%s/no-such-pass", g_dir);
+        rc = run_admin_capture((char *[]){ "authd_admin", "init", "--dir", d2, "--dir", d2, "--server-id", "authd",
+                                           "--passphrase-file", pf, NULL }, err, sizeof err);
+        struct stat st;
+        CHECK(rc == 2 && strstr(err, "init: --dir is given more than once") != NULL && stat(d2, &st) != 0,
+              "args: an offline command refuses a doubled flag before it makes anything (F537)");
+    }
+    /* The canary: a VALUE that looks like a flag is not a repeat. This is
+     * past the usage checks and fails at the socket that is not there. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", nosock, "--user", "alice",
+                                       "--reason", "--user", NULL }, err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "more than once") == NULL && strstr(err, "cannot-connect") != NULL,
+          "args: a value spelled like a flag is a value: the request goes on to the socket (F537 canary)");
+
+    /* F538: one path for the key and its public half. */
+    {
+        char same[sizeof g_dir + 32u], pf[sizeof g_dir + 32u];
+        (void)snprintf(same, sizeof same, "%s/same.ek", g_dir);
+        (void)snprintf(pf, sizeof pf, "%s/no-such-pass", g_dir);
+        rc = run_admin_capture((char *[]){ "authd_admin", "keygen-server", "--key", same, "--pub", same,
+                                           "--server-id", "authd", "--passphrase-file", pf, NULL }, err, sizeof err);
+        struct stat st;
+        CHECK(rc == 2 && strstr(err, "--key and --pub name the same file; nothing was written") != NULL &&
+              stat(same, &st) != 0,
+              "args: keygen-server with one path for both halves is refused as usage and writes nothing (F538)");
+    }
+
+    /* F539: pseudonym --id is held to the daemon's bound for an identifier. */
+    {
+        char id64[65], id65[66];
+        memset(id64, 'a', 64u); id64[64] = '\0';
+        memset(id65, 'a', 65u); id65[65] = '\0';
+        char no[sizeof g_dir + 32u];
+        (void)snprintf(no, sizeof no, "%s/no-such-file", g_dir);
+        rc = run_admin_capture((char *[]){ "authd_admin", "pseudonym", "--store", no, "--key", no,
+                                           "--passphrase-file", no, "--server-id", "authd", "--id", id65, NULL },
+                               err, sizeof err);
+        CHECK(rc == 2 && strstr(err, "pseudonym: --id is 1 to 64 bytes of printable ASCII") != NULL,
+              "args: pseudonym refuses a 65-byte --id as usage, naming the bound (F539)");
+        rc = run_admin_capture((char *[]){ "authd_admin", "pseudonym", "--store", no, "--key", no,
+                                           "--passphrase-file", no, "--server-id", "authd", "--id", "a\tb", NULL },
+                               err, sizeof err);
+        CHECK(rc == 2 && strstr(err, "--id is 1 to 64 bytes of printable ASCII") != NULL,
+              "args: and one with a tab in it (F539)");
+        rc = run_admin_capture((char *[]){ "authd_admin", "pseudonym", "--store", no, "--key", no,
+                                           "--passphrase-file", no, "--server-id", "authd", "--id", id64, NULL },
+                               err, sizeof err);
+        CHECK(rc != 2 && strstr(err, "--id is 1 to") == NULL,
+              "args: a 64-byte --id passes that check and fails later, on the files (F539 canary)");
+    }
+
+    /* F533: BACKUP is given ten minutes, everything else ten seconds, and a
+     * timed-out backup says the daemon may still finish it. Named here; a
+     * test that waited for either would be the slowest in the tree. */
+    CHECK(authd_cli_timeout_ms("BACKUP") == 600000u, "args: BACKUP waits ten minutes for its answer (F533)");
+    CHECK(authd_cli_timeout_ms("LIST-USERS") == 10000u && authd_cli_timeout_ms("ENROLL-OPERATOR") == 10000u &&
+          authd_cli_timeout_ms(NULL) == 10000u,
+          "args: every other command waits ten seconds (the canary)");
+    CHECK(authd_cli_timeout_hint("BACKUP") != NULL &&
+          strstr(authd_cli_timeout_hint("BACKUP"), "the daemon may still be writing the backup") != NULL,
+          "args: a timed-out backup says the daemon may still be writing it (F533)");
+    CHECK(authd_cli_timeout_hint("LIST-USERS") == NULL && authd_cli_timeout_hint(NULL) == NULL,
+          "args: and no other command claims that");
+}
+
 /* F209 (V4-126): the watchdog interval. systemd hands a service with
  * WatchdogSec= the timeout in $WATCHDOG_USEC (and, when the variable is meant
  * for one process only, that process in $WATCHDOG_PID). The daemon pings at a
@@ -2456,6 +2540,7 @@ int main(void)
     test_stdfds();
     test_sd_notify();
     test_sd_watchdog();
+    test_admin_arguments();
     test_keygen_crlf();
 
     char cmd[512];

@@ -20855,3 +20855,62 @@ No code.
 Counts: unchanged by this step (734 mutations, 137 campaigns, 779
 anchors; 531 findings, the 13 above open; spec v1.96, 139 errata; 66
 tests).
+
+## V4-311 — the site's client and the admin tool's arguments (F532 to F539)
+
+The sixty-seventh review read `authd_admin`'s offline commands, its socket
+commands' argument handling, and `examples/site-node/authd.mjs`. It ran the
+client against a stand-in daemon. The offline commands' file handling, the
+reply parser and the request building were sound. Eight findings, all fixed
+here: two Low, six Info.
+
+- **F532 (Low).** A reused `Authd` object could answer bob's token with
+  alice's identity. The shipped site makes one object per request and is not
+  affected; a copy that keeps a connection is.
+  - `connect()` empties the buffer. The reset is there and not in `close`,
+    because a `destroy()` followed at once by `connect()` has not had its
+    `close` yet.
+  - `connect()` on an open connection is refused as `already-connected`.
+  - Listeners ignore a socket that is no longer the object's.
+  - A line that arrives with no request written ends the connection.
+- **F533 (Low).** `backup` waits ten minutes; every other command still
+  waits ten seconds. A backup that still times out says the daemon may be
+  writing it. The two figures and the sentence are checked by name. Nothing
+  drives a real timeout: that test would take ten minutes.
+- **F534, F535, F536 (Info).** `connect()` settles when destroyed first; a
+  list reply must begin `OK`; a login code is exactly 43 base64url
+  characters.
+- **F537 (Info).** A flag given twice is a usage error in every subcommand.
+  Every flag of the tool takes one value, so only the arguments in flag
+  position are compared, and a value spelled like a flag is still a value.
+- **F538, F539 (Info).** `keygen-server` refuses one path for both halves;
+  `pseudonym --id` is held to the daemon's bound.
+
+**What went wrong on the way.**
+- The six JavaScript controls first scored KILLED(other), and two hung. The
+  tests failed by a thrown error, not a named assertion, and a failed
+  assertion left a socket open, so node never exited. The stand-in now ends
+  every connection when it stops, and each check is an assertion with its
+  own message.
+- I started a second control while the first batch was still running on
+  the same file. Both mutations were left in `authd.mjs`. They were put back
+  by hand, and the file's sha256 matched the tool's clean fingerprint
+  (`6c85c16dcdaa`) before anything else ran.
+
+Campaign v168: four mutations (AD1 to AD4), each killed by hand in
+build-asan-p.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`site_node_handler`, each KILLED by its named assertion:
+- NC1: the buffer is not emptied by `connect()`.
+- NC2: an unasked line is kept.
+- NC3: `close` does not settle `connect()`.
+- NC4: a list waits unless the line is `ERR code=`.
+- NC5: `codeToHex` checks only the type.
+- NC6: `connect()` on an open connection is allowed.
+
+No spec change: the tool's exit statuses already follow spec 13.
+
+Counts: 738 mutations, 138 campaigns, 783 anchors; 539 findings (F148,
+F156, F273, F288, F309, F398, F419, F431, F435, F436, F451, F453 and F511
+open); spec v1.96, 139 errata; 66 tests.

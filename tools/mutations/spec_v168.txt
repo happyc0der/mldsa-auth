@@ -1,0 +1,4 @@
+AD1|^test_authd_cli$|args: disable-user with --user twice is refused as usage, naming the flag (F537)
+AD2|^test_authd_cli$|args: keygen-server with one path for both halves is refused as usage and writes nothing (F538)
+AD3|^test_authd_cli$|args: pseudonym refuses a 65-byte --id as usage, naming the bound (F539)
+AD4|^test_authd_cli$|args: BACKUP waits ten minutes for its answer (F533)

@@ -300,3 +300,155 @@ test('a reply that is not the protocol\'s is malformed-response, not a success (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// V4-311, review 67: a stand-in daemon that answers line by line, for what a
+// real one cannot be made to do on demand.
+async function standIn(prefix, onLine) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const path = join(dir, 's.sock');
+  let n = 0;
+  const conns = new Set();
+  const srv = createServer((conn) => {
+    const id = ++n;
+    let b = '';
+    conns.add(conn);
+    conn.on('close', () => conns.delete(conn));
+    conn.on('error', () => {});
+    conn.on('data', (d) => {
+      b += d;
+      let i;
+      while ((i = b.indexOf('\n')) >= 0) { const l = b.slice(0, i); b = b.slice(i + 1); onLine(conn, l, id); }
+    });
+  });
+  await new Promise((r) => srv.listen(path, r));
+  // Every connection is ended here: a failed assertion must not leave a
+  // socket open, which keeps the test process alive until CTest's timeout.
+  const stop = async () => {
+    for (const c of conns) { c.destroy(); }
+    await new Promise((r) => srv.close(r));
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { path, stop };
+}
+const settled = (p, ms = 2000) => Promise.race([
+  p.then(() => 'resolved', (e) => (e instanceof AuthdError ? e.code : `threw ${e}`)),
+  new Promise((r) => setTimeout(() => r('NEVER SETTLED'), ms)),
+]);
+const hexOf = (s) => Buffer.from(s).toString('hex');
+// Whose identity a VERIFY returned, or the error's code: a value to assert
+// on, so a wrong answer and a thrown error are both a named assertion.
+const whose = (p) => settled2(p.then((v) => v.user, (e) => (e instanceof AuthdError ? e.code : `threw ${e}`)));
+const settled2 = (p, ms = 2000) => Promise.race([p, new Promise((r) => setTimeout(() => r('NEVER SETTLED'), ms))]);
+
+// F532: what one connection left unread is not the next connection's reply.
+// A list reply cut short left `OK count=2`, a DEVICE line and half another in
+// the buffer; connect() again on the same object kept them, three requests
+// were answered malformed-response from the stale lines, and from then on
+// every reply was three requests late -- alice's identity for bob's token.
+test('a second connection does not read the first one\'s leftovers: bob\'s token is bob (F532)', async () => {
+  const users = { aa: 'alice', bb: 'bob' };
+  const s = await standIn('authd-f532-', (c, l, id) => {
+    if (l.startsWith('LIST-DEVICES') && id === 1) {
+      c.write(`OK count=2\nDEVICE handle=${hexOf('h1')} status=active\nDEVICE ha`);
+      setTimeout(() => c.destroy(), 30);
+      return;
+    }
+    const m = /^VERIFY token=(\w+)/.exec(l);
+    if (m) { c.write(`OK user=${hexOf(users[m[1]])} handle=${hexOf('dev-' + users[m[1]])} role=user issued=1 expires=2\n`); }
+  });
+  const a = await new Authd(s.path).connect();
+  try {
+    assert.equal(await settled(listDevices(a, 'alice')), 'connection-closed', 'the cut list is a closed connection');
+    await a.connect();
+    assert.equal(await whose(verify(a, 'aa')), 'alice', 'the first request on the new connection gets its own reply (F532)');
+    assert.equal(await whose(verify(a, 'bb')), 'bob', 'and bob\'s token is bob (F532)');
+    // While that connection is open, connect() again is refused: the first
+    // socket's 'close' would otherwise fail requests in flight on the second.
+    assert.equal(await settled(a.connect()), 'already-connected', 'connect() on an open connection is refused (F532)');
+    assert.equal(await whose(verify(a, 'bb')), 'bob', 'and the open connection still answers (the canary)');
+  } finally {
+    a.destroy();
+    await s.stop();
+  }
+});
+
+// F532, the other half: a line nobody asked for ends the connection. Kept in
+// the buffer it became the reply to the next request.
+test('a line the daemon sends unasked ends the connection, it does not answer the next request (F532)', async () => {
+  const s = await standIn('authd-f532b-', (c, l) => {
+    if (l.startsWith('PING')) { c.write('OK version=1 schema=1 uptime=1\nOK user=616c696365 handle=68 role=user issued=1 expires=2\n'); }
+    else if (l.startsWith('VERIFY')) { c.write(`OK user=${hexOf('bob')} handle=68 role=user issued=1 expires=2\n`); }
+  });
+  const a = await new Authd(s.path).connect();
+  try {
+    await ping(a);
+    const got = await whose(verify(a, 'bb'));
+    assert.equal(got, 'connection-closed', 'a line sent unasked ends the connection; it is not bob\'s answer (F532)');
+  } finally {
+    a.destroy();
+    await s.stop();
+  }
+});
+
+// F534: destroy() before the connection is made raised 'close' and no
+// 'error', and connect() never settled.
+test('connect() settles when the socket is destroyed before it connects (F534)', async () => {
+  const s = await standIn('authd-f534-', (c) => c.write('OK version=1 schema=1 uptime=1\n'));
+  try {
+    const a = new Authd(s.path);
+    const p = a.connect();
+    a.destroy();
+    assert.equal(await settled(p), 'connection-closed', 'connect() rejects when destroyed first, it does not hang (F534)');
+    const b = await new Authd(s.path).connect();
+    assert.equal(await settled(ping(b)), 'resolved', 'a connection left alone still connects and answers (the canary)');
+    b.destroy();
+  } finally {
+    await s.stop();
+  }
+});
+
+// F535: a list command answered by one line that is neither OK nor
+// `ERR code=` waited for an END that never came, and so did everything
+// queued behind it.
+test('a list command answered by a line that is not the protocol\'s is refused, not waited on (F535)', async () => {
+  let reply = 'ERR internal\n';
+  const s = await standIn('authd-f535-', (c) => c.write(reply));
+  try {
+    for (const line of ['ERR internal\n', 'OKAY\n', 'HTTP/1.1 400 Bad Request\r\n']) {
+      reply = line;
+      const a = await new Authd(s.path).connect();
+      const got = await settled(listDevices(a, 'alice'));
+      a.destroy();
+      assert.equal(got, 'malformed-response', `a list answered ${JSON.stringify(line)} is refused, not waited on (F535)`);
+    }
+    reply = `OK count=1\nDEVICE handle=${hexOf('h1')} label=${hexOf('l')} status=active enrolled=1 last_seen=2 fp=ab\nEND\n`;
+    const a = await new Authd(s.path).connect();
+    const whole = await settled(listDevices(a, 'alice'));
+    a.destroy();
+    assert.equal(whole, 'resolved', 'a whole list is still a list (the canary)');
+  } finally {
+    await s.stop();
+  }
+});
+
+// F536: one login code has one spelling, and a non-string is the caller's
+// fault, said as every other refused value is.
+test('codeToHex takes exactly the 43 base64url characters of a code (F536)', async () => {
+  const { codeToHex } = await import('./authd.mjs');
+  const raw = Buffer.alloc(32, 0xfb);
+  const url = raw.toString('base64url');
+  assert.equal(codeToHex(url), raw.toString('hex'), 'the code as the client prints it (the canary)');
+  const refused = (v) => { try { codeToHex(v); return 'accepted'; } catch (e) { return e instanceof AuthdError ? e.code : `threw ${e.constructor.name}`; } };
+  for (const [label, v] of [
+    ['standard base64 with +/=', raw.toString('base64')],
+    ['spaces and a newline inside', ` ${url.slice(0, 10)}\n ${url.slice(10)}`],
+    ['other characters inside', `${url.slice(0, 5)}!*$${url.slice(5)}`],
+    ['one character short', url.slice(1)],
+    ['one character long', `${url}A`],
+    ['undefined', undefined],
+    ['a number', 5],
+    ['an array of 32 numbers', Array(32).fill(0xfb)],
+  ]) {
+    assert.equal(refused(v), 'bad-request-field', `codeToHex refuses ${label} (F536)`);
+  }
+});

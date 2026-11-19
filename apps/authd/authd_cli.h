@@ -39,4 +39,11 @@
 /* argv[0] is the program name, argv[1] the subcommand. */
 int authd_cli_admin(int argc, char **argv);
 
+/* How long the tool waits for the daemon's answer to `cmd` (F533): ten
+ * seconds, and ten minutes for BACKUP, whose time grows with the store. And
+ * what it adds to `timeout` for a command the daemon may still complete, or
+ * NULL. Exposed so a test can name both without waiting for either. */
+uint64_t authd_cli_timeout_ms(const char *cmd);
+const char *authd_cli_timeout_hint(const char *cmd);
+
 #endif /* MLDSA_AUTHD_CLI_H */

@@ -383,6 +383,11 @@ service may not write to. It has one word for all of these, `internal`, so
 look at the path first. For a second backup on the same day (before an
 upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
 
+The tool waits up to ten minutes for a backup (since V4-311; every other
+command, ten seconds): the daemon copies the whole store before it answers.
+If it still says `timeout`, the daemon may be finishing the file: look at the
+destination before you retry, and check what is there with `audit-verify`.
+
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
 plain `sudo`. As any other user the socket's own permissions stop the
 connection first, and the tool says `cannot-connect` and, since V4-276, why:

@@ -35,6 +35,13 @@ const hex = (b) => Buffer.from(b).toString('hex');
  *  speaks hex. Converting here keeps the protocol single-encoding: one
  *  decoder in the daemon, and therefore one decoder to fuzz. */
 export function codeToHex(codeBase64url) {
+  // Exactly the 43 characters the client prints, and a string (F536): the
+  // decoder skips what is outside its alphabet, so a code with spaces, with
+  // `+/=`, or an array of 32 numbers each passed as the same code, and a
+  // non-string threw a TypeError the site reads as the daemon being away.
+  if (typeof codeBase64url !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(codeBase64url)) {
+    throw new AuthdError('bad-request-field');
+  }
   const b = Buffer.from(codeBase64url, 'base64url');
   if (b.length !== 32) {
     // The caller's input is at fault, not the daemon: an AuthdError, as for
@@ -65,16 +72,34 @@ export class Authd {
   }
 
   async connect() {
+    // One connection per object at a time (F532). A second connect() left
+    // the first socket's listeners attached: its 'close' failed requests in
+    // flight on the second, and bytes the first had left unread were taken
+    // for the replies to the second's requests.
+    if (this.#sock && !this.#sock.destroyed) {
+      throw new AuthdError('already-connected');
+    }
+    // What the last connection left unread is nobody's reply (F532): kept,
+    // it answered this connection's requests, one user's identity for
+    // another user's token. Here and not in 'close', which a destroy()
+    // followed at once by connect() has not delivered yet.
+    this.#buf = '';
     await new Promise((resolve, reject) => {
-      this.#sock = net.createConnection(this.socketPath);
-      this.#sock.setEncoding('utf8');
-      this.#sock.once('connect', () => { this.#open = true; resolve(); });
+      const sock = net.createConnection(this.socketPath);
+      this.#sock = sock;
+      sock.setEncoding('utf8');
+      sock.once('connect', () => { if (sock === this.#sock) { this.#open = true; } resolve(); });
       // Listened to for the socket's whole life: 'close' follows every error
       // and is what fails the queue, and an 'error' with no listener ends
       // the process.
-      this.#sock.on('error', reject);
-      this.#sock.on('data', (chunk) => this.#onData(chunk));
-      this.#sock.on('close', () => {
+      sock.on('error', reject);
+      sock.on('data', (chunk) => { if (sock === this.#sock) { this.#onData(chunk); } });
+      sock.on('close', () => {
+        // A connect() still waiting is told (F534): destroy() before the
+        // connection was made raises 'close' and no 'error', and the promise
+        // never settled. After 'connect' this reject is a no-op.
+        reject(new AuthdError('connection-closed'));
+        if (sock !== this.#sock) { return; }
         // Fail everything still waiting rather than leaving a promise pending
         // forever if the daemon restarts mid-request.
         this.#open = false;
@@ -113,7 +138,14 @@ export class Authd {
     this.#buf += chunk;
     for (;;) {
       const pending = this.#queue[0];
-      if (!pending) return;
+      // Bytes nobody asked for (F532): the daemon answers one request with
+      // one reply, so a line with no request written is a peer out of step,
+      // and every later reply would be read against the wrong request. The
+      // connection is ended; what was waiting fails as connection-closed.
+      if (!pending || !pending.sent) {
+        if (this.#buf.length > 0) { this.#buf = ''; this.#sock?.destroy(); }
+        return;
+      }
 
       const nl = this.#buf.indexOf('\n');
       if (nl < 0) return;
@@ -123,7 +155,11 @@ export class Authd {
       // is not hypothetical: it hung this file's own test suite for 24s until
       // the daemon exited.
       const firstLine = this.#buf.slice(0, nl);
-      if (!pending.wantList || firstLine.startsWith('ERR code=')) {
+      // A list is a reply whose first line is `OK` (F535): anything else --
+      // `ERR code=`, or a line that is neither -- is one line, for the caller
+      // to refuse. Waiting for END on `ERR internal` never ended.
+      const isList = pending.wantList && (firstLine === 'OK' || firstLine.startsWith('OK '));
+      if (!isList) {
         this.#buf = this.#buf.slice(nl + 1);
         this.#queue.shift();
         pending.resolve([firstLine]);

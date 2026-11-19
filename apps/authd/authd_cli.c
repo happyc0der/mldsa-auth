@@ -39,6 +39,26 @@
 #define KDF_OPS_SERVER    4u
 
 #define LOCAL_TIMEOUT_MS  10000u
+/* F533: BACKUP is the one request whose time grows with the store -- the
+ * daemon copies the whole database before it answers. At ten seconds the tool
+ * gave up on a large store, printed `timeout` and exited 1 while the daemon
+ * finished and kept the file; a script read a failed backup, and its retry
+ * to the same name was refused because the file was there. */
+#define BACKUP_TIMEOUT_MS 600000u
+
+uint64_t authd_cli_timeout_ms(const char *cmd)
+{
+    return (cmd != NULL && strcmp(cmd, "BACKUP") == 0) ? (uint64_t)BACKUP_TIMEOUT_MS
+                                                       : (uint64_t)LOCAL_TIMEOUT_MS;
+}
+
+const char *authd_cli_timeout_hint(const char *cmd)
+{
+    return (cmd != NULL && strcmp(cmd, "BACKUP") == 0)
+               ? "the daemon may still be writing the backup: look at the destination before "
+                 "retrying, and verify what is there with audit-verify"
+               : NULL;
+}
 
 /* Spec 16 fixes these names whatever the server's id happens to be. */
 /* A server key an offline command was given and cannot use (F196, V4-112).
@@ -331,6 +351,13 @@ static int cmd_keygen_server(int argc, char **argv, const char *prog)
         demo_parse_id(id_s, &id, &id_len) != 0) {
         return need(prog, "keygen-server", "--key PATH --pub PATH --server-id ID --passphrase-file PATH");
     }
+    /* F538: one path for both halves passed the check below, since neither
+     * existed yet; the key was sealed there, the public half refused to
+     * overwrite it, and the message about what was left did not fit. */
+    if (strcmp(key, pub) == 0) {
+        fprintf(stderr, "%s keygen-server: --key and --pub name the same file; nothing was written\n", prog);
+        return EX_USAGE;
+    }
     /* F232: both targets are looked at BEFORE a key is made. The key was
      * sealed first and the public half written second, so a --pub that already
      * existed left a secret key with no public key beside it, and a retry was
@@ -532,10 +559,13 @@ static int local_call(const char *prog, const char *sub, const char *sock,
 {
     static char resp[LOCALCLI_RESP_MAX + 1u];
     size_t len = 0;
-    const localcli_status_t st = localcli_call(sock, cmd, args, LOCAL_TIMEOUT_MS,
+    const localcli_status_t st = localcli_call(sock, cmd, args, authd_cli_timeout_ms(cmd),
                                                resp, sizeof resp, &len);
     if (st != LOCALCLI_OK) {
         fprintf(stderr, "%s %s: %s: %s\n", prog, sub, sock, localcli_status_name(st));
+        if (st == LOCALCLI_ERR_TIMEOUT && authd_cli_timeout_hint(cmd) != NULL) {
+            fprintf(stderr, "%s %s: %s\n", prog, sub, authd_cli_timeout_hint(cmd));   /* F533 */
+        }
         /* F445: `cannot-connect` was all a user outside the socket's
          * permissions was told, word for word what a stopped daemon gives.
          * The two have different remedies; the socket path says which. */
@@ -967,6 +997,13 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
                     "--store store.sqlite3 --key server.ek --passphrase-file PATH "
                     "--server-id ID --id USER-OR-HANDLE");
     }
+    /* F539: an identifier the daemon could never hold got a well-formed idh=
+     * that is in no journal, and exit 0. The daemon's bound, named. */
+    if (!cli_id_in_bounds(who)) {
+        fprintf(stderr, "%s pseudonym: --id is 1 to %u bytes of printable ASCII\n", prog,
+                (unsigned)AUTHD_CLI_ID_MAX);
+        return EX_USAGE;
+    }
 
     uint8_t *pass = NULL;
     size_t pass_len = 0;
@@ -1130,6 +1167,20 @@ static int admin_dispatch(int argc, char **argv, const char *prog)
         return EX_USAGE;
     }
     const char *sub = argv[1];
+
+    /* F537: a flag given twice is refused, in every subcommand. Each took the
+     * last value and said nothing: `disable-user --user alice --user bob`
+     * disabled bob and exited 0. Every flag of this tool takes exactly one
+     * value, so the flags are the arguments at 2, 4, 6, ...; a value that
+     * happens to look like a flag is at an odd place and is not compared. */
+    for (int i = 2; i < argc; i += 2) {
+        for (int j = 2; j < i; j += 2) {
+            if (strcmp(argv[i], argv[j]) == 0) {
+                fprintf(stderr, "%s %s: %s is given more than once\n", prog, sub, argv[i]);
+                return EX_USAGE;
+            }
+        }
+    }
 
     if (strcmp(sub, "init") == 0)           { return cmd_init(argc, argv, prog); }
     if (strcmp(sub, "keygen-server") == 0)  { return cmd_keygen_server(argc, argv, prog); }
