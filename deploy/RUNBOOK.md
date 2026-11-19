@@ -388,10 +388,14 @@ is not where you look for it, and it is deleted when the service stops.
 `/var/run`, which is the same directory): the
 service's own directory there is writable, and systemd removes it whenever
 the service stops or restarts, so a backup taken there before an upgrade is
-gone at the upgrade's restart. The tool warns of that too (V4-333). Any
-other place outside `/var/lib/mldsa-authd` is read-only to the daemon under
-this unit (`ProtectSystem=strict`) and is answered `internal`: to keep a
-backup on another volume, copy the finished file there yourself. For a second backup on the same day (before an
+gone at the upgrade's restart. The tool warns of that too (V4-333). Nor
+under `/dev/shm`, which the daemon can also write under this unit and
+which is memory: a backup there is gone when the host restarts (measured in
+this runbook's rehearsal, V4-335; warned of since V4-336). Any other place
+outside `/var/lib/mldsa-authd` is read-only to the daemon under this unit
+(`ProtectSystem=strict`) and is answered `internal`, even a directory the
+service user owns: to keep a backup on another volume, copy the finished
+file there yourself. For a second backup on the same day (before an
 upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
 
 The tool waits up to ten minutes for a backup (since V4-311; every other

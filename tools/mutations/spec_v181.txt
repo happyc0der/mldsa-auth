@@ -6,3 +6,6 @@ BW5|^test_authd_cli$|backup: /tmp and /var/tmp are warned of however the path is
 BW6|^test_authd_cli$|backup: and /runs is not /run (F631)
 BW7|^test_authd_cli$|backup: /var/run is /run, and is warned of (F633)
 BW8|^test_authd_cli$|backup: /var/lock is /run/lock, and is warned of; /var/locks is not (F633)
+BW9|^test_authd_cli$|backup: a destination under /dev/shm is warned of: it is memory; /dev/shmem is not (F634)
+BW10|^test_authd_cli$|backup: a destination under /dev/shm is warned of: it is memory; /dev/shmem is not (F634)
+BW11|^test_authd_cli$|backup: a `..` after /var/lock or /var/run leaves /run, as the kernel's does (F640)

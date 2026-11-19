@@ -867,6 +867,17 @@ static void backup_path_as_resolved(const char *path, char *out, size_t cap)
         out[n++] = '/';
         memcpy(out + n, seg, len);
         n += len;
+        /* F640 (V4-336): the two names every host with systemd has as links
+         * into /run are followed HERE, as the walk reaches them, so that a
+         * `..` after one goes where the kernel's would: /var/lock/../x is
+         * /run/x, and reducing the spelling first made it /var/x. Neither
+         * replacement is longer than what it replaces. */
+        if (n == 8u && memcmp(out, "/var/run", 8u) == 0) {
+            n = 4u;
+            memcpy(out, "/run", 4u);
+        } else if (n == 9u && memcmp(out, "/var/lock", 9u) == 0) {
+            memcpy(out, "/run/lock", 9u);
+        }
     }
     out[n] = '\0';
 }
@@ -927,10 +938,16 @@ static int cmd_backup(int argc, char **argv, const char *prog)
         fprintf(stderr, "%s backup: warning: under the shipped service unit the daemon has a /tmp and a /var/tmp "
                         "of its own (PrivateTmp): a backup written there is not at this path for you, and is "
                         "deleted when the service stops. Use the store's backups/ directory\n", prog);
-    } else if (strncmp(seen, "/run/", 5u) == 0 || strncmp(seen, "/var/run/", 9u) == 0 ||
-               strncmp(seen, "/var/lock/", 10u) == 0) {
+    } else if (strncmp(seen, "/dev/shm/", 9u) == 0) {
+        /* F634: measured under the shipped unit by the runbook's rehearsal
+         * (V4-335's CI, two Ubuntus): written, answered OK, there for the
+         * operator, there after a restart. And in memory. */
+        fprintf(stderr, "%s backup: warning: /dev/shm is memory: the daemon can write there under the shipped "
+                        "service unit, and a backup written there is gone when the host restarts. "
+                        "Use the store's backups/ directory\n", prog);
+    } else if (strncmp(seen, "/run/", 5u) == 0) {
         /* F633: /var/run is /run, and /var/lock is /run/lock, on every host
-         * that has systemd: links this tool cannot see from here. */
+         * that has systemd; backup_path_as_resolved has followed them. */
         fprintf(stderr, "%s backup: warning: /run is not kept: the service's runtime directory is removed "
                         "whenever the service stops or restarts, and a backup written there goes with it. "
                         "Use the store's backups/ directory\n", prog);

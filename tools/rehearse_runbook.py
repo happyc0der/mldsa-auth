@@ -166,8 +166,12 @@ POST = {
     # daemon answers, whether the operator can see the file, and what a
     # restart leaves. The runbook's step 12 and authd_admin's warnings were
     # written from the documentation; this is what holds them to the host.
-    12: ["for p in /tmp/probe.sqlite3 /var/tmp/probe.sqlite3 /run/mldsa-authd/probe.sqlite3 "
-         "/var/run/mldsa-authd/probe2.sqlite3 /dev/shm/probe.sqlite3 /srv/probe.sqlite3; do "
+    # V4-336 (F639): the read-only place is a directory the SERVICE USER
+    # owns. /srv itself is root's, and a backup there is refused for that
+    # alone, with or without ProtectSystem=strict.
+    12: ["sudo install -d -o mldsa-authd -m 0700 /srv/probe.d; "
+         "for p in /tmp/probe.sqlite3 /var/tmp/probe.sqlite3 /run/mldsa-authd/probe.sqlite3 "
+         "/var/run/mldsa-authd/probe2.sqlite3 /dev/shm/probe.sqlite3 /srv/probe.d/probe.sqlite3; do "
          "a=$(sudo authd_admin backup --socket /run/mldsa-authd/admin.sock --path $p 2>&1 | tail -n 1 | tr ' ' '_' || true); "
          "v=$(sudo test -e $p && echo yes || echo no); "
          "echo \"MEASURED backup $p: answer=${a:-none} visible=$v\"; done",
@@ -175,7 +179,7 @@ POST = {
          "for i in $(seq 1 100); do sudo test -S /run/mldsa-authd/admin.sock && break; sleep 0.2; done; "
          "echo \"MEASURED after a restart: run=$(sudo test -e /run/mldsa-authd/probe.sqlite3 && echo kept || echo gone) "
          "devshm=$(sudo test -e /dev/shm/probe.sqlite3 && echo kept || echo gone) "
-         "daemon=$(systemctl is-active mldsa-authd || true)\"; sudo rm -f /dev/shm/probe.sqlite3"],
+         "daemon=$(systemctl is-active mldsa-authd || true)\"; sudo rm -f /dev/shm/probe.sqlite3; sudo rm -rf /srv/probe.d"],
     19: [LOGIN_OLD + " > /tmp/old.out 2>&1 && echo old-key-ACCEPTED || echo old-key-refused; tail -n 2 /tmp/old.out"],
     20: [LOGIN + " > /tmp/dis.out 2>&1 && echo disabled-user-ACCEPTED || echo disabled-user-refused; tail -n 2 /tmp/dis.out"],
     21: [LOGIN],
@@ -341,15 +345,18 @@ EXPECT = {
          # V4-335: the daemon's /tmp and /var/tmp are its own (answered OK,
          # not there for the operator); its runtime directory is written,
          # seen, by either name, and gone after a restart; a place the unit
-         # makes read-only is refused. /dev/shm is measured and not asserted:
-         # the line must be there, and V4-335's entry says what it read.
-         r"(?m)^MEASURED backup /tmp/probe\.sqlite3: answer=\S*OK\S* visible=no$",
-         r"(?m)^MEASURED backup /var/tmp/probe\.sqlite3: answer=\S*OK\S* visible=no$",
-         r"(?m)^MEASURED backup /run/mldsa-authd/probe\.sqlite3: answer=\S*OK\S* visible=yes$",
-         r"(?m)^MEASURED backup /var/run/mldsa-authd/probe2\.sqlite3: answer=\S*OK\S* visible=yes$",
-         r"(?m)^MEASURED backup /dev/shm/probe\.sqlite3: answer=\S+ visible=(yes|no)$",
-         r"(?m)^MEASURED backup /srv/probe\.sqlite3: answer=\S*internal\S* visible=no$",
-         r"(?m)^MEASURED after a restart: run=gone devshm=(kept|gone) daemon=active$"],
+         # makes read-only is refused though the service user owns it
+         # (V4-336, F639). /dev/shm was measured in V4-335's run and is
+         # asserted since V4-336 (F634): written, seen, kept by a restart.
+         # The answers are matched whole (F639): `\S*OK\S*` also matched the
+         # tool's own "neither OK nor ERR".
+         r"(?m)^MEASURED backup /tmp/probe\.sqlite3: answer=OK visible=no$",
+         r"(?m)^MEASURED backup /var/tmp/probe\.sqlite3: answer=OK visible=no$",
+         r"(?m)^MEASURED backup /run/mldsa-authd/probe\.sqlite3: answer=OK visible=yes$",
+         r"(?m)^MEASURED backup /var/run/mldsa-authd/probe2\.sqlite3: answer=OK visible=yes$",
+         r"(?m)^MEASURED backup /dev/shm/probe\.sqlite3: answer=OK visible=yes$",
+         r"(?m)^MEASURED backup /srv/probe\.d/probe\.sqlite3: answer=\S+_refused:_internal visible=no$",
+         r"(?m)^MEASURED after a restart: run=gone devshm=kept daemon=active$"],
     13: [r"100% tests passed(, 0 tests failed)? out of 3"],
     14: [r'\{"port":9080\}', r"login\.html 200", r"session 200",
          r'"login-failed"\} login 403', r"event=local-request.*EXCHANGE"],

@@ -991,10 +991,40 @@ try {
     for (let i = 0; i < 4; i++) { four.s.onMessage(new Uint8Array([i]).buffer); }
     check(four.s.queue.length === 4 && four.ws.closes === 0 && four.s.queue.every((m) => m instanceof Uint8Array),
           'queue: four waiting is still within the bound (F638)');
-    four.s.onMessage(new Uint8Array([9]).buffer);
+    // V4-336 (F642): a close that arrives at a full queue is a close, not
+    // a flood.
     four.s.wake(null);
-    check(four.s.queue.length === 1 && four.ws.closes === 1,
-          'queue: the fifth is the flood, and the close that follows adds nothing (F638)'); }
+    check(four.s.queue.length === 5 && four.s.queue[4] === null && four.ws.closes === 0,
+          'queue: a close that arrives when four are waiting is kept, and is not a flood (F642)');
+    const five = mk();
+    for (let i = 0; i < 4; i++) { five.s.onMessage(new Uint8Array([i]).buffer); }
+    five.s.onMessage(new Uint8Array([9]).buffer);
+    five.s.onMessage(new Uint8Array([10]).buffer);
+    check(five.s.queue.length === 1 && five.ws.closes === 1,
+          'queue: the fifth is the flood, and what follows it adds nothing (F638)');
+    // F641: the close after a flood is still told, once: a second read used
+    // to wait out its timeout.
+    five.s.wake(null);
+    five.s.wake(null);
+    five.s.timeoutMs = 100;             // a read that finds nothing says so here, and is not left to end the test
+    const f1 = await five.s.next().catch(() => 'timed out'), f2 = await five.s.next().catch(() => 'timed out');
+    check(typeof f1 === 'symbol' && f2 === null && five.s.queue.length === 0,
+          'queue: after a flood the frame error is read, and then the close, once (F641)');
+    // F641: only an ArrayBuffer is a message.
+    const odd = mk();
+    let threw = false;
+    try { odd.s.onMessage(null); odd.s.onMessage({ size: 3 }); odd.s.onMessage('text'); } catch { threw = true; }
+    check(!threw && odd.s.queue.length === 3 && odd.s.queue.every((m) => typeof m === 'symbol'),
+          'queue: null, an object with no byteLength, and a string are each a frame error, and none throws (F641)');
+    // F641: a wait that timed out does not take the next message.
+    const late = mk();
+    late.s.timeoutMs = 30;
+    const timedOut = await late.s.next().then(() => 'resolved', (e) => e.message);
+    late.s.onMessage(new Uint8Array([7]).buffer);
+    late.s.timeoutMs = 200;
+    const got7 = await late.s.next().catch(() => 'timed out');
+    check(/timed out/.test(timedOut) && late.s.waiters.length === 0 && got7 instanceof Uint8Array && got7[0] === 7,
+          `queue: a message that arrives after a wait timed out goes to the next reader, not to the one that gave up (${timedOut}) (F641)`); }
 
   // V4-281, F460: a ROTATE that never left the page cannot have been
   // committed, so the staged key goes -- as when no session was opened

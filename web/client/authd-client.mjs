@@ -241,8 +241,11 @@ export class Session {
   // waiting for was copied and kept whatever its size, and so was the next,
   // for as long as the peer went on sending. A message larger than a frame
   // is a frame error without being copied.
+  // F641 (V4-336): and only an ArrayBuffer is a message. A Blob, or
+  // anything else with no byteLength, compared false against the cap and
+  // became an empty frame; null threw inside the event handler.
   onMessage(data) {
-    this.wake(typeof data === 'string' || data.byteLength > this.cap ? BAD_FRAME : new Uint8Array(data));
+    this.wake(!(data instanceof ArrayBuffer) || data.byteLength > this.cap ? BAD_FRAME : new Uint8Array(data));
   }
 
   // The protocol is one message for one message: the daemon never has more
@@ -252,7 +255,10 @@ export class Session {
   wake(msg) {
     const w = this.waiters.shift();
     if (w) { w(msg); return; }
-    if (this.flooded) { return; }
+    // After a flood only the close is still news (F641): dropped with the
+    // rest, a second read waited out its whole timeout for a connection
+    // that had already ended.
+    if (this.flooded) { if (msg === null && this.queue.at(-1) !== null) { this.queue.push(null); } return; }
     if (msg !== null && this.queue.length >= QUEUE_MAX) {
       this.flooded = true;
       this.queue = [BAD_FRAME];
@@ -265,8 +271,15 @@ export class Session {
   next() {
     if (this.queue.length) { return Promise.resolve(this.queue.shift()); }
     return new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('timed out waiting for the daemon')), this.timeoutMs);
-      this.waiters.push((m) => { clearTimeout(t); resolve(m); });
+      // F641: a wait that timed out is taken off the list. Left there, it
+      // was handed the next message, which nobody then saw.
+      const w = (m) => { clearTimeout(t); resolve(m); };
+      const t = setTimeout(() => {
+        const i = this.waiters.indexOf(w);
+        if (i >= 0) { this.waiters.splice(i, 1); }
+        reject(new Error('timed out waiting for the daemon'));
+      }, this.timeoutMs);
+      this.waiters.push(w);
     });
   }
 

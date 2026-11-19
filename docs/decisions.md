@@ -22124,3 +22124,62 @@ No spec change.
 Counts: 798 mutations, 152 campaigns, 843 anchors; 638 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609 and F636 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-336: what was measured under systemd (F634), and what the eighty-third review found (F639 to F642)
+
+**The measurement.** V4-335's CI ran the runbook's rehearsal with the new
+probes, on Ubuntu 24.04 and 26.04 (run 44624438312), and both printed the
+same seven lines:
+
+- `/tmp` and `/var/tmp`: answered `OK`, not there for the operator.
+- `/run/mldsa-authd` and `/var/run/mldsa-authd`: answered `OK`, there, and
+  gone after a restart.
+- `/srv`: refused `internal`.
+- `/dev/shm`: answered `OK`, there, and **kept** by a restart.
+
+So the four claims V4-332 and V4-333 took from systemd's documentation
+hold, and the fifth, "any other place is read-only to the daemon", did
+not: `/dev/shm` is writable. F634 is fixed on what was measured. The tool
+warns of it, the runbook says so, and the rehearsal asserts it from now
+on.
+
+**The eighty-third review** read V4-335's commit, the WebSocket and PROXY
+v2 parsers, the key file, the session and framing code, and the reference
+site's sessions, cookies and pages. No High or Medium. One Low, three
+Info. Every parser was found bounded on every length; the site's cookie
+attributes, its Origin checks on every route, its rotation of the session
+at login and its CSP were found sound.
+
+- **F639 (Low).** The probe that was to show a read-only place was refused
+  for another reason (`/srv` is root's), and the answers were matched by a
+  pattern that the tool's own error also fits. Both corrected. That a
+  directory the service user owns is refused under the unit is a new
+  claim, in the runbook since this step, and this step's CI run measures
+  it.
+- **F640 (Info).** `/var/run` and `/var/lock` are followed as the path is
+  walked, so a `..` after one leaves `/run`.
+- **F641 (Info).** Four edges of the browser session's queue.
+- **F642 (Info).** A condition with no test.
+
+The first form of two of the new JavaScript checks awaited a read that,
+under the mutant, timed out and threw: the test ended on the exception
+and no named check failed (KILLED(other), twice). They now catch it. It
+is V4-330's lesson in another language: a check has to survive the
+defect it is there to name.
+
+Campaign v181 was re-anchored for the walk and gained BW9 (`/dev/shm` is
+not warned of), BW10 (any path beginning `/dev/shm` is) and BW11
+(`/var/lock` is followed to `/run`, so a `..` after it reaches the root);
+all eleven KILLED by hand.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, all KILLED: Q4, a close at a full queue is a flood; Q5, a
+wait that timed out keeps its place; Q6, anything is a message; Q7, the
+close after a flood is dropped; Q8, it is told twice. Q1 and Q2 of V4-335
+were killed again.
+
+No spec change.
+
+Counts: 801 mutations, 152 campaigns, 846 anchors; 642 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609 and F636 open); spec v1.109, 158 errata; 66 tests.

@@ -1594,6 +1594,24 @@ static void test_backup_path_bound(void)
                            err, sizeof err);
     CHECK(lock_said && rc == 1 && strstr(err, "warning") == NULL,
           "backup: /var/lock is /run/lock, and is warned of; /var/locks is not (F633)");
+    /* V4-336 (F640): a `..` after one of those links goes where the
+     * kernel's would. /var/lock/../mldsa-authd is /run/mldsa-authd; reduced
+     * by its spelling it was /var/mldsa-authd, and unwarned. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/lock/../mldsa-authd/b.sqlite3", NULL },
+                           err, sizeof err);
+    const int via_lock = (rc == 1 && strstr(err, "/run is not kept") != NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/run/../var/lib/mldsa-authd/backups/b", NULL },
+                           err, sizeof err);
+    CHECK(via_lock && rc == 1 && strstr(err, "warning") == NULL,
+          "backup: a `..` after /var/lock or /var/run leaves /run, as the kernel's does (F640)");
+    /* V4-336 (F634): /dev/shm, measured writable under the shipped unit. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/dev/shm/b.sqlite3", NULL },
+                           err, sizeof err);
+    const int shm_said = (rc == 1 && strstr(err, "/dev/shm is memory") != NULL && strstr(err, "/run is not kept") == NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/dev/shmem/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(shm_said && rc == 1 && strstr(err, "warning") == NULL,
+          "backup: a destination under /dev/shm is warned of: it is memory; /dev/shmem is not (F634)");
     rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/runs/b.sqlite3", NULL },
                            err, sizeof err);
     CHECK(rc == 1 && strstr(err, "warning") == NULL,
