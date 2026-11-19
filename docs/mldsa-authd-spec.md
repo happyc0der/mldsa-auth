@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.96, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309)
+# mldsa-authd — deployment specification (v1.97, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -273,6 +273,16 @@ Content = 43 bytes → a **281-byte record** at the default bucket 256.
 The client MUST require this exact op as the first record; anything else is a
 protocol error and the session is abandoned.
 
+**A login the daemon cannot record is answered** (erratum 140). When the
+handshake has completed and the store then fails -- the re-read of the key at
+`ClientAuth` (§7.3) or the write of the login code -- the daemon's first and
+only record is `ERROR(0x05)`, and it closes. The peer has proved its key by
+then, so the answer discloses nothing a refusal would hide. A client MUST NOT
+read `ERROR(0x05)` here as the daemon refusing the key: it reports that the
+daemon could not answer, and a client deciding between a current and a
+pending key (§10.2) counts it as a key the daemon was not asked about. A
+connection closed with no record after `ClientAuth` remains a refusal.
+
 ### 6.3 `ROTATE` (0x11)
 
 Replaces the device's active key with a new one, keeping the handle. Permitted
@@ -463,8 +473,8 @@ the store cannot be read at `ClientHello` the daemon still pins the decoy and
 proceeds, because the wire must not say which handles exist; and it logs
 `store-read-failed` at ERROR with the store's status in `detail=`. The same
 read is made again at `ClientAuth` (erratum 61); if it fails there the
-connection closes and the event is `store-read-failed`, not
-`client-auth-key-changed`.
+daemon answers `ERROR(0x05)` under the session and closes (erratum 140,
+§6.2), and the event is `store-read-failed`, not `client-auth-key-changed`.
 
 **Any failed `ClientAuth` closes the connection** (erratum 72), as spec-v2 §8
 item 4 requires: a bad signature, a malformed `ClientAuth` and a handshake-id
@@ -1176,6 +1186,9 @@ exit 3 for a `--key`, `--in` or passphrase file that is missing, unsafe,
 malformed, or not opened by the passphrase. So for `audit-verify`, 1 means
 the store was opened and read and the chain did **not** verify (or the store
 itself could not be opened), and 3 means it was never asked.
+`authd_client login` and `rotate` hold their `--key` to it too (erratum 141):
+3 for a device key that is missing, unsafe, malformed, or not opened by the
+passphrase, so 1 means the daemon was asked and the login did not succeed.
 
 ## 14. Browser client *(B)*
 
@@ -2508,3 +2521,10 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 139 | 16 | One local slot is the administrative socket's: a site connection is not given the last free one (with `max_local_slots = 1` the one slot is shared). The notification socket is opened once and kept, and every `WATCHDOG=1` uses it | A site holding every local slot, a `PING` on each inside the idle timeout, kept `authd_admin` from being served, and root's remedy was to stop the site (F421). The ping opened a socket each time, so a system-wide shortage of file-table entries lasting the watchdog interval got a daemon killed whose loop was still turning (F437) |
+
+### Revision v1.97 (V4-312)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 140 | 6.2, 7.3 | A store failure after the handshake has completed -- the key's re-read at `ClientAuth`, or the write of the login code -- is answered `ERROR(0x05)` as the first record, and the daemon closes. A client reports it as the daemon being unable to answer, and does not count it as a refusal of the key | The daemon closed with nothing sent, and both clients read a close after `ClientAuth` as the key being refused. With a pending rotation both keys were then "refused" and the user was told an administrator must re-enrol a device whose key was live (F431). No new code point: `0x05` already answers a store failure in `ROTATE` (errata 117, 134) |
+| 141 | 13 | `authd_client login` and `rotate` exit 3, not 1, for a `--key` they cannot use; erratum 82's rule covers the device key | The passphrase file already exited 3 and the key 1, so a script could not tell a mistyped path or passphrase from a login the daemon refused (F451). The split erratum 82 closed for `authd_admin` |

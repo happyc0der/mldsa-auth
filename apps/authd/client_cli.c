@@ -189,6 +189,12 @@ static void client_session_close(client_session_t *cs)
     cs->live = 0;
 }
 
+/* The exit status for a --key that could not be used (F451; spec 13). */
+static int client_key_exit(keyfile_status_t ks)
+{
+    return (ks == KEYFILE_ERR_CRYPTO) ? EX_FAIL : EX_CONFIG;
+}
+
 /* Prints a core failure exactly as the pre-core client printed it. */
 static void report(const char *prog, const char *sub, const cc_diag_t *d)
 {
@@ -222,6 +228,7 @@ static int cs_recv_for_core(client_session_t *cs, uint8_t *buf, size_t *msg_len)
  * upgrade, a ServerHello that did not arrive or did not verify -- says
  * nothing about whether the key is live, and `g_open_why` says what it was. */
 static int g_open_judged;
+static int g_open_unanswered;   /* F431: the daemon had the key and could not record the login */
 static char g_open_why[96];
 
 static void open_failed_before_key(const char *what, const char *detail)
@@ -255,6 +262,7 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
     cc_init(cs->cc, NULL, NULL);
     cs->deadline = net_deadline_in(LOGIN_TIMEOUT_MS);
     g_open_judged = 0;
+    g_open_unanswered = 0;
     g_open_why[0] = '\0';
 
     if (cc_pin_server(cs->cc, sid, sid_len, server_pk) != CC_OK) {
@@ -334,8 +342,17 @@ static int client_open_session_ex(const char *prog, const char *sub, int quiet,
         }
         goto fail_io;
     }
-    if (cc_login_on_record(cs->cc, rx, m, &cs->code) != CC_OK) {
-        goto fail_core;
+    {
+        const cc_status_t ls = cc_login_on_record(cs->cc, rx, m, &cs->code);
+        if (ls == CC_ERR_UNANSWERED) {
+            /* F431: the daemon took the key and could not record the login.
+             * That is not its answer about the key, so it is not judged. */
+            open_failed_before_key("the daemon could not record the login (its store failed) at", io_stage);
+            g_open_unanswered = 1;
+        }
+        if (ls != CC_OK) {
+            goto fail_core;
+        }
     }
     cs->live = 1;
     return EX_OK;
@@ -746,7 +763,11 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
         const keyfile_status_t ks = keyfile_open(a->key_path, a->hid, a->hid_len,
                                                  pass, pass_len, kp_out, NULL);
         if (ks != KEYFILE_OK) {
-            return failed(prog, sub, a->key_path, keyfile_status_name(ks));
+            /* F451: a --key that cannot be used is a file the operator named,
+             * 3, as --passphrase-file already was and as authd_admin's --key
+             * is (spec 13, errata 51 and 82). Only an internal failure is 1. */
+            (void)failed(prog, sub, a->key_path, keyfile_status_name(ks));
+            return client_key_exit(ks);
         }
         return EX_OK;
     }
@@ -1092,7 +1113,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * because a test scanned it. */
         if (unlink(next_path) == 0) {
             fprintf(stderr, "%s rotate: %s, so the new key was never sent; it is not kept\n", prog,
-                    g_open_judged ? "the daemon refused the session" : "the daemon was not reached");
+                    g_open_judged ? "the daemon refused the session"
+                    : g_open_unanswered ? "the daemon could not record the login"
+                    : "the daemon was not reached");
         }
         return rc;
     }

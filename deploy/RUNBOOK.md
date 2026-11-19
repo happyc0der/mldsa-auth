@@ -1236,6 +1236,13 @@ Common ones, and what they actually are:
 - **`audit-verify` … `FAILED at entry 1`, on every backup** — `--key` is not
   the server key the stores were written with, more likely than every backup
   being altered (F446).
+- **`the daemon could not record the login`** from `authd_client`, or
+  `daemon-could-not-answer` on the login page (since V4-312, F431) — the
+  daemon accepted the device's key and its store then failed: the journal has
+  `error event=store-read-failed` or `error event=login-code-failed` at that
+  moment. Nothing is wrong with the key and nothing was changed on the
+  device; mend the store (a full disk, a damaged file) and log in again.
+  `authd_client` exits 1 for this, and 3 for a `--key` it cannot open.
 - **`Unexpected NULL returned from … API. Exiting.`**, and the daemon gone
   with exit 1 (F435) — an allocation inside liboqs's SHA-3 failed and the
   library exits the process; this daemon cannot catch it. It needs a host that

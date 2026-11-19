@@ -20,6 +20,7 @@
 #include <sqlite3.h>
 
 #include "authd_harness.h"
+#include "authmsg.h"
 #include "journal_scan.h"
 
 static int g_fail = 0;
@@ -2687,7 +2688,16 @@ static void test_store_read_failure(void)
     h_client_t c1;
     CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0, "rfail: a handshake reaches ClientAuth on the whole store");
     CHECK(store_exec(DB, DAMAGE) == 0, "rfail: the active key's column is made unreadable");
-    CHECK(h_get_login_code(&d, &c1, code) != 0, "rfail: no login code when the re-check cannot read the store");
+    /* V4-312 (F431): and the device is told. It proved its key, so the answer
+     * is a sealed ERROR(0x05), not a close it would read as a refusal. */
+    { uint8_t first[64];
+      size_t fl = 0;
+      const int got = h_first_record(&d, &c1, first, sizeof first, &fl);
+      CHECK(!(got == 0 && fl == 43u && first[0] == AUTHMSG_OP_LOGIN_CODE),
+            "rfail: no login code when the re-check cannot read the store");
+      CHECK(got == 0 && fl == AUTHMSG_ERROR_CONTENT_LEN && first[0] == AUTHMSG_OP_ERROR &&
+            first[2] == AUTHMSG_ERR_INTERNAL,
+            "rfail: a store read that fails at ClientAuth is answered ERROR(0x05) under the session (F431)"); }
     fflush(f);
     CHECK(count_of(buf, "error event=store-read-failed") == 1u && strstr(buf, "detail=store-corrupt") != NULL &&
           strstr(buf, "client-auth-key-changed") == NULL,
@@ -2709,6 +2719,67 @@ static void test_store_read_failure(void)
     (void)fclose(f);
     free(buf);
     h_client_close(&c);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+/* V4-312 (F431): a login code the store will not take is answered, not
+ * dropped. The peer has proved its key by then; a bare close read to both
+ * clients as that key being refused, and with a pending rotation as "an
+ * administrator must re-enrol this device". The insert is failed by a trigger
+ * written from a second connection, and the trigger is then removed. */
+static void test_login_code_not_stored(void)
+{
+    static const char DB[] = "nocode.sqlite3";
+    static const char BLOCK[] =
+        "CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END;";
+    static const char UNBLOCK[] = "DROP TRIGGER v312_block;";
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *f = open_memstream(&buf, &len);
+    if (f == NULL) { printf("SKIP: open_memstream unavailable\n"); return; }
+
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    uint8_t code[32];
+    CHECK(h_start(&d, g_dir, DB, 1) == 0, "nocode: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+    { h_client_t c0;
+      CHECK(h_login(&d, &c0, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c0, code) == 0,
+            "nocode: the device logs in while the store takes the code (the canary)");
+      h_client_close(&c0); }
+
+    authd_log_init(f, AUTHD_LOG_INFO);
+    CHECK(store_exec(DB, BLOCK) == 0, "nocode: the store is made to refuse a new login code");
+    { h_client_t c1;
+      uint8_t first[64];
+      size_t fl = 0;
+      CHECK(h_login(&d, &c1, HANDLE1, sizeof HANDLE1, &kp) == 0, "nocode: the handshake completes");
+      const int got = h_first_record(&d, &c1, first, sizeof first, &fl);
+      CHECK(got == 0 && fl == AUTHMSG_ERROR_CONTENT_LEN && first[0] == AUTHMSG_OP_ERROR &&
+            first[2] == AUTHMSG_ERR_INTERNAL,
+            "nocode: a login code the store will not take is answered ERROR(0x05) under the session (F431)");
+      /* ... and that record is the last: the connection is closed after it. */
+      uint8_t more[AUTHD_MAX_RECORD];
+      size_t ml = 0;
+      CHECK(h_recv_frame(&d, c1.fd, more, sizeof more, &ml) != 0,
+            "nocode: the connection closes after the ERROR; nothing is served on it");
+      h_client_close(&c1); }
+    fflush(f);
+    CHECK(count_of(buf, "error event=login-code-failed") == 1u && strstr(buf, "login-code-issued") == NULL &&
+          strstr(buf, "record-refused") == NULL,
+          "nocode: the journal still says login-code-failed, once, and nothing else about it");
+    CHECK(store_int(DB, "SELECT COUNT(*) FROM login_codes;") == 1,
+          "nocode: no code was stored (the canary's is the only one)");
+
+    CHECK(store_exec(DB, UNBLOCK) == 0, "nocode: the obstacle is removed");
+    { h_client_t c2;
+      CHECK(h_login(&d, &c2, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c2, code) == 0,
+            "nocode: and the same device then logs in");
+      h_client_close(&c2); }
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    (void)fclose(f);
+    free(buf);
     mldsa_keypair_free(&kp);
     h_stop(&d);
 }
@@ -3101,6 +3172,7 @@ int main(void)
     test_revoke_ends_codes();
     test_store_write_failure();
     test_store_read_failure();
+    test_login_code_not_stored();
     test_enroll_without_continuity();
     test_spec_clauses_v262();
     test_recovery_kdf_failure();

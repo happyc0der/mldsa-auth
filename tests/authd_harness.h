@@ -562,6 +562,23 @@ static inline int h_get_login_code(h_daemon_t *d, h_client_t *c, uint8_t code_ou
     return 0;
 }
 
+/* The daemon's first record after ClientAuth, opened: 0 and its content, or
+ * -1 when none came or it did not authenticate (V4-312, F431). */
+static inline int h_first_record(h_daemon_t *d, h_client_t *c, uint8_t *out, size_t cap, size_t *out_len)
+{
+    uint8_t rec[AUTHD_MAX_RECORD], pt[AUTHD_MAX_RECORD];
+    size_t rec_len = 0, pt_len = 0;
+    *out_len = 0;
+    if ((c->ws ? h_ws_recv_frame(d, c->fd, rec, sizeof rec, &rec_len)
+               : h_recv_frame(d, c->fd, rec, sizeof rec, &rec_len)) != 0) { return -1; }
+    if (session_open(&c->sess, rec, rec_len, pt, sizeof pt, &pt_len) != SESSION_OK) { return -1; }
+    if (pt_len > cap) { return -1; }
+    memcpy(out, pt, pt_len);
+    *out_len = pt_len;
+    sodium_memzero(pt, sizeof pt);
+    return 0;
+}
+
 static inline void h_hex(char *out, size_t cap, const uint8_t *p, size_t n)
 {
     (void)sodium_bin2hex(out, cap, p, n);

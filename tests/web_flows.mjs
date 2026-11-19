@@ -28,7 +28,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { argon2Sync } from 'node:crypto';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createConnection } from 'node:net';
 import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -160,6 +160,36 @@ try {
   };
   await unresolved('wrong passphrase', { passphrase: 'not the passphrase at all, sorry' }, /neither key of .* could be opened .*decryption-failed.*the daemon was not asked/);
   await unresolved('daemon unreachable', { url: 'ws://127.0.0.1:9/authd/v1' }, /could not ask the daemon/);
+
+  { // V4-312 (F431): the daemon accepts the current key and cannot record the
+    // login. It answers ERROR(0x05); it used to close, which read as the key
+    // being refused, and with the stale pending key refused too the page said
+    // neither key authenticates. The store is made to refuse a new login code
+    // by a trigger written from a second connection, removed afterwards.
+    const { store, params } = await fresh();
+    const stale = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, stale.envelope);
+    const before = await store.get(params.handle);
+    const db = join(dirname(info.site), 'wasm.sqlite3');
+    const sql = (q) => spawnSync('python3', ['-I', '-c',
+      'import sqlite3, sys\nc = sqlite3.connect(sys.argv[1], timeout=5)\nc.execute(sys.argv[2])\nc.commit()\nc.close()',
+      db, q], { encoding: 'utf8' });
+    const blocked = sql("CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END");
+    let err = null;
+    try { const s = await flows.login(client, store, params); await s.close(); } catch (e) { err = e; }
+    const unblocked = sql('DROP TRIGGER v312_block');
+    check(blocked.status === 0 && unblocked.status === 0,
+          `recovery, login not recorded: the store was made to refuse a login code, and put back (${blocked.stderr}${unblocked.stderr})`);
+    check(err !== null && err.name !== 'RecoveryRefused',
+          `recovery, login not recorded: not reported as two keys the daemon refused (${err?.name}) (F431)`);
+    check(err !== null && err.name === 'RecoveryUnresolved' &&
+          /could not ask the daemon which key .* is live \(daemon-could-not-answer at login-code/.test(err.message),
+          `recovery, login not recorded: the error says the daemon could not answer (${err?.name}: ${err?.message}) (F431)`);
+    check(isDeepStrictEqual(await store.get(params.handle), before),
+          'recovery, login not recorded: the store is exactly as it was (F431)');
+    const s = await flows.login(client, store, params);
+    check(s.code.length === 32, 'recovery, login not recorded: the same identity then logs in (F431)');
+    await s.close(); }
 
   { // The daemon refuses the current key (the rotation committed) and the
     // pending key will not open: that is not "neither authenticates" either.

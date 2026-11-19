@@ -37,6 +37,7 @@ const char *cc_status_name(cc_status_t st)
     case CC_ERR_KEYS:         return "public-key-file";
     case CC_ERR_CRYPTO:       return "crypto-error";
     case CC_ERR_PASSPHRASE:   return "passphrase-policy";
+    case CC_ERR_UNANSWERED:   return "daemon-could-not-answer";
     }
     return "unknown";
 }
@@ -406,7 +407,20 @@ cc_status_t cc_login_on_record(cc_t *cc, const uint8_t *msg, size_t msg_len, aut
     /* The daemon's first record is LOGIN_CODE and nothing else: anything that
      * authenticates but is not one is refused, not skipped. */
     const authmsg_status_t as = authmsg_decode_login_code(cc->pt, pt_len, code_out);
+    /* Except ERROR(0x05), which is the daemon saying it could not record the
+     * login (erratum 140, F431). It is told apart from every other failure
+     * because it is the one that says nothing about the key: a caller probing
+     * two keys must not count it as either being refused. Any other code is
+     * still an unexpected message. */
+    uint8_t err = 0;
+    const int unanswered = (as != AUTHMSG_OK &&
+                            authmsg_decode_error(cc->pt, pt_len, &err) == AUTHMSG_OK &&
+                            err == AUTHMSG_ERR_INTERNAL);
     sodium_memzero(cc->pt, pt_len);
+    if (unanswered) {
+        memset(code_out, 0, sizeof *code_out);
+        return fail(cc, CC_ERR_UNANSWERED, CC_DIAG_MESSAGE, "login-code", "the daemon could not record the login");
+    }
     if (as != AUTHMSG_OK) {
         memset(code_out, 0, sizeof *code_out);
         return fail(cc, CC_ERR_MESSAGE, CC_DIAG_MESSAGE, "login-code", authmsg_status_name(as));

@@ -77,7 +77,10 @@ typedef enum {
     CC_ERR_KEYFILE,       /* an MLDSAEK1 envelope failed (cc_diag_t names why) */
     CC_ERR_KEYS,          /* an MLDSAPK1 image failed (cc_diag_t names why) */
     CC_ERR_CRYPTO,        /* key generation, signing, allocation */
-    CC_ERR_PASSPHRASE     /* refused by the passphrase policy (passphrase.h); V4-13c */
+    CC_ERR_PASSPHRASE,    /* refused by the passphrase policy (passphrase.h); V4-13c */
+    CC_ERR_UNANSWERED     /* ERROR(0x05) in place of LOGIN_CODE: the daemon accepted the
+                           * key and could not record the login. Not a refusal of the
+                           * key (V4-312, F431). Last, so no earlier value moved. */
 } cc_status_t;
 
 typedef enum {

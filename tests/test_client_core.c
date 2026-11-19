@@ -342,6 +342,27 @@ static void test_fake(void)
         cc_wipe(&g_cc); fs_wipe(&fs);
     }
 
+    /* V4-312 (F431): ERROR(0x05) in LOGIN_CODE's place is the daemon saying it
+     * could not record the login. It is its own status, because it is the
+     * one failure here that says nothing about the key. 0x03 above stays an
+     * unexpected message. */
+    { fs_t fs;
+      uint8_t e5[AUTHMSG_ERROR_CONTENT_LEN];
+      size_t e5l = 0;
+      (void)authmsg_encode_error(e5, sizeof e5, &e5l, AUTHMSG_ERR_INTERNAL);
+      (void)fs_init(&fs, SID, sizeof SID, hid, hl, kp.public_key);
+      (void)fake_login(&fs, &g_cc, hid, hl, &kp, 0u);
+      memset(&code, 0xA5, sizeof code);
+      const cc_status_t st = (fs_send(&fs, e5, e5l, g_in, sizeof g_in, &m) == 0)
+                                 ? cc_login_on_record(&g_cc, g_in, m, &code) : CC_OK;
+      CHECK(st == CC_ERR_UNANSWERED && strcmp(cc_status_name(st), "daemon-could-not-answer") == 0,
+            "fake: ERROR(0x05) as the first record is 'the daemon could not answer', not a refusal (F431)");
+      const cc_diag_t *dg = cc_diag(&g_cc);
+      CHECK(cc_state(&g_cc) == CC_STATE_FAILED && sodium_is_zero(code.code, 32) &&
+            dg->kind == CC_DIAG_MESSAGE && strcmp(dg->stage, "login-code") == 0,
+            "fake: and the core has failed at login-code with no code given out (F431)");
+      cc_wipe(&g_cc); fs_wipe(&fs); }
+
     /* ROTATE_ACK must name THIS handle and THIS new key */
     mldsa_keypair_t nkp, other;
     CHECK(mldsa_keypair_generate(&nkp) == 0 && mldsa_keypair_generate(&other) == 0, "fake: new and other keys");

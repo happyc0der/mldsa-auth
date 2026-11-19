@@ -133,7 +133,11 @@ async function probe(client, params, envelope) {
     return { verdict: 'live' };
   } catch (e) {
     const core = e?.name === 'AuthdError';
-    const verdict = core && e.framesSent >= 2 ? 'refused' : core && e.framesSent === 0 ? 'unopened' : 'unasked';
+    // F431: 'daemon-could-not-answer' is the daemon's ERROR(0x05) in place of
+    // a login code. It had the key and could not record the login, which is
+    // not a refusal of the key.
+    const judged = core && e.statusName !== 'daemon-could-not-answer';
+    const verdict = judged && e.framesSent >= 2 ? 'refused' : judged && e.framesSent === 0 ? 'unopened' : 'unasked';
     return { verdict, why: String(e?.message ?? e) };
   }
 }

@@ -172,17 +172,23 @@ static int queue_sealed(authd_slot_t *slot, session_t *sess, const uint8_t *cont
     return (cs == CONN_IO_OK) ? 0 : -1;
 }
 
-/* Seals an ERROR and asks the loop to close once it has gone out. */
-static ev_action_t fail_with_error(authd_slot_t *slot, authd_conn_t *c, uint8_t code, const char *why)
+/* Seals an ERROR and asks the loop to close once it has gone out. The caller
+ * logs: what the journal says differs by where this is used. */
+static ev_action_t close_with_error(authd_slot_t *slot, authd_conn_t *c, uint8_t code)
 {
     uint8_t content[AUTHMSG_ERROR_CONTENT_LEN];
     size_t n = 0;
     if (authmsg_encode_error(content, sizeof content, &n, code) == AUTHMSG_OK) {
         (void)queue_sealed(slot, &c->sess, content, n);
     }
-    authd_log_slot_detail(AUTHD_LOG_INFO, "record-refused", slot->index, why);
     c->stage = CONN_STAGE_CLOSING;
     return EV_ACTION_CLOSE;
+}
+
+static ev_action_t fail_with_error(authd_slot_t *slot, authd_conn_t *c, uint8_t code, const char *why)
+{
+    authd_log_slot_detail(AUTHD_LOG_INFO, "record-refused", slot->index, why);
+    return close_with_error(slot, c, code);
 }
 
 /* --- the pin's time floor (V4-67, F135; see authd_conn.h) ---------------- */
@@ -376,10 +382,10 @@ static int rotation_due(const authd_app_t *app, const authd_conn_t *c)
     return (app->now_unix - valid_from) >= (int64_t)app->rotation_due_age_s;
 }
 
-/* Issues the login code as the session's FIRST record. spec-v2 6.4.4 allows
- * the responder's confirmation record to carry content, and spec 6.2 makes it
- * this message -- so confirmation and the login code are one record, not two. */
-static int issue_login_code(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c)
+/* Turns the finished handshake into the session. It is its own step, ahead of
+ * the store (V4-312, F431): the peer has proved its key by now, and a store
+ * that then fails is answered with a sealed ERROR, which needs the session. */
+static int begin_session(authd_app_t *app, authd_conn_t *c)
 {
     uint8_t hsid[WIRE_HANDSHAKE_ID_LEN];
     if (handshake_get_handshake_id(&c->hs, hsid) != HANDSHAKE_OK) {
@@ -399,6 +405,18 @@ static int issue_login_code(authd_app_t *app, authd_slot_t *slot, authd_conn_t *
      * and session_t's copy is private to session.c. */
     memcpy(c->handshake_id, hsid, sizeof c->handshake_id);
     c->hsid_set = 1;
+    sodium_memzero(hsid, sizeof hsid);
+    return 0;
+}
+
+/* Issues the login code as the session's FIRST record. spec-v2 6.4.4 allows
+ * the responder's confirmation record to carry content, and spec 6.2 makes it
+ * this message -- so confirmation and the login code are one record, not two.
+ * The session exists already (begin_session). */
+static int issue_login_code(authd_app_t *app, authd_slot_t *slot, authd_conn_t *c)
+{
+    uint8_t hsid[WIRE_HANDSHAKE_ID_LEN];
+    memcpy(hsid, c->handshake_id, sizeof hsid);
 
     authmsg_login_code_t m;
     memset(&m, 0, sizeof m);
@@ -485,6 +503,12 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
         return EV_ACTION_CLOSE;
     }
 
+    /* The session, before the store is asked anything (V4-312, F431). */
+    if (begin_session(app, c) != 0) {
+        authd_log_slot(AUTHD_LOG_ERROR, "login-code-failed", slot->index);
+        return EV_ACTION_CLOSE;
+    }
+
     /* THE PINNED KEY MUST STILL BE THE ACTIVE ONE (V4-79, F158). The pin is
      * taken at ClientHello, and a ROTATE, a revocation or a disable can land
      * between that and this ClientAuth -- up to handshake_timeout_ms. Without
@@ -501,10 +525,12 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
                           sodium_memcmp(owner, c->user_id, owner_len) == 0);
         sodium_memzero(cur, sizeof cur);
         if (ls != STORE_OK && ls != STORE_ERR_NOT_FOUND) {
-            /* F239: a read that failed is not a key that changed. */
+            /* F239: a read that failed is not a key that changed. F431: and
+             * the peer is told so. It proved its key, so ERROR(0x05) discloses
+             * nothing; a bare close read to it as that key being refused. */
             authd_log_slot_detail(AUTHD_LOG_ERROR, "store-read-failed", slot->index, store_status_name(ls));
             app->handshakes_failed++;
-            return EV_ACTION_CLOSE;
+            return close_with_error(slot, c, AUTHMSG_ERR_INTERNAL);
         }
         if (!same) {
             authd_log_slot(AUTHD_LOG_INFO, "client-auth-key-changed", slot->index);
@@ -514,8 +540,9 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
     }
 
     if (issue_login_code(app, slot, c) != 0) {
+        /* F431: the code could not be stored. The same answer. */
         authd_log_slot(AUTHD_LOG_ERROR, "login-code-failed", slot->index);
-        return EV_ACTION_CLOSE;
+        return close_with_error(slot, c, AUTHMSG_ERR_INTERNAL);
     }
     (void)store_touch_last_seen(app->store, c->handle, c->handle_len);
 

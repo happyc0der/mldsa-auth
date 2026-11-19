@@ -20914,3 +20914,58 @@ No spec change: the tool's exit statuses already follow spec 13.
 Counts: 738 mutations, 138 campaigns, 783 anchors; 539 findings (F148,
 F156, F273, F288, F309, F398, F419, F431, F435, F436, F451, F453 and F511
 open); spec v1.96, 139 errata; 66 tests.
+
+## V4-312 — a login the daemon could not record (F431), and the client's exit status for its key (F451)
+
+**F431.** After `ClientAuth` the daemon reads the key again and stores the
+login code. When either failed it closed the connection, and both clients
+read a close at that point as the key being refused. With a pending rotation
+the second key was refused too, and the user was told that an administrator
+must re-enrol a device whose key was live.
+
+- The daemon now answers `ERROR(0x05)` under the session and closes. The
+  peer has proved its key by then, so the answer discloses nothing. No new
+  code point: 0x05 already answers a store failure in `ROTATE`.
+- The session is made before the store is asked (`begin_session`), because
+  the re-read came before it and an ERROR needs it. A changed key still
+  closes with nothing sent: that is a refusal.
+- The journal is unchanged: `store-read-failed` and `login-code-failed`.
+- The core gives that record its own status, `CC_ERR_UNANSWERED`
+  (`daemon-could-not-answer`), added last so no existing value moved. Only
+  0x05 gets it. Any other ERROR in LOGIN_CODE's place is still an unexpected
+  message.
+- `authd_client` and the browser's flow count it as a key the daemon was not
+  asked about. `rotate` says the daemon could not record the login and still
+  removes the staged key, since no ROTATE was sent.
+
+**F451, the exit status only.** `authd_client login` and `rotate` exit 3 for
+a `--key` that cannot be used, the rule errata 51 and 82 state and
+`authd_admin` follows. The wording differences F451 also lists stay open:
+each is a word a script may read, and which word wins is the owner's.
+
+**What went wrong on the way.** To check the campaign's anchors I applied
+each mutation and undid it with `git checkout -- apps`. That also discarded
+this step's uncommitted edits under `apps/`. They were re-applied from the
+edit scripts and the diff matched the earlier one line for line; every test
+was rerun afterwards. Anchors are now checked against a scratch copy.
+
+Tests: `test_authd_localapi` reads the first record on both store-failure
+paths (the code's write is failed by a trigger from a second connection);
+`test_client_core` the new status; `authd_e2e` a pending rotation with the
+store refusing the code, and the two exit statuses; `web_flows` the same
+rotation in the browser's flow.
+
+Campaign v169: eight mutations (LR1 to LR4, CU1, CU2, CL1, CL2), each killed
+by hand in build-asan-p. The older mutations of the touched functions (v104,
+v112, v158 SR1, v58 GA3) were run again and are still killed. One changed
+its killer: v104 RK1 (a failure after ClientAuth is never judged) now fails
+the new leg first, because the second probe's reason overwrites "could not
+record the login"; its spec line names that check. One hand
+control with `tools/hand_control.py --interpreted` against `web_flows`,
+KILLED: FM1, the flow counts `daemon-could-not-answer` as a refusal.
+
+Spec v1.97: errata 140 (6.2, 7.3) and 141 (13).
+
+Counts: 746 mutations, 139 campaigns, 791 anchors; 539 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453 and F511 open);
+spec v1.97, 141 errata; 66 tests.

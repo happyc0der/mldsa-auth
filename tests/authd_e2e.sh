@@ -1410,6 +1410,57 @@ grep -q "cannot ask the daemon which key is live: cannot connect" "$TMP/rec1c.er
     || { cat "$TMP/rec1c.err"; fail "recovery, no daemon: the client did not say it could not connect (F225)"; }
 grep -q "NOTHING has been deleted" "$TMP/rec1c.err" || fail "recovery, no daemon: did not say that nothing was deleted"
 echo "PASS: E2E: recovery with a stale .ek.next -- a wrong passphrase and an unreachable daemon are each named, and neither is called a dead identity (F225)"
+
+# 1d (V4-312, F431). The same state, and a daemon whose store will not take a
+#    login code. It accepts .ek and cannot record the login; it used to close
+#    the connection, the client counted that as .ek refused, .ek.next (the
+#    superseded key) is refused, and the user was told to re-enrol a device
+#    whose key is live. The daemon now answers ERROR(0x05) and the client says
+#    that it could not be asked. The store is made to refuse the code by a
+#    trigger written from a second connection, and the trigger is removed.
+store_sql() {
+    python3 -I -c 'import sqlite3, sys
+c = sqlite3.connect(sys.argv[1], timeout=5)
+c.execute(sys.argv[2])
+c.commit()
+c.close()' "$TMP/d/store.sqlite3" "$1"
+}
+store_sql "CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END" \
+    || fail "recovery, login not recorded: could not stage the store"
+rc=0
+"$CLIENT" login --handle "$HANDLE" --key "$EK" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1d.err" || rc=$?
+store_sql "DROP TRIGGER v312_block" || fail "recovery, login not recorded: could not put the store back"
+[ "$rc" -ne 0 ] || fail "recovery, login not recorded: login succeeded with the store refusing the code"
+[ -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery, login not recorded: a key file was touched"
+if grep -q "re-enrol" "$TMP/rec1d.err"; then
+    cat "$TMP/rec1d.err"; fail "recovery, login not recorded: the client told the user to re-enrol the device (F431)"
+fi
+grep -q "cannot ask the daemon which key is live: the daemon could not record the login" "$TMP/rec1d.err" \
+    || { cat "$TMP/rec1d.err"; fail "recovery, login not recorded: the client did not say the daemon could not record the login (F431)"; }
+grep -q "NOTHING has been deleted" "$TMP/rec1d.err" || fail "recovery, login not recorded: did not say that nothing was deleted"
+echo "PASS: E2E: recovery with a stale .ek.next -- a login the daemon could not record is named, and is not called a dead identity (F431)"
+
+# 1e (V4-312, F451). A --key that cannot be used is a file the operator named:
+#    exit 3, as an unusable --passphrase-file already was (spec 13, errata 51
+#    and 82). It was 1, the status of a login the daemon refused. .ek.next is
+#    moved aside so the ordinary path, not the recovery, opens the key.
+mv "$NEXT" "$TMP/next.aside"
+for leg in missing wrongpass; do
+    case "$leg" in
+    missing)   kf="$TMP/dev/no-such.ek"; pf="$TMP/opass"; want="io" ;;
+    *)         kf="$EK";                 pf="$TMP/wpass"; want="decryption-failed" ;;
+    esac
+    rc=0
+    "$CLIENT" login --handle "$HANDLE" --key "$kf" \
+        --passphrase-file "$pf" --server-id authd --server-pub "$TMP/d/server.pub" \
+        --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1e.err" || rc=$?
+    [ "$rc" -eq 3 ] || { cat "$TMP/rec1e.err"; fail "an unusable --key ($leg) exits $rc, not 3 (F451)"; }
+    grep -q "$want" "$TMP/rec1e.err" || { cat "$TMP/rec1e.err"; fail "an unusable --key ($leg) is not named $want"; }
+done
+mv "$TMP/next.aside" "$NEXT"
+echo "PASS: E2E: a --key that is missing or does not open under the passphrase exits 3, as an unusable passphrase file does (F451)"
 rm -f "$NEXT"
 
 # 2. REFUSE: neither file authenticates. Deleting either would be guessing
