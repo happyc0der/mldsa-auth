@@ -21600,3 +21600,51 @@ Spec v1.105: erratum 154 (10.2).
 Counts: 776 mutations, 147 campaigns, 821 anchors; 595 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
 F585 open); spec v1.105, 154 errata; 66 tests.
+
+## V4-325: cleanup after V4-323 and V4-324, and a mutation that was killed by luck (F596)
+
+**F596.** The nightly on `e044f2f` (V4-322) had one failure that was not
+the runner's: campaign v166's TS7 SURVIVED.
+
+- TS7 stops the limiter's search for a free entry after 1,024 entries. Its
+  check filled a 1,875-entry table and expected every address admitted.
+- Where an address starts its search is a keyed hash, and the key is random
+  each run. Nearly always some address needs more than 1,024 steps and the
+  mutant fails the check. About three runs in a hundred none does
+  (simulated: 12 of 400).
+- It had been killed in every nightly since V4-308, about twenty. Nothing
+  in V4-322 touched it. The limiter was never wrong; the campaign's claim
+  about this mutation was weaker than it read.
+- The new check holds 1,874 entries, leaves one free, and tries 64 new
+  addresses against that same table. With the whole table searched each
+  finds the entry. The key decides nothing.
+- Lesson: a kill has to be a property of the mutant and the test, not of
+  a random value. A campaign green twenty times is not evidence of that.
+  Review 73 had asked whether the limiter's tests depend on the hash key
+  and was told no, which is true of the code under test and was not true
+  of this mutant.
+
+**Cleanup.**
+- `docs/review/REPRODUCE.md` now cites the runs on `3030576` (V4-320,
+  main): CI 44508182074 (16/16) and nightly 44508188353 (159/159 on its
+  second attempt, 144 campaigns).
+- GitHub's runners could not reach Ubuntu's package archives for much of
+  the morning of 2026-11-19. What that cost, for the record; none of these
+  was a test or a campaign failing:
+  - `d2dfa48` (V4-321): CI 44519640641 lost three jobs to it and passed
+    16/16 on its second attempt. Nightly 44519645574 lost five (four
+    campaigns at `Install ccache`, and the ProVerif job building its
+    toolchain); those five were run again.
+  - `e044f2f` (V4-322): CI 44525275635 lost one job (`OFFLINE: cannot
+    install the toolchain`) and passed on its second attempt. Nightly
+    44525282364: TS7, above; that job was run again.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549 and F585. Also open: whether F420's overlap should be
+  refused rather than warned of, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+No campaign and no spec change. v166 TS7's line names the new check.
+
+Counts: 776 mutations, 147 campaigns, 821 anchors; 596 findings (the 14
+above open); spec v1.105, 154 errata; 66 tests.

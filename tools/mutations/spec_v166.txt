@@ -4,4 +4,4 @@ TS3|^test_authd_ws$|limiter size: 750256 wanted is capped at the 16384-entry cei
 TS4|^test_authd_ws$|limiter size: the slots are added to the rate's share, not compared with it: 4096 + 750, 256 + 1875 (F544)
 TS5|^authd_e2e$|a daemon at rate_per_min = 2 did not size its limiter table at 9031 (F338)
 TS6|^authd_e2e$|--check-config did not warn that 3510160 addresses exceed the 16384-entry table, and pass (F338)
-TS7|^test_authd_ws$|limiter size: a 1875-entry table admits 1875 distinct addresses and refuses the next 8 (F338)
+TS7|^test_authd_ws$|limiter size: with one entry free among 1875, every new address finds it, wherever its search starts (F596)

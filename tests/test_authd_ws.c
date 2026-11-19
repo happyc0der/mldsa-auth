@@ -1156,6 +1156,36 @@ static void test_ratelimit(void)
       c.addr[1] = 0u; c.addr[2] = 0u; c.addr[3] = 5u;
       CHECK(ratelimit_conns(&r, &c) == 1u,
             "limiter size: an address in the larger table is still found"); }
+    /* V4-325 (F596): the WHOLE table is searched for room, wherever the one
+     * free entry is. The check above is what campaign v166's TS7 (the search
+     * stops after 1024 entries) was killed by, and that kill was luck: where
+     * an address starts its search depends on the limiter's hash key, which
+     * is random, and about three runs in a hundred every address found room
+     * within 1024 entries. On 2026-11-19 a nightly was one of the three.
+     * Here 1874 addresses hold their entries and one is free. Each of 64
+     * new addresses is tried against that same table, restored each time.
+     * Searching all of it, each finds the entry. Searching 1024 of 1875,
+     * each misses it nearly half the time, and all 64 finding it is one
+     * chance in 10^17. */
+    { static ratelimit_entry_t one[1875], snap[1875];
+      static ratelimit_t r0;
+      ratelimit_init(&r, one, 1875u, 1000u, 1000u, 10000u, 4u, 0u);
+      authd_addr_t c = { 4u, { 10u, 1u, 0u, 0u } };
+      size_t held = 0, found = 0;
+      for (size_t i = 0; i < 1874u; i++) {
+          c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+          if (ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW) { held++; }
+      }
+      memcpy(snap, one, sizeof snap);
+      r0 = r;
+      for (size_t i = 0; i < 64u; i++) {
+          memcpy(one, snap, sizeof one);
+          r = r0;
+          c.addr[1] = 2u; c.addr[2] = 0u; c.addr[3] = (uint8_t)i;
+          if (ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW) { found++; }
+      }
+      CHECK(held == 1874u && found == 64u,
+            "limiter size: with one entry free among 1875, every new address finds it, wherever its search starts (F596)"); }
     /* F544 (V4-315): the size is enough for what it is for. 1024 sessions
      * stay open from 1024 addresses, and then new addresses arrive at the
      * global rate for 15 s: 750, the most whose buckets can be refilling at
