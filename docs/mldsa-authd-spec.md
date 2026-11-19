@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.101, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320)
+# mldsa-authd — deployment specification (v1.102, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -581,7 +581,11 @@ the request out, usually because a read or a write of its store failed. It is
 not a verdict on what was presented (erratum 96). A request whose store
 operation failed is answered `internal` and with no other code, so a valid
 token is never called `unknown` and a wrong recovery code that was not counted
-is never called `invalid`; §14 says what a site does with it.
+is never called `invalid`; §14 says what a site does with it. Every request
+answered `internal` writes `error event=local-internal` to the journal, with
+the command and the peer; and a `RECOVERY-USE` refusal whose Argon2id cannot
+be computed is one of them, logged `recovery-use detail=kdf-failed` at ERROR,
+whoever was named (erratum 123).
 
 **`site.sock`** — mode 0660, group `mldsa-authd` (the daemon's; the site's
 and the proxy's users are added to it, §16), uid allowlist `site_uids`, which
@@ -618,12 +622,13 @@ because a caller who believes it is redeeming a ticket and is not has been
 told something false.
 
 `ENROLL` creates the user on first use, with role `user`. A handle whose user
-already exists with the other role is `role-mismatch`. On either `via`,
+already exists with the other role is `role-mismatch`. Whatever its `via`,
 `exists-different-key` means the handle already exists with a different key
 (Req 7, logged -- including a handle whose device is revoked or whose user is
 disabled), and `pk-in-use` means the key is already enrolled: under another handle, or under this
 handle for another user (erratum 46). A request refused for its own user
-first (`user-exists`, `role-mismatch`, `user-disabled`) keeps that answer, and
+first (`user-exists`, `role-mismatch`, `user-disabled`), or for its ticket
+(`ticket-invalid`, erratum 129), keeps that answer, and
 a different key for the handle it names is still logged as a Req 7 rejection
 (erratum 118). `ENROLL-OPERATOR` is
 the same request with the same keys, on the administrative socket, creating
@@ -777,7 +782,7 @@ the key the handle holds and of the key presented. That holds on either
 never reused, so a handle can only ever be enrolled with the key it holds or
 last held. A refused enrollment writes nothing to the store, the audit chain
 included (erratum 45). With an identical key it is idempotent for the user the
-handle belongs to; any other user naming it, on either `via`, is refused as
+handle belongs to; any other user naming it, whatever its `via`, is refused as
 `pk-in-use` and writes nothing, and a recovery ticket is not spent (erratum 46).
 
 ### 10.2 Rotation
@@ -863,6 +868,8 @@ that run uses `.ek` and decides nothing about it (erratum 127). A
 run that finds the lock taken says so and waits; one that cannot take the lock
 does neither thing. And a rotation discards `.ek.next` only when this run
 asked the daemon and `.ek` authenticated — never because the file is there.
+A key path too long for its `.ek.next` name to fit the platform's path limit
+is refused before anything is read (errata 104, 146).
 
 **On the server there is no overlap window**: `one_active_key` makes two
 simultaneously-active keys for a handle unrepresentable, and that is enforced
@@ -1198,6 +1205,14 @@ passphrase file that could not be used. A socket path or a port with no
 daemon behind it is 1: the tool cannot tell a mistyped address from a daemon
 that is down.
 
+`authd_admin`'s socket commands name two waits apart (errata 149, 150).
+`daemon-busy`: the daemon did not take the connection before the wait ended,
+which on Linux is a listen queue already full; nothing was sent. `timeout`:
+the request was sent and no reply came in time. A daemon that is busy, with
+a long `BACKUP` for one, takes such a connection when it is free and carries
+the request out with nobody to read the answer, so after `timeout` the
+operator checks the result before asking again.
+
 ## 14. Browser client *(B)*
 
 Feasibility was established before this section was written (V4-2 S6): the
@@ -1272,8 +1287,11 @@ line towards the daemon: a reply is `OK`, alone or followed by a space, with
 the fields that reply carries (a login its token, a recovery its ticket), or
 it is `malformed-response`; a recovery is enrolled as one because a ticket
 was given, never because of what the ticket holds; and a ticket the daemon
-refuses as spent, or whose expiry has passed, is dropped from the site's
-session.
+refuses (`ticket-invalid`: spent, expired or unknown), or whose expiry has
+passed, is dropped from the site's session. The reference site answers both
+enrollment conflicts, `pk-in-use` and `exists-different-key`, with one word,
+so a page cannot learn from it whether a key or a handle is enrolled
+(erratum 122).
 
 A page hands the module nothing larger than a frame (erratum 107): a
 WebSocket message longer than the module's frame buffer is a frame error
@@ -1582,6 +1600,8 @@ symbolic link, a file that is not the service user's alone, an empty or
 oversized passphrase file, or a key file of a size no envelope has is
 refused there, exit 3, in the start's words. `authd_admin --check-config`,
 which an operator runs as themselves, checks only that the two files exist.
+A store or a socket directly under `/` is accepted: a path whose only slash
+is its first has a directory, the root (erratum 112).
 Both forms also refuse (erratum 114), exit 3, a `store_path` that names
 something other than a regular file, or a file that is neither empty nor
 begins as an SQLite database does, and two socket paths that are one file
@@ -1773,7 +1793,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
 | Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded; the rate holds exactly at every value the configuration accepts, however often an address asks (erratum 109) | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
-| Addresses the limiter tracks | sized at start (errata 138, 143, 145): `max_slots` + the larger of 1.25 × H and H + `rate_global_per_sec`, where H is the sum, for k from 1 to `rate_burst`, of ⌈`rate_global_per_sec` × T / k⌉ (erratum 148: an address that spent k tokens is tracked k times as long) and T is the time one token takes to come back, in seconds (60 / `rate_per_min` when that divides the minute evenly, otherwise up to one refill step longer: erratum 147); at least 1024 and at most 16384; 2454 at the defaults; logged as `limiter-table count=` | §7.2 |
+| Addresses the limiter tracks | sized at start (errata 138, 143, 145): `max_slots` + the larger of 1.25 × H and H + `rate_global_per_sec`, where H is the sum, for k from 1 to `rate_burst`, of `rate_global_per_sec` × T / k, rounded up once (errata 148, 150: an address that spent k tokens is tracked k times as long) and T is the time one token takes to come back, in seconds (60 / `rate_per_min` when that divides the minute evenly, otherwise up to one refill step longer: erratum 147); at least 1024 and at most 16384; 2454 at the defaults; logged as `limiter-table count=` | §7.2 |
 | The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
 `rotation_due_age_s`, `max_conns_per_addr`, `rate_per_min` and `rate_burst`,
@@ -2568,3 +2588,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 148 | 17 | The limiter's table is sized for the burst: H is summed over the tokens an address can spend, 1 to `rate_burst`. The defaults now give 2454 entries, not 1024 | An entry is kept until the address's bucket is full again, so an address that spent k tokens is tracked k times as long as one that spent one. Errata 138, 143, 145 and 147 all counted one token an address. At the shipped rates a flood spending the global budget ten tokens to an address, then nine, down to one, held 1,757 addresses at once against a table of 1,024, and new addresses were answered `limiter-table-full` for 17 s in every 120 (F563) |
 | 149 | 13 | `authd_admin` reports a connection the daemon did not take before its wait ended as `daemon-busy`, and says nothing was sent; `timeout` is now only a reply that did not come | Since V4-318 a full backlog is waited on. That wait ending printed `timeout`, the word for a request that was sent and not answered, and for `backup` the hint that the daemon may still be writing the file, when nothing had been asked (F566) |
+
+### Revision v1.102 (V4-321)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 150 | 8, 10.1, 10.2, 13, 14, 16, 17 | The body is brought into agreement with the errata again: the journal lines of erratum 123, `ticket-invalid` among the refusals that still log Req 7 (129), "whatever its `via`" now that there are three (56), the path too long for `.ek.next` (104), `ticket-invalid` as what drops a ticket from the site's session (106), the one word for both enrollment conflicts (122), paths directly under `/` (112) and `daemon-busy` (149). §13 says what `timeout` from `authd_admin` means: the request was sent, and a busy daemon still carries it out. §17's rate share is the burst's sum rounded up once, not a term at a time | The seventy-second review compared 144 errata with the body and found these nine stated only in the table (F574). `authd_admin` printed a bare `timeout` for every command but `backup`, and the runbook said `daemon-busy` is what any command says during a long backup, when the first sixteen connect, send and time out, and are then carried out (F569). Rounding each of the burst's terms up made the table at least `rate_burst` entries and warned of a ceiling the rates could not reach (F570) |

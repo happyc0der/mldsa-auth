@@ -387,10 +387,14 @@ The tool waits up to ten minutes for a backup (since V4-311; every other
 command, ten seconds): the daemon copies the whole store before it answers.
 If it still says `timeout`, the daemon may be finishing the file: look at the
 destination before you retry, and check what is there with `audit-verify`.
-`daemon-busy` (since V4-320) is something else: the daemon did not take the
-connection before the wait ended, so nothing was asked of it. It is what
-any `authd_admin` command says while a long backup is running; run the
-command again when the backup is done.
+While a long backup runs, other `authd_admin` commands wait too, and what
+they say depends on how many are waiting. The first sixteen connect, send
+their request and print `timeout` after ten seconds: **those requests were
+sent**, and the daemon carries each out when the backup ends, with nobody
+left to read the answer. Check the result (`list-users`, `list-devices`,
+`audit-tail`) before you run the command again. Past sixteen, on Linux, the
+daemon's queue is full and the command prints `daemon-busy` (since V4-320):
+that one was not sent, and can simply be run again later.
 The copy is one piece of work for the daemon: nothing else is served until
 it ends, so take a large store's backup at a quiet hour. The reference site
 gives up on a request after ten seconds and answers 503. A request it gave

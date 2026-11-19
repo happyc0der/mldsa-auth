@@ -2419,6 +2419,29 @@ static void test_admin_arguments(void)
               "args: a 64-byte --id passes that check and fails later, on the files (F539 canary)");
     }
 
+    /* V4-321, F569: a command that is sent and not answered says so. A bare
+     * `timeout` read as "nothing happened"; a daemon that is busy carries the
+     * request out when it is free. The listener here takes the connection
+     * into its queue and never answers: ten seconds, the tool's own wait. */
+    {
+        char sp[sizeof g_dir + 32u];
+        (void)snprintf(sp, sizeof sp, "%s/silent.sock", g_dir);
+        struct sockaddr_un sa; memset(&sa, 0, sizeof sa); sa.sun_family = AF_UNIX;
+        const size_t spn = strlen(sp);
+        const int fits = spn < sizeof sa.sun_path;
+        if (fits) { memcpy(sa.sun_path, sp, spn + 1u); }
+        const int ls = socket(AF_UNIX, SOCK_STREAM, 0);
+        const int up = fits && ls >= 0 && bind(ls, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(ls, 4) == 0;
+        rc = up ? run_admin_capture((char *[]){ "authd_admin", "disable-user", "--socket", sp, "--user", "u",
+                                               "--reason", "r", NULL }, err, sizeof err) : -2;
+        CHECK(rc == 1 && strstr(err, ": timeout") != NULL &&
+              strstr(err, "the request was sent and not answered in time") != NULL &&
+              strstr(err, "check the result before running this again") != NULL,
+              "args: a command sent to a daemon that does not answer says it WAS sent and may still be carried out (F569)");
+        if (ls >= 0) { (void)close(ls); }
+        (void)unlink(sp);
+    }
+
     /* F533: BACKUP is given ten minutes, everything else ten seconds, and a
      * timed-out backup says the daemon may still finish it. Named here; a
      * test that waited for either would be the slowest in the tree. */

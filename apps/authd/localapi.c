@@ -1119,9 +1119,9 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
     char status[16] = {0};
     const store_status_t us = store_get_user(app->store, user, user_len, &role, status, sizeof status);
     if (us == STORE_ERR_NOT_FOUND) {
-        /* §8 defines no error code for RECOVERY-ISSUE at all (recorded as a
-         * spec gap); `invalid` is borrowed from RECOVERY-USE's vocabulary
-         * rather than inventing a new one. V4-285, F474: every refusal of a
+        /* `invalid`, as §8 gives it for RECOVERY-ISSUE (it once defined no
+         * code for this command, and the word was borrowed from
+         * RECOVERY-USE's). V4-285, F474: every refusal of a
          * well-formed RECOVERY-ISSUE writes a recovery-issue line, as every
          * refusal of RECOVERY-USE does (F393). */
         authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);

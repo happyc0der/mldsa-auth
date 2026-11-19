@@ -53,11 +53,16 @@ uint64_t ratelimit_hold_ms(uint32_t per_min)
 static uint64_t held_at_once(uint64_t gl, uint64_t hold_ms, uint32_t burst)
 {
     const uint64_t b = (uint64_t)clamp_u32(burst, 1u, RATELIMIT_BURST_MAX);
-    uint64_t sum = 0;
+    /* F570 (V4-321): summed in thousandths of an entry and rounded up ONCE.
+     * Rounding each term up added one entry for every k past global x hold,
+     * where the term is below one: a burst of 10000 gave a table of at least
+     * 10000 whatever the rates, and --check-config warned of a ceiling the
+     * configuration could not reach. */
+    uint64_t sum_milli = 0;
     for (uint64_t k = 1u; k <= b; k++) {
-        sum += (gl * hold_ms + 1000u * k - 1u) / (1000u * k);   /* rounded up */
+        sum_milli += (gl * hold_ms + k - 1u) / k;
     }
-    return sum;
+    return (sum_milli + 999u) / 1000u;
 }
 
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots)
@@ -67,8 +72,9 @@ uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t burst, uint32_t glo
     uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
     /* F548 (V4-317): the global bucket also holds one second's burst, so
      * `gl` more addresses can be admitted on top of the steady `held`. The
-     * quarter covers that only while per_min <= 15; past it the burst is the
-     * larger and is what the table is given. */
+     * quarter covers that only while a quarter of `held` is at least `gl`
+     * (per_min <= 15 at a burst of 1, about 43 at the shipped 10); past it
+     * the burst is the larger and is what the table is given. */
     if (want < held + gl) {
         want = held + gl;
     }

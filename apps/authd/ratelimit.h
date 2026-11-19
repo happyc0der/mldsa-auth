@@ -41,25 +41,27 @@
  */
 
 /* Entries. The table is the CALLER's storage, sized at start from the
- * configuration (F338, V4-308). An address that connects once holds its entry
- * until its bucket refills, 60000 / per_min ms, and new addresses are
- * admitted at up to global_per_sec, so about global_per_sec x 60 / per_min
- * entries are held at once: 600 at the defaults, but 1,500 at per_min = 2,
- * past a fixed 1,024, where every address not already in the table was
+ * configuration (F338, V4-308). An address holds its entry until its bucket
+ * is FULL again: 60000 / per_min ms for one token spent, and k times that
+ * for k (F563). New addresses are admitted at up to global_per_sec, so with
+ * one token an address about global_per_sec x 60 / per_min entries are held
+ * at once (600 at the defaults, 1,500 at per_min = 2), and with the burst
+ * spent, up to 2.9 times that at the shipped burst of 10 (1,758). A fixed
+ * 1,024 was past that, and every address not already in the table was
  * answered `limiter-table-full` -- and tightening per_min made it easier.
  * Likewise max_slots above 1,024 could not be filled by distinct addresses.
  * An address with a connection open holds its entry too, for as long as the
  * connection lasts, so the table has room for both together (F544).
  *
- * RATELIMIT_ENTRIES is the least a table holds (and what the defaults use);
+ * RATELIMIT_ENTRIES is the least a table holds (the defaults use 2,454);
  * RATELIMIT_ENTRIES_MAX the most, because a refusal at a full table scans
  * all of it. ratelimit_entries_wanted() is the uncapped figure, so the
  * daemon can say when the cap is what binds. */
 #define RATELIMIT_ENTRIES      1024u
 #define RATELIMIT_ENTRIES_MAX 16384u
 
-/* Bounds for the operator-set values. The spec fixes no numbers (§17 has no
- * row for them), so these are policy with a documented default, the
+/* Bounds for the operator-set values. The spec fixes no numbers (§17 lists
+ * them as operator policy), so these are policy with a documented default, the
  * rotation_due_age_s precedent -- not invented protocol constants. */
 #define RATELIMIT_PER_MIN_DEFAULT      5u
 #define RATELIMIT_BURST_DEFAULT       10u
@@ -125,22 +127,21 @@ void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
                     uint32_t global_per_sec, uint32_t max_conns, uint64_t now_ms);
 
 /* The entries a configuration can hold at once: max_slots, for the
- * addresses with a connection open, plus those whose bucket is refilling:
- * held = ceil(global_per_sec x 60 / per_min), given a quarter's headroom or
- * the global bucket's one-second burst (held + global_per_sec), whichever
- * is more (F548). The sum, since both are held together (F544); never less
- * than RATELIMIT_ENTRIES. Uncapped (F338). */
+ * addresses with a connection open, plus those whose bucket is refilling.
+ * `held` is the sum, for k from 1 to `burst`, of global_per_sec x hold /
+ * (1000 x k), rounded up once (F563, F570): an entry is held until its
+ * bucket is full again, k hold-times for an address that spent k tokens, so
+ * for each k that many addresses can be live at once. It is given a
+ * quarter's headroom or the global bucket's one-second burst (held +
+ * global_per_sec), whichever is more (F548). The sum with max_slots, since
+ * both are held together (F544); never less than RATELIMIT_ENTRIES.
+ * Uncapped (F338). */
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots);
-/* How long one connection's entry is held, in ms: the time the bucket takes
- * to refill one token in the whole steps refill() uses (F556). `held` above
- * is ceil(global_per_sec x this / 1000). */
+/* The hold: how long an entry is held for ONE token spent, in ms -- the time
+ * the bucket takes to refill it, in the whole steps refill() uses (F556). */
 uint64_t ratelimit_hold_ms(uint32_t per_min);
-/* F563: `held` is summed over the burst. An entry is held until its bucket is
- * full again, k hold-times for an address that spent k tokens, so for each k
- * from 1 to `burst` there can be ceil(global_per_sec x hold / (1000 x k))
- * addresses live at once; `held` is their sum. With a burst of 1 it is the
- * figure above. */
-/* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
+/* ratelimit_entries_wanted, capped at RATELIMIT_ENTRIES_MAX: the size to
+ * give the table. */
 size_t ratelimit_entries_for(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots);
 
 /* Admits one connection from `addr`, or says why not.

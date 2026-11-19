@@ -247,6 +247,22 @@ static void test_two_tables(void)
           h_local_cmd(&d, site, "NOSUCHTHING", b, sizeof b) == 0 && strcmp(a, b) == 0,
           "tables: an admin command and a nonsense command give the SAME answer");
 
+    /* V4-321, review 72: EVERY administrative command, by name. The two
+     * checks above name two of the six; a single row added to the site's
+     * table by mistake passed them. Each answers exactly as a nonsense
+     * command does. */
+    { static const char *const ADMIN_ONLY[] = { "ENROLL-OPERATOR", "DISABLE-USER", "ENABLE-USER",
+                                                "LIST-USERS", "AUDIT-TAIL", "BACKUP" };
+      int all = 1;
+      for (size_t i = 0; i < sizeof ADMIN_ONLY / sizeof ADMIN_ONLY[0]; i++) {
+          char got[64];
+          if (h_local_cmd(&d, site, ADMIN_ONLY[i], got, sizeof got) != 0 || strcmp(got, b) != 0) {
+              all = 0;
+              printf("  %s on site.sock answered: %s", ADMIN_ONLY[i], got);
+          }
+      }
+      CHECK(all, "tables: each of the six administrative commands is refused on site.sock as a nonsense command is (Req 11)"); }
+
     (void)close(site); (void)close(adm);
     h_stop(&d);
 }
@@ -851,7 +867,20 @@ static void test_log_hygiene(void)
       size_t tokn = 0;
       CHECK(sodium_hex2bin(tok, sizeof tok, token_hex, strlen(token_hex), NULL, &tokn, NULL) == 0 &&
                 tokn == sizeof tok && !log_holds_window(buf, "the token", tok, sizeof tok, 0),
-            "log: no window of the issued token in any form -- hex, base64, an escaped id= field (V4-29)"); }
+            "log: no window of the issued token in any form -- hex, base64, an escaped id= field (V4-29)");
+      /* V4-321, review 72: and where the token is PRESENTED, which is every
+       * later request a site makes. The scan above saw only the request
+       * that issued it. */
+      char rq[160], rs[512];
+      (void)snprintf(rq, sizeof rq, "VERIFY token=%s", token_hex);
+      const int v_ok = (h_local_cmd(&d, fd, rq, rs, sizeof rs) == 0 && starts(rs, "OK user="));
+      (void)snprintf(rq, sizeof rq, "LOGOUT token=%s", token_hex);
+      const int l_ok = (h_local_cmd(&d, fd, rq, rs, sizeof rs) == 0 && starts(rs, "OK"));
+      fflush(f);
+      CHECK(v_ok && l_ok && strstr(buf, "cmd=VERIFY") != NULL && strstr(buf, "cmd=LOGOUT") != NULL,
+            "log: VERIFY and LOGOUT with the token are served and logged by name (the canary)");
+      CHECK(tokn == sizeof tok && strstr(buf, token_hex) == NULL && !log_holds_window(buf, "the token", tok, sizeof tok, 0),
+            "log: a token presented to VERIFY and LOGOUT never appears in the log, in any form (D13)"); }
     CHECK(!log_holds_window(buf, "the login code", code, sizeof code, 0),
           "log: no window of the login code in any form -- hex, base64, an escaped id= field (V4-29)");
 

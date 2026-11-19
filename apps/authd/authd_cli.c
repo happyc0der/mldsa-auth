@@ -267,8 +267,9 @@ static int cmd_init(int argc, char **argv, const char *prog)
     size_t pass_len = 0;
     int rc = read_pass(prog, "init", pass_path, &pass, &pass_len);
     if (rc != EX_OK) {
-        /* F565: the seal has not run, so a key at `ek` is not this run's. */
-        init_leftovers(prog, pass_path, NULL, pub, db);
+        /* F565: the seal has not run, so a key at `ek` is not this run's.
+         * F571: nor is a public half, nor a store: neither has been made. */
+        init_leftovers(prog, pass_path, NULL, NULL, NULL);
         return rc;
     }
 
@@ -279,7 +280,9 @@ static int cmd_init(int argc, char **argv, const char *prog)
         /* F560: a key at `ek` that this seal did not write is not this run's
          * to list (one another run made between the check above and the
          * seal). The seal says whether it left one. */
-        init_leftovers(prog, pass_path, g_seal_left_key ? ek : NULL, pub, db);
+        /* F571: a seal that failed wrote no public half (it is the last
+         * thing the seal does), and the store is opened only after it. */
+        init_leftovers(prog, pass_path, g_seal_left_key ? ek : NULL, NULL, NULL);
         return rc;
     }
 
@@ -582,6 +585,14 @@ static int local_call(const char *prog, const char *sub, const char *sock,
         fprintf(stderr, "%s %s: %s: %s\n", prog, sub, sock, localcli_status_name(st));
         if (st == LOCALCLI_ERR_TIMEOUT && authd_cli_timeout_hint(cmd) != NULL) {
             fprintf(stderr, "%s %s: %s\n", prog, sub, authd_cli_timeout_hint(cmd));   /* F533 */
+        } else if (st == LOCALCLI_ERR_TIMEOUT) {
+            /* F569: for every command, not only BACKUP. The request WAS sent.
+             * A daemon that is busy (a long backup) reads it when it is free
+             * and carries it out, with nobody left to read the answer; a
+             * bare `timeout` read as "nothing happened". */
+            fprintf(stderr, "%s %s: the request was sent and not answered in time. A busy daemon (a "
+                            "backup in progress) will still carry it out when it is free: check the "
+                            "result before running this again\n", prog, sub);
         }
         /* F566: the wait for the daemon to TAKE the connection ended. That
          * is not a reply that never came: nothing was sent, so nothing can

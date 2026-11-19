@@ -15,8 +15,8 @@ LC = "apps/authd/localcli.c"
 M = {
     "BS1": [(RL, "    for (uint64_t k = 1u; k <= b; k++) {\n",
              "    for (uint64_t k = 1u; k <= b && k <= 1u; k++) { /* MUTATION BS1 */\n")],
-    "BS2": [(RL, "        sum += (gl * hold_ms + 1000u * k - 1u) / (1000u * k);   /* rounded up */\n",
-             "        sum += (gl * hold_ms + 999u) / 1000u + 0u * k; /* MUTATION BS2 */\n")],
+    "BS2": [(RL, "        sum_milli += (gl * hold_ms + k - 1u) / k;\n",
+             "        sum_milli += gl * hold_ms + 0u * k; /* MUTATION BS2 */\n")],
     "BZ1": [(LC, "        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_BUSY : LOCALCLI_ERR_CONNECT;\n",
              "        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_TIMEOUT : LOCALCLI_ERR_CONNECT; /* MUTATION BZ1 */\n")],
 }

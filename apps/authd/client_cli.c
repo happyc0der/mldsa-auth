@@ -1241,6 +1241,10 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         if (unsent_gone) {
             fprintf(stderr, "%s rotate: ROTATE could not be sent, so the new key was never sent; "
                             "it is not kept\n", prog);
+        } else {
+            /* F573: the silence F564 was raised for, on the path that fixes it. */
+            fprintf(stderr, "%s rotate: ROTATE could not be sent, and %s could not be removed: it is "
+                            "KEPT, though the daemon never had it. Remove it by hand\n", prog, next_path);
         }
         goto out;
     }

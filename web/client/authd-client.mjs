@@ -322,14 +322,17 @@ export class Session {
     if (this.closed) { throw new Error('session is closed'); }
   }
 
-  // BYE (best effort), then close and wipe.
+  // BYE (best effort), then close and wipe. It never rejects (F572): the BYE
+  // is a courtesy, and a clock that refused or a send that threw made the
+  // caller's next step -- posting the login code, promoting a key the daemon
+  // had acknowledged -- not happen.
   async close() {
     if (this.closed) { return; }
     const M = this.client.M;
     try {
       this.tick();
       if (M._ccw_bye(this.h, this.frame, this.cap, this.outLen) === 0 && this.ws?.readyState === 1) { this.send(); }
-    } finally { this.destroy(); }
+    } catch { /* best effort */ } finally { this.destroy(); }
   }
 
   destroy() {

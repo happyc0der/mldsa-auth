@@ -597,6 +597,16 @@ try {
             `checkPassphrase: the passphrase's array is zeroed and its copy dropped all the same (${held2.size} left) (F557)`);
       check(client.checkPassphrase(PASS).ok === true, 'checkPassphrase: and it still answers afterwards (the canary)'); } }
 
+  // F572 (V4-321): close() is a courtesy and cannot reject. A clock that
+  // refused threw out of it, and a caller's next step -- posting the login
+  // code, promoting a key the daemon had acknowledged -- did not happen.
+  { const { store, params } = await fresh();
+    const s = await flows.login(client, store, params);
+    s.tick = () => { throw new Error('clock refused'); };
+    const how = await s.close().then(() => 'resolved', (e) => `rejected: ${e.message}`);
+    check(how === 'resolved' && s.closed === true,
+          `close: a session whose clock refuses still closes, and close() does not reject (${how}) (F572)`); }
+
   // F305: a peer that answers the upgrade and then sends one message far
   // larger than any frame. It is refused as a frame error without being
   // copied into the module: nothing that large is ever handed to put().

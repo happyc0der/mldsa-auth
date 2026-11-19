@@ -21363,3 +21363,65 @@ Spec v1.101: errata 148 (17) and 149 (13).
 Counts: 768 mutations, 144 campaigns, 813 anchors; 568 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
 open); spec v1.101, 149 errata; 66 tests.
+
+## V4-321 — what the seventy-second review found (F569 to F577)
+
+The seventy-second review was an independent read of the code V4-320
+changed, and of the local API and the store against spec 8 and 10, the key
+file's header against spec 12, the reference site against spec 14, a
+sample of CLAIMS, and 144 of the 149 errata against the body. It found the
+local API, the store, the key file and the site sound. Nine findings, two
+Low and seven Info. Eight are closed here and one is recorded unchanged.
+
+**The limiter, again, and what is different this time.**
+- The review answered the question V4-320 left: the bound is a true one.
+  Over adversarial floods and 400 random schedules with refunds, releases
+  and held connections, live entries never exceeded it.
+- **F570 (Low)** is the other direction: rounding each of the burst's terms
+  up made the table at least `rate_burst` entries. The sum is now rounded
+  once. The defaults do not move.
+- The search is now in the tree. `test_authd_ws` runs 744 floods in four
+  shapes over rates, bursts and held slots, each table sized as the daemon
+  sizes it; none may fill. A larger search of the same kind (1,560 floods)
+  was run outside the tree before and after the rounding change, with none
+  full, and with the old sizing as a control: 228 full, the shipped
+  defaults among them. It covers the shapes found so far and proves nothing
+  about others.
+
+**F569 (Low): what V4-320 told the operator was wrong.** `daemon-busy` is
+said only once the daemon's queue of sixteen is full. Before that a command
+connects, sends, waits ten seconds and prints `timeout`, and is carried out
+when the daemon is free. The runbook says so now, and `timeout` from any
+command says the request was sent. That the daemon carries out a request
+whose asker has gone is F549, and stays the owner's.
+
+**The others.**
+- **F574 (Info).** Nine errata were stated only in the table. Each sentence
+  is now in its section (erratum 150).
+- **F572 (Info).** `Session.close()` cannot reject. V4-320 had guarded one
+  caller; this fixes the callee.
+- **F576 (Info).** Two claims are checked as widely as they read: all six
+  administrative commands on the site socket, and a token presented to
+  `VERIFY` and `LOGOUT`.
+- **F571, F573, F575 (Info).** `init`'s list; `rotate` when its `unlink`
+  fails; comments that gave superseded figures.
+- **F577 (Info), no change.** A repeat `DISABLE-USER` logs a line though it
+  changes nothing. F174 left the same for a repeat revoke.
+
+Not tested, kept here: F571's race and F573's failed `unlink`; the
+`daemon-busy` sentence `authd_admin` prints (its status is tested, on
+Linux); a journal scan after `ENROLL via=recovery ticket=`.
+
+Campaign v175: three mutations (RD1, TH1, SA1), each killed by hand in
+build-asan-p. Moved with this step's code and killed again: v174 BS2,
+v49b P1; and run again with the new figures: v174 BS1, v166 TS1, TS2, TS4
+to TS6, v172 LB1, v173 HM1, v49a A1.
+
+Hand control with `tools/hand_control.py --interpreted` against
+`web_flows`, KILLED: SC1, `close()` rejects when the clock refuses.
+
+Spec v1.102: erratum 150 (8, 10.1, 10.2, 13, 14, 16, 17).
+
+Counts: 771 mutations, 145 campaigns, 816 anchors; 577 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
+open); spec v1.102, 150 errata; 66 tests.
