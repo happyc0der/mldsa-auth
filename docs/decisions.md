@@ -21261,3 +21261,41 @@ Spec v1.100: errata 146 (13) and 147 (17).
 Counts: 765 mutations, 143 campaigns, 810 anchors; 562 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
 open); spec v1.100, 147 errata; 66 tests.
+
+## V4-319: cleanup after V4-317 and V4-318
+
+No code.
+
+- `docs/review/REPRODUCE.md` now cites the runs on `c4bfc60` (V4-317,
+  main): CI 44491206192 (16/16) and nightly 44491210340 (157/157, 142
+  campaigns). V4-314 to V4-317 landed together on those runs.
+- What the runs before them showed, for the record:
+  - `1c844c8` (V4-314): CI 44469307985 16/16; nightly 44469310267 153/155.
+    The two failures were campaigns v104 and v169, whose spec lines named a
+    check that V4-314's own new check had come to pre-empt. V4-317 corrected
+    the lines; no code was wrong.
+  - `381e1ef` (V4-315): CI 44472640230 failed once in the deploy job
+    (`could not install systemd in the container`) and passed 16/16 when
+    its failed jobs were run again. Nightly 44472645449 153/156: v104 and
+    v169 as above, and v55, whose campaign had finished and whose artifact
+    upload timed out.
+  - `35b881f` (V4-316): CI 44477271150 16/16.
+- A sweep of the threat model, CLAIMS, the README, the example
+  configuration and the runbook for F548 to F562 found nothing that still
+  gave the limiter's old sizing rule or said `authd_client` exits 1 for a
+  file it cannot use.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511 and F549. Also open: whether F420's overlap should be refused
+  rather than warned of, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+- Not tested, carried forward from V4-315, V4-317 and V4-318: the line
+  that hands the watchdog's callback to the store and a backup longer than
+  the watchdog's interval; `rotate`'s reasons other than `cannot connect`;
+  a key-directory lock that fails inside the tool; the two races in
+  `keygen-server` and `init`; the login page's selection changing during
+  a login.
+
+Counts: unchanged by this step (765 mutations, 143 campaigns, 810
+anchors; 562 findings, the 13 above open; spec v1.100, 147 errata; 66
+tests).
