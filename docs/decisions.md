@@ -20969,3 +20969,24 @@ Spec v1.97: errata 140 (6.2, 7.3) and 141 (13).
 Counts: 746 mutations, 139 campaigns, 791 anchors; 539 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453 and F511 open);
 spec v1.97, 141 errata; 66 tests.
+
+## V4-313: cleanup after V4-311 and V4-312
+
+No code.
+
+- `docs/review/REPRODUCE.md` now cites the runs on `fbe3eb6` (V4-311,
+  main): CI 44454455498 (16/16) and nightly 44454461207 (153/153, 138
+  campaigns). Before them, `beb1d97` (V4-310) had CI 44453042016 (16/16).
+- The README's row for `web_flows` names the scenario V4-312 added.
+- A sweep of the threat model, CLAIMS, the README and the runbook for F431
+  and F451 found nothing else that described a close after `ClientAuth` as
+  the only answer, or the client's old exit status.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453 and
+  F511. Also open: whether F420's overlap should be refused rather than
+  warned of, and the questions in V4-246's, V4-274's, V4-281's, V4-284's,
+  V4-285's, V4-291's and V4-300's entries.
+
+Counts: unchanged by this step (746 mutations, 139 campaigns, 791
+anchors; 539 findings, the 12 above open; spec v1.97, 141 errata; 66
+tests).
