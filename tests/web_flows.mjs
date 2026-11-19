@@ -715,8 +715,11 @@ try {
     // enroll never returned, holding the identity's lock, with the site
     // enrolled.
     { let rereads = 0;
-      const never = closedStore(() => { rereads++; return new Promise(() => {}); });
-      const t0 = Date.now();
+      // F621 (V4-330): timed from when the second look BEGINS. From before
+      // enroll it included the key derivation, which on a slow machine is
+      // 1.5 s by itself, and a 20 ms wait then passed.
+      let t0 = 0;
+      const never = closedStore(() => { rereads++; t0 = Date.now(); return new Promise(() => {}); });
       const c8 = await Promise.race([
         flows.enroll(client, never.st, want, async () => { never.close(); return { user: 'u' }; }),
         new Promise((r) => setTimeout(() => r('hung'), 6000))]);

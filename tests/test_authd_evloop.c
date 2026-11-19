@@ -523,6 +523,8 @@ typedef struct {
     int ahead_at;             /* ... when h->frames reaches this */
     int ahead_seen;
     int establish;            /* V4-69: mark the slot's handshake complete, as authd_conn does */
+    evloop_t *note_ev;        /* V4-330 (F619): the handler "took until" note_ms */
+    uint64_t note_ms;
 } harness_t;
 
 static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *payload, size_t len)
@@ -543,6 +545,9 @@ static ev_action_t on_frame(void *user, authd_slot_t *slot, const uint8_t *paylo
     }
     if (h->establish) {
         slot->established = 1;
+    }
+    if (h->note_ev != NULL) {
+        evloop_note_time(h->note_ev, h->note_ms);
     }
     if (h->echo) {
         (void)conn_io_queue(&slot->io, payload, len);
@@ -657,11 +662,33 @@ static void test_evloop(void)
         h.establish = 0;
     }
 
+    /* V4-330 (F619): a handler that outlasts the iteration says so, and the
+     * idle deadline is counted from when the frame was served. */
+    {
+        h.note_ev = &ev; h.note_ms = 1000u + 300000u;
+        uint8_t f[4 + 5];
+        put_be32(f, 5); memcpy(f + 4, "block", 5);
+        CHECK(write(c1, f, sizeof f) == (ssize_t)sizeof f, "ev: client sends a frame whose handler blocks");
+        (void)PUMP_UNTIL(&ev, 1000, h.frames >= 3 && conn_io_pending(&slots[0].io) == 0u);
+        uint8_t back[4 + 5];
+        CHECK(read(c1, back, sizeof back) == (ssize_t)sizeof back, "ev: its echo arrives");
+        CHECK(slots[0].deadline_ms == 1000u + 300000u + 20000u,
+              "ev: a frame whose handler outlasted the iteration re-arms the deadline from when it was served (F619)");
+        h.note_ev = NULL;
+        /* An earlier time than one already noted changes nothing. */
+        evloop_note_time(&ev, 9u);
+        evloop_note_time(&ev, 5u);
+        CHECK(ev.late_ms == 9u, "ev: a time earlier than one already noted is ignored (F619)");
+        (void)evloop_run_once(&ev, 0, 1000u + 300000u);
+        CHECK(evloop_active(&ev) == 1u, "ev: and the connection is open at the time the handler ended (F619)");
+        CHECK(ev.late_ms == 0u, "ev: what a handler noted lasts for its own iteration only (F619)");
+    }
+
     /* the deadline, with its lower bound */
     {
         CHECK(slots[0].established == 1, "ev: the slot is marked established");
         /* the frame above re-armed it to the idle timeout */
-        CHECK(slots[0].deadline_ms == 1000u + 20000u,
+        CHECK(slots[0].deadline_ms == 1000u + 300000u + 20000u,
               "ev: once established, serving a frame re-arms the deadline to the IDLE timeout");
         const uint64_t dl = slots[0].deadline_ms;
         (void)evloop_run_once(&ev, 0, dl - 1u);

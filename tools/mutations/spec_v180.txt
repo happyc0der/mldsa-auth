@@ -1,0 +1,4 @@
+LT1|^test_authd_evloop$|ev: a frame whose handler outlasted the iteration re-arms the deadline from when it was served (F619)
+LT2|^test_authd_localapi$|backup clock: the connection that asked for a long backup is not closed on a deadline counted from before it (F619)
+LT3|^test_authd_evloop$|ev: what a handler noted lasts for its own iteration only (F619)
+LT4|^test_authd_evloop$|ev: a time earlier than one already noted is ignored (F619)

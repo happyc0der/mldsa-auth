@@ -13,6 +13,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -524,6 +525,7 @@ static void refresh_plus_100(void *ctx)
 {
     authd_app_t *app = ctx;
     app->now_unix += 100;
+    app->now_ms += 100000u;             /* longer than the harness's idle timeout, 60 s (F619) */
     g_refreshes++;
 }
 
@@ -539,8 +541,8 @@ static void test_backup_refreshes_clock(void)
     uint8_t code[32];
     CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "backup clock: login");
     CHECK(h_get_login_code(&d, &c, code) == 0, "backup clock: login code received");
-    const int site = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
-    CHECK(site >= 0 && adm >= 0, "backup clock: both sockets connect");
+    const int adm = h_dial_unix(d.admin_path);
+    CHECK(adm >= 0, "backup clock: the admin socket connects");
 
     char hexcode[80], ex[512], bk[1400], path[512], hexpath[1100], resp[16384];
     hx(hexcode, sizeof hexcode, code, sizeof code);
@@ -558,16 +560,34 @@ static void test_backup_refreshes_clock(void)
           "backup clock: the backup is written (the canary)");
     CHECK(g_refreshes == 1u && d.app.now_unix == t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S + 99,
           "backup clock: the daemon reads its clock again once a BACKUP has been written (F612)");
+    /* Connected now: a connection idle through a hundred seconds is closed,
+     * and rightly. */
+    const int site = h_dial_unix(d.site_path);
+    CHECK(site >= 0, "backup clock: the site socket connects");
     CHECK(h_local_cmd(&d, site, ex, resp, sizeof resp) == 0 && starts(resp, "ERR code=expired"),
           "backup clock: a code that expired while the backup was written is refused after it (F612)");
-    /* A backup that FAILS took its time too: the destination exists now. */
-    CHECK(h_local_cmd(&d, adm, bk, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
-          "backup clock: a second backup onto the same file is refused (the canary)");
-    CHECK(g_refreshes == 2u,
-          "backup clock: the clock is read again after a BACKUP that failed as well (F612)");
-    /* No other command asks: the pass's own reading is theirs. */
-    CHECK(h_local_cmd(&d, adm, "LIST-USERS", resp, sizeof resp) == 0 && g_refreshes == 2u,
-          "backup clock: a command that does not block leaves the clock as the pass read it (F612)");
+    /* V4-330 (F619): the loop is told too. Its idle deadline for the
+     * connection that asked was counted from before the copy -- a hundred
+     * seconds ago, against sixty of idle time -- and the connection was
+     * closed on the next turn. Turns have passed (the EXCHANGE above); it
+     * is still open. Asked of the socket, not by writing to it: a write to
+     * a connection the daemon closed ends this test with a signal. */
+    h_tick(&d);
+    char peeked;
+    const ssize_t pk = recv(adm, &peeked, 1, MSG_DONTWAIT | MSG_PEEK);
+    const int adm_open = (pk < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+    CHECK(adm_open,
+          "backup clock: the connection that asked for a long backup is not closed on a deadline counted from before it (F619)");
+    if (adm_open) {
+        /* A backup that FAILS took its time too: the destination exists now. */
+        CHECK(h_local_cmd(&d, adm, bk, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
+              "backup clock: a second backup onto the same file is refused (the canary)");
+        CHECK(g_refreshes == 2u,
+              "backup clock: the clock is read again after a BACKUP that failed as well (F612)");
+        /* No other command asks: the pass's own reading is theirs. */
+        CHECK(h_local_cmd(&d, adm, "LIST-USERS", resp, sizeof resp) == 0 && g_refreshes == 2u,
+              "backup clock: a command that does not block leaves the clock as the pass read it (F612)");
+    }
     d.app.clock_refresh = NULL;
     (void)unlink(path);
 

@@ -63,6 +63,13 @@ int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr)
     return 0;
 }
 
+void evloop_note_time(evloop_t *ev, uint64_t now_ms)
+{
+    if (ev != NULL && now_ms > ev->late_ms) {
+        ev->late_ms = now_ms;
+    }
+}
+
 int evloop_set_clock(evloop_t *ev, evloop_clock_fn clock, void *ctx)
 {
     if (ev == NULL || clock == NULL) {
@@ -436,7 +443,10 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
          * handshake, hold the slot past handshake_timeout_ms, by up to
          * idle_timeout_ms per frame. */
         if (s->kind == SLOT_KIND_LOCAL || s->established) {
-            s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
+            /* F619: from when the request was SERVED, which a handler that
+             * blocked (BACKUP) says is later than the iteration's time. */
+            const uint64_t served_ms = (ev->late_ms > now_ms) ? ev->late_ms : now_ms;
+            s->deadline_ms = (ev->idle_timeout_ms > 0u) ? served_ms + (uint64_t)ev->idle_timeout_ms : 0u;
         }
         if (act == EV_ACTION_CLOSE) {
             s->state = SLOT_DRAINING;
@@ -559,6 +569,7 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
     if (ev == NULL) {
         return -1;
     }
+    ev->late_ms = 0u;                /* F619: a handler's note is for its own iteration */
     /* Poll set, rebuilt each iteration from the slot table (the only source of
      * truth). Both arrays are static and sized from the compile-time maximum,
      * so a full pool costs no stack and no allocation. */

@@ -21870,3 +21870,47 @@ Spec v1.108: erratum 157 (7.1).
 Counts: 779 mutations, 149 campaigns, 824 anchors; 618 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585 and F609 open); spec v1.108, 157 errata; 66 tests.
+
+## V4-330: what the seventy-ninth review found (F619 to F622)
+
+**The seventy-ninth review** read V4-329's commit, the campaigns the sweep
+of V4-327 had not traced, and the loop's time around a handler that
+blocks. No High or Medium. One Low, three Info.
+
+- **F619 (Low).** F612 was half a fix. The daemon's clock was read again
+  after a backup; the loop's own copy of the time was not, and the idle
+  deadline it re-arms was counted from before the copy. After a backup
+  longer than the idle timeout, the connection that asked was closed on the
+  next turn. `BACKUP` now tells the loop when it ended.
+  - The pass's deadline check keeps the time the pass began with. The
+    review proposed the fresh time there too. That would close a peer that
+    wrote during the copy and had not been read yet; with the old time it
+    is read first on the next turn.
+  - The first form of the test wrote to the admin connection to see
+    whether it was still served. Under the mutant the daemon had closed
+    it, and the write ended the test with a signal: a kill with no named
+    line, which the hand control reported as KILLED(other). The test now
+    asks the socket.
+- **F620 (Info).** The probe's bounds are counted from one point.
+- **F621 (Info).** The wait is timed from where it begins.
+- **F622 (Info).** An absolute-form target is tested and not forwarded.
+  Extended `CONNECT` is written down (erratum 158) and not tested.
+
+**The campaigns the sweep had left** (v48b C3, v49c W12, v112, v169, v122
+WC2 to WC4, v146, and the fuzz-replay campaigns v138 to v140, v149, v162
+and v29 Y9) were traced by the review: none is killed by chance. For the
+fuzz-replay ones each mutant was not traced to the seed that kills it; a
+wrong prediction there is a stable survivor, which the nightly shows.
+
+Campaign v180, all KILLED by hand: LT1 (the deadline is re-armed from the
+pass's time), LT2 (`BACKUP` does not tell the loop), LT3 (a note outlives
+its pass), LT4 (an earlier time replaces a later one). v179 BC1 and BC2,
+v103 CK4 and CK5, and J4 against `web_flows` were killed again.
+
+`tests/caddy_proxy.sh` was run in its container: all checks pass.
+
+Spec v1.109: erratum 158 (7.1).
+
+Counts: 783 mutations, 150 campaigns, 828 anchors; 622 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585 and F609 open); spec v1.109, 158 errata; 66 tests.

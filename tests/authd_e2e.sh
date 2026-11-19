@@ -2250,7 +2250,11 @@ try:
         # F613: an attempt this process was stalled in says nothing either way.
         # A byte sent late reaches a correct daemon after the real deadline; a
         # close made late leaves the daemon to end the connection on its own.
-        if not 0.65 <= phase <= 0.95 or sent - phase > 0.2 or done - sent > 0.55:
+        # F620 (V4-330): and the two together are bounded by less than the
+        # 600 ms the daemon allows -- 0.2 and 0.55 apart added up to more, so
+        # two stalls could show a correct daemon closing on its true deadline.
+        # (There is no lower edge: the sleep above never returns early.)
+        if phase > 0.95 or sent - phase > 0.2 or done - phase > 0.55:
             print(f"attempt {attempt}: phase {phase:.3f}s, byte +{sent - phase:.3f}s, close +{done - sent:.3f}s; again")
             continue
         if closed:

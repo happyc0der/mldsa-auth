@@ -317,16 +317,25 @@ ENCODED=$(inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 --p
            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
            -H 'Origin: https://authd.example.com' 'http://127.0.0.1:8080/%61uthd/v1?state=s9' || true")
+# F622 (V4-330): the absolute form, which a client sends to a forward proxy
+# and never to a site. It is not the daemon's either: what is compared is the
+# target as sent.
+ABSOLUTE=$(inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 \
+           --request-target 'http://127.0.0.1:8080/authd/v1?state=s9' \
+           -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+           -H 'Origin: https://authd.example.com' 'http://127.0.0.1:8080/' || true")
 N3=$(seen)
+[ "$ABSOLUTE" != 101 ] || fail "an upgrade whose target was in absolute form was relayed to the daemon (F622)"
 [ "$ENCODED" != 101 ] || fail "an upgrade to /%61uthd/v1 was relayed to the daemon (F615)"
 [ "$UPPER" != 101 ] || fail "an upgrade to /AUTHD/V1 was relayed to the daemon (F615)"
 [ "$DOUBLED" != 101 ] || fail "an upgrade to //authd/v1 was relayed to the daemon (F615)"
 [ "$EVIL" != 101 ] || fail "an upgrade to /authd/v1evil was relayed to the daemon (F605)"
 [ "$POSTED" != 101 ] || fail "a POST upgrade to /authd/v1 was relayed to the daemon (F605)"
-[ "$N3" = "$N2" ] || fail "the daemon saw $((N3 - N2)) connection(s) for /authd/v1evil, /AUTHD/V1, //authd/v1, /%61uthd/v1 or a POST (F605, F615)"
+[ "$N3" = "$N2" ] || fail "the daemon saw $((N3 - N2)) connection(s) for /authd/v1evil, /AUTHD/V1, //authd/v1, /%61uthd/v1, an absolute-form target or a POST (F605, F615, F622)"
 AGAIN=$(origin_status 8080 https://authd.example.com)
 [ "$AGAIN" = 101 ] || fail "after those, the real upgrade answered $AGAIN, not 101 -- the canary (F605)"
-echo "PASS: CADDY: only GET /authd/v1 is forwarded to the daemon; /authd/v1evil and a POST are not (F605), nor /AUTHD/V1, //authd/v1 and /%61uthd/v1 (F615)"
+echo "PASS: CADDY: only GET /authd/v1 is forwarded to the daemon; /authd/v1evil and a POST are not (F605), nor /AUTHD/V1, //authd/v1, /%61uthd/v1 (F615) and an absolute-form target (F622)"
 
 # ---------------------------------------- the public journal (V4-13d, F14)
 #
