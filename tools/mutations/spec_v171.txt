@@ -1,0 +1,5 @@
+BT1|^test_authd_store$|backup: the caller's tick is called while the copy runs (F541)
+BT2|^test_authd_store$|backup: and by nothing else the store does (F541)
+WT1|^test_authd_cli$|sd_watchdog tick: a millisecond before a ping is due, none is sent (F541)
+WT2|^test_authd_cli$|sd_watchdog tick: with no watchdog nothing is sent, however long the turn (F541)
+WT3|^test_authd_cli$|sd_watchdog tick: when a ping is due inside a turn, WATCHDOG=1 is sent and the time noted (F541)

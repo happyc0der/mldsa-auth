@@ -1055,21 +1055,25 @@ static void test_ratelimit(void)
 
     /* F338 (V4-308): the table is sized from the configuration. The sizes
      * from literals: what a configuration can hold at once is
-     * global x 60 / per_min, with a quarter's headroom, and never less than
-     * 1024 or max_slots, nor more than the ceiling. */
-    CHECK(ratelimit_entries_for(5u, 50u, 256u) == 1024u,
-          "limiter size: the defaults (600 held, 750 wanted) keep the 1024-entry table (F338)");
-    CHECK(ratelimit_entries_for(2u, 50u, 256u) == 1875u,
+     * global x 60 / per_min, with a quarter's headroom, and an entry for
+     * every slot besides (F544: the open connections and the refilling
+     * buckets are held together); never less than 1024, nor more than the
+     * ceiling. The first seven are with no slots, so the rate's share shows. */
+    CHECK(ratelimit_entries_for(5u, 50u, 0u) == 1024u && ratelimit_entries_for(5u, 50u, 256u) == 1024u,
+          "limiter size: the defaults (600 held, 750 with headroom, 256 slots) keep the 1024-entry table (F338)");
+    CHECK(ratelimit_entries_for(2u, 50u, 0u) == 1875u,
           "limiter size: rate_per_min = 2 holds 1500 addresses and gets 1875 entries (F338)");
-    CHECK(ratelimit_entries_for(5u, 100u, 256u) == 1500u,
+    CHECK(ratelimit_entries_for(5u, 100u, 0u) == 1500u,
           "limiter size: rate_global_per_sec = 100 holds 1200 and gets 1500 entries (F338)");
-    CHECK(ratelimit_entries_for(5u, 50u, 4096u) == 4096u,
-          "limiter size: max_slots = 4096 gets an entry for every slot (F338)");
-    CHECK(ratelimit_entries_for(7u, 50u, 256u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 256u) == 10715u,
+    CHECK(ratelimit_entries_for(5u, 50u, 4096u) == 4846u && ratelimit_entries_for(2u, 50u, 256u) == 2131u,
+          "limiter size: the slots are added to the rate's share, not compared with it: 4096 + 750, 256 + 1875 (F544)");
+    CHECK(ratelimit_entries_for(5u, 50u, 1024u) == 1774u,
+          "limiter size: 1024 slots held by 1024 addresses leave the rate's 750 entries free (F544)");
+    CHECK(ratelimit_entries_for(7u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 0u) == 10715u,
           "limiter size: a rate that does not divide is rounded up (8572 held, 10715 wanted) (F338)");
-    CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750000u &&
+    CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750256u &&
           ratelimit_entries_for(1u, 10000u, 256u) == 16384u,
-          "limiter size: 750000 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)");
+          "limiter size: 750256 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)");
     CHECK(ratelimit_entries_for(0u, 0u, 0u) == 1024u,
           "limiter size: zero rates are clamped, not divided by (F338)");
     /* ...and the table the limiter is GIVEN is the one it fills: 1875
@@ -1087,6 +1091,27 @@ static void test_ratelimit(void)
       c.addr[1] = 0u; c.addr[2] = 0u; c.addr[3] = 5u;
       CHECK(ratelimit_conns(&r, &c) == 1u,
             "limiter size: an address in the larger table is still found"); }
+    /* F544 (V4-315): the size is enough for what it is for. 1024 sessions
+     * stay open from 1024 addresses, and then new addresses arrive at the
+     * global rate for 15 s: 750, the most whose buckets can be refilling at
+     * once. Sized as the larger of the two (1024), the table was full at the
+     * first of them. Time is 20 ms a connection, the global rate exactly. */
+    { static ratelimit_entry_t both[2048];
+      const size_t nb = ratelimit_entries_for(5u, 50u, 1024u);
+      size_t admitted = 0;
+      uint64_t t_ms = 0;
+      authd_addr_t c = { 4u, { 10u, 9u, 0u, 0u } };
+      if (nb <= 2048u) {
+          ratelimit_init(&r, both, nb, 5u, 5u, 50u, 4u, 0u);
+          for (size_t i = 0; i < 1024u + 750u; i++, t_ms += 20u) {
+              c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+              if (ratelimit_admit(&r, &c, t_ms) == RATELIMIT_ALLOW) { admitted++; }
+              /* the first 1024 stay connected; the rest hang up at once */
+              if (i >= 1024u) { ratelimit_release(&r, &c); }
+          }
+      }
+      CHECK(nb <= 2048u && admitted == 1774u && r.denied_table == 0u,
+            "limiter size: with every slot held, the addresses the rate admits still find room in the table (F544)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

@@ -1093,12 +1093,12 @@ int authd_cli_config_warnings(const authd_config_t *cfg, const char *prog)
                                                        cfg->max_slots);
         if (held > (uint64_t)RATELIMIT_ENTRIES_MAX) {
             fprintf(stderr,
-                    "%s: warning: rate_global_per_sec = %u and rate_per_min = %u can hold "
-                    "%llu addresses at once and the limiter's table holds %u: past that, new "
+                    "%s: warning: rate_global_per_sec = %u, rate_per_min = %u and max_slots = %u can "
+                    "hold %llu addresses at once and the limiter's table holds %u: past that, new "
                     "addresses are refused limiter-table-full. Raise rate_per_min or lower "
                     "rate_global_per_sec (F338).\n",
-                    prog, cfg->rate_global_per_sec, cfg->rate_per_min, (unsigned long long)held,
-                    (unsigned)RATELIMIT_ENTRIES_MAX);
+                    prog, cfg->rate_global_per_sec, cfg->rate_per_min, cfg->max_slots,
+                    (unsigned long long)held, (unsigned)RATELIMIT_ENTRIES_MAX);
             said++;
         }
     }

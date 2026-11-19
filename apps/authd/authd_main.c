@@ -649,6 +649,14 @@ int main(int argc, char **argv)
      * nothing below does anything. */
     const unsigned wd_ms = authd_sd_watchdog_period_ms();
     uint64_t wd_last_ms = now_ms();
+    /* F541: and from inside a BACKUP, which copies the whole store in one
+     * turn. The store calls this while it copies; a copy longer than
+     * WatchdogSec used to get the daemon killed. */
+    static authd_wd_tick_t backup_wd;
+    backup_wd.period_ms = wd_ms;
+    backup_wd.last_ms = wd_last_ms;
+    backup_wd.clock_ms = now_ms;
+    store_set_backup_tick(store, authd_sd_watchdog_tick, &backup_wd);
 
     int draining = 0;
     /* F208: a loop that failed is a failure of the daemon. Exiting 0 after

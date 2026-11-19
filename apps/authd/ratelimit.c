@@ -30,11 +30,13 @@ uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uin
     const uint64_t gl = (uint64_t)clamp_u32(global_per_sec, 1u, RATELIMIT_GLOBAL_MAX);
     const uint64_t held = (gl * 60u + pm - 1u) / pm;       /* rounded up */
     uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
+    /* F544 (V4-315): AND an entry for every slot, not the larger of the two.
+     * An address with a connection open keeps its entry for as long as the
+     * connection lasts, whatever its bucket holds, so the open connections
+     * and the refilling buckets are in the table together. */
+    want += (uint64_t)max_slots;
     if (want < (uint64_t)RATELIMIT_ENTRIES) {
         want = (uint64_t)RATELIMIT_ENTRIES;
-    }
-    if (want < (uint64_t)max_slots) {
-        want = (uint64_t)max_slots;
     }
     return want;
 }

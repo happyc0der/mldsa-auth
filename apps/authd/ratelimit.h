@@ -48,6 +48,8 @@
  * past a fixed 1,024, where every address not already in the table was
  * answered `limiter-table-full` -- and tightening per_min made it easier.
  * Likewise max_slots above 1,024 could not be filled by distinct addresses.
+ * An address with a connection open holds its entry too, for as long as the
+ * connection lasts, so the table has room for both together (F544).
  *
  * RATELIMIT_ENTRIES is the least a table holds (and what the defaults use);
  * RATELIMIT_ENTRIES_MAX the most, because a refusal at a full table scans
@@ -122,9 +124,11 @@ void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
                     uint32_t per_min, uint32_t burst,
                     uint32_t global_per_sec, uint32_t max_conns, uint64_t now_ms);
 
-/* The entries a configuration can hold at once, with a quarter's headroom:
- * the larger of RATELIMIT_ENTRIES, max_slots, and
- * 1.25 x ceil(global_per_sec x 60 / per_min). Uncapped (F338). */
+/* The entries a configuration can hold at once: max_slots, for the
+ * addresses with a connection open, plus 1.25 x ceil(global_per_sec x 60 /
+ * per_min), for those whose bucket is refilling, with a quarter's headroom
+ * (F544: the sum, since both are held together); never less than
+ * RATELIMIT_ENTRIES. Uncapped (F338). */
 uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
 /* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
 size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);

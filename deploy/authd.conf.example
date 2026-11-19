@@ -75,9 +75,9 @@ proxy_uids = 997
 # bucket below bounds the cost either way.
 #
 # The limiter's table is sized from these at start: room for
-# rate_global_per_sec x 60 / rate_per_min addresses and a quarter more, at
-# least 1024 and max_slots, at most 16384 (`--check-config` prints
-# rate_table= and warns when the ceiling binds).
+# rate_global_per_sec x 60 / rate_per_min addresses and a quarter more, and
+# for max_slots besides; at least 1024, at most 16384 (`--check-config`
+# prints rate_table= and warns when the ceiling binds).
 rate_per_min = 5
 rate_burst = 10
 rate_global_per_sec = 50

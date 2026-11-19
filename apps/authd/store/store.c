@@ -131,6 +131,8 @@ struct store {
     uint8_t store_id[STORE_STORE_ID_BYTES];
     uint8_t decoy_pk[STORE_PK_BYTES];
     int created;                              /* this open gave the store its id (F199) */
+    store_tick_fn backup_tick;                /* called while a backup copies (F541); may be NULL */
+    void *backup_tick_ctx;
 };
 
 #define AUDIT_LABEL "mldsa-authd/v1/audit-mac"
@@ -2897,6 +2899,25 @@ store_status_t store_audit_tail(const store_t *s, size_t n, store_audit_fn fn, v
 
 /* --- backup ---------------------------------------------------------------- */
 
+void store_set_backup_tick(store_t *s, store_tick_fn fn, void *ctx)
+{
+    if (s != NULL) {
+        s->backup_tick = fn;
+        s->backup_tick_ctx = ctx;
+    }
+}
+
+/* SQLite's progress handler for the length of the copy. Returning 0 lets the
+ * statement go on; nothing here ever interrupts it. */
+static int backup_progress(void *p)
+{
+    const store_t *s = p;
+    if (s->backup_tick != NULL) {
+        s->backup_tick(s->backup_tick_ctx);
+    }
+    return 0;
+}
+
 store_status_t store_backup(store_t *s, const char *dest_path)
 {
     if (s == NULL || dest_path == NULL) { return STORE_ERR_ARG; }
@@ -2925,11 +2946,16 @@ store_status_t store_backup(store_t *s, const char *dest_path)
         return STORE_ERR_DB;
     }
     store_status_t r = STORE_OK;
+    /* F541: the copy is one step, as long as the store is large. The caller
+     * is called back through it, and only through it: the handler is taken
+     * off again before anything else runs on this connection. */
+    sqlite3_progress_handler(s->db, STORE_BACKUP_TICK_OPS, backup_progress, s);
     if (sqlite3_bind_text(st, 1, dest_path, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
         r = STORE_ERR_DB;
     } else if (sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_IO;   /* the destination is not writable */
     }
+    sqlite3_progress_handler(s->db, 0, NULL, NULL);
     sqlite3_finalize(st);
     STORE_BACKUP_OBSERVE(dest_path);
     /* VACUUM INTO creates the destination with the DAEMON'S umask, which is

@@ -387,6 +387,10 @@ The tool waits up to ten minutes for a backup (since V4-311; every other
 command, ten seconds): the daemon copies the whole store before it answers.
 If it still says `timeout`, the daemon may be finishing the file: look at the
 destination before you retry, and check what is there with `audit-verify`.
+The copy is one piece of work for the daemon: logins wait until it ends, so
+take a large store's backup at a quiet hour. The daemon keeps telling systemd
+it is alive throughout (since V4-315; before it, a copy longer than the
+unit's `WatchdogSec=30s` had the daemon killed and restarted).
 
 `admin.sock` answers root only (`admin_uids = 0`, spec §16), so these are
 plain `sudo`. As any other user the socket's own permissions stop the
@@ -758,7 +762,8 @@ refused; `rate_global_per_sec` still bounds the daemon's total signing work.
 
 The limiter tracks one entry per address until that address's bucket has
 refilled, so it needs room for about `rate_global_per_sec × 60 / rate_per_min`
-of them. The daemon sizes the table from those settings at start (since
+of them, and for one per open connection besides (`max_slots`, since
+V4-315). The daemon sizes the table from those settings at start (since
 V4-308) and says the size: `info event=limiter-table count=1024` in the
 journal, `rate_table=` in the `--check-config` line. The most it holds is
 16384; `--check-config` warns when your rates can exceed that, and past it new

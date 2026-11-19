@@ -48,7 +48,9 @@ RestartSec=2s
 # the daemon is hung -- and systemd kills it and, by Restart=on-failure,
 # starts another. Without this a hung daemon stays "active" and nobody can
 # log in until someone notices. 30 s is far above the longest thing the loop
-# does in one turn (a recovery-code check, under a second). SIGKILL rather
+# does in one turn (a recovery-code check, under a second), a backup apart:
+# that copies the whole store in one turn, and the daemon goes on sending
+# WATCHDOG=1 from inside it (V4-315, F541). SIGKILL rather
 # than the default SIGABRT: a process that holds the server key should not be
 # asked for a core dump, and a daemon that is stopped or stuck in the kernel
 # would not act on anything gentler.

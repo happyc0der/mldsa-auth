@@ -21051,3 +21051,51 @@ No spec change: erratum 141 already states F543's rule.
 Counts: 750 mutations, 140 campaigns, 795 anchors; 547 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F541 and
 F544 open); spec v1.97, 141 errata; 66 tests.
+
+## V4-315 — the watchdog through a backup (F541), and the limiter's table (F544)
+
+The two findings of the sixty-eighth review that V4-314 left open.
+
+**F541.** `BACKUP` copies the whole store inside one turn of the loop, and
+the watchdog's ping was sent between turns. A copy longer than the unit's
+thirty seconds had the daemon killed.
+
+- The store takes a callback (`store_set_backup_tick`) and SQLite's progress
+  handler calls it about every thousand steps while `VACUUM INTO` runs. The
+  handler is installed for the copy and removed after it.
+- The daemon's callback sends `WATCHDOG=1` when a period has passed
+  (`authd_sd_watchdog_tick`). The decision takes the time as an argument, so
+  a test can stand a millisecond either side of it.
+- The loop's own ping is unchanged. After a long copy it finds a ping due
+  and sends one at once.
+- SQLite counts steps per statement, so a table of a few rows never reaches
+  a thousand and calls nothing. That does not matter for a store that
+  small; the test stores 600 rows to see a call.
+- Not measured: whether one statement of a very large copy can spend thirty
+  seconds without a thousand steps (a single `fsync` of gigabytes at the
+  end). No store here is that large.
+- Not tested: the line in `authd_main.c` that hands the notifier's callback
+  to the store. Each half is tested by itself.
+- Logins still wait for the copy. The runbook now says to take a large
+  store's backup at a quiet hour. Copying across turns is a larger change
+  and is not made here.
+
+**F544.** The limiter's table holds `max_slots` entries and the rate's
+share, 1.25 x held, where it held the larger of the two. The defaults
+still give 1,024. `--check-config`'s warning names `max_slots` with the
+two rates, since it now enters the figure it prints.
+
+Campaign v171: five mutations (BT1, BT2, WT1 to WT3), each killed by hand
+in build-asan-p. Two needed work first. BT1 as first written deleted the
+call and did not compile (the handler became unused), which is not a kill;
+it now installs the handler with a period of zero. BT2 (the handler left
+installed) survived: the check after the backup read one user and verified
+a short chain, neither a thousand steps. It now sweeps the 600 codes in
+one DELETE. v166's TS4 is rewritten (the larger, not the sum), and
+its other lines carry the new figures; all seven were killed again.
+
+Spec v1.98: errata 142 (16) and 143 (17).
+
+Counts: 755 mutations, 141 campaigns, 800 anchors; 547 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453 and F511 open);
+spec v1.98, 143 errata; 66 tests.

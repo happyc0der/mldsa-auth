@@ -2425,6 +2425,8 @@ static void test_admin_arguments(void)
  * quarter of it, at most once a second -- its loop turns at least that often
  * -- and not at all unless all of it is there and well-formed: a ping nobody
  * asked for is harmless, but a period computed from garbage is not. */
+static uint64_t tick_clock(void) { return 2000u; }
+
 static void test_sd_watchdog(void)
 {
     char pid[32];
@@ -2459,6 +2461,44 @@ static void test_sd_watchdog(void)
           "sd_watchdog wait: a ping that is due or overdue is not slept on at all");
     CHECK(authd_sd_watchdog_wait_ms(0u, 123456u, 1000) == 1000,
           "sd_watchdog wait: with no watchdog the idle wait is the loop's own");
+    /* V4-315, F541: the ping from inside one long turn (a BACKUP). The
+     * decision with the time as an argument, against a socket standing in
+     * for systemd's. */
+    {
+        char tp[600], keep[600] = {0};
+        const char *was = getenv("NOTIFY_SOCKET");
+        if (was != NULL) { (void)snprintf(keep, sizeof keep, "%s", was); }
+        (void)snprintf(tp, sizeof tp, "%s/tick.sock", g_dir);
+        struct sockaddr_un ta; memset(&ta, 0, sizeof ta); ta.sun_family = AF_UNIX;
+        const size_t tn = strlen(tp);
+        const int tfits = tn < sizeof ta.sun_path;
+        if (tfits) { memcpy(ta.sun_path, tp, tn + 1u); }
+        const int ts = socket(AF_UNIX, SOCK_DGRAM, 0);
+        const int bound = tfits && ts >= 0 && bind(ts, (struct sockaddr *)&ta, sizeof ta) == 0;
+        authd_sd_notify_close();
+        (void)setenv("NOTIFY_SOCKET", tp, 1);
+        char got[32];
+        authd_wd_tick_t t = { .period_ms = 0u, .last_ms = 1000u, .clock_ms = tick_clock };
+        CHECK(bound && authd_sd_watchdog_tick_at(&t, 999999u) == 0 && recv(ts, got, sizeof got, MSG_DONTWAIT) < 0,
+              "sd_watchdog tick: with no watchdog nothing is sent, however long the turn (F541)");
+        t.period_ms = 500u;
+        CHECK(authd_sd_watchdog_tick_at(&t, 1499u) == 0 && recv(ts, got, sizeof got, MSG_DONTWAIT) < 0,
+              "sd_watchdog tick: a millisecond before a ping is due, none is sent (F541)");
+        memset(got, 0, sizeof got);
+        CHECK(authd_sd_watchdog_tick_at(&t, 1500u) == 1 && recv(ts, got, sizeof got - 1u, MSG_DONTWAIT) == 10 &&
+              memcmp(got, "WATCHDOG=1", 10u) == 0 && t.last_ms == 1500u,
+              "sd_watchdog tick: when a ping is due inside a turn, WATCHDOG=1 is sent and the time noted (F541)");
+        CHECK(authd_sd_watchdog_tick_at(&t, 1501u) == 0 && recv(ts, got, sizeof got, MSG_DONTWAIT) < 0,
+              "sd_watchdog tick: and the next call sends nothing until a period has passed (F541)");
+        memset(got, 0, sizeof got);
+        authd_sd_watchdog_tick(&t);                     /* the store's callback: the clock says 2000 */
+        CHECK(recv(ts, got, sizeof got - 1u, MSG_DONTWAIT) == 10 && t.last_ms == 2000u,
+              "sd_watchdog tick: the store's callback reads the clock it was given and pings (F541)");
+        authd_sd_notify_close();
+        if (ts >= 0) { (void)close(ts); }
+        (void)unlink(tp);
+        if (was != NULL) { (void)setenv("NOTIFY_SOCKET", keep, 1); } else { (void)unsetenv("NOTIFY_SOCKET"); }
+    }
     (void)setenv("WATCHDOG_USEC", "2000000", 1);
     /* The pid as systemd would write it -- an environment value, not a name
      * (tests/scratch_dirs.sh forbids the latter, F114). */

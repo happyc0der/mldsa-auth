@@ -110,6 +110,24 @@ unsigned authd_sd_watchdog_period_ms(void)
     return (unsigned)ms;
 }
 
+int authd_sd_watchdog_tick_at(authd_wd_tick_t *t, uint64_t now_ms)
+{
+    if (t == NULL || t->period_ms == 0u || now_ms - t->last_ms < (uint64_t)t->period_ms) {
+        return 0;
+    }
+    (void)authd_sd_notify("WATCHDOG=1");
+    t->last_ms = now_ms;
+    return 1;
+}
+
+void authd_sd_watchdog_tick(void *ctx)
+{
+    authd_wd_tick_t *t = ctx;
+    if (t != NULL && t->clock_ms != NULL) {
+        (void)authd_sd_watchdog_tick_at(t, t->clock_ms());
+    }
+}
+
 int authd_sd_watchdog_wait_ms(unsigned period_ms, uint64_t since_ms, int idle_ms)
 {
     if (period_ms == 0u || idle_ms <= 0) {

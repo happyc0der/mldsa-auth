@@ -457,4 +457,13 @@ store_status_t store_audit_tail_check(const store_t *s);
 /* Consistent snapshot via `VACUUM INTO` to `dest_path` (must not exist). */
 store_status_t store_backup(store_t *s, const char *dest_path);
 
+/* V4-315, F541: `fn(ctx)` is called again and again while store_backup
+ * copies, about every STORE_BACKUP_TICK_OPS steps of SQLite's machine, and at
+ * no other time. The copy runs inside one call, for as long as the store is
+ * large; this is how the daemon goes on telling systemd it is alive. NULL
+ * (the default) calls nothing. The callback must not use the store. */
+#define STORE_BACKUP_TICK_OPS 1000
+typedef void (*store_tick_fn)(void *ctx);
+void store_set_backup_tick(store_t *s, store_tick_fn fn, void *ctx);
+
 #endif /* MLDSA_AUTHD_STORE_H */

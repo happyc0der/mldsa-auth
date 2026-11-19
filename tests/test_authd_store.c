@@ -47,6 +47,10 @@ static void bk_observe(const char *dest)
     g_bk_mode = st.st_mode & 07777;
 }
 
+/* V4-315 (F541): how often the store called back during a backup. */
+static int g_bk_ticks = 0;
+static void bk_tick(void *ctx) { (*(int *)ctx)++; }
+
 static int g_fail = 0;
 static int g_checks = 0;
 
@@ -1781,6 +1785,42 @@ int main(void)
         { struct stat st;
           CHECK(stat(bak, &st) == 0 && (st.st_mode & 07777) == 0600, "backup: ...and 0600 when it returns"); }
         CHECK(store_backup(s, bak) == STORE_ERR_IO, "backup refuses to overwrite an existing file");
+        /* V4-315, F541: the caller is called back while the copy runs, so a
+         * daemon can go on telling systemd it is alive through a long one --
+         * and at no other time, since the callback is the watchdog's. */
+        { char tk[512];
+          path(tk, sizeof tk, "backup-tick.sqlite3");
+          (void)unlink(tk);
+          /* Rows enough that copying one table is more than one tick's worth
+           * of SQLite's steps: the count is per statement. */
+          int filled = 1;
+          for (unsigned i = 0; i < 600u; i++) {
+              uint8_t ch[STORE_HASH_BYTES], hs[16], sh[STORE_HASH_BYTES];
+              memset(ch, 0, sizeof ch); memset(hs, 0x5a, sizeof hs); memset(sh, 0x33, sizeof sh);
+              ch[0] = (uint8_t)(i & 0xffu); ch[1] = (uint8_t)(i >> 8); ch[2] = 0xb7;
+              if (store_add_login_code(s, ch, U1, sizeof U1, H1, sizeof H1, hs, sizeof hs, sh,
+                                       1700000000, 1700000060) != STORE_OK) { filled = 0; }
+          }
+          CHECK(filled, "backup: 600 login codes are stored (the copy needs something to copy)");
+          g_bk_ticks = 0;
+          store_set_backup_tick(s, bk_tick, &g_bk_ticks);
+          CHECK(store_backup(s, tk) == STORE_OK && g_bk_ticks > 0,
+                "backup: the caller's tick is called while the copy runs (F541)");
+          const int during = g_bk_ticks;
+          /* A statement long enough to reach a tick's worth of steps, were
+           * the callback still installed: all 600 codes swept in one DELETE. */
+          store_sweep_counts_t swept;
+          memset(&swept, 0, sizeof swept);
+          CHECK(store_sweep(s, 1700000061, &swept) == STORE_OK && swept.login_codes == 600u &&
+                g_bk_ticks == during,
+                "backup: and by nothing else the store does (F541)");
+          store_set_backup_tick(s, NULL, NULL);
+          (void)unlink(tk);
+          path(tk, sizeof tk, "backup-notick.sqlite3");
+          (void)unlink(tk);
+          CHECK(store_backup(s, tk) == STORE_OK && g_bk_ticks == during,
+                "backup: with no tick set the copy calls nothing");
+          (void)unlink(tk); }
         { struct stat st;
           store_t *chk = NULL;
           CHECK(stat(bak, &st) == 0 && st.st_size > 0 && store_open(bak, KEK, &chk) == STORE_OK,

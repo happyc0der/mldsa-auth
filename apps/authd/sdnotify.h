@@ -53,4 +53,23 @@ unsigned authd_sd_watchdog_period_ms(void);
  */
 int authd_sd_watchdog_wait_ms(unsigned period_ms, uint64_t since_ms, int idle_ms);
 
+/*
+ * A ping from inside one long turn (V4-315, F541). The loop pings between
+ * turns, and a BACKUP copies the whole store inside one: past WatchdogSec
+ * systemd killed the daemon for a copy that was going well. The store calls
+ * this back while it copies (store_set_backup_tick), with `ctx` an
+ * authd_wd_tick_t. `period_ms` is authd_sd_watchdog_period_ms(); with 0
+ * nothing is sent. `clock_ms` is the caller's monotonic clock.
+ *
+ * authd_sd_watchdog_tick_at is the decision with the time as an argument:
+ * 1 when a ping was due and was sent (or tried), 0 when none was due.
+ */
+typedef struct {
+    unsigned period_ms;
+    uint64_t last_ms;
+    uint64_t (*clock_ms)(void);
+} authd_wd_tick_t;
+int authd_sd_watchdog_tick_at(authd_wd_tick_t *t, uint64_t now_ms);
+void authd_sd_watchdog_tick(void *ctx);
+
 #endif /* MLDSA_AUTHD_SDNOTIFY_H */
