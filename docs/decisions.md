@@ -20831,3 +20831,27 @@ Spec v1.96, erratum 139.
 Counts: 734 mutations, 137 campaigns, 779 anchors; 531 findings (F148,
 F156, F273, F288, F309, F398, F419, F431, F435, F436, F451, F453 and F511
 open); spec v1.96, 139 errata; 66 tests.
+
+## V4-310: cleanup after V4-308 and V4-309
+
+No code.
+
+- `docs/review/REPRODUCE.md` now cites the runs on `53716bc` (V4-309,
+  main): CI 44439156085 (16/16) and nightly 44439161460 (152/152, 137
+  campaigns).
+- Before them, `1fbe5ca` (V4-308) had CI 44436474918 (16/16) and nightly
+  44436481858 (151/151); `0b99102` (V4-307) had CI 44434040584 (16/16).
+- A sweep of the threat model, CLAIMS, the README and the runbook for
+  F338, F421 and F437 found each already saying what V4-308 and V4-309
+  shipped; nothing else called them open.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F431, F435, F436, F451, F453 and F511.
+  Also open: whether F420's overlap should be refused rather than warned
+  of, and the questions in V4-246's, V4-274's, V4-281's, V4-284's,
+  V4-285's, V4-291's and V4-300's entries.
+- Review 67 (the admin tool's arguments and the site's client for the
+  daemon) is done; its eight findings are V4-311.
+
+Counts: unchanged by this step (734 mutations, 137 campaigns, 779
+anchors; 531 findings, the 13 above open; spec v1.96, 139 errata; 66
+tests).
