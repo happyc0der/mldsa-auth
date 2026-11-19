@@ -289,6 +289,25 @@ CTRL4=$(origin_status 8083 https://evil.example)
 [ "$CTRL4" = 101 ] || fail "with the Origin condition removed the foreign upgrade answered $CTRL4, not 101: this check cannot fail"
 echo "PASS: CADDY: another site's upgrade and a plain GET are answered 403 by Caddy and never reach the daemon; the site's own Origin and no Origin are served (F417)"
 
+# V4-327 (F605): only GET /authd/v1 is the daemon's. A target that merely
+# begins with it, and another method, used to be forwarded by `/authd/v1*`.
+N2=$(seen)
+EVIL=$(inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 \
+           -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+           -H 'Origin: https://authd.example.com' 'http://127.0.0.1:8080/authd/v1evil?state=s9' || true")
+POSTED=$(inc "curl -s -o /dev/null -w '%{http_code}' --max-time 3 --http1.1 -X POST \
+           -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+           -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' \
+           -H 'Origin: https://authd.example.com' 'http://127.0.0.1:8080/authd/v1?state=s9' || true")
+N3=$(seen)
+[ "$EVIL" != 101 ] || fail "an upgrade to /authd/v1evil was relayed to the daemon (F605)"
+[ "$POSTED" != 101 ] || fail "a POST upgrade to /authd/v1 was relayed to the daemon (F605)"
+[ "$N3" = "$N2" ] || fail "the daemon saw $((N3 - N2)) connection(s) for /authd/v1evil or a POST (F605)"
+AGAIN=$(origin_status 8080 https://authd.example.com)
+[ "$AGAIN" = 101 ] || fail "after those, the real upgrade answered $AGAIN, not 101 -- the canary (F605)"
+echo "PASS: CADDY: only GET /authd/v1 is forwarded to the daemon; /authd/v1evil and a POST are not (F605)"
+
 # ---------------------------------------- the public journal (V4-13d, F14)
 #
 # deploy/RUNBOOK.md's public settings, behind the real Caddy: the same store,

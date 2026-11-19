@@ -178,6 +178,16 @@ static pid_t run_child(int slave, int report_fd, int which)
 static int child_result(int report_rd, pid_t pid, result_t *r, int *wstatus)
 {
     memset(r, 0, sizeof *r);
+    /* V4-327 (F608): with a deadline. A child that never reports -- the
+     * prompt waiting for a line that was thrown away, which is what campaign
+     * v94's JC6 can do -- left this read blocked until CTest's 300 s, and
+     * the run ended with no FAIL line for the campaign to match. */
+    struct pollfd pfd = { .fd = report_rd, .events = POLLIN, .revents = 0 };
+    if (poll(&pfd, 1, 15000) <= 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, wstatus, 0);
+        return 0;
+    }
     const ssize_t k = read(report_rd, r, sizeof *r);
     (void)waitpid(pid, wstatus, 0);
     return k == (ssize_t)sizeof *r;

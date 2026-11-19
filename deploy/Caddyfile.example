@@ -100,7 +100,15 @@ authd.example.com {
 	# was answered 429. A browser always sends Origin with an upgrade; a
 	# native client (authd_client) sends none. REPLACE THE ORIGIN below
 	# together with the site address above.
-	handle /authd/v1* {
+	# Exactly this path, by GET (F605): `/authd/v1*` also forwarded
+	# `/authd/v1evil` and any method, which the reference site's own relay
+	# stopped doing in V4-326. Anything else under that prefix goes to the
+	# site below, which answers it as it does any unknown path.
+	@authd {
+		path /authd/v1
+		method GET
+	}
+	handle @authd {
 		@page {
 			header Upgrade websocket
 			header Origin https://authd.example.com

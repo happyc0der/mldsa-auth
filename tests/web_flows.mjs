@@ -641,6 +641,33 @@ try {
     // has no key to log in with.
     check(lost.stored === false && got !== null && got.stored === true && fine.stored === true,
           'enroll: a key that is gone is reported as not stored; one that is only still marked, and one confirmed, as stored (F597)');
+    // V4-327 (F603): what a real browser's store does when the origin's
+    // storage is cleared is THROW: its connection is closed. Review 77 ran
+    // it in a browser: get() threw, enroll reported the key as stored, and
+    // the page told the user to log in once. A store that throws is asked
+    // again through a fresh connection, and that decides.
+    const closedStore = (after) => {
+      const st = new MemoryStore();
+      const g = st.get.bind(st);
+      let closed = false;
+      st.get = async (h) => { if (closed) { throw new Error('The database connection is closing'); } return g(h); };
+      st.confirm = async () => { throw new Error('The database connection is closing'); };
+      st.reread = after;
+      return { st, close: () => { closed = true; } };
+    };
+    const cleared = closedStore(async () => null);
+    const c1 = await flows.enroll(client, cleared.st, want, async () => { cleared.close(); return { user: 'u' }; });
+    check(c1.stored === false && c1.confirmed === false,
+          'enroll: a store that throws, and holds no record when read afresh, is reported as not stored (F603)');
+    let kept1 = null;
+    const stillThere = closedStore(async (h) => kept1 ?? { handle: h, unconfirmed: true });
+    const c2 = await flows.enroll(client, stillThere.st, want, async () => { stillThere.close(); return { user: 'u' }; });
+    check(c2.stored === true && c2.confirmed === false,
+          'enroll: a store that throws, and still holds the record when read afresh, is stored and not confirmed (F603)');
+    const blind = closedStore(async () => { throw new Error('cannot open'); });
+    const c3 = await flows.enroll(client, blind.st, want, async () => { blind.close(); return { user: 'u' }; });
+    check(c3.stored === true && c3.confirmed === false,
+          'enroll: a store that cannot be read at all is not said to have lost the key (F603)');
     const store2 = new MemoryStore();
     store2.remove = async () => { throw new Error('transaction aborted'); };
     const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })

@@ -758,9 +758,13 @@ done
 kill -0 "$SUPID" 2>/dev/null || fail "a daemon sent SIGHUP died (F206): $(cat "$TMP/su-hup.log")"
 grep -q '^warn event=sighup-ignored$' "$TMP/su-hup.log" \
     || fail "a daemon sent SIGHUP did not log 'warn event=sighup-ignored' (F206): $(cat "$TMP/su-hup.log")"
-# The loop turns at least once a second; a flag that is never cleared would
-# log on every turn.
-sleep 1.3
+# A flag that is never cleared would log on every turn of the loop. Three
+# requests force three turns (V4-327, F608): it was `sleep 1.3` for the one
+# turn a second an idle loop makes, and a daemon scheduled 300 ms late had
+# not yet made it (campaign v97, SH5).
+for _hup in 1 2 3; do
+    "$ADMIN" list-users --socket "$TMP/su-a.sock" > /dev/null 2>&1 || fail "the daemon did not answer after a SIGHUP (F206)"
+done
 [ "$(grep -c '^warn event=sighup-ignored$' "$TMP/su-hup.log")" -eq 1 ] \
     || fail "one SIGHUP was logged more than once (F206): $(cat "$TMP/su-hup.log")"
 kill -HUP "$SUPID"
@@ -1676,19 +1680,23 @@ if ! grep -q "another run is using" "$TMP/rotw.err"; then
     cat "$TMP/rotw.err"
     fail "a rotation did not wait while another run held the key's directory (F293)"
 fi
-# It SAID it would wait; that it does is a separate fact. A rotation takes
-# about a second, so one that is still there after five did wait.
-i=0
-while kill -0 "$RWPID" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-if ! kill -0 "$RWPID" 2>/dev/null; then
-    : > "$TMP/lk.go"; wait "$LKPY" 2>/dev/null || true
+# It SAID it would wait; that it does is a separate fact, and the client
+# says when the wait is over (V4-327, F608). This used to ask whether the
+# rotation was still running five seconds later, which a rotation that did
+# NOT wait also is on a slow machine (three key derivations and a session):
+# campaign v132's KL3 then failed a later check under another name.
+sleep 0.5
+if grep -q "has finished; going on" "$TMP/rotw.err"; then
+    : > "$TMP/lk.go"; wait "$LKPY" 2>/dev/null || true; wait "$RWPID" 2>/dev/null || true
     fail "a rotation announced that it would wait and then ran while the lock was held (F293)"
 fi
+kill -0 "$RWPID" 2>/dev/null || { : > "$TMP/lk.go"; wait "$LKPY" 2>/dev/null || true; cat "$TMP/rotw.err"; fail "F293: the waiting rotation exited while the lock was held"; }
 [ ! -e "$TMP/dev/$HANDLE.ek.next" ] || fail "F293: a waiting rotation had already written .ek.next"
 [ "$(fp_now)" = "$FP_L0" ] || fail "F293: a waiting rotation had already changed the active key"
 : > "$TMP/lk.go"
 wait "$LKPY" || fail "F293: the lock holder failed"
 wait "$RWPID" || { cat "$TMP/rotw.err"; fail "F293: the rotation failed once the lock was free"; }
+grep -q "has finished; going on" "$TMP/rotw.err" || { cat "$TMP/rotw.err"; fail "F293: the rotation that waited did not say when the wait ended (the canary)"; }
 FP_L1=$(fp_now)
 [ "$FP_L1" != "$FP_L0" ] || fail "F293: the rotation that waited did not rotate"
 echo "PASS: E2E: a rotation waits while another run holds the key's directory, then completes (F293)"

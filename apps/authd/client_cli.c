@@ -826,6 +826,9 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
             errno = e;
             return -1;
         }
+        /* The wait is over, and is said to be (V4-327): the line above
+         * leaves a person watching with no sign that anything followed. */
+        fprintf(stderr, "%s %s: the other run has finished; going on\n", prog, sub);
     }
     return fd;
 }
@@ -1146,7 +1149,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         authd_secret_free(pass, pass_len);
         mldsa_keypair_free(&old_kp);
         fprintf(stderr, "%s rotate: not rotating: %s holds the LIVE key and could not be put in place, "
-                        "because the device's .pub could not be updated (the line above says how). Do NOT "
+                        "because the device's .pub could not be updated (the lines above say how). Do NOT "
                         "remove it. Mend that, log in once (which completes the earlier rotation), then "
                         "rotate\n",
                 prog, next_path);

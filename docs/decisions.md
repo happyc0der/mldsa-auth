@@ -21700,3 +21700,74 @@ Spec v1.106: erratum 155 (14).
 Counts: 777 mutations, 148 campaigns, 822 anchors; 602 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
 F585 open); spec v1.106, 155 errata; 66 tests.
+
+## V4-327 — what the seventy-seventh review found (F603 to F607), and every campaign read for kills by chance (F608 to F610)
+
+**The seventy-seventh review** read the code V4-326 changed, the transcript
+and KEX code, spec-v2's records and framing against `session.c` and
+`frame.c`, the daemon's handlers together with the site that calls them,
+and the remaining pages. It found all of that sound: every MUST of spec-v2
+6.4 is met, every daemon code maps to the intended answer of the site, and
+no page inserts anything as HTML. Five findings, one Low and four Info.
+
+- **F603 (Low).** V4-326's fix of F597 did not fire in a browser. Cleared
+  storage makes the store THROW; it does not return no record. The review
+  ran it in Chromium. A store that throws is now asked again through a
+  fresh connection. This is the third step in a row to correct the same
+  few lines (F584, F594, F597, F603), each time because the test's stand-in
+  store did something the real one does not. The stand-ins in the new test
+  throw as the browser's does; it is still not a browser.
+- **F604 (Info).** The recover page trims the name and drops whitespace
+  from the code.
+- **F605 (Info).** The shipped proxy example forwards exactly
+  `GET /authd/v1`, as the site's relay has since V4-326. Its test runs in
+  CI only.
+- **F606 (Info).** A message's wording.
+- **F607 (Info), not changed.** The account page's buttons are not guarded
+  against each other. Not confirmed.
+
+**The sweep.** After F596 (found by a nightly) and F598 (found by a review
+that sampled twenty campaigns), all 148 campaigns were read for mutations
+whose kill depends on something that varies from run to run: every
+description and spec line, and about 180 mutations traced to their checks.
+
+- **Nine were found** (F608, F609), from one run in 256 down to three in a
+  hundred thousand. None is a defect in the code the mutation is of. Each
+  is a test that would let that defect through on some runs, which is what
+  a campaign exists to rule out.
+- **Five are fixed here** (F608): v88 RK13, v132 KL3, v49b L2, v94 JC6,
+  v97 SH5. Each fix replaces a random value, a sleep or a deadline with a
+  property: a root with no byte equal to the allocator's fill; a line the
+  client prints when its wait ends; rows written when the header has been
+  read; a deadline on a child that never reports; requests that force the
+  loop's turns.
+- **Four groups are open** (F609). Three are the next bug step. The
+  fourth, v101 DR3, needs a new log field, which is the owner's.
+- **F610** records the mutations that cannot be killed under particular
+  machine limits. They are stable for a machine and are left.
+- The sweep also notes that V4-326's lower bound for v89 OE6 has LW2's
+  shape: a stall inside the measured call can meet it. It needs a stall of
+  200 ms inside one call, and is left with LW2.
+- Not traced to their checks, and so not cleared: the `authd_e2e` legs of
+  about twenty campaigns (every sleep and bounded wait in the script was
+  read), four in-process connection checks, two groups of WebSocket checks,
+  the fuzz-replay campaigns and the older known-answer ones.
+
+**The client says when its wait for the lock ends.** That is one new line
+on stderr from `authd_client` (`the other run has finished; going on`),
+added so the test can tell a rotation that waited from one that did not.
+It is also what a person watching the first line was missing.
+
+No campaign: the five fixes change tests, and one line of the client. Each
+of the five mutations was killed by hand afterwards, with v132 KL2 and KL4,
+v94 JC1, v177 KR1 and v178 KR3.
+
+Hand control with `tools/hand_control.py --interpreted` against
+`web_flows`, KILLED: RR1, a store that throws is taken to still hold the
+key.
+
+Spec v1.107: erratum 156 (7.1).
+
+Counts: 777 mutations, 148 campaigns, 822 anchors; 610 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585 and F609 open); spec v1.107, 156 errata; 66 tests.

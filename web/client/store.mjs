@@ -149,6 +149,17 @@ export class IdentityStore {
     return (await done(tx.objectStore(STORE).get(handle))) ?? null;
   }
 
+  // What a FRESH connection says of `handle`: the record, or null (F603).
+  // When the origin's storage is cleared, the browser closes this object's
+  // connection, and get() then throws; it does not answer "no record". A
+  // caller that must tell a key that is gone from one it merely could not
+  // read asks here. Opened as open() opens, so a database that was deleted
+  // is made again, empty, with its store.
+  async reread(handle) {
+    const fresh = await IdentityStore.open(this.db.name);
+    try { return await fresh.get(handle); } finally { try { fresh.db.close(); } catch { /* gone */ } }
+  }
+
   async list() {
     const tx = this.db.transaction(STORE, 'readonly');
     return done(tx.objectStore(STORE).getAll());
@@ -212,6 +223,7 @@ export class MemoryStore {
   get sharedLock() { return true; }                 // one process is all there is
   async exclusive(handle, fn) { return this.pageLocks.run(handle, fn); }
   async get(handle) { const r = this.m.get(handle); return r ? { ...r } : null; }
+  async reread(handle) { const r = this.m.get(handle); return r ? { ...r } : null; }
   async list() { return [...this.m.values()].map((r) => ({ ...r })); }
   async create(r) {
     if (this.m.has(r.handle)) { throw new Error('exists'); }

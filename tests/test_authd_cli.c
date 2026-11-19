@@ -28,6 +28,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#endif
+
 #include "authd_cli.h"
 #include "authd_config.h"
 #include "authd_harness.h"
@@ -96,6 +101,23 @@ static int run_tool_capture_stream(int (*tool)(int, char **), char **argv, char 
 static int run_admin_capture_stream(char **argv, char *buf, size_t cap, FILE *stream, int fd)
 {
     return run_tool_capture_stream(authd_cli_admin, argv, buf, cap, stream, fd);
+}
+
+/* V4-327 (F608): how many bytes written to `fd` its peer has not read yet,
+ * where the platform can say. Linux can (measured in a container: 768 after
+ * an 11-byte write to a Unix socket, 0 once the peer has read). macOS's
+ * SO_NWRITE answers 0 for a Unix socket whatever is unread, so there this
+ * returns 0 and the caller keeps its sleep; the nightly, which is the
+ * authority for a campaign's kills, runs on Linux. */
+static int unread_bytes(int fd)
+{
+    int n = 0;
+#if defined(__linux__)
+    if (ioctl(fd, SIOCOUTQ, &n) != 0) { n = 0; }
+#else
+    (void)fd;
+#endif
+    return n;
 }
 
 static int run_client_capture(char **argv, char *buf, size_t cap)
@@ -1162,7 +1184,16 @@ static void test_localcli_split_list(void)
         static const char head[] = "OK count=1\n";
         static const char rest[] = "DEVICE handle=6431 label=- via=site\nEND\n";
         (void)!write(c, head, sizeof head - 1u);
-        usleep(200000);                         /* the rows arrive in a second write */
+        /* The rows arrive in a second write, and only once the header has
+         * been READ (V4-327, F608). It was a 200 ms sleep: a reader stalled
+         * past it took both writes in one read, and a client that stops at
+         * the first line (campaign v49b, L2) returned the whole list. */
+        if (unread_bytes(c) > 0) {
+            for (int spin = 0; spin < 5000 && unread_bytes(c) > 0; spin++) { usleep(1000); }
+            usleep(20000);
+        } else {
+            usleep(200000);                     /* this platform cannot say (macOS): the old sleep */
+        }
         (void)!write(c, rest, sizeof rest - 1u);
         usleep(100000);
         (void)close(c);
@@ -2050,8 +2081,15 @@ static void test_rotate_on_disk(void)
         rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
                                                "--passphrase-file", pass, "--server-id", "authd",
                                                "--server-pub", spub, "--port", port, NULL });
-        CHECK(rc == 0 && access(next, F_OK) != 0 && !same_bytes(ek, live, ln) && !same_bytes(ek, sealed_a, na),
-              "promotable: a rotation that can complete the earlier one does, and then rotates to a new key (F591)"); }
+        /* Review 77: and the .pub names the key that is now in .ek. */
+        mldsa_keypair_t after_kp;
+        memset(&after_kp, 0, sizeof after_kp);
+        const int o2 = keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &after_kp, NULL) == KEYFILE_OK;
+        CHECK(rc == 0 && access(next, F_OK) != 0 && !same_bytes(ek, live, ln) && !same_bytes(ek, sealed_a, na) && o2 &&
+              demo_keys_load_public(pubp, (const uint8_t *)handle, hlen, got) == DEMO_KEYS_OK &&
+              memcmp(got, after_kp.public_key, sizeof got) == 0,
+              "promotable: a rotation that can complete the earlier one does, and then rotates to a new key (F591)");
+        mldsa_keypair_free(&after_kp); }
 #undef PUB_BLOCKED_FRESH_LEDGER
     }
 

@@ -178,6 +178,12 @@ int main(void)
       uint8_t root[SPEC_ROOT], key3[SPEC_KEY];
       if (env3 == NULL || file == NULL || pt2 == NULL) { printf("FAIL: allocation (v2)\n"); return 1; }
       randombytes_buf(root, sizeof root);
+      /* V4-327 (F608): no byte of the root is 0xdb, which is what libsodium
+       * fills new guarded memory with. A seal that left out the root's last
+       * byte (campaign v88, RK13) leaves that fill where the byte should be,
+       * and one random root in 256 ended in 0xdb: the mutant then produced
+       * the right bytes and passed. */
+      for (size_t i = 0; i < sizeof root; i++) { if (root[i] == 0xdbu) { root[i] = 0xdcu; } }
 
       /* spec -> code */
       memcpy(pt2, img, img_len);

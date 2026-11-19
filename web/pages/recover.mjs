@@ -7,8 +7,13 @@ import { boot, post, report, val, secret, action } from './common.mjs';
 await boot();
 document.body.dataset.ready = '1';
 action('go', async () => {
-  const user = val('user');
-  const code = secret('code');
+  // F604: neither field was trimmed. A trailing space from a phone's
+  // keyboard, or a code typed in groups, was refused by the site before the
+  // daemon saw it, as `recover-failed`, at the cost of one of the client's
+  // five attempts; a name with a space after it was sent as another user.
+  // The daemon already ignores hyphens in a code; spaces are dropped here.
+  const user = val('user').trim();
+  const code = secret('code').replace(/\s+/g, '');
   try {
     await post('/api/recover', { user, code });
   } catch (e) {

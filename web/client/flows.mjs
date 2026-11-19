@@ -230,14 +230,30 @@ export async function login(client, store, params, events) {
 // to tell the user: 'confirmed'; 'marked' when the mark could not be cleared;
 // 'gone' when the record is not there at all (F594, F597: storage cleared
 // meanwhile), which is a different thing to tell a user -- the key is lost.
+//
+// F603: a store that THROWS is asked again through a fresh connection. That
+// is what a browser's store does when the origin's storage is cleared: its
+// connection is closed, and every call fails. It was read as "still marked",
+// so the case F597 was written for was reported as a key to log in with.
 async function confirmQuietly(store, handle) {
+  const again = async () => {
+    try { return (typeof store.reread === 'function') ? await store.reread(handle) : undefined; }
+    catch { return undefined; }                // nothing can be read: not known to be gone
+  };
   let rec;
-  try { rec = await store.get(handle); } catch { return 'marked'; }
+  try { rec = await store.get(handle); }
+  catch {
+    rec = await again();
+    if (rec === undefined) { return 'marked'; }
+    return rec ? 'marked' : 'gone';            // readable only through another connection: not confirmed here
+  }
   if (!rec) { return 'gone'; }
   try {
     if (rec.unconfirmed) { await store.confirm(handle); }
     return 'confirmed';
-  } catch { return 'marked'; }
+  } catch {
+    return (await again()) === null ? 'gone' : 'marked';
+  }
 }
 
 // Makes a key and has the site enroll it (V4-138, F220).
