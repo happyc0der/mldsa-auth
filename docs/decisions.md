@@ -20725,3 +20725,28 @@ Spec v1.94, errata 136 and 137.
 Counts: 724 mutations, 135 campaigns, 769 anchors; 531 findings (F148,
 F156, F273, F288, F309, F338, F398, F419, F421, F431, F435, F436, F437,
 F451, F453 and F511 open); spec v1.94, 137 errata; 66 tests.
+
+## V4-307: cleanup after V4-305 and V4-306
+
+No code.
+
+- `docs/review/REPRODUCE.md` now cites the runs on `b6a57ab` (V4-306,
+  main): CI 44424815586 (16/16) and nightly 44424821970 (150/150, 135
+  campaigns; one job more than before, for v165).
+- Before them, `31b6cbb` (V4-305) had CI 44407453488 (16/16) and nightly
+  44407459994 (149/149).
+- CLAIMS D12 and the threat model's compromised-site row still called F420
+  open and the shipped example overlapping. Both now say what V4-306
+  shipped: a warning from `--check-config`, and an example that gives the
+  proxy and the site a user each.
+- A sweep for the 4 KiB-only figure found it nowhere else stated as general.
+  The remaining "10 MiB" figures are each labelled x86_64.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F338, F398, F419, F421, F431, F435, F436, F437,
+  F451, F453 and F511. Also open: whether F420's overlap should be
+  refused rather than warned of, and the questions in V4-246's, V4-274's,
+  V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+Counts: unchanged by this step (724 mutations, 135 campaigns, 769
+anchors; 531 findings, the 16 above open; spec v1.94, 137 errata; 66
+tests).
