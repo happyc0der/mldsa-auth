@@ -244,7 +244,15 @@ int evloop_set_clock(evloop_t *ev, evloop_clock_fn clock, void *ctx);
  * one already noted is ignored, and what is noted lasts for the iteration it
  * was noted in. At the end of that iteration EVERY armed deadline is moved
  * on by the time the handler ran past the iteration's own (F623): the daemon
- * neither read nor wrote meanwhile, and that is no connection's doing. */
+ * neither read nor wrote meanwhile, and that is no connection's doing.
+ *
+ * What this does NOT do (F629): a handshake that has its ServerHello is also
+ * held in the pending ledger, whose lifetime is counted on the daemon's
+ * clock, not the loop's deadlines. One that waited through a block longer
+ * than handshake_timeout_ms keeps its connection and is then refused as
+ * expired. And a deadline counts time the daemon was serving only (F630):
+ * handlers that block one after another hold every deadline off for as long
+ * as they go on. */
 void evloop_note_time(evloop_t *ev, uint64_t now_ms);
 
 /* Registers a LINE-oriented local-API listener: its connections come from the

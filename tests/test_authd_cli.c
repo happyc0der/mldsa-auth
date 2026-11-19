@@ -1554,8 +1554,32 @@ static void test_backup_path_bound(void)
     const int alike = (strstr(err, "PrivateTmp") == NULL);
     rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/lib/mldsa-authd/backups/b.sqlite3", NULL },
                            err, sizeof err);
-    CHECK(alike && rc == 1 && strstr(err, "PrivateTmp") == NULL,
+    CHECK(alike && rc == 1 && strstr(err, "PrivateTmp") == NULL && strstr(err, "/run is not kept") == NULL,
           "backup: and no other destination is (F624)");
+    /* V4-333 (F631): by where the path leads, not how it is spelled. */
+    { static const char *const SPELT[] = { "//tmp/b.sqlite3", "/./tmp/b.sqlite3", "/var//tmp/b.sqlite3",
+                                           "/var/./tmp/b.sqlite3", "/tmp/../tmp/b.sqlite3", "/var/lib/../tmp/b.sqlite3" };
+      int all = 1;
+      for (size_t i = 0; i < sizeof SPELT / sizeof SPELT[0]; i++) {
+          rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", (char *)SPELT[i], NULL },
+                                 err, sizeof err);
+          if (rc != 1 || strstr(err, "PrivateTmp") == NULL) { all = 0; printf("  not warned of: %s\n", SPELT[i]); }
+      }
+      CHECK(all, "backup: /tmp and /var/tmp are warned of however the path is spelled (F631)");
+      rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/tmp/../var/lib/mldsa-authd/backups/b", NULL },
+                             err, sizeof err);
+      CHECK(rc == 1 && strstr(err, "warning") == NULL,
+            "backup: and a path that only passes through /tmp is not (F631)"); }
+    /* The runtime directory: the one other place the sandboxed daemon can
+     * write, removed by systemd at every stop. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/run/mldsa-authd/pre-upgrade.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "/run is not kept") != NULL && strstr(err, "PrivateTmp") == NULL,
+          "backup: a destination under /run is warned of: it is removed when the service stops (F631)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/runs/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "warning") == NULL,
+          "backup: and /runs is not /run (F631)");
 }
 
 /* V4-245, F352: authd_client options that could not take effect were dropped

@@ -10,6 +10,7 @@ Usage: mutate_v180.py <repo> <ID>
     LT5   only served connections are moved on; a handshake in flight is not (V4-332).
     LT6   RECOVERY-ISSUE is not counted as a handler that blocks (V4-332).
     LT7   RECOVERY-USE is not (V4-332).
+    LT8   a deadline is moved on before it is looked at (V4-333).
 """
 import sys, pathlib
 EV = "apps/authd/evloop.c"
@@ -18,6 +19,8 @@ LA = "apps/authd/localapi.c"
 M = {
     "LT1": [(EV, "            s->deadline_ms += deaf_ms;\n",
              "            /* MUTATION LT1 */ (void)deaf_ms;\n")],
+    "LT8": [(EV, "            if (now_ms >= s->deadline_ms) {\n                ev->closed_deadline++;\n",
+             "            s->deadline_ms += deaf_ms; /* MUTATION LT8 */\n            if (now_ms >= s->deadline_ms) {\n                ev->closed_deadline++;\n")],
     "LT5": [(EV, "            s->deadline_ms += deaf_ms;\n",
              "            if (s->kind == SLOT_KIND_LOCAL || s->established) { s->deadline_ms += deaf_ms; } /* MUTATION LT5 */\n")],
     "LT6": [(LA, "            if (table[i].fn == h_recovery_issue || table[i].fn == h_recovery_use) {\n",

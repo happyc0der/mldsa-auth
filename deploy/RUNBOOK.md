@@ -384,7 +384,13 @@ look at the path first. Do not give it a path under `/tmp` or `/var/tmp`:
 the unit runs the daemon with those two directories of its own
 (`PrivateTmp=yes`), so the backup is written, the answer is `OK`, the file
 is not where you look for it, and it is deleted when the service stops.
-`authd_admin` warns of such a path (V4-332). For a second backup on the same day (before an
+`authd_admin` warns of such a path (V4-332). Nor under `/run`: the
+service's own directory there is writable, and systemd removes it whenever
+the service stops or restarts, so a backup taken there before an upgrade is
+gone at the upgrade's restart. The tool warns of that too (V4-333). Any
+other place outside `/var/lib/mldsa-authd` is read-only to the daemon under
+this unit (`ProtectSystem=strict`) and is answered `internal`: to keep a
+backup on another volume, copy the finished file there yourself. For a second backup on the same day (before an
 upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
 
 The tool waits up to ten minutes for a backup (since V4-311; every other

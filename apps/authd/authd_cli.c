@@ -840,6 +840,37 @@ static int cmd_enroll_operator(int argc, char **argv, const char *prog)
     return local_call(prog, "enroll-operator", sock, "ENROLL-OPERATOR", args);
 }
 
+/* An absolute path with its empty, `.` and `..` segments taken out, as the
+ * kernel would walk it were none of its directories a symbolic link. For the
+ * warning below only: nothing is sent or opened by this spelling. `out` holds
+ * at least strlen(path) + 2 bytes. */
+static void backup_path_as_resolved(const char *path, char *out, size_t cap)
+{
+    size_t n = 0;
+    const char *p = path;
+    while (*p != '\0') {
+        while (*p == '/') { p++; }
+        const char *seg = p;
+        while (*p != '\0' && *p != '/') { p++; }
+        const size_t len = (size_t)(p - seg);
+        if (len == 0u || (len == 1u && seg[0] == '.')) {
+            continue;
+        }
+        if (len == 2u && seg[0] == '.' && seg[1] == '.') {
+            while (n > 0u && out[n - 1u] != '/') { n--; }
+            if (n > 0u) { n--; }
+            continue;
+        }
+        if (n + 1u + len + 1u > cap) {
+            break;
+        }
+        out[n++] = '/';
+        memcpy(out + n, seg, len);
+        n += len;
+    }
+    out[n] = '\0';
+}
+
 static int cmd_backup(int argc, char **argv, const char *prog)
 {
     const char *sock = NULL, *path = NULL;
@@ -886,10 +917,20 @@ static int cmd_backup(int argc, char **argv, const char *prog)
      * the daemon wrote the backup into a /tmp of its own, answered OK, and
      * the file was nowhere the operator could see, and gone when the service
      * next stopped. */
-    if (strncmp(path, "/tmp/", 5u) == 0 || strncmp(path, "/var/tmp/", 9u) == 0) {
+    /* F631 (V4-333): as the daemon will resolve it, not as it is spelled --
+     * `//tmp/x` and `/var/./tmp/x` went unwarned -- and /run too: the
+     * service's runtime directory is the one other place the sandboxed
+     * daemon can write, and systemd removes it at every stop. */
+    char seen[AUTHD_BACKUP_PATH_MAX + 2u];
+    backup_path_as_resolved(path, seen, sizeof seen);
+    if (strncmp(seen, "/tmp/", 5u) == 0 || strncmp(seen, "/var/tmp/", 9u) == 0) {
         fprintf(stderr, "%s backup: warning: under the shipped service unit the daemon has a /tmp and a /var/tmp "
                         "of its own (PrivateTmp): a backup written there is not at this path for you, and is "
                         "deleted when the service stops. Use the store's backups/ directory\n", prog);
+    } else if (strncmp(seen, "/run/", 5u) == 0) {
+        fprintf(stderr, "%s backup: warning: /run is not kept: the service's runtime directory is removed "
+                        "whenever the service stops or restarts, and a backup written there goes with it. "
+                        "Use the store's backups/ directory\n", prog);
     }
     memcpy(args, "path=", 5u);
     hexify(args + 5u, path, plen);

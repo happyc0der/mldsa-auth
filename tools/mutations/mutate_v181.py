@@ -5,6 +5,10 @@ Usage: mutate_v181.py <repo> <ID>
 
     BW1   /var/tmp is not warned of.
     BW2   any path that begins with /tmp is.
+    BW3   /run is not warned of (V4-333).
+    BW4   a `.` segment hides the destination.
+    BW5   a `..` segment does.
+    BW6   any path that begins with /run is warned of.
 
 F623's and F625's mutations are campaign v180's LT1 and LT5 to LT7.
 """
@@ -12,10 +16,18 @@ import sys, pathlib
 CLI = "apps/authd/authd_cli.c"
 
 M = {
-    "BW1": [(CLI, "    if (strncmp(path, \"/tmp/\", 5u) == 0 || strncmp(path, \"/var/tmp/\", 9u) == 0) {\n",
-             "    if (strncmp(path, \"/tmp/\", 5u) == 0) { /* MUTATION BW1 */\n")],
-    "BW2": [(CLI, "    if (strncmp(path, \"/tmp/\", 5u) == 0 || strncmp(path, \"/var/tmp/\", 9u) == 0) {\n",
-             "    if (strncmp(path, \"/tmp\", 4u) == 0 || strncmp(path, \"/var/tmp/\", 9u) == 0) { /* MUTATION BW2 */\n")],
+    "BW1": [(CLI, "    if (strncmp(seen, \"/tmp/\", 5u) == 0 || strncmp(seen, \"/var/tmp/\", 9u) == 0) {\n",
+             "    if (strncmp(seen, \"/tmp/\", 5u) == 0) { /* MUTATION BW1 */\n")],
+    "BW2": [(CLI, "    if (strncmp(seen, \"/tmp/\", 5u) == 0 || strncmp(seen, \"/var/tmp/\", 9u) == 0) {\n",
+             "    if (strncmp(seen, \"/tmp\", 4u) == 0 || strncmp(seen, \"/var/tmp/\", 9u) == 0) { /* MUTATION BW2 */\n")],
+    "BW3": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0) {\n",
+             "    } else if (strncmp(seen, \"/rum/\", 5u) == 0) { /* MUTATION BW3 */\n")],
+    "BW4": [(CLI, "        if (len == 0u || (len == 1u && seg[0] == '.')) {\n",
+             "        if (len == 0u) { /* MUTATION BW4 */\n")],
+    "BW5": [(CLI, "        if (len == 2u && seg[0] == '.' && seg[1] == '.') {\n",
+             "        if (len == 2u && seg[0] == '.' && seg[1] == '/') { /* MUTATION BW5 */\n")],
+    "BW6": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0) {\n",
+             "    } else if (strncmp(seen, \"/run\", 4u) == 0) { /* MUTATION BW6 */\n")],
 }
 
 def main():

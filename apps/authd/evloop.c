@@ -743,13 +743,18 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             if (s->state == SLOT_FREE || s->deadline_ms == 0u) {
                 continue;
             }
-            s->deadline_ms += deaf_ms;
+            /* Checked BEFORE it is moved (F630, V4-333): a deadline that had
+             * passed when this iteration began was passed while the daemon
+             * was serving, and a handler that then blocked for longer than
+             * it was overdue used to carry it back into the future. */
             if (now_ms >= s->deadline_ms) {
                 ev->closed_deadline++;
                 authd_log_slot(AUTHD_LOG_INFO, "closed-deadline", s->index);
                 evloop_close_slot(ev, s);
                 activity++;
+                continue;
             }
+            s->deadline_ms += deaf_ms;
         }
     }
 

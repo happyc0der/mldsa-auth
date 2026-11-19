@@ -21983,6 +21983,8 @@ configuration's defaults were found sound.
 - Whether `BACKUP` should refuse a destination outside the store's
   directory (F624). Recommendation: no; the warning covers the case that
   loses a backup, and operators back up to mounted volumes.
+  (Corrected in V4-333, F631: under the shipped unit a mounted volume is
+  read-only to the daemon. The recommendation stands for its first reason.)
 - The review could not establish whether Caddy 2.10.2 offers browsers
   WebSocket over HTTP/2 by extended `CONNECT` (F622). If it does, a
   browser that takes the offer cannot log in through the documented
@@ -21999,5 +22001,53 @@ killed by hand afterwards.
 No spec change.
 
 Counts: 788 mutations, 151 campaigns, 833 anchors; 628 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585 and F609 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-333: what the eighty-first review found (F629 to F632)
+
+**The eighty-first review** read V4-332's commit and the cryptographic
+core as the daemon uses it, and ran two programs of its own against the
+loop and the harness. No High or Medium. Three Low, one Info. The core
+was found sound: sequence numbers, transcript binding, constant-time
+comparisons, wiping on every failure path, lengths before copies; no
+deviation from spec-v2.
+
+- **F629 (Low), recorded and pinned.** V4-332's row said a handshake in
+  flight is no longer lost to a long backup. The connection is kept; the
+  pending ledger still expires the handshake on the daemon's clock. A test
+  now holds both sides of that line (3 s completes, 15 s is refused), the
+  row and the header say so, and the question is the owner's.
+- **F630 (Low).** A deadline is looked at before it is moved. That
+  handlers blocking back to back hold all deadlines off is recorded: a cap
+  would undo F619.
+- **F631 (Low).** The backup warning follows where the path leads and
+  covers `/run`. V4-332's entry gave a reason that was wrong, and it is
+  corrected there.
+- **F632 (Info).** A comment; and three times that are early by under a
+  second, left.
+
+This is the fourth step on what a blocking handler does to the loop's
+time (F612, F619, F623, then F629 and F630). Each review ran or read the
+step before it and found the next edge. What is left is not an edge of
+the fix but the design it sits on: one loop, and handlers that block it.
+
+**Open for the owner, new here.**
+- Whether the pending ledger's lifetime should also be extended by time
+  the daemon was blocked (F629). Recommendation: no. It is the bound on a
+  ServerHello's life, a login that fails this way is retried by the
+  client, and the cause is a backup, which the runbook schedules.
+- F630's second part adds weight to the budget for `RECOVERY-ISSUE`
+  asked about in V4-332's entry.
+
+Campaigns, all KILLED by hand: v180 gained LT8 (a deadline is moved before
+it is looked at); v181 gained BW3 (`/run` is not warned of), BW4 and BW5
+(a `.` or `..` segment hides the destination) and BW6 (any path beginning
+`/run` is warned of), and its BW1 and BW2 were re-anchored. v180's LT1 and
+LT5 were killed again.
+
+No spec change.
+
+Counts: 793 mutations, 151 campaigns, 838 anchors; 632 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585 and F609 open); spec v1.109, 158 errata; 66 tests.

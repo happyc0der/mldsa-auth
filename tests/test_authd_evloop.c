@@ -949,6 +949,59 @@ static void bp_stall(evloop_t *ev, uint64_t now, int c, const uint8_t *sent, siz
     }
 }
 
+/* V4-333 (F630): a deadline that had passed when the iteration began is
+ * acted on, whatever a handler in that iteration then says of the time.
+ * V4-332 moved every deadline on before it looked, so a handler that blocked
+ * for longer than a connection was overdue carried it back into the future.
+ * Two established connections: A falls silent; B's request is the one whose
+ * handler blocks. The iteration is run only once B's bytes can be read, so
+ * that the note is made in the very iteration that finds A late. */
+static void test_overdue_before_a_block(void)
+{
+    enum { NS = 4 };
+    static authd_slot_t slots[NS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1;
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    h.echo = 1;
+    h.establish = 1;
+    CHECK(listener_open_loopback(0, 8, &lfd, &port) == LISTENER_OK, "overdue: the listener binds");
+    CHECK(evloop_init(&ev, slots, NS, 5000u, 20000u, on_frame, on_close, &h) == 0 &&
+          evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "overdue: the loop starts");
+    uint8_t f[4 + 5], back[4 + 5];
+    put_be32(f, 5); memcpy(f + 4, "hello", 5);
+
+    const int a = dial(port);
+    CHECK(a >= 0 && write(a, f, sizeof f) == (ssize_t)sizeof f, "overdue: A connects and sends a frame");
+    (void)PUMP_UNTIL(&ev, 1000, h.frames >= 1 && conn_io_pending(&slots[0].io) == 0u);
+    CHECK(read(a, back, sizeof back) == (ssize_t)sizeof back && slots[0].deadline_ms == 1000u + 20000u,
+          "overdue: A is established, on the idle deadline");
+    const int b = dial(port);
+    CHECK(b >= 0 && write(b, f, sizeof f) == (ssize_t)sizeof f, "overdue: B connects and sends a frame");
+    (void)PUMP_UNTIL(&ev, 10000, h.frames >= 2 && conn_io_pending(&slots[1].io) == 0u);
+    CHECK(read(b, back, sizeof back) == (ssize_t)sizeof back && slots[1].deadline_ms == 10000u + 20000u,
+          "overdue: B is established later, with a later deadline");
+
+    /* At 26000 A is five seconds overdue and B is not. B's handler will say
+     * it ran until 32000: six seconds, more than A is overdue by. */
+    CHECK(write(b, f, sizeof f) == (ssize_t)sizeof f, "overdue: B sends the request whose handler blocks");
+    struct pollfd pb = { .fd = slots[1].fd, .events = POLLIN, .revents = 0 };
+    CHECK(poll(&pb, 1, 5000) == 1, "overdue: B's request can be read before the iteration begins");
+    h.note_ev = &ev; h.note_ms = 26000u + 6000u;
+    (void)evloop_run_once(&ev, 0, 26000u);
+    h.note_ev = NULL;
+    CHECK(h.frames == 3, "overdue: the handler ran, and noted the time, in that iteration (the canary)");
+    CHECK(slots[0].state == SLOT_FREE && ev.closed_deadline == 1u,
+          "overdue: a connection already past its deadline is closed, though a handler then blocked for longer than it was overdue (F630)");
+    CHECK(slots[1].state != SLOT_FREE && slots[1].deadline_ms == 26000u + 20000u + 6000u,
+          "overdue: and the one that was not overdue is moved on by the block (F623, the canary)");
+    (void)close(a); (void)close(b);
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 static void test_backpressure(void)
 {
     enum { NSLOTS = 2 };
@@ -2305,6 +2358,7 @@ int main(void)
     test_config();
     test_conn_io();
     test_evloop();
+    test_overdue_before_a_block();
     test_pipelined();
     test_bad_header_behind_a_frame();
     test_accept_run_ends_at_refused_peer();

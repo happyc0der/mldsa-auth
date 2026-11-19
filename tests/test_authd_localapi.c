@@ -595,8 +595,9 @@ static void test_backup_refreshes_clock(void)
               "backup clock: a command that does not block leaves the clock as the pass read it (F612)");
     }
     /* V4-332 (F625): the recovery commands run a slow hash, up to sixteen
-     * times, and say so the same way. Asked for a user that does not exist:
-     * what is counted is the request, whatever it is answered. */
+     * times, and say so the same way. Neither request here gets as far as
+     * a hash (the first has no count= and is malformed, the second names
+     * nobody): what is counted is the request, whatever it is answered. */
     if (site_open) {
         const unsigned r0 = g_refreshes;
         CHECK(h_local_cmd(&d, site, "RECOVERY-ISSUE user=6e6f626f6479", resp, sizeof resp) == 0 && g_refreshes == r0 + 1u,
@@ -613,6 +614,84 @@ static void test_backup_refreshes_clock(void)
     h_client_close(&c);
     mldsa_keypair_free(&kp);
     h_stop(&d);
+}
+
+/* V4-333 (F629): a handshake that waits through a BACKUP. Its connection's
+ * deadline is moved on by the copy (F623); the pending ledger's entry is
+ * not -- its lifetime is the daemon's clock, and is the bound on how long a
+ * ServerHello can be answered. So a block shorter than the handshake timeout
+ * (10 s here) costs the login nothing, and a longer one costs it the login,
+ * refused as expired, with the connection left to its peer. Both are pinned:
+ * F623's row said the second no longer happened. */
+static unsigned long g_block_ms;
+static void refresh_block(void *ctx)
+{
+    authd_app_t *app = ctx;
+    app->now_unix += (int64_t)(g_block_ms / 1000u);
+    app->now_ms += g_block_ms;
+}
+
+static void handshake_across_backup(unsigned long block_ms, int want_login)
+{
+    h_daemon_t d;
+    mldsa_keypair_t kp;
+    char name[64], what[200];
+    snprintf(name, sizeof name, "hsbk%lu.sqlite3", block_ms);
+    CHECK(h_start(&d, g_dir, name, 1) == 0, "handshake/backup: daemon starts");
+    enroll_direct(&d, HANDLE1, sizeof HANDLE1, &kp);
+
+    h_client_t c;
+    memset(&c, 0, sizeof c);
+    keystore_init(&c.pins);
+    (void)keystore_add(&c.pins, H_SERVER_ID, sizeof H_SERVER_ID, d.server_kp.public_key);
+    c.fd = h_dial(d.port);
+    (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) >= 1u);
+    (void)handshake_initiator_init(&c.hs, HANDLE1, sizeof HANDLE1, &kp, &c.pins, H_SERVER_ID, sizeof H_SERVER_ID);
+    static uint8_t buf[AUTHD_FRAME_MAX];
+    size_t n = 0, sh = 0;
+    (void)handshake_initiator_create_client_hello(&c.hs, buf, sizeof buf, &n);
+    (void)h_send_frame(c.fd, buf, n);
+    const int got_sh = (h_recv_frame(&d, c.fd, buf, sizeof buf, &sh) == 0 &&
+                        handshake_initiator_verify_server_hello(&c.hs, buf, sh) == HANDSHAKE_OK);
+    CHECK(got_sh, "handshake/backup: the client has its ServerHello");
+    (void)handshake_initiator_create_client_auth(&c.hs, buf, sizeof buf, &n);
+    const uint64_t dl0 = d.slots[0].deadline_ms;
+
+    const int adm = h_dial_unix(d.admin_path);
+    char path[512], hexpath[1100], bk[1400], resp[4096];
+    snprintf(path, sizeof path, "%s/hsbk%lu.bak", g_dir, block_ms);
+    (void)unlink(path);
+    hx(hexpath, sizeof hexpath, (const uint8_t *)path, strlen(path));
+    snprintf(bk, sizeof bk, "BACKUP path=%s", hexpath);
+    g_block_ms = block_ms;
+    d.app.clock_refresh = refresh_block;
+    const int brc = h_local_cmd(&d, adm, bk, resp, sizeof resp);
+    d.app.clock_refresh = NULL;
+    h_tick(&d);
+    snprintf(what, sizeof what, "handshake/backup: a handshake in flight is not closed on a deadline by a backup of %lu ms; its deadline moves by as much (F623)", block_ms);
+    CHECK(got_sh && brc == 0 && starts(resp, "OK") && d.ev.closed_deadline == 0u &&
+          d.slots[0].state != SLOT_FREE && d.slots[0].deadline_ms == dl0 + block_ms, what);
+
+    const uint64_t failed0 = d.app.handshakes_failed, ok0 = d.app.logins_issued;
+    (void)h_send_frame(c.fd, buf, n);
+    (void)H_PUMP_UNTIL(&d, d.app.handshakes_failed > failed0 || d.app.logins_issued > ok0);
+    if (want_login) {
+        CHECK(d.app.logins_issued == ok0 + 1u && d.app.handshakes_failed == failed0,
+              "handshake/backup: a login whose ClientAuth waited through a backup shorter than the handshake timeout completes (F629)");
+    } else {
+        CHECK(d.app.logins_issued == ok0 && d.app.handshakes_failed == failed0 + 1u && d.ev.closed_deadline == 0u,
+              "handshake/backup: one that waited longer than the handshake timeout is refused by the ledger, not closed on a deadline (F629)");
+    }
+    (void)close(adm); (void)close(c.fd);
+    (void)unlink(path);
+    mldsa_keypair_free(&kp);
+    h_stop(&d);
+}
+
+static void test_handshake_across_backup(void)
+{
+    handshake_across_backup(3000u, 1);
+    handshake_across_backup(15000u, 0);
 }
 
 /* ------------------------------------------- revocation reaches live sessions */
@@ -3287,6 +3366,7 @@ int main(void)
     test_exchange_verify();
     test_exchange_expiry();
     test_backup_refreshes_clock();
+    test_handshake_across_backup();
     test_revocation_closes_sessions();
     test_disable_closes_sessions();
     test_enroll();
