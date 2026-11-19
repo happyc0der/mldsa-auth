@@ -3,7 +3,7 @@
 
 Usage: mutate_v179.py <repo> <ID>
 
-    BC1   h_backup does not ask for the clock to be read again.
+    BC1   a handler that blocked does not ask for the clock to be read again.
     BC2   it asks only when the backup was written.
 
 The browser's flow (F611, F618) is JavaScript, which no campaign compiles;
@@ -17,8 +17,8 @@ LA = "apps/authd/localapi.c"
 M = {
     "BC1": [(LA, "        app->clock_refresh(app);          /* F612: the copy took as long as it took */\n",
              "        /* MUTATION BC1 */\n")],
-    "BC2": [(LA, "    if (app->clock_refresh != NULL) {\n        app->clock_refresh(app);          /* F612",
-             "    if (app->clock_refresh != NULL && bs == STORE_OK) { /* MUTATION BC2 */\n        app->clock_refresh(app);          /* F612")],
+    "BC2": [(LA, "    served_late(app);\n    if (bs != STORE_OK) {\n",
+             "    if (bs == STORE_OK) { served_late(app); } /* MUTATION BC2 */\n    if (bs != STORE_OK) {\n")],
 }
 
 def main():

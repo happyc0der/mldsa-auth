@@ -2,3 +2,6 @@ LT1|^test_authd_evloop$|ev: a frame whose handler outlasted the iteration re-arm
 LT2|^test_authd_localapi$|backup clock: the connection that asked for a long backup is not closed on a deadline counted from before it (F619)
 LT3|^test_authd_evloop$|ev: what a handler noted lasts for its own iteration only (F619)
 LT4|^test_authd_evloop$|ev: a time earlier than one already noted is ignored (F619)
+LT5|^test_authd_evloop$|ev: a handshake in flight is not charged for the time a handler blocked either (F623)
+LT6|^test_authd_localapi$|backup clock: the clock is read again after a RECOVERY-ISSUE (F625)
+LT7|^test_authd_localapi$|backup clock: and after a RECOVERY-USE (F625)

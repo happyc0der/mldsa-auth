@@ -235,17 +235,16 @@ int evloop_set_on_addr(evloop_t *ev, evloop_on_addr_fn on_addr);
 int evloop_set_clock(evloop_t *ev, evloop_clock_fn clock, void *ctx);
 
 /* Tells the loop that a handler took long enough for the iteration's time to
- * be wrong (F619, V4-330): BACKUP, which copies the whole store inside one.
- * The idle deadline the loop re-arms once a request is served was counted
- * from before the copy, so after a backup longer than the idle timeout the
- * connection that asked for it -- and every one served after it in that
- * iteration -- was already past its new deadline, and was closed on the next
- * turn with its reply perhaps half written. `now_ms` is on the same clock as
- * evloop_run_once()'s; an earlier time than one already noted is ignored,
- * and what is noted lasts for the iteration it was noted in.
- * Only the re-arm uses it: the iteration's deadline CHECK keeps the time the
- * iteration began with, so a peer that wrote during the copy is read on the
- * next turn before it can be found late. */
+ * be wrong (F619, V4-330): BACKUP, which copies the whole store inside one,
+ * and the recovery commands, which run a slow hash. The deadlines the loop
+ * keeps were counted from before it, so after a backup longer than the idle
+ * timeout the connection that asked for it was already past its deadline,
+ * and was closed on the next turn with its reply perhaps half written.
+ * `now_ms` is on the same clock as evloop_run_once()'s; an earlier time than
+ * one already noted is ignored, and what is noted lasts for the iteration it
+ * was noted in. At the end of that iteration EVERY armed deadline is moved
+ * on by the time the handler ran past the iteration's own (F623): the daemon
+ * neither read nor wrote meanwhile, and that is no connection's doing. */
 void evloop_note_time(evloop_t *ev, uint64_t now_ms);
 
 /* Registers a LINE-oriented local-API listener: its connections come from the

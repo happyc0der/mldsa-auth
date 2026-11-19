@@ -1069,6 +1069,17 @@ static ev_action_t h_audit_tail(authd_app_t *app, authd_slot_t *slot, const req_
     return finish_list(slot, &body, &c);
 }
 
+/* A handler that can outlast the pass of the loop it runs in says so when it
+ * is done: BACKUP (the whole store, F612) and the recovery commands (up to
+ * sixteen slow hashes, F625). */
+static void served_late(authd_app_t *app)
+{
+    if (app->clock_refresh != NULL) {
+        app->clock_refresh(app);          /* F612: the copy took as long as it took */
+    }
+    evloop_note_time(app->ev, app->now_ms);   /* F619: and the loop's deadlines count from now */
+}
+
 static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *req)
 {
     static const char *const allowed[] = { "path" };
@@ -1087,10 +1098,7 @@ static ev_action_t h_backup(authd_app_t *app, authd_slot_t *slot, const req_t *r
     }
     path[path_len] = 0;
     const store_status_t bs = store_backup(app->store, (const char *)path);
-    if (app->clock_refresh != NULL) {
-        app->clock_refresh(app);          /* F612: the copy took as long as it took */
-    }
-    evloop_note_time(app->ev, app->now_ms);   /* F619: and the loop's deadlines count from now */
+    served_late(app);
     if (bs != STORE_OK) {
         return send_err(slot, "internal");
     }
@@ -1544,6 +1552,12 @@ ev_action_t localapi_on_line(void *user, authd_slot_t *slot, const uint8_t *line
     for (size_t i = 0; i < n; i++) {
         if (strcmp(req.cmd, table[i].cmd) == 0) {
             const ev_action_t act = table[i].fn(app, slot, &req);
+            /* F625: the slow hashes of a recovery command are time too. One
+             * is under a second; a pass serves every site connection that is
+             * readable, and seven issuing sixteen codes each are six. */
+            if (table[i].fn == h_recovery_issue || table[i].fn == h_recovery_use) {
+                served_late(app);
+            }
             g_serving_cmd = "?";      /* req is this frame's; nothing may keep it */
             return act;
         }

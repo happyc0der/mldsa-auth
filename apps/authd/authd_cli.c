@@ -881,6 +881,16 @@ static int cmd_backup(int argc, char **argv, const char *prog)
     if (2u * plen + 8u >= sizeof args) {
         return failed(prog, "backup", path, "request-too-long");
     }
+    /* F624 (V4-332): said, not refused -- a daemon run by hand shares /tmp
+     * with this shell. Under the shipped unit it does not (PrivateTmp=yes):
+     * the daemon wrote the backup into a /tmp of its own, answered OK, and
+     * the file was nowhere the operator could see, and gone when the service
+     * next stopped. */
+    if (strncmp(path, "/tmp/", 5u) == 0 || strncmp(path, "/var/tmp/", 9u) == 0) {
+        fprintf(stderr, "%s backup: warning: under the shipped service unit the daemon has a /tmp and a /var/tmp "
+                        "of its own (PrivateTmp): a backup written there is not at this path for you, and is "
+                        "deleted when the service stops. Use the store's backups/ directory\n", prog);
+    }
     memcpy(args, "path=", 5u);
     hexify(args + 5u, path, plen);
     return local_call(prog, "backup", sock, "BACKUP", args);

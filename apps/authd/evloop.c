@@ -443,10 +443,7 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
          * handshake, hold the slot past handshake_timeout_ms, by up to
          * idle_timeout_ms per frame. */
         if (s->kind == SLOT_KIND_LOCAL || s->established) {
-            /* F619: from when the request was SERVED, which a handler that
-             * blocked (BACKUP) says is later than the iteration's time. */
-            const uint64_t served_ms = (ev->late_ms > now_ms) ? ev->late_ms : now_ms;
-            s->deadline_ms = (ev->idle_timeout_ms > 0u) ? served_ms + (uint64_t)ev->idle_timeout_ms : 0u;
+            s->deadline_ms = (ev->idle_timeout_ms > 0u) ? now_ms + (uint64_t)ev->idle_timeout_ms : 0u;
         }
         if (act == EV_ACTION_CLOSE) {
             s->state = SLOT_DRAINING;
@@ -726,6 +723,14 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
         }
     }
 
+    /* F619, F623 (V4-332): time a handler blocked for is charged to NO
+     * connection. A handler that outlasted the iteration said until when
+     * (evloop_note_time); the daemon read nothing and wrote nothing in
+     * between, so every armed deadline moves on by that much. V4-330 moved
+     * only the deadlines re-armed after the handler: a connection served
+     * earlier in the same iteration, its reply still queued, was closed on
+     * the next turn all the same, and so was a handshake in flight. */
+    const uint64_t deaf_ms = (ev->late_ms > now_ms) ? ev->late_ms - now_ms : 0u;
     /* deadlines last, so a frame served this iteration has already re-armed */
     for (int pool = 0; pool < 2; pool++) {
         authd_slot_t *arr = (pool == 0) ? ev->slots : ev->local_slots;
@@ -738,6 +743,7 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             if (s->state == SLOT_FREE || s->deadline_ms == 0u) {
                 continue;
             }
+            s->deadline_ms += deaf_ms;
             if (now_ms >= s->deadline_ms) {
                 ev->closed_deadline++;
                 authd_log_slot(AUTHD_LOG_INFO, "closed-deadline", s->index);

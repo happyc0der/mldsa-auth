@@ -3,18 +3,27 @@
 
 Usage: mutate_v180.py <repo> <ID>
 
-    LT1   the idle deadline is re-armed from the iteration's time, noted or not.
-    LT2   BACKUP does not tell the loop what time it ended at.
+    LT1   no deadline is moved on by the time a handler blocked for.
+    LT2   a handler that blocked does not tell the loop what time it ended at.
     LT3   what a handler noted is kept for later iterations.
     LT4   an earlier time replaces a later one already noted.
+    LT5   only served connections are moved on; a handshake in flight is not (V4-332).
+    LT6   RECOVERY-ISSUE is not counted as a handler that blocks (V4-332).
+    LT7   RECOVERY-USE is not (V4-332).
 """
 import sys, pathlib
 EV = "apps/authd/evloop.c"
 LA = "apps/authd/localapi.c"
 
 M = {
-    "LT1": [(EV, "            const uint64_t served_ms = (ev->late_ms > now_ms) ? ev->late_ms : now_ms;\n",
-             "            const uint64_t served_ms = now_ms; /* MUTATION LT1 */\n")],
+    "LT1": [(EV, "            s->deadline_ms += deaf_ms;\n",
+             "            /* MUTATION LT1 */ (void)deaf_ms;\n")],
+    "LT5": [(EV, "            s->deadline_ms += deaf_ms;\n",
+             "            if (s->kind == SLOT_KIND_LOCAL || s->established) { s->deadline_ms += deaf_ms; } /* MUTATION LT5 */\n")],
+    "LT6": [(LA, "            if (table[i].fn == h_recovery_issue || table[i].fn == h_recovery_use) {\n",
+             "            if (table[i].fn == h_recovery_use) { /* MUTATION LT6 */\n")],
+    "LT7": [(LA, "            if (table[i].fn == h_recovery_issue || table[i].fn == h_recovery_use) {\n",
+             "            if (table[i].fn == h_recovery_issue) { /* MUTATION LT7 */\n")],
     "LT2": [(LA, "    evloop_note_time(app->ev, app->now_ms);   /* F619: and the loop's deadlines count from now */\n",
              "    /* MUTATION LT2 */\n")],
     "LT3": [(EV, "    ev->late_ms = 0u;                /* F619: a handler's note is for its own iteration */\n",

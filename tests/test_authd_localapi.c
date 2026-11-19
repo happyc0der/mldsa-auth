@@ -541,10 +541,12 @@ static void test_backup_refreshes_clock(void)
     uint8_t code[32];
     CHECK(h_login(&d, &c, HANDLE1, sizeof HANDLE1, &kp) == 0, "backup clock: login");
     CHECK(h_get_login_code(&d, &c, code) == 0, "backup clock: login code received");
-    const int adm = h_dial_unix(d.admin_path);
-    CHECK(adm >= 0, "backup clock: the admin socket connects");
+    const int site = h_dial_unix(d.site_path), adm = h_dial_unix(d.admin_path);
+    CHECK(site >= 0 && adm >= 0, "backup clock: both sockets connect");
 
-    char hexcode[80], ex[512], bk[1400], path[512], hexpath[1100], resp[16384];
+    char hexcode[80], ex[512], bk[1400], path[512], hexpath[1100], resp[16384], resp0[256];
+    /* Served once, so the site connection's idle deadline is a real one. */
+    CHECK(h_local_cmd(&d, site, "PING", resp0, sizeof resp0) == 0, "backup clock: the site connection is served once");
     hx(hexcode, sizeof hexcode, code, sizeof code);
     snprintf(ex, sizeof ex, "EXCHANGE code=%s state=", hexcode);
     snprintf(path, sizeof path, "%s/bkclock.bak", g_dir);
@@ -560,11 +562,15 @@ static void test_backup_refreshes_clock(void)
           "backup clock: the backup is written (the canary)");
     CHECK(g_refreshes == 1u && d.app.now_unix == t0 + (int64_t)AUTHD_LOGIN_CODE_TTL_S + 99,
           "backup clock: the daemon reads its clock again once a BACKUP has been written (F612)");
-    /* Connected now: a connection idle through a hundred seconds is closed,
-     * and rightly. */
-    const int site = h_dial_unix(d.site_path);
-    CHECK(site >= 0, "backup clock: the site socket connects");
-    CHECK(h_local_cmd(&d, site, ex, resp, sizeof resp) == 0 && starts(resp, "ERR code=expired"),
+    /* V4-332 (F623): on a connection that was open, and idle, all through
+     * the hundred seconds. They are not charged to it: the daemon read
+     * nothing meanwhile. V4-330 closed it. */
+    h_tick(&d);
+    char peek0;
+    const int site_open = (recv(site, &peek0, 1, MSG_DONTWAIT | MSG_PEEK) < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+    CHECK(site_open,
+          "backup clock: a connection that was idle while a long backup ran is not closed for it (F623)");
+    CHECK(site_open && h_local_cmd(&d, site, ex, resp, sizeof resp) == 0 && starts(resp, "ERR code=expired"),
           "backup clock: a code that expired while the backup was written is refused after it (F612)");
     /* V4-330 (F619): the loop is told too. Its idle deadline for the
      * connection that asked was counted from before the copy -- a hundred
@@ -587,6 +593,18 @@ static void test_backup_refreshes_clock(void)
         /* No other command asks: the pass's own reading is theirs. */
         CHECK(h_local_cmd(&d, adm, "LIST-USERS", resp, sizeof resp) == 0 && g_refreshes == 2u,
               "backup clock: a command that does not block leaves the clock as the pass read it (F612)");
+    }
+    /* V4-332 (F625): the recovery commands run a slow hash, up to sixteen
+     * times, and say so the same way. Asked for a user that does not exist:
+     * what is counted is the request, whatever it is answered. */
+    if (site_open) {
+        const unsigned r0 = g_refreshes;
+        CHECK(h_local_cmd(&d, site, "RECOVERY-ISSUE user=6e6f626f6479", resp, sizeof resp) == 0 && g_refreshes == r0 + 1u,
+              "backup clock: the clock is read again after a RECOVERY-ISSUE (F625)");
+        CHECK(h_local_cmd(&d, site, "RECOVERY-USE user=6e6f626f6479 code=AAAA", resp, sizeof resp) == 0 && g_refreshes == r0 + 2u,
+              "backup clock: and after a RECOVERY-USE (F625)");
+        CHECK(h_local_cmd(&d, site, "PING", resp, sizeof resp) == 0 && g_refreshes == r0 + 2u,
+              "backup clock: and not after a PING (F625)");
     }
     d.app.clock_refresh = NULL;
     (void)unlink(path);

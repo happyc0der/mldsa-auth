@@ -1539,6 +1539,23 @@ static void test_backup_path_bound(void)
                            err, sizeof err);
     CHECK(utf8_ok && rc == 2 && strstr(err, "--path is printable ASCII only") != NULL,
           "backup: a destination with a byte outside printable ASCII is usage, and says so (F345)");
+    /* V4-332 (F624): a destination in /tmp or /var/tmp is the daemon's own
+     * under the shipped unit. Said before the request goes out; and not said
+     * of a path that only begins alike. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/tmp/b.sqlite3", NULL },
+                           err, sizeof err);
+    const int tmp_said = (rc == 1 && strstr(err, "PrivateTmp") != NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/tmp/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(tmp_said && rc == 1 && strstr(err, "PrivateTmp") != NULL,
+          "backup: a destination under /tmp or /var/tmp is warned of: the daemon's is its own under the shipped unit (F624)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/tmpfiles/b.sqlite3", NULL },
+                           err, sizeof err);
+    const int alike = (strstr(err, "PrivateTmp") == NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/lib/mldsa-authd/backups/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(alike && rc == 1 && strstr(err, "PrivateTmp") == NULL,
+          "backup: and no other destination is (F624)");
 }
 
 /* V4-245, F352: authd_client options that could not take effect were dropped

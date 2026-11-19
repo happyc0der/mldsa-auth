@@ -1,0 +1,2 @@
+BW1|^test_authd_cli$|backup: a destination under /tmp or /var/tmp is warned of: the daemon's is its own under the shipped unit (F624)
+BW2|^test_authd_cli$|backup: and no other destination is (F624)

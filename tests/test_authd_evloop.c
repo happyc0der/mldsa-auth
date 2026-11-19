@@ -665,6 +665,13 @@ static void test_evloop(void)
     /* V4-330 (F619): a handler that outlasts the iteration says so, and the
      * idle deadline is counted from when the frame was served. */
     {
+        /* V4-332 (F623): a second connection, still in its handshake, whose
+         * deadline is the one accept gave it. */
+        const int c2 = dial(port);
+        CHECK(c2 >= 0, "ev: a second client connects");
+        (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 2u);
+        CHECK(slots[1].state != SLOT_FREE && slots[1].deadline_ms == 1000u + 5000u,
+              "ev: it has the handshake deadline (the canary)");
         h.note_ev = &ev; h.note_ms = 1000u + 300000u;
         uint8_t f[4 + 5];
         put_be32(f, 5); memcpy(f + 4, "block", 5);
@@ -674,7 +681,13 @@ static void test_evloop(void)
         CHECK(read(c1, back, sizeof back) == (ssize_t)sizeof back, "ev: its echo arrives");
         CHECK(slots[0].deadline_ms == 1000u + 300000u + 20000u,
               "ev: a frame whose handler outlasted the iteration re-arms the deadline from when it was served (F619)");
+        CHECK(slots[1].state != SLOT_FREE && slots[1].deadline_ms == 1000u + 5000u + 300000u,
+              "ev: a handshake in flight is not charged for the time a handler blocked either (F623)");
         h.note_ev = NULL;
+        (void)close(c2);
+        (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
+        CHECK(ev.closed_deadline == 0u && h.close_calls == 1,
+              "ev: and it is open until its peer leaves (F623)");
         /* An earlier time than one already noted changes nothing. */
         evloop_note_time(&ev, 9u);
         evloop_note_time(&ev, 5u);
@@ -696,7 +709,7 @@ static void test_evloop(void)
         (void)evloop_run_once(&ev, 0, dl);
         CHECK(evloop_active(&ev) == 0u, "ev: the connection is closed at its deadline");
         CHECK(ev.closed_deadline == 1u, "ev: the deadline close is counted");
-        CHECK(h.close_calls == 1, "ev: on_close ran for the expired slot");
+        CHECK(h.close_calls == 2, "ev: on_close ran for the expired slot");
         CHECK(slots[0].established == 0, "ev: a released slot is no longer established (V4-69)");
     }
     (void)close(c1);

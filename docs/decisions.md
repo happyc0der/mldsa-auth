@@ -21943,3 +21943,61 @@ No code, test, campaign or spec change.
 
 Counts: 783 mutations, 150 campaigns, 828 anchors; 622 findings (the 15
 above open); spec v1.109, 158 errata; 66 tests.
+
+## V4-332: what the eightieth review found (F623 to F628)
+
+**The eightieth review** read V4-330's commit, the deployment files as
+someone about to deploy would, and the rate limiter with the listener. No
+High or Medium. Two Low, four Info. The limiter, the listener and the
+configuration's defaults were found sound.
+
+- **F623 (Low).** V4-330's fix was a special case, and the review found
+  the case it left: a connection served before the backup in the same
+  pass. Every armed deadline is now moved on by the time a handler ran
+  past its pass. This is the third step on the same defect (F612, F619,
+  F623). The first two each fixed what the review had named; this one
+  fixes the cause, which is that the loop charged connections for time in
+  which it was not serving anyone.
+  - V4-330's entry argued for keeping the pass's own time in the deadline
+    check, so that a peer that wrote during the copy is read first. The
+    move keeps that and no longer needs the argument.
+  - A connection that is idle through a backup is no longer closed for
+    it. V4-330's test said it was "closed, and rightly"; it was closed,
+    and the test now holds one open through the backup and uses it.
+- **F624 (Low).** `authd_admin backup` warns of a destination under
+  `/tmp` or `/var/tmp`, which under the shipped unit is the daemon's own
+  and is deleted with the service's stop. A warning and not a refusal.
+- **F625 (Info).** The recovery commands read the clock again and tell
+  the loop, as `BACKUP` does. The unit's comment is corrected.
+- **F626 (Info), not changed.** LT3 stays.
+- **F627, F628 (Info).** Two corrections to the runbook's text.
+
+**Open for the owner, new here.**
+- F39 was accepted when the daemon served operators only: one
+  `RECOVERY-ISSUE` holds the loop for most of a second, and nothing
+  limits how many site connections ask in one pass. The review's figure is
+  about six seconds for seven, extrapolated. A budget for issuing codes,
+  or hashing outside the loop, is a design change. Recommendation: a
+  budget like `RECOVERY-USE`'s, since the site already authenticates the
+  user before it asks.
+- Whether `BACKUP` should refuse a destination outside the store's
+  directory (F624). Recommendation: no; the warning covers the case that
+  loses a backup, and operators back up to mounted volumes.
+- The review could not establish whether Caddy 2.10.2 offers browsers
+  WebSocket over HTTP/2 by extended `CONNECT` (F622). If it does, a
+  browser that takes the offer cannot log in through the documented
+  proxy. A real browser through a TLS Caddy is the test that would say;
+  nothing here runs one.
+
+Campaign v181, both KILLED by hand: BW1 (`/var/tmp` is not warned of),
+BW2 (any path beginning `/tmp` is). Campaign v180 gained LT5 (a handshake
+in flight is not moved on), LT6 and LT7 (one recovery command or the other
+is not counted), and LT1 was rewritten for the move; v179's BC2 was
+rewritten for the shared helper. All of v180's seven and v179's two were
+killed by hand afterwards.
+
+No spec change.
+
+Counts: 788 mutations, 151 campaigns, 833 anchors; 628 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585 and F609 open); spec v1.109, 158 errata; 66 tests.

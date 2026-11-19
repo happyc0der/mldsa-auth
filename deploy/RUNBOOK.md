@@ -380,7 +380,11 @@ sudo authd_admin backup \
 The daemon never writes over a file: a second backup to a name that exists
 is refused, and so is one to a directory that is not there or that the
 service may not write to. It has one word for all of these, `internal`, so
-look at the path first. For a second backup on the same day (before an
+look at the path first. Do not give it a path under `/tmp` or `/var/tmp`:
+the unit runs the daemon with those two directories of its own
+(`PrivateTmp=yes`), so the backup is written, the answer is `OK`, the file
+is not where you look for it, and it is deleted when the service stops.
+`authd_admin` warns of such a path (V4-332). For a second backup on the same day (before an
 upgrade, say) give it another name, such as `$(date +%F-%H%M).sqlite3`.
 
 The tool waits up to ten minutes for a backup (since V4-311; every other
@@ -479,6 +483,12 @@ Forwarding those lines off the host â€” your log shipper, or a mail on failure â
 is what turns them into the second trust domain; the timer only guarantees
 there is a line to forward. If your `server_id` is not `authd`, edit
 `--server-id` in the audit unit to match.
+
+The timer can fire while the store is moved aside during a restore (below)
+or between the two moves of a passphrase change (step 23). The unit then
+fails for that hour and `systemctl --failed` lists it: that is the timer
+finding no store, not a chain that does not verify. Start the audit unit
+once more when the step is finished, and read its line.
 
 **Restoring.** First prove the backup, while the store it will replace is
 still there. A backup the daemon was killed in the middle of writing has the
@@ -754,7 +764,8 @@ look people up somewhere else, or keep the system journal as close as this
 one (V4-276, F447). The same holds for the `--user` and `--handle` of steps
 20 and 21. Nothing is lost by hashing:
 the store's audit chain (step 12) records the real identifiers under every
-setting, and the rate limiter keys on the full address in memory.
+setting, and the rate limiter keys in memory on the full IPv4 address, and
+on the /64 of an IPv6 one.
 
 ## 16. Rate limits for phones
 
