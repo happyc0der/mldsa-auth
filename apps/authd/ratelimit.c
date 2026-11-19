@@ -43,10 +43,27 @@ uint64_t ratelimit_hold_ms(uint32_t per_min)
     return ((1000u + step_tok - 1u) / step_tok) * step_ms;
 }
 
-uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots)
+/* F563 (V4-320): an entry is held until its bucket is FULL again, so an
+ * address that spent k tokens holds it k hold-times, and k can be as much as
+ * the burst. The size counted one token an address. What can be live at one
+ * moment is, for each k from 1 to the burst, the addresses that spent k
+ * tokens in the k-th hold-time back: each such window has global x hold
+ * tokens to spend, k to an address. The sum is the bound; with a burst of 1
+ * it is the old figure, and at the shipped 10 it is 2.93 times it. */
+static uint64_t held_at_once(uint64_t gl, uint64_t hold_ms, uint32_t burst)
+{
+    const uint64_t b = (uint64_t)clamp_u32(burst, 1u, RATELIMIT_BURST_MAX);
+    uint64_t sum = 0;
+    for (uint64_t k = 1u; k <= b; k++) {
+        sum += (gl * hold_ms + 1000u * k - 1u) / (1000u * k);   /* rounded up */
+    }
+    return sum;
+}
+
+uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots)
 {
     const uint64_t gl = (uint64_t)clamp_u32(global_per_sec, 1u, RATELIMIT_GLOBAL_MAX);
-    const uint64_t held = (gl * ratelimit_hold_ms(per_min) + 999u) / 1000u;   /* rounded up */
+    const uint64_t held = held_at_once(gl, ratelimit_hold_ms(per_min), burst);
     uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
     /* F548 (V4-317): the global bucket also holds one second's burst, so
      * `gl` more addresses can be admitted on top of the steady `held`. The
@@ -66,9 +83,9 @@ uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uin
     return want;
 }
 
-size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots)
+size_t ratelimit_entries_for(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots)
 {
-    const uint64_t want = ratelimit_entries_wanted(per_min, global_per_sec, max_slots);
+    const uint64_t want = ratelimit_entries_wanted(per_min, burst, global_per_sec, max_slots);
     return (want > (uint64_t)RATELIMIT_ENTRIES_MAX) ? (size_t)RATELIMIT_ENTRIES_MAX : (size_t)want;
 }
 

@@ -21299,3 +21299,67 @@ No code.
 Counts: unchanged by this step (765 mutations, 143 campaigns, 810
 anchors; 562 findings, the 13 above open; spec v1.100, 147 errata; 66
 tests).
+
+## V4-320 — what the seventy-first review found (F563 to F568)
+
+The seventy-first review was an independent read of the code V4-318
+changed and of what the seventieth had not reached: the browser's flows
+path by path, the timing page and the HTML, the configuration parser, the
+rest of `authd_admin`, and spec sections 6, 10, 12 and 14 against the code.
+It found those sound. Six findings, one Low and five Info, all closed here.
+
+**F563 (Low): the limiter's table and the burst.** This is the fourth
+correction to V4-308's sizing, and the first that the shipped defaults
+reach.
+
+- An entry is kept until the bucket is full again. An address that spent k
+  tokens holds its entry k hold-times. F544, F548 and F556 each fixed a
+  term of a sum that counted one token an address.
+- The bound now: for each k from 1 to the burst, the k-th hold-time back
+  has global x hold tokens, spent k to an address. An entry live now that
+  last spent in that window needs a deficit of at least k, and so cost at
+  least k tokens. The sum over k is what can be live at once.
+- The defaults give 2,454 entries where they gave 1,024. The table's
+  storage was already sized for the ceiling, so memory does not change; a
+  refusal at a full table scans more.
+- The quarter's headroom and the global burst stay on top as before. With
+  a burst of 1 every earlier figure is unchanged, which is how the older
+  tests were kept: they pass a burst of 1, the one token their floods
+  spend.
+- Why four corrections: each was derived on paper and tested with a flood
+  shaped like the derivation. Each reviewer then built the limiter and
+  searched. The test added here runs the reviewer's own flood, at the
+  shipped rates.
+
+**The others.**
+- **F566 (Info).** `daemon-busy` for a connection the daemon did not take,
+  with a sentence saying nothing was sent. It is a new word from
+  `authd_admin`, for a case that did not exist before V4-318.
+- **F564 (Info).** A ROTATE that could not be written discards the staged
+  key and says so, as spec 10.2 already said.
+- **F565, F567, F568 (Info).** `init`'s list before the seal; the login
+  page's label when the site fails after the daemon accepted; which
+  `--check-config` prints `rate_table=`.
+
+**Reported and not confirmed, so not a finding.** The reference site's
+client connects with Node's `net.createConnection`. If Node reports
+`EAGAIN` from a Unix connect as an error at once, the site fails
+immediately during a long backup where the C tools now wait. Not run:
+it needs Node on Linux, which this machine's containers do not have.
+
+Not tested, kept here: F564's failed write, F565's race, F567's site
+failure after an accepted login. The allocation sites of F557 other than
+`checkPassphrase`'s remain untested too, as review 71 noted.
+
+Campaign v174: three mutations (BS1, BS2, BZ1). BS1 and BS2 were killed by
+hand in build-asan-p; BZ1 is a Linux-only kill, listed as one, and was
+killed in the container. Older mutations moved with this step's code and
+killed again: v166 TS1 (and TS2 to TS7 with the new figures), v82 LC5,
+v49b P1. v156 TN1 and v158 SR1 anchor on a line the new code first
+repeated; the new code was reworded so they still match once.
+
+Spec v1.101: errata 148 (17) and 149 (13).
+
+Counts: 768 mutations, 144 campaigns, 813 anchors; 568 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511 and F549
+open); spec v1.101, 149 errata; 66 tests.

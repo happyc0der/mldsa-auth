@@ -130,13 +130,18 @@ void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
  * the global bucket's one-second burst (held + global_per_sec), whichever
  * is more (F548). The sum, since both are held together (F544); never less
  * than RATELIMIT_ENTRIES. Uncapped (F338). */
-uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
+uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots);
 /* How long one connection's entry is held, in ms: the time the bucket takes
  * to refill one token in the whole steps refill() uses (F556). `held` above
  * is ceil(global_per_sec x this / 1000). */
 uint64_t ratelimit_hold_ms(uint32_t per_min);
+/* F563: `held` is summed over the burst. An entry is held until its bucket is
+ * full again, k hold-times for an address that spent k tokens, so for each k
+ * from 1 to `burst` there can be ceil(global_per_sec x hold / (1000 x k))
+ * addresses live at once; `held` is their sum. With a burst of 1 it is the
+ * figure above. */
 /* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
-size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
+size_t ratelimit_entries_for(uint32_t per_min, uint32_t burst, uint32_t global_per_sec, uint32_t max_slots);
 
 /* Admits one connection from `addr`, or says why not.
  *

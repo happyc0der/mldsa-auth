@@ -387,6 +387,10 @@ The tool waits up to ten minutes for a backup (since V4-311; every other
 command, ten seconds): the daemon copies the whole store before it answers.
 If it still says `timeout`, the daemon may be finishing the file: look at the
 destination before you retry, and check what is there with `audit-verify`.
+`daemon-busy` (since V4-320) is something else: the daemon did not take the
+connection before the wait ended, so nothing was asked of it. It is what
+any `authd_admin` command says while a long backup is running; run the
+command again when the backup is done.
 The copy is one piece of work for the daemon: nothing else is served until
 it ends, so take a large store's backup at a quiet hour. The reference site
 gives up on a request after ten seconds and answers 503. A request it gave
@@ -766,14 +770,17 @@ prefix during your busy hours is neighbours being locked out. Raising
 refused; `rate_global_per_sec` still bounds the daemon's total signing work.
 
 The limiter tracks one entry per address until that address's bucket has
-refilled, so it needs room for about `rate_global_per_sec × 60 / rate_per_min`
-of them, and for one per open connection besides (`max_slots`, since
-V4-315). The daemon sizes the table from those settings at start (since
-V4-308) and says the size: `info event=limiter-table count=1024` in the
-journal, `rate_table=` in the `--check-config` line. The most it holds is
+refilled: `60 / rate_per_min` seconds for an address that spent one token,
+and k times that for one that spent k, up to `rate_burst` (since V4-320).
+It needs room for what `rate_global_per_sec` can put there at once, and for
+one per open connection besides (`max_slots`, since V4-315). The daemon
+sizes the table from those settings at start (since V4-308) and says the
+size: `info event=limiter-table count=2454` in the journal at the shipped
+values, `rate_table=` in the line `mldsa-authd --check-config` prints
+(`authd_admin --check-config` gives the warning below and not the figure). The most it holds is
 16384; `--check-config` warns when your rates can exceed that, and past it new
 addresses get a 503. A lower `rate_per_min` needs a larger table, not a
-smaller one.
+smaller one, and so does a higher `rate_burst`.
 
 ## 17. Tell people what the browser cannot do
 

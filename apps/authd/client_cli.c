@@ -1231,6 +1231,17 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     }
     if (cs_send(&cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) {
         (void)failed(prog, "rotate", next_path, "cannot-send-rotate");
+        /* F564: a write that failed did not hand the whole record to the
+         * daemon, and the daemon cannot act on part of one (it does not
+         * authenticate). So the staged key is discarded, as spec 10.2 says
+         * of a ROTATE never handed to the transport and as the browser does.
+         * It was kept, without a word, and the next login then probed with
+         * both keys. */
+        const int unsent_gone = (unlink(next_path) == 0);
+        if (unsent_gone) {
+            fprintf(stderr, "%s rotate: ROTATE could not be sent, so the new key was never sent; "
+                            "it is not kept\n", prog);
+        }
         goto out;
     }
     if (cs_recv_for_core(&cs, rx, &m) != 0) {

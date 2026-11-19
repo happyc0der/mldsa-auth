@@ -16,3 +16,4 @@ v75 KC5 keyfile_open ignores the owner: only root can make another user's key fi
 v79 PF6 authd_secret_read ignores the owner: only root can make another user's passphrase file readable to the client
 v99 LF1 a loop that fails is staged with prlimit on the running daemon (F208): Linux has it, nothing portable does, and the leg is skipped elsewhere
 v173 NE1 a full Unix backlog answers EAGAIN on Linux only (macOS refuses the connection), so the test that stages one is compiled on Linux only (F561)
+v174 BZ1 the status of a connect that waited out a full Unix backlog: the backlog test is compiled on Linux only (F561, F566)

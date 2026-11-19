@@ -48,7 +48,10 @@ typedef enum {
     LOCALCLI_ERR_IO,
     LOCALCLI_ERR_TIMEOUT,
     LOCALCLI_ERR_TOO_LONG,    /* the request would exceed AUTHD_LINE_MAX */
-    LOCALCLI_ERR_RESPONSE     /* over LOCALCLI_RESP_MAX, or the peer closed mid-response */
+    LOCALCLI_ERR_RESPONSE,    /* over LOCALCLI_RESP_MAX, or the peer closed mid-response */
+    LOCALCLI_ERR_BUSY         /* the connection was not taken before the deadline: NOTHING was
+                               * sent (F566). Since F561 a full backlog is waited on, and that
+                               * wait ending looked the same as a reply that never came. */
 } localcli_status_t;
 
 const char *localcli_status_name(localcli_status_t st);

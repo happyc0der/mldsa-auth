@@ -19,6 +19,7 @@ const char *localcli_status_name(localcli_status_t st)
     case LOCALCLI_ERR_TIMEOUT:   return "timeout";
     case LOCALCLI_ERR_TOO_LONG:  return "request-too-long";
     case LOCALCLI_ERR_RESPONSE:  return "malformed-response";
+    case LOCALCLI_ERR_BUSY:      return "daemon-busy";
     }
     return "unknown";
 }
@@ -121,7 +122,7 @@ localcli_status_t localcli_call(const char *sock_path, const char *cmd, const ch
     net_conn_init(&conn);
     const net_status_t cs = net_connect_unix(sock_path, deadline, &conn);
     if (cs != NET_OK) {
-        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_TIMEOUT : LOCALCLI_ERR_CONNECT;
+        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_BUSY : LOCALCLI_ERR_CONNECT;
     }
     if (net_write_all(&conn, (const uint8_t *)req, (size_t)rn, deadline) != NET_OK) {
         net_close(&conn);

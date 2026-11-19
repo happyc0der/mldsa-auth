@@ -2,6 +2,6 @@ TS1|^test_authd_ws$|limiter size: rate_per_min = 2 holds 1500 addresses and gets
 TS2|^test_authd_ws$|limiter size: rate_per_min = 2 holds 1500 addresses and gets 1875 entries (F338)
 TS3|^test_authd_ws$|limiter size: 750256 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)
 TS4|^test_authd_ws$|limiter size: the slots are added to the rate's share, not compared with it: 4096 + 750, 256 + 1875 (F544)
-TS5|^authd_e2e$|a daemon at rate_per_min = 2 did not size its limiter table at 2131 (F338)
-TS6|^authd_e2e$|--check-config did not warn that 750256 addresses exceed the 16384-entry table, and pass (F338)
+TS5|^authd_e2e$|a daemon at rate_per_min = 2 did not size its limiter table at 9059 (F338)
+TS6|^authd_e2e$|--check-config did not warn that 3510183 addresses exceed the 16384-entry table, and pass (F338)
 TS7|^test_authd_ws$|limiter size: a 1875-entry table admits 1875 distinct addresses and refuses the next 8 (F338)

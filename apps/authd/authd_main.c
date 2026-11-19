@@ -247,7 +247,7 @@ int main(int argc, char **argv)
                cfg.proxy_protocol_v2 ? "v2" : "none", cfg.rate_per_min,
                cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr,
                cfg.proxy_protocol_v2
-                   ? ratelimit_entries_for(cfg.rate_per_min, cfg.rate_global_per_sec, cfg.max_slots)
+                   ? ratelimit_entries_for(cfg.rate_per_min, cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_slots)
                    : (size_t)0u,
                authd_log_ids_name(cfg.log_identities), authd_log_ip_name(cfg.log_client_ip));
         return 0;
@@ -416,7 +416,7 @@ int main(int argc, char **argv)
      * early exits. Only the entries the configuration asks for are touched. */
     static ratelimit_entry_t limiter_table[RATELIMIT_ENTRIES_MAX];
     if (cfg.proxy_protocol_v2) {
-        const size_t table_n = ratelimit_entries_for(cfg.rate_per_min, cfg.rate_global_per_sec,
+        const size_t table_n = ratelimit_entries_for(cfg.rate_per_min, cfg.rate_burst, cfg.rate_global_per_sec,
                                                      cfg.max_slots);
         ratelimit_init(&limiter, limiter_table, table_n,
                        cfg.rate_per_min, cfg.rate_burst,

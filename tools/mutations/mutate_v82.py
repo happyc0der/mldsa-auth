@@ -33,8 +33,8 @@ M = {
                  "            result = (got > 0u) ? LOCALCLI_OK /* MUTATION LC3: a truncation accepted */\n")],
     "LC4": [(LC, "        if (pr == 0) {\n            result = LOCALCLI_ERR_TIMEOUT;\n",
                  "        if (pr == 0) {\n            result = LOCALCLI_ERR_IO; /* MUTATION LC4: a timeout called an I/O error */\n")],
-    "LC5": [(LC, "        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_TIMEOUT : LOCALCLI_ERR_CONNECT;\n",
-                 "        return LOCALCLI_ERR_TIMEOUT; /* MUTATION LC5: every connect failure a timeout */\n")],
+    "LC5": [(LC, "        return (cs == NET_TIMEOUT) ? LOCALCLI_ERR_BUSY : LOCALCLI_ERR_CONNECT;\n",
+                 "        return LOCALCLI_ERR_BUSY; /* MUTATION LC5: every connect failure a wait that ended */\n")],
     "LC6": [(LC, "    if ((size_t)rn > AUTHD_LINE_MAX) {\n",
                  "    if ((size_t)rn >= AUTHD_LINE_MAX) { /* MUTATION LC6: the cap one byte early */\n")],
 }

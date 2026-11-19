@@ -1,0 +1,3 @@
+BS1|^test_authd_ws$|limiter size: an address that spends k tokens holds its entry k times as long, and the burst is summed (F563)
+BS2|^test_authd_ws$|limiter size: an address that spends k tokens holds its entry k times as long, and the burst is summed (F563)
+BZ1|^test_authd_cli$|backlog: authd_admin's call to a full backlog is daemon-busy, not timeout: nothing was sent (F566)

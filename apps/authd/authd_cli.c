@@ -267,7 +267,8 @@ static int cmd_init(int argc, char **argv, const char *prog)
     size_t pass_len = 0;
     int rc = read_pass(prog, "init", pass_path, &pass, &pass_len);
     if (rc != EX_OK) {
-        init_leftovers(prog, pass_path, ek, pub, db);
+        /* F565: the seal has not run, so a key at `ek` is not this run's. */
+        init_leftovers(prog, pass_path, NULL, pub, db);
         return rc;
     }
 
@@ -581,6 +582,15 @@ static int local_call(const char *prog, const char *sub, const char *sock,
         fprintf(stderr, "%s %s: %s: %s\n", prog, sub, sock, localcli_status_name(st));
         if (st == LOCALCLI_ERR_TIMEOUT && authd_cli_timeout_hint(cmd) != NULL) {
             fprintf(stderr, "%s %s: %s\n", prog, sub, authd_cli_timeout_hint(cmd));   /* F533 */
+        }
+        /* F566: the wait for the daemon to TAKE the connection ended. That
+         * is not a reply that never came: nothing was sent, so nothing can
+         * have been done, and the hint above (the daemon may still be
+         * writing the backup) would be false. */
+        if (st == LOCALCLI_ERR_BUSY) {
+            fprintf(stderr, "%s %s: the daemon did not take the connection in time: it is busy (a backup "
+                            "copies the whole store before anything else is served). Nothing was sent; "
+                            "run this again when it is done\n", prog, sub);
         }
         /* F445: `cannot-connect` was all a user outside the socket's
          * permissions was told, word for word what a stopped daemon gives.
@@ -1100,15 +1110,15 @@ int authd_cli_config_warnings(const authd_config_t *cfg, const char *prog)
     /* F338: the limiter's table is sized from these settings, to a ceiling;
      * say so when the ceiling is what will refuse. */
     if (cfg->proxy_protocol_v2) {
-        const uint64_t held = ratelimit_entries_wanted(cfg->rate_per_min, cfg->rate_global_per_sec,
+        const uint64_t held = ratelimit_entries_wanted(cfg->rate_per_min, cfg->rate_burst, cfg->rate_global_per_sec,
                                                        cfg->max_slots);
         if (held > (uint64_t)RATELIMIT_ENTRIES_MAX) {
             fprintf(stderr,
-                    "%s: warning: rate_global_per_sec = %u, rate_per_min = %u and max_slots = %u can "
-                    "hold %llu addresses at once and the limiter's table holds %u: past that, new "
-                    "addresses are refused limiter-table-full. Raise rate_per_min or lower "
-                    "rate_global_per_sec (F338).\n",
-                    prog, cfg->rate_global_per_sec, cfg->rate_per_min, cfg->max_slots,
+                    "%s: warning: rate_global_per_sec = %u, rate_per_min = %u, rate_burst = %u and "
+                    "max_slots = %u can hold %llu addresses at once and the limiter's table holds %u: "
+                    "past that, new addresses are refused limiter-table-full. Raise rate_per_min, or "
+                    "lower rate_global_per_sec or rate_burst (F338).\n",
+                    prog, cfg->rate_global_per_sec, cfg->rate_per_min, cfg->rate_burst, cfg->max_slots,
                     (unsigned long long)held, (unsigned)RATELIMIT_ENTRIES_MAX);
             said++;
         }

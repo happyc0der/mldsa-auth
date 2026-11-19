@@ -1059,21 +1059,21 @@ static void test_ratelimit(void)
      * every slot besides (F544: the open connections and the refilling
      * buckets are held together); never less than 1024, nor more than the
      * ceiling. The first seven are with no slots, so the rate's share shows. */
-    CHECK(ratelimit_entries_for(5u, 50u, 0u) == 1024u && ratelimit_entries_for(5u, 50u, 256u) == 1024u,
+    CHECK(ratelimit_entries_for(5u, 1u, 50u, 0u) == 1024u && ratelimit_entries_for(5u, 1u, 50u, 256u) == 1024u,
           "limiter size: the defaults (600 held, 750 with headroom, 256 slots) keep the 1024-entry table (F338)");
-    CHECK(ratelimit_entries_for(2u, 50u, 0u) == 1875u,
+    CHECK(ratelimit_entries_for(2u, 1u, 50u, 0u) == 1875u,
           "limiter size: rate_per_min = 2 holds 1500 addresses and gets 1875 entries (F338)");
-    CHECK(ratelimit_entries_for(5u, 100u, 0u) == 1500u,
+    CHECK(ratelimit_entries_for(5u, 1u, 100u, 0u) == 1500u,
           "limiter size: rate_global_per_sec = 100 holds 1200 and gets 1500 entries (F338)");
-    CHECK(ratelimit_entries_for(5u, 50u, 4096u) == 4846u && ratelimit_entries_for(2u, 50u, 256u) == 2131u,
+    CHECK(ratelimit_entries_for(5u, 1u, 50u, 4096u) == 4846u && ratelimit_entries_for(2u, 1u, 50u, 256u) == 2131u,
           "limiter size: the slots are added to the rate's share, not compared with it: 4096 + 750, 256 + 1875 (F544)");
-    CHECK(ratelimit_entries_for(5u, 50u, 1024u) == 1774u,
+    CHECK(ratelimit_entries_for(5u, 1u, 50u, 1024u) == 1774u,
           "limiter size: 1024 slots held by 1024 addresses leave the rate's 750 entries free (F544)");
     /* F548: past rate_per_min = 15 the global bucket's one-second burst is
      * more than the quarter. 30 a minute at 100 a second: 200 held, 250 with
      * the quarter, 300 with the burst. 15 is where the two meet. */
-    CHECK(ratelimit_entries_wanted(30u, 100u, 1024u) == 1324u && ratelimit_entries_wanted(30u, 1000u, 256u) == 3256u &&
-          ratelimit_entries_wanted(15u, 1000u, 0u) == 5000u && ratelimit_entries_wanted(16u, 1000u, 0u) == 4750u,
+    CHECK(ratelimit_entries_wanted(30u, 1u, 100u, 1024u) == 1324u && ratelimit_entries_wanted(30u, 1u, 1000u, 256u) == 3256u &&
+          ratelimit_entries_wanted(15u, 1u, 1000u, 0u) == 5000u && ratelimit_entries_wanted(16u, 1u, 1000u, 0u) == 4750u,
           "limiter size: the global bucket's burst is counted when it is more than the quarter (F548)");
     /* F556 (V4-318): the hold is the refill's, in its whole steps. 7 a
      * minute is 7 milli-tokens every 60 ms: 143 steps, 8580 ms, not 8571.4. */
@@ -1082,13 +1082,13 @@ static void test_ratelimit(void)
           "limiter hold: a rate that divides the minute holds an entry 60000 / rate ms (the canary)");
     CHECK(ratelimit_hold_ms(7u) == 8580u && ratelimit_hold_ms(17u) == 3540u && ratelimit_hold_ms(9973u) == 60u,
           "limiter hold: a rate that does not divide holds it until the refill's next whole step (F556)");
-    CHECK(ratelimit_entries_for(7u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 0u) == 10725u &&
-          ratelimit_entries_wanted(17u, 1000u, 0u) == 4540u,
+    CHECK(ratelimit_entries_for(7u, 1u, 50u, 0u) == 1024u && ratelimit_entries_wanted(7u, 1u, 1000u, 0u) == 10725u &&
+          ratelimit_entries_wanted(17u, 1u, 1000u, 0u) == 4540u,
           "limiter size: a rate that does not divide is sized from that hold (8580 held, 10725 wanted; 4540 at 17) (F556)");
-    CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750256u &&
-          ratelimit_entries_for(1u, 10000u, 256u) == 16384u,
+    CHECK(ratelimit_entries_wanted(1u, 1u, 10000u, 256u) == 750256u &&
+          ratelimit_entries_for(1u, 1u, 10000u, 256u) == 16384u,
           "limiter size: 750256 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)");
-    CHECK(ratelimit_entries_for(0u, 0u, 0u) == 1024u,
+    CHECK(ratelimit_entries_for(0u, 1u, 0u, 0u) == 1024u,
           "limiter size: zero rates are clamped, not divided by (F338)");
     /* ...and the table the limiter is GIVEN is the one it fills: 1875
      * entries admit 1875 distinct addresses where 1024 admitted 1024. */
@@ -1111,7 +1111,7 @@ static void test_ratelimit(void)
      * once. Sized as the larger of the two (1024), the table was full at the
      * first of them. Time is 20 ms a connection, the global rate exactly. */
     { static ratelimit_entry_t both[2048];
-      const size_t nb = ratelimit_entries_for(5u, 50u, 1024u);
+      const size_t nb = ratelimit_entries_for(5u, 1u, 50u, 1024u);
       size_t admitted = 0;
       uint64_t t_ms = 0;
       authd_addr_t c = { 4u, { 10u, 9u, 0u, 0u } };
@@ -1132,7 +1132,7 @@ static void test_ratelimit(void)
      * 1000 and the 2000 since are all in the table. The quarter alone gave
      * 2500 entries, and the table was full with tokens to spare. */
     { static ratelimit_entry_t burst[3072];
-      const size_t nb = ratelimit_entries_for(30u, 1000u, 0u);
+      const size_t nb = ratelimit_entries_for(30u, 1u, 1000u, 0u);
       size_t admitted = 0;
       authd_addr_t c = { 4u, { 10u, 7u, 0u, 0u } };
       if (nb <= 3072u) {
@@ -1149,7 +1149,7 @@ static void test_ratelimit(void)
      * and not 60000 / 17. Sized from the quotient the table was 4530 and ten
      * addresses were refused for it at 3.53 s. */
     { static ratelimit_entry_t odd[4608];
-      const size_t nb = ratelimit_entries_for(17u, 1000u, 0u);
+      const size_t nb = ratelimit_entries_for(17u, 1u, 1000u, 0u);
       size_t admitted = 0;
       authd_addr_t c = { 4u, { 10u, 6u, 0u, 0u } };
       if (nb <= 4608u) {
@@ -1162,6 +1162,40 @@ static void test_ratelimit(void)
       }
       CHECK(nb == 4540u && admitted == 5000u && r.denied_table == 0u,
             "limiter size: at a rate that does not divide the minute the flood still finds room (F556)"); }
+    /* F563 (V4-320): the burst. An entry is held until its bucket is full
+     * again, so an address that spent k tokens holds it k hold-times. The
+     * figures: at the shipped 5 a minute, burst 10 and 50 a second, 600 are
+     * held by one token each, and 1758 when every k from 1 to 10 is spent. */
+    CHECK(ratelimit_entries_wanted(5u, 10u, 50u, 0u) == 2198u && ratelimit_entries_for(5u, 10u, 50u, 256u) == 2454u &&
+          ratelimit_entries_wanted(15u, 2u, 1000u, 0u) == 7500u && ratelimit_entries_wanted(5u, 2u, 50u, 0u) == 1125u,
+          "limiter size: an address that spends k tokens holds its entry k times as long, and the burst is summed (F563)");
+    /* ... and the flood that needs it, at the shipped rates. For ten
+     * hold-times of 12 s, the whole global budget is spent k tokens to an
+     * address, k from 10 down to 1, so that every entry is still held when
+     * the last is made. Sized for one token an address the table was 1024
+     * and was full at 102 s. */
+    { static ratelimit_entry_t harm[2560];
+      const size_t nb = ratelimit_entries_for(5u, 10u, 50u, 0u);
+      size_t asked = 0, allowed = 0, addrs = 0;
+      uint64_t t_ms = 0;
+      authd_addr_t c = { 4u, { 10u, 5u, 0u, 0u } };
+      if (nb <= 2560u) {
+          ratelimit_init(&r, harm, nb, 5u, 10u, 50u, 4u, 0u);
+          for (uint32_t k = 10u; k >= 1u; k--) {
+              const uint64_t period_end = (uint64_t)(11u - k) * 12000u;
+              while (t_ms + (uint64_t)k * 20u <= period_end) {
+                  t_ms += (uint64_t)k * 20u;             /* k tokens of the global 50 a second */
+                  c.addr[2] = (uint8_t)(addrs >> 8); c.addr[3] = (uint8_t)addrs;
+                  addrs++;
+                  for (uint32_t i = 0; i < k; i++) {
+                      asked++;
+                      if (ratelimit_admit(&r, &c, t_ms) == RATELIMIT_ALLOW) { allowed++; ratelimit_release(&r, &c); }
+                  }
+              }
+          }
+      }
+      CHECK(nb == 2198u && addrs > 1700u && allowed == asked && r.denied_table == 0u,
+            "limiter size: the shipped rates, spent a burst to an address, still find room in the table (F563)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

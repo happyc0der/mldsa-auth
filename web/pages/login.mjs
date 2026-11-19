@@ -75,12 +75,12 @@ action('go', async () => {
     const sess = await session();
     const s = await flows.login(client, store, loginParams(sess, chosen, passphrase), (e) => events.push(e));
     const code = b64url(s.code);
-    await s.close();
-    // THE HAND-OFF: the code travels in a same-origin POST body, never a URL.
-    const me = await post('/api/login', { code });
     // V4-293, F494: a login the daemon accepted confirms the key (F220), and
     // the list says so: it kept "(enrollment not confirmed)" and offered to
     // forget a key the account now uses, warning that the site never had it.
+    // F567: done here, as soon as the daemon has accepted the key, and not
+    // after the hand-off below: a site that failed to take the code left the
+    // key marked unconfirmed though the store no longer said so.
     const now = await store.get(chosen).catch(() => null);
     const shown = shownAtStart;
     if (now && now.unconfirmed !== true && shown && shown.dataset.unconfirmed === '1') {
@@ -88,6 +88,11 @@ action('go', async () => {
       delete shown.dataset.unconfirmed;
       offer();
     }
+    // The daemon has issued the code: a BYE that cannot be sent must not
+    // keep it from the site (F567).
+    await s.close().catch(() => {});
+    // THE HAND-OFF: the code travels in a same-origin POST body, never a URL.
+    const me = await post('/api/login', { code });
     report(true, `Logged in as ${typeof me.user === 'string' ? me.user : '(the site did not say)'}` +
                  (events.length ? ` (${events.join('; ')})` : ''));
   } catch (e) {

@@ -2480,6 +2480,14 @@ static void test_unix_backlog_full(void)
     CHECK(busy == NET_TIMEOUT && waited >= 250u,
           "backlog: a connect to a full backlog waits for its deadline and is a timeout, not an I/O error (F561)");
     if (busy == NET_OK) { net_close(&conn); }
+    /* F566 (V4-320): and the administrator's tool says which wait ended.
+     * `timeout` is a request that was sent and not answered; here nothing
+     * was sent, and the status says so. */
+    { char out[64];
+      size_t on = 0;
+      const localcli_status_t ls = localcli_call(sp, "PING", NULL, 300u, out, sizeof out, &on);
+      CHECK(ls == LOCALCLI_ERR_BUSY && strcmp(localcli_status_name(ls), "daemon-busy") == 0,
+            "backlog: authd_admin's call to a full backlog is daemon-busy, not timeout: nothing was sent (F566)"); }
     /* The listener takes one: there is room, and the same call connects. */
     const int got = accept(ls, NULL, NULL);
     const net_status_t then = net_connect_unix(sp, net_deadline_in(2000u), &conn);
