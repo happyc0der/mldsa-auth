@@ -21914,3 +21914,32 @@ Spec v1.109: erratum 158 (7.1).
 Counts: 783 mutations, 150 campaigns, 828 anchors; 622 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585 and F609 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-331: cleanup after V4-329 and V4-330
+
+- `docs/review/REPRODUCE.md` now cites the runs on `4e24603` (V4-327,
+  main since 2026-11-19): CI 44575076384 (16/16) and nightly 44575081252
+  (163/163, 148 campaigns), each on its first attempt. V4-322 to V4-327
+  landed together on them.
+- V4-329's nightly (44586824011) was cancelled while queued, when V4-330
+  was pushed: V4-330's runs everything it would have. V4-328 has no
+  nightly of its own for the same reason.
+- `tests/caddy_proxy.sh` can be run on a developer's machine again: the
+  two steps before this one ran it three times in its container, about
+  thirteen minutes each with the dependency volume in place. V4-327's
+  entry says its test "runs in CI only"; that was true of that step, not
+  of the test.
+- The lesson of V4-329's F615, for the record: a remedy taken from a
+  tool's documentation was wrong (`path_regexp` cleans the path too), and
+  the test written for it, run against the real tool, said so before the
+  commit. The review that proposed it had marked it unconfirmed.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585 and F609 (DR3). Also open: whether F420's overlap should
+  be refused rather than warned of, and the questions in V4-246's,
+  V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and V4-300's entries.
+
+No code, test, campaign or spec change.
+
+Counts: 783 mutations, 150 campaigns, 828 anchors; 622 findings (the 15
+above open); spec v1.109, 158 errata; 66 tests.
