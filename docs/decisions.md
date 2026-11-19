@@ -22051,3 +22051,35 @@ No spec change.
 Counts: 793 mutations, 151 campaigns, 838 anchors; 632 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585 and F609 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-334: cleanup after V4-332 and V4-333
+
+- `docs/review/REPRODUCE.md` now cites the runs main stands on: CI
+  44592922422 on `e071824` (V4-331, main since 2026-11-19; 16/16) and
+  nightly 44592213328 on `fabb92d` (V4-330; 165/165, 150 campaigns), each
+  on its first attempt. V4-328 to V4-331 landed together on them. V4-331
+  changed documents only, and has no nightly of its own.
+- V4-332's nightly (44598129837) was cancelled while queued, when V4-333
+  was pushed: V4-333's runs everything it would have.
+- Four steps in a row (V4-329, V4-330, V4-332, V4-333) were about what a
+  handler that blocks does to the loop's time, each found by the review of
+  the one before. V4-333's entry says what is left is the design: one
+  loop, and handlers that block it. The questions that follow from that
+  are the owner's and are listed below; no further step is planned on the
+  loop's time without an answer, unless a review finds a defect in what is
+  there.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585 and F609 (DR3). Also open, in the entries named:
+  whether F420's overlap should be refused rather than warned of; the
+  questions in V4-246's, V4-274's, V4-281's, V4-284's, V4-285's, V4-291's
+  and V4-300's entries; a budget for `RECOVERY-ISSUE` (F39, F625, F630),
+  whether `BACKUP` should refuse a destination outside the store's
+  directory (F624), and whether Caddy offers browsers WebSocket over
+  HTTP/2 (F622), in V4-332's; whether the pending ledger's lifetime
+  should be extended by time the daemon was blocked (F629), in V4-333's.
+
+No code, test, campaign or spec change.
+
+Counts: 793 mutations, 151 campaigns, 838 anchors; 632 findings (the 15
+above open); spec v1.109, 158 errata; 66 tests.
