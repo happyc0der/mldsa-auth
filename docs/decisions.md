@@ -22083,3 +22083,44 @@ No code, test, campaign or spec change.
 
 Counts: 793 mutations, 151 campaigns, 838 anchors; 632 findings (the 15
 above open); spec v1.109, 158 errata; 66 tests.
+
+## V4-335: what the eighty-second review found (F633 to F638)
+
+**The eighty-second review** read V4-333's commit, the client's half of
+the handshake with everything that calls it (the command-line client, the
+WebAssembly module and its JavaScript), the transcript and framing code,
+and the store's SQL. No High or Medium. Two Low, four Info. The handshake's
+initiator, the transcript, the framing and every statement of the store
+were found sound: no SQL is built from input, every multi-statement
+operation rolls back on every failing step, and nothing a server sends is
+used before it is checked, with the one exception of F635.
+
+- **F633 (Low).** `/var/run` and `/var/lock` are warned of as `/run` is.
+- **F634 (Info), being measured.** Whether `/dev/shm` is writable to the
+  daemon under the shipped unit was not known to the review or to this
+  step. It is not guessed: the rehearsal now measures it, with the four
+  places the runbook and the warnings do make claims about, and those four
+  are asserted. V4-332 and V4-333 wrote those claims from systemd's
+  documentation; the rehearsal on this step's CI run is the first time
+  they are checked against a host. If it fails, the claim is wrong and the
+  step after this corrects it.
+- **F635 (Info).** The client bounds the number it prints.
+- **F636 (Info), open with F585.**
+- **F637 (Info).** The test's gaps are closed.
+- **F638 (Info).** The browser session bounds what it holds.
+
+Campaign v182, all KILLED by hand: SL1 (the number is not capped), SL2 (a
+clock before 1970 is read as a very large time), SL3 (an expiry in the
+past is subtracted). Campaign v181 gained BW7 (`/var/run` is not warned
+of) and BW8 (any path beginning `/var/lock` is), and BW3 and BW6 were
+re-anchored; all eight of v181 were killed by hand afterwards.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, all KILLED: Q1, a message is not measured where it arrives;
+Q2, four thousand may wait; Q3, only three may.
+
+No spec change.
+
+Counts: 798 mutations, 152 campaigns, 843 anchors; 638 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609 and F636 open); spec v1.109, 158 errata; 66 tests.

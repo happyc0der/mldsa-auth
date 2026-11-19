@@ -1086,8 +1086,8 @@ static int cmd_client_login(int argc, char **argv, const char *prog)
     if ((cs.code.flags & AUTHMSG_FLAG_ROTATION_DUE) != 0u) {
         fprintf(stderr, "%s login: this key is due for rotation -- run `%s rotate`\n", prog, prog);
     }
-    fprintf(stderr, "%s login: code valid for %lld more seconds; single use\n", prog,
-            (long long)cs.code.code_expires - (long long)time(NULL));
+    fprintf(stderr, "%s login: code valid for %llu more seconds; single use\n", prog,
+            (unsigned long long)cc_seconds_left(cs.code.code_expires, (int64_t)time(NULL)));
     client_say_bye(&cs);
     return EX_OK;
 }

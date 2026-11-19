@@ -200,6 +200,7 @@ export class AuthdClient {
 
 // What a text message is queued as: feed() answers it as a frame error.
 const BAD_FRAME = Symbol('bad-frame');
+const QUEUE_MAX = 4;
 
 export class Session {
   constructor(client, h, frame, cap, outLen, tick, timeoutMs) {
@@ -209,6 +210,7 @@ export class Session {
     this.waiters = [];
     this.ws = null;
     this.closed = false;
+    this.flooded = false;
   }
 
   // Bounded by the same timeout as each frame (V4-187, F264). A socket that
@@ -229,14 +231,35 @@ export class Session {
       // The daemon sends binary messages only (spec 7.1). A text message
       // arrives as a string, and `new Uint8Array("2000000000")` is two
       // billion zero bytes: it is a frame error where it arrives (F313).
-      ws.onmessage = (ev) => this.wake(typeof ev.data === 'string' ? BAD_FRAME : new Uint8Array(ev.data));
+      ws.onmessage = (ev) => this.onMessage(ev.data);
       this.ws = ws;
     });
   }
 
+  // F638 (V4-335): what arrives is bounded where it ARRIVES. The size check
+  // of F305 is in feed(), where a message is used; one that nothing was
+  // waiting for was copied and kept whatever its size, and so was the next,
+  // for as long as the peer went on sending. A message larger than a frame
+  // is a frame error without being copied.
+  onMessage(data) {
+    this.wake(typeof data === 'string' || data.byteLength > this.cap ? BAD_FRAME : new Uint8Array(data));
+  }
+
+  // The protocol is one message for one message: the daemon never has more
+  // than two on the way that the page has not asked for (a reply, and its
+  // close). A peer with more than QUEUE_MAX waiting is not speaking it: what
+  // is held is dropped for one frame error, and the socket is closed.
   wake(msg) {
     const w = this.waiters.shift();
-    if (w) { w(msg); } else { this.queue.push(msg); }
+    if (w) { w(msg); return; }
+    if (this.flooded) { return; }
+    if (msg !== null && this.queue.length >= QUEUE_MAX) {
+      this.flooded = true;
+      this.queue = [BAD_FRAME];
+      try { this.ws?.close(); } catch { /* gone */ }
+      return;
+    }
+    this.queue.push(msg);
   }
 
   next() {

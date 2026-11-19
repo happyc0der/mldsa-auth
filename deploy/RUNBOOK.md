@@ -384,7 +384,8 @@ look at the path first. Do not give it a path under `/tmp` or `/var/tmp`:
 the unit runs the daemon with those two directories of its own
 (`PrivateTmp=yes`), so the backup is written, the answer is `OK`, the file
 is not where you look for it, and it is deleted when the service stops.
-`authd_admin` warns of such a path (V4-332). Nor under `/run`: the
+`authd_admin` warns of such a path (V4-332). Nor under `/run` (or
+`/var/run`, which is the same directory): the
 service's own directory there is writable, and systemd removes it whenever
 the service stops or restarts, so a backup taken there before an upgrade is
 gone at the upgrade's restart. The tool warns of that too (V4-333). Any

@@ -1557,8 +1557,13 @@ static void test_backup_path_bound(void)
     CHECK(alike && rc == 1 && strstr(err, "PrivateTmp") == NULL && strstr(err, "/run is not kept") == NULL,
           "backup: and no other destination is (F624)");
     /* V4-333 (F631): by where the path leads, not how it is spelled. */
+    /* F637 (V4-335): `/../tmp` -- a `..` above the root stays at the root,
+     * and a version that stepped back past the start of its buffer passed
+     * every other path here. `/tmp/../tmp` was in this list and proved
+     * nothing: as spelled it begins /tmp/ already. */
     { static const char *const SPELT[] = { "//tmp/b.sqlite3", "/./tmp/b.sqlite3", "/var//tmp/b.sqlite3",
-                                           "/var/./tmp/b.sqlite3", "/tmp/../tmp/b.sqlite3", "/var/lib/../tmp/b.sqlite3" };
+                                           "/var/./tmp/b.sqlite3", "/../tmp/b.sqlite3", "/var/lib/../tmp/b.sqlite3",
+                                           "/x/../../var/y/../tmp/b.sqlite3" };
       int all = 1;
       for (size_t i = 0; i < sizeof SPELT / sizeof SPELT[0]; i++) {
           rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", (char *)SPELT[i], NULL },
@@ -1576,6 +1581,19 @@ static void test_backup_path_bound(void)
                            err, sizeof err);
     CHECK(rc == 1 && strstr(err, "/run is not kept") != NULL && strstr(err, "PrivateTmp") == NULL,
           "backup: a destination under /run is warned of: it is removed when the service stops (F631)");
+    /* V4-335 (F633): /var/run is /run on a host with systemd, and /var/lock
+     * is /run/lock. */
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/run/mldsa-authd/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(rc == 1 && strstr(err, "/run is not kept") != NULL,
+          "backup: /var/run is /run, and is warned of (F633)");
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/lock/b.sqlite3", NULL },
+                           err, sizeof err);
+    const int lock_said = (rc == 1 && strstr(err, "/run is not kept") != NULL);
+    rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/var/locks/b.sqlite3", NULL },
+                           err, sizeof err);
+    CHECK(lock_said && rc == 1 && strstr(err, "warning") == NULL,
+          "backup: /var/lock is /run/lock, and is warned of; /var/locks is not (F633)");
     rc = run_admin_capture((char *[]){ "authd_admin", "backup", "--socket", sock, "--path", "/runs/b.sqlite3", NULL },
                            err, sizeof err);
     CHECK(rc == 1 && strstr(err, "warning") == NULL,

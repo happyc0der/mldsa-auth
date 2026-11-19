@@ -959,6 +959,43 @@ try {
             `send: on a socket that is ${state === 2 ? 'closing' : 'closed'} nothing is counted as sent, and the caller is told (sent ${shut.s.sent}) (F354)`);
     } }
 
+  // V4-335 (F638): messages nobody was waiting for are bounded as they
+  // arrive, in size and in number.
+  { const mk = () => {
+      const ws = { readyState: 1, closes: 0, close() { this.closes += 1; } };
+      const s = new Session({ M: { HEAPU8: new Uint8Array(16) }, u32: () => 4 }, 0, 0, 16, 0, () => {}, 1000);
+      s.ws = ws;
+      return { s, ws };
+    };
+    const two = mk();
+    two.s.onMessage(new Uint8Array([1]).buffer);
+    two.s.onMessage(new Uint8Array([2]).buffer);
+    const a = await two.s.next(), b = await two.s.next();
+    check(a instanceof Uint8Array && a[0] === 1 && b instanceof Uint8Array && b[0] === 2 && two.ws.closes === 0,
+          'queue: two messages that arrive before they are asked for are kept, in order (the control)');
+    const big = mk();
+    big.s.onMessage(new ArrayBuffer(17));
+    check(big.s.queue.length === 1 && typeof big.s.queue[0] === 'symbol',
+          'queue: a message larger than a frame is a frame error where it arrives, and is not copied (F638)');
+    big.s.queue = [];
+    big.s.onMessage(new ArrayBuffer(16));
+    check(big.s.queue.length === 1 && big.s.queue[0] instanceof Uint8Array && big.s.queue[0].length === 16,
+          'queue: one of exactly a frame is kept (F638)');
+    const many = mk();
+    for (let i = 0; i < 1000; i++) { many.s.onMessage(new Uint8Array([i & 255]).buffer); }
+    const held = many.s.queue.length;
+    const first = await many.s.next();
+    check(held === 1 && typeof first === 'symbol' && many.ws.closes === 1,
+          `queue: a peer that sends a thousand messages nobody asked for is held to one frame error and closed once (${held} held, ${many.ws.closes} closes) (F638)`);
+    const four = mk();
+    for (let i = 0; i < 4; i++) { four.s.onMessage(new Uint8Array([i]).buffer); }
+    check(four.s.queue.length === 4 && four.ws.closes === 0 && four.s.queue.every((m) => m instanceof Uint8Array),
+          'queue: four waiting is still within the bound (F638)');
+    four.s.onMessage(new Uint8Array([9]).buffer);
+    four.s.wake(null);
+    check(four.s.queue.length === 1 && four.ws.closes === 1,
+          'queue: the fifth is the flood, and the close that follows adds nothing (F638)'); }
+
   // V4-281, F460: a ROTATE that never left the page cannot have been
   // committed, so the staged key goes -- as when no session was opened
   // (F235). Here the socket closes after the rotation's login and before

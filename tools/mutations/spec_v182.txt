@@ -1,0 +1,3 @@
+SL1|^test_client_core$|left: an expiry no signed number holds, and any more than a day away, is a day (F635)
+SL2|^test_client_core$|left: a clock before 1970 is taken as 1970, not as a number above every expiry (F635)
+SL3|^test_client_core$|left: sixty seconds ahead is 60; now, a second ago and zero are 0 (F635)

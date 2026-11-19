@@ -862,7 +862,7 @@ static void backup_path_as_resolved(const char *path, char *out, size_t cap)
             continue;
         }
         if (n + 1u + len + 1u > cap) {
-            break;
+            break;                       /* cannot be: what is kept is never longer than the path (F637) */
         }
         out[n++] = '/';
         memcpy(out + n, seg, len);
@@ -927,7 +927,10 @@ static int cmd_backup(int argc, char **argv, const char *prog)
         fprintf(stderr, "%s backup: warning: under the shipped service unit the daemon has a /tmp and a /var/tmp "
                         "of its own (PrivateTmp): a backup written there is not at this path for you, and is "
                         "deleted when the service stops. Use the store's backups/ directory\n", prog);
-    } else if (strncmp(seen, "/run/", 5u) == 0) {
+    } else if (strncmp(seen, "/run/", 5u) == 0 || strncmp(seen, "/var/run/", 9u) == 0 ||
+               strncmp(seen, "/var/lock/", 10u) == 0) {
+        /* F633: /var/run is /run, and /var/lock is /run/lock, on every host
+         * that has systemd: links this tool cannot see from here. */
         fprintf(stderr, "%s backup: warning: /run is not kept: the service's runtime directory is removed "
                         "whenever the service stops or restarts, and a backup written there goes with it. "
                         "Use the store's backups/ directory\n", prog);

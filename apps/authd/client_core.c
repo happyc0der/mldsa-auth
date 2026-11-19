@@ -21,6 +21,16 @@ static uint32_t get_len(const uint8_t *p)
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
 
+uint64_t cc_seconds_left(uint64_t expires, int64_t now_unix)
+{
+    const uint64_t now = (now_unix > 0) ? (uint64_t)now_unix : 0u;
+    if (expires <= now) {
+        return 0u;
+    }
+    const uint64_t left = expires - now;
+    return (left > CC_SECONDS_LEFT_MAX) ? CC_SECONDS_LEFT_MAX : left;
+}
+
 const char *cc_status_name(cc_status_t st)
 {
     switch (st) {

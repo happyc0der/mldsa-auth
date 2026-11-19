@@ -355,6 +355,18 @@ static void test_fake(void)
       memset(&code, 0xA5, sizeof code);
       const cc_status_t st = (fs_send(&fs, e5, e5l, g_in, sizeof g_in, &m) == 0)
                                  ? cc_login_on_record(&g_cc, g_in, m, &code) : CC_OK;
+      /* V4-335 (F635): the daemon's expiry is a 64-bit number nothing has
+       * checked; what is printed of it is bounded on both sides. */
+      CHECK(cc_seconds_left(1060u, 1000) == 60u && cc_seconds_left(1000u, 1000) == 0u &&
+            cc_seconds_left(999u, 1000) == 0u && cc_seconds_left(0u, 1000) == 0u,
+            "left: sixty seconds ahead is 60; now, a second ago and zero are 0 (F635)");
+      CHECK(cc_seconds_left(0x8000000000000000ull, 1795118736) == CC_SECONDS_LEFT_MAX &&
+            cc_seconds_left(UINT64_MAX, 1795118736) == CC_SECONDS_LEFT_MAX &&
+            cc_seconds_left(1000u + CC_SECONDS_LEFT_MAX + 1u, 1000) == CC_SECONDS_LEFT_MAX &&
+            cc_seconds_left(1000u + CC_SECONDS_LEFT_MAX, 1000) == CC_SECONDS_LEFT_MAX,
+            "left: an expiry no signed number holds, and any more than a day away, is a day (F635)");
+      CHECK(cc_seconds_left(50u, -5) == 50u,
+            "left: a clock before 1970 is taken as 1970, not as a number above every expiry (F635)");
       CHECK(st == CC_ERR_UNANSWERED && strcmp(cc_status_name(st), "daemon-could-not-answer") == 0,
             "fake: ERROR(0x05) as the first record is 'the daemon could not answer', not a refusal (F431)");
       const cc_diag_t *dg = cc_diag(&g_cc);

@@ -138,6 +138,14 @@ typedef struct {
 } cc_t;
 
 const char *cc_status_name(cc_status_t st);
+/* How long a login code is still good for, for the line a tool prints
+ * (F635, V4-335). `expires` is the daemon's word and is not checked by
+ * anything before this: the tool subtracted it as a signed number, and a
+ * value above INT64_MAX was undefined behaviour and printed as nine
+ * quintillion seconds. Zero for a time already past; never more than
+ * CC_SECONDS_LEFT_MAX, which is far above any lifetime the daemon gives. */
+#define CC_SECONDS_LEFT_MAX 86400u
+uint64_t cc_seconds_left(uint64_t expires, int64_t now_unix);
 /* The name the daemon's log uses for a handshake status (spec 13). */
 const char *cc_handshake_status_name(handshake_status_t st);
 

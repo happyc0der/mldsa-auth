@@ -9,6 +9,8 @@ Usage: mutate_v181.py <repo> <ID>
     BW4   a `.` segment hides the destination.
     BW5   a `..` segment does.
     BW6   any path that begins with /run is warned of.
+    BW7   /var/run is not warned of (V4-335).
+    BW8   any path that begins with /var/lock is.
 
 F623's and F625's mutations are campaign v180's LT1 and LT5 to LT7.
 """
@@ -20,14 +22,18 @@ M = {
              "    if (strncmp(seen, \"/tmp/\", 5u) == 0) { /* MUTATION BW1 */\n")],
     "BW2": [(CLI, "    if (strncmp(seen, \"/tmp/\", 5u) == 0 || strncmp(seen, \"/var/tmp/\", 9u) == 0) {\n",
              "    if (strncmp(seen, \"/tmp\", 4u) == 0 || strncmp(seen, \"/var/tmp/\", 9u) == 0) { /* MUTATION BW2 */\n")],
-    "BW3": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0) {\n",
-             "    } else if (strncmp(seen, \"/rum/\", 5u) == 0) { /* MUTATION BW3 */\n")],
+    "BW3": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0 || strncmp(seen, \"/var/run/\", 9u) == 0 ||\n",
+             "    } else if (strncmp(seen, \"/rum/\", 5u) == 0 || strncmp(seen, \"/var/run/\", 9u) == 0 || /* MUTATION BW3 */\n")],
+    "BW7": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0 || strncmp(seen, \"/var/run/\", 9u) == 0 ||\n",
+             "    } else if (strncmp(seen, \"/run/\", 5u) == 0 || /* MUTATION BW7 */\n")],
+    "BW8": [(CLI, "               strncmp(seen, \"/var/lock/\", 10u) == 0) {\n",
+             "               strncmp(seen, \"/var/lock\", 9u) == 0) { /* MUTATION BW8 */\n")],
     "BW4": [(CLI, "        if (len == 0u || (len == 1u && seg[0] == '.')) {\n",
              "        if (len == 0u) { /* MUTATION BW4 */\n")],
     "BW5": [(CLI, "        if (len == 2u && seg[0] == '.' && seg[1] == '.') {\n",
              "        if (len == 2u && seg[0] == '.' && seg[1] == '/') { /* MUTATION BW5 */\n")],
-    "BW6": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0) {\n",
-             "    } else if (strncmp(seen, \"/run\", 4u) == 0) { /* MUTATION BW6 */\n")],
+    "BW6": [(CLI, "    } else if (strncmp(seen, \"/run/\", 5u) == 0 || strncmp(seen, \"/var/run/\", 9u) == 0 ||\n",
+             "    } else if (strncmp(seen, \"/run\", 4u) == 0 || strncmp(seen, \"/var/run/\", 9u) == 0 || /* MUTATION BW6 */\n")],
 }
 
 def main():
