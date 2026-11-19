@@ -121,7 +121,8 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
  * refilled it as fast as it was emptied (refusals at a full pool cost it
  * nothing) kept the loop there, serving no slot, firing no deadline and
  * feeding no watchdog. The listener stays readable, so what is left is taken
- * on the next turn. Under the smallest listen backlog the daemon uses (64). */
+ * on the next turn. It equals the smallest listen backlog the daemon uses
+ * (the administrative socket's 16), so one turn can empty that queue. */
 #define EVLOOP_ACCEPT_BURST 16u
 
 /* Upper bound on slots the loop polls in one iteration. The two pools share

@@ -746,26 +746,33 @@ static int client_pub_path(const char *key_path, char *out, size_t cap)
  * rotate publishes it only after the ACK, so an interrupted rotation leaves
  * the .pub naming the OLD key, and the promotion used to leave it so: the
  * next administrator to enrol from it would install a key this device no
- * longer holds. Written beside the key and renamed, as rotate does. The key
- * is already promoted, so a failure here is reported and is not the login's. */
-static void client_republish_pub(const char *prog, const char *sub, const client_args_t *a,
-                                 const char *next_path, const uint8_t *pk)
+ * longer holds. Written beside the key and renamed, as rotate does, and
+ * BEFORE the key is promoted (F466).
+ *
+ * Returns 0 when the .pub names `pk`, -1 when it could not be replaced. The
+ * caller then does NOT promote (F583): promoted, .ek.next was gone, and with
+ * it the only thing that makes a later run publish the .pub again. It used
+ * to return nothing, and a full disk left the new key under a .pub naming
+ * the old one for good -- F401's state, by a failure instead of a crash. */
+static int client_republish_pub(const char *prog, const char *sub, const client_args_t *a,
+                                const char *next_path, const uint8_t *pk)
 {
     char pub_path[PATH_MAX], pub_tmp[PATH_MAX];
     const int pn = snprintf(pub_tmp, sizeof pub_tmp, "%s.newpub.%ld", next_path, (long)getpid());
     if (client_pub_path(a->key_path, pub_path, sizeof pub_path) != 0 ||
         pn < 0 || (size_t)pn >= sizeof pub_tmp) {
-        fprintf(stderr, "%s %s: the rotation is complete but the device's .pub could not be "
-                        "updated (path-too-long); it still names the OLD key\n", prog, sub);
-        return;
+        fprintf(stderr, "%s %s: the device's .pub could not be updated (path-too-long); "
+                        "it still names the OLD key\n", prog, sub);
+        return -1;
     }
     (void)unlink(pub_tmp);
     if (demo_keys_write_public(pub_tmp, a->hid, a->hid_len, pk) != DEMO_KEYS_OK ||
         rename(pub_tmp, pub_path) != 0) {
         (void)unlink(pub_tmp);
-        fprintf(stderr, "%s %s: the rotation is complete but %s could not be updated; "
-                        "it still names the OLD key\n", prog, sub, pub_path);
+        fprintf(stderr, "%s %s: %s could not be updated; it still names the OLD key\n", prog, sub, pub_path);
+        return -1;
     }
+    return 0;
 }
 
 /* V4-217, F293: one run at a time beside a key. The lock is an flock on the
@@ -910,7 +917,17 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
          * run stopped between them left the new .ek under a .pub naming the
          * old key, with no .ek.next to say so. next_ok is the proof, as the
          * ACK is for rotate. */
-        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);
+        if (client_republish_pub(prog, sub, a, next_path, next_kp.public_key) != 0) {
+            /* F583: the .pub still names the old key, so the rename is not
+             * made: .ek.next stays, and the next run comes back here and
+             * tries both again. This login goes ahead with the live key. */
+            fprintf(stderr, "%s %s: the interrupted rotation is NOT completed: %s is kept, and the next "
+                            "run will try again. Logging in with it\n", prog, sub, next_path);
+            memcpy(kp_out, &next_kp, sizeof next_kp);
+            memset(&next_kp, 0, sizeof next_kp);
+            rc = EX_OK;
+            break;
+        }
         if (keyfile_promote(next_path, a->key_path) != KEYFILE_OK) {
             (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
             break;
@@ -1296,8 +1313,14 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * In this order the same death leaves .ek.next, and the recovery
          * that promotes it republishes the .pub too (F227). */
         if (rename(pub_tmp, pub_path) != 0) {
-            fprintf(stderr, "%s rotate: the key rotated but %s could not be updated; "
-                            "it still names the OLD key\n", prog, pub_path);
+            /* F583: and so the key is not promoted either. The daemon has
+             * the new key; it is in .ek.next, which the next login finds
+             * live and promotes, publishing the .pub first. Promoted here,
+             * nothing would ever have published it, and this exited 0. */
+            fprintf(stderr, "%s rotate: the key rotated at the daemon but %s could not be updated; it "
+                            "still names the OLD key. %s is KEPT and holds the new key: the next login "
+                            "completes the rotation\n", prog, pub_path, next_path);
+            goto out;
         }
         if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
             (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");

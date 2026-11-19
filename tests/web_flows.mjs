@@ -605,10 +605,23 @@ try {
   { const store = new MemoryStore();
     const want = { serverId: info.server_id, serverPub, passphrase: PASS };
     store.confirm = async () => { throw new Error('transaction aborted'); };
+    let got = null;
     const yes = await flows.enroll(client, store, want, async () => ({ user: 'u' }))
-      .then((r) => `resolved ${typeof r.handle}`, (e) => `rejected: ${e.name}: ${e.message}`);
+      .then((r) => { got = r; return `resolved ${typeof r.handle}`; }, (e) => `rejected: ${e.name}: ${e.message}`);
     check(yes === 'resolved string',
           `enroll: an enrollment the site accepted succeeds though the store cannot record the confirmation (${yes}) (F578)`);
+    // Review 74: and WHAT is left. The key must still be stored -- it may be
+    // the account's only one -- and still marked, and the caller is told the
+    // mark could not be cleared (F584) and given the site's answer.
+    const kept = got ? await store.get(got.handle) : null;
+    check(kept !== null && kept.unconfirmed === true && got.answer?.user === 'u',
+          'enroll: that key is still stored, still marked, and the site\'s answer is passed on (F578)');
+    check(got !== null && got.confirmed === false,
+          'enroll: and the caller is told the confirmation was not recorded (F584)');
+    const okStore = new MemoryStore();
+    const fine = await flows.enroll(client, okStore, want, async () => ({ user: 'u' }));
+    check(fine.confirmed === true && (await okStore.get(fine.handle)).unconfirmed !== true,
+          'enroll: with a store that records it, the key is confirmed and the caller is told so (the canary)');
     const store2 = new MemoryStore();
     store2.remove = async () => { throw new Error('transaction aborted'); };
     const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })

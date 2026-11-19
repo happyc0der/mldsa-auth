@@ -20,11 +20,11 @@ CL = "apps/authd/client_cli.c"
 
 M = {
     "PB1": [(CL,
-             "        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);\n",
-             "        if (0) { client_republish_pub(prog, sub, a, next_path, next_kp.public_key); } /* MUTATION PB1 */\n")],
+             "        if (client_republish_pub(prog, sub, a, next_path, next_kp.public_key) != 0) {\n",
+             "        if (0 && client_republish_pub(prog, sub, a, next_path, next_kp.public_key) != 0) { /* MUTATION PB1 */\n")],
     "PB2": [(CL,
-             "        client_republish_pub(prog, sub, a, next_path, next_kp.public_key);\n",
-             "        client_republish_pub(prog, sub, a, next_path, ek_kp.public_key); /* MUTATION PB2 */\n")],
+             "        if (client_republish_pub(prog, sub, a, next_path, next_kp.public_key) != 0) {\n",
+             "        if (client_republish_pub(prog, sub, a, next_path, ek_kp.public_key) != 0) { /* MUTATION PB2 */\n")],
     "PB3": [(CL,
              "    if (demo_keys_write_public(pub_tmp, a->hid, a->hid_len, pk) != DEMO_KEYS_OK ||\n"
              "        rename(pub_tmp, pub_path) != 0) {\n",

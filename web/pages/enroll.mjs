@@ -53,14 +53,19 @@ action('go', async () => {
     // persist() was asked above, before the key is made (F413), not after
     // the site said yes: an enrollment the site never answers leaves a key
     // that may be the account's only one, the case that most needs it.
-    const { handle, answer: r } = await flows.enroll(client, store,
+    const { handle, answer: r, confirmed } = await flows.enroll(client, store,
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
         try { return await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
         catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }
       });
+    // F584: the site enrolled the key and this browser could not record
+    // that. The login page would call the key unconfirmed and offer to
+    // forget it; one login clears the mark, so the user is told to make one.
     report(true, `Enrolled ${r.user} on this device as ${handle}` +
-                 (persisted ? '' : ' (the browser did not promise to keep this storage)'));
+                 (persisted ? '' : ' (the browser did not promise to keep this storage)') +
+                 (confirmed ? '' : '. This browser could not record that the site confirmed the key: ' +
+                                   'log in once now to finish, and do not use Forget on it'));
   } catch (e) {
     report(false, e.statusName === 'passphrase-policy' ? 'that passphrase is refused by the policy' : e.message);
   }

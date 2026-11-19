@@ -116,8 +116,8 @@ M = {
                "    if (next_present && next_ok >= 0) {\n        return KEY_PLAN_PROMOTE_NEXT;   /* MUTATION W14 */\n    }\n    return KEY_PLAN_REFUSE;")]),
  # rotate leaves the device's .pub naming the superseded key
  # V4-13a: moved with rotate into client_cli.c, text unchanged.
- "W15": (CL, [("        if (rename(pub_tmp, pub_path) != 0) {\n            fprintf(stderr, \"%s rotate: the key rotated but %s could not be updated; \"\n                            \"it still names the OLD key\\n\", prog, pub_path);\n        }",
-               "        /* MUTATION W15: the device .pub is never updated */")]),
+ "W15": (CL, [('        if (rename(pub_tmp, pub_path) != 0) {\n            /* F583: and so the key is not promoted either. The daemon has\n             * the new key; it is in .ek.next, which the next login finds\n             * live and promotes, publishing the .pub first. Promoted here,\n             * nothing would ever have published it, and this exited 0. */\n            fprintf(stderr, "%s rotate: the key rotated at the daemon but %s could not be updated; it "\n                            "still names the OLD key. %s is KEPT and holds the new key: the next login "\n                            "completes the rotation\\n", prog, pub_path, next_path);\n            goto out;\n        }\n',
+               "        /* MUTATION W15: the device .pub is never updated */\n")]),
 }
 path, edits = M[MID]
 f = REPO / path; s = f.read_text()

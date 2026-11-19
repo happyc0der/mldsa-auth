@@ -1,0 +1,3 @@
+PR1|^test_authd_cli$|pub blocked: the login succeeds with the live key and promotes nothing: .ek.next is kept (F583)
+PR2|^test_authd_cli$|pub blocked: a rotation whose .pub cannot be replaced fails, promotes nothing and keeps .ek.next (F583)
+PR3|^test_authd_cli$|pub blocked: the login succeeds with the live key and promotes nothing: .ek.next is kept (F583)

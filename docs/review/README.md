@@ -49,9 +49,9 @@ system, which decides who may enroll.
    gate (`tools/audit/check_claim_map.py`, in CI) fails if anything the map
    cites stops existing.
 2. [The threat model](../v4/threat-model.md) and [the audit
-   register](../v4/audit.md). 582 findings (F0–F582), with severity, evidence and
+   register](../v4/audit.md). 590 findings (F0–F590), with severity, evidence and
    disposition; no F16 was ever assigned. The open ones are listed below.
-3. The two specifications. The deployment spec's §20 lists 151 errata, each
+3. The two specifications. The deployment spec's §20 lists 153 errata, each
    citing the finding that forced it.
 4. [REPRODUCE.md](REPRODUCE.md): how to re-run every result, and where CI
    and the nightly run them on Linux.
@@ -62,7 +62,7 @@ system, which decides who may enroll.
 
 - **Tests** are named checks, not exit codes. The suite is 66 tests with the
   browser client, run under ASan and UBSan on Linux and macOS in CI.
-- **Mutations**: 771 committed defects in 145 campaigns, each of which must be
+- **Mutations**: 774 committed defects in 146 campaigns, each of which must be
   caught *by a named check*. The nightly runs all of them. Since V4-14a a
   mutation the compiler refuses no longer counts as caught unless the
   compiler is the check; that change found two properties no test had been
@@ -97,7 +97,7 @@ page said only F91 until V4-38, F120):
 | F15 | Info | v1's x86_64 performance target was never measured on x86_64, and v1's code is gone, so it cannot be |
 | F17 | Med | Req 4.9 (no secret-dependent control flow) is partly pinned: since V4-15b a gate fails if a constant-time comparison site stops using one, but nothing measures timing. Req 4.8, its other half, closed in V4-11. Since V4-65 one path is measured, §7.3's decoy flow (`bench_decoy`), and it found F135 |
 
-Thirteen more are open in the register, each with its reasons there. This list
+Fourteen more are open in the register, each with its reasons there. This list
 was missing all of them until V4-266, and since V4-268
 `tools/audit/check_claim_map.py` fails if a row the register marks OPEN has
 no row here:
@@ -114,6 +114,7 @@ no row here:
 | F435 | Low | A failed allocation in liboqs's SHA-3 exits the daemon; the runbook names its line since V4-306; nothing in this code can catch it |
 | F436 | Low | A recovery lockout can be cleared only by editing the store; recommended: an administrative `RECOVERY-ISSUE` clears it; the site's `ENROLL via=site` already re-enrols a locked user |
 | F549 | Low | A site request given up on during a long backup is still carried out when the copy ends (a recovery code can be spent with nobody to read the answer), and so is an `authd_admin` command that timed out (F569); the runbook says so; recommended: the daemon refuses a state-changing line whose peer has hung up, or the backup is copied across turns |
+| F585 | Low | A key file is reported written without knowing the directory entry is durable (a failed directory sync is ignored; on macOS `fsync` does not flush the drive); recommended: fail and remove on a failed directory sync where one is supported, and say in spec 12 what is promised |
 | F451 | Low | The three tools word the same faults differently; recommended: one word per fault. `authd_client` exits 3 for an unusable key since V4-312 |
 | F453 | Low | A recovery code can be phished: a username and one code, given to a look-alike page, recover the account; recommended: tell the account's other sessions |
 | F511 | Low | The CLI's pasted login code can be phished: `--state` binds the code to whatever state a look-alike page supplies; recommended (review 66): document `--state` as operators and testing only; naming the server identity would print `authd`, not a site |

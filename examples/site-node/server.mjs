@@ -197,6 +197,10 @@ export async function startSite(opt) {
   // in a table bounded like the session table. It is not what stops guessing
   // -- 80-bit codes and the daemon's lockout do -- but it bounds how fast one
   // client can spend the daemon's Argon2id time or a user's five attempts.
+  // A full table evicts the least recently used bucket, spent or not (F587):
+  // a client with ten thousand addresses gets its attempts back sooner. The
+  // other choice, keeping spent buckets, lets those addresses fill the table
+  // and deny recovery to everyone else, which is worse.
   const RECOVER_BURST = opt.recoverBurst ?? 5;
   const RECOVER_REFILL_MS = opt.recoverRefillMs ?? 60 * 1000;
   const RECOVER_KEYS_MAX = 10000;
@@ -605,7 +609,10 @@ export async function startSite(opt) {
 
   const server = http.createServer(async (req, res) => {
     try {
-      const url = new URL(req.url, 'http://x');
+      // F588: a target that is not a URL (`//`) threw here and was answered
+      // 500 `internal`, the site's own error, for a request that was wrong.
+      let url;
+      try { url = new URL(req.url, 'http://x'); } catch { return send(res, 400, { error: 'bad request' }); }
       if (!hostAllowed(req.headers.host, opt)) { return send(res, 421, { error: 'unknown host' }); }
       if (req.method === 'POST') {
         const origin = req.headers.origin;

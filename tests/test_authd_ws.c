@@ -1289,8 +1289,13 @@ static void test_ratelimit(void)
       } } } }
       CHECK(runs == 744u && full == 0u,
             "limiter size: over a grid of rates, bursts and held slots, no flood shape found so far fills the table (F563, F570)");
-      CHECK(controls == 56u && controls_full == controls,
-            "limiter size: and every one of those tables above the floor, halved, is filled by the same flood (the control, F581)"); }
+      /* Two checks, so that each says what it found (review 74). A change to
+       * the formula that drops a configuration to the 1024 floor shows as a
+       * count, not as "a halved table was not filled". */
+      CHECK(controls == 56u,
+            "limiter size: 56 of the grid's configurations are sized by the formula, above the 1024 floor");
+      CHECK(controls > 0u && controls_full == controls,
+            "limiter size: and every one of those tables, halved, is filled by the same flood (the control, F581)"); }
     /* No table is a refusal, not a crash. */
     ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&

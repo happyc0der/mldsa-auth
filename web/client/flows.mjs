@@ -226,8 +226,13 @@ export async function login(client, store, params, events) {
 // The daemon accepted the key, so it was enrolled after all (F220). The
 // login has succeeded either way: a store that cannot record that says so
 // the next time.
+// Resolves to whether the store now says so (F584): false when the mark could
+// not be cleared, for a caller that has something to tell the user.
 async function confirmQuietly(store, handle) {
-  try { if ((await store.get(handle))?.unconfirmed) { await store.confirm(handle); } } catch { /* still unconfirmed */ }
+  try {
+    if ((await store.get(handle))?.unconfirmed) { await store.confirm(handle); }
+    return true;
+  } catch { return false; /* still unconfirmed */ }
 }
 
 // Makes a key and has the site enroll it (V4-138, F220).
@@ -267,8 +272,12 @@ export async function enroll(client, store, { serverId, serverPub, passphrase },
     // cannot record the confirmation says so at the next login, which clears
     // the mark (F220), as login itself has always done. Thrown from here it
     // told the user their enrollment had failed, with the invitation spent.
-    await confirmQuietly(store, id.handle);
-    return { handle: id.handle, answer };
+    // `confirmed` is false when that could not be recorded (F584): the login
+    // page will then list the key as not confirmed and offer to forget it,
+    // though the site has it, until one login clears the mark. The caller
+    // says so.
+    const confirmed = await confirmQuietly(store, id.handle);
+    return { handle: id.handle, answer, confirmed };
   });
 }
 

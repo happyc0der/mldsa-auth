@@ -21491,3 +21491,61 @@ Spec v1.103: erratum 151 (10.2).
 
 Counts: 771 mutations, 145 campaigns, 816 anchors; 582 findings (the 13
 above open); spec v1.103, 151 errata; 66 tests.
+
+## V4-323 — what the seventy-fourth review found (F583 to F590)
+
+The seventy-fourth review was an independent read of the code V4-322
+changed and of what the seventy-third had not reached: the reference site
+whole, the key file's write path, the key recovery path by path, and the
+KEX, HKDF and transcript code. It found the site's checks, sessions and
+bounds sound, the key file never written in place, and the protocol's
+labels and lengths right. Eight findings, three Low and five Info. Six are
+closed here, one is recorded unchanged and one is the owner's.
+
+- **F583 (Low).** A `.pub` that cannot be replaced stops the promotion.
+  The order `.pub` then key was chosen so that a crash between them leaves
+  `.ek.next`; a failure of the first step did not get the same care, and
+  the promote went ahead. Now the key is not promoted, `.ek.next` stays,
+  and the next run tries both. A recovering login still logs in, with the
+  key the daemon accepted; `rotate` exits 1, since its job is not done.
+- **F584 (Low).** V4-322's fix of F578 left the key marked with nobody
+  told. `enroll` now says whether the mark was cleared and the page asks
+  for one login when it was not.
+- **F586, F589 (Info).** Tests V4-322 added, measured by the review and
+  tightened: the limiter search's two checks have their own messages, and
+  F578's test checks what is left in the store.
+- **F588, F590 (Info).** `GET //` is 400; a comment's figure.
+
+**F587 (Info) is recorded and not changed.** The site's recovery limiter
+evicts the least recently used bucket when its table of 10,000 is full, so
+a client with that many addresses gets its attempts back. Keeping spent
+buckets would let the same client fill the table and have everyone else
+refused. The limiter is not what stops guessing; the daemon's lockout is.
+
+**F585 (Low) is the owner's.** A key file's directory entry is not known
+to be durable when the tools say it is written: the directory sync's result
+is dropped, and on macOS `fsync` does not reach the drive. Failing on a
+failed sync is right where a directory can be synced and wrong where it
+cannot, and `F_FULLFSYNC` has a cost. Spec 12 promises less than the code's
+comments assume.
+
+**A harness limit met on the way.** The new test's logins were refused with
+`ledger-full`. The harness daemon's clock stands still, so every handshake
+this test function had had refused was still in its ledger, one a slot.
+The test moves the clock past the ledger's ten seconds before each leg.
+
+Campaign v176: three mutations (PR1, PR2, PR3), each killed by hand in
+build-asan-p. Moved with this step's code and killed again: v105 PB1 and
+PB2, v158 PO1, v49c W15; and run again: v105 PB3 and PB4, v158 SR1,
+v156 TN1.
+
+Hand controls with `tools/hand_control.py --interpreted`, each KILLED by
+its named check:
+- CF1 (`web_flows`): the caller is always told the key was confirmed.
+- BT1 (`site_sessions`): a target that is not a URL is the site's error.
+
+Spec v1.104: errata 152 (10.2) and 153 (14).
+
+Counts: 774 mutations, 146 campaigns, 819 anchors; 590 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
+F585 open); spec v1.104, 153 errata; 66 tests.

@@ -324,6 +324,16 @@ try {
 
   // V4-76, F143: /api/recover gives every refusal ONE reply, so it does not say
   // which usernames exist; and it is rate-limited per client.
+  // V4-323 (F588): a request target that is not a URL is the client's error.
+  // `//` threw inside the handler and was answered 500 `internal`.
+  {
+    const bad = await fetch(`${base}//`);
+    const bb = await bad.json().catch(() => ({}));
+    check(bad.status === 400 && bb.error === 'bad request',
+          `bad target: GET // is 400, a bad request, not the site's own error (${bad.status} ${bb.error}) (F588)`);
+    const ok = await fetch(`${base}/api/session`);
+    check(ok.status === 200, `bad target: and the site still answers afterwards (${ok.status}) (the canary)`);
+  }
   {
     const ghost = await post('/api/recover', { user: 'nobody-by-this-name', code: '0000000000000000' });
     const wrong = await post('/api/recover', { user, code: '0000000000000000' });
