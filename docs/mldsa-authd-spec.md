@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.104, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323)
+# mldsa-authd — deployment specification (v1.105, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -798,7 +798,9 @@ compares the two. The recovery keeps the same order (erratum 127): the
 `.ek.next` for the next. And a `.pub` that cannot be replaced stops there
 (erratum 152): the key is not promoted, `.ek.next` is kept, and the next run
 tries both again. `rotate` then exits 1, the daemon having taken the new
-key; a login that found `.ek.next` live goes ahead with that key.
+key; a login that found `.ek.next` live goes ahead with that key. A
+`rotate` that finds `.ek.next` live and cannot promote it does not rotate
+(erratum 154): it makes no key and says what is in the way.
 
 **Recovering an interrupted rotation.** If `.ek.next` exists at startup the
 client probes with `<handle>.ek` first, and the rule is stated in the only
@@ -2614,3 +2616,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 152 | 10.2 | A `.pub` that cannot be replaced stops the promotion: `.ek.next` is kept and the next run tries again; `rotate` exits 1, and a recovering login uses the live key | The key was promoted all the same. `.ek.next` was then gone, nothing publishes the `.pub` again, and the file an administrator enrols from named a dead key for good: erratum 119's state, reached by a failed write and not a crash. `rotate` exited 0 (F583) |
 | 153 | 14 | An enrollment the site accepted is one though the browser's store cannot record the confirmation; the page says so and asks for one login | Since V4-322 such an enrollment succeeds (F578), and the key stays marked. The login page then said the site never confirmed it and offered to forget it, which for an account's only key loses the account (F584) |
+
+### Revision v1.105 (V4-324)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 154 | 10.2 | A `rotate` that finds `.ek.next` holding the live key and cannot promote it (erratum 152) stops before it makes a key | It went on, sealed a new key, and failed where that key is written with `already-exists`, naming `.ek.next`: the one file that must not be removed, since it holds the only copy of the live key (F591) |

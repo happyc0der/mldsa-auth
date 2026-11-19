@@ -1,0 +1,2 @@
+KR1|^test_authd_cli$|pub blocked: a rotation while .ek.next holds the live key stops, says so and changes neither file (F591)
+KR2|^test_authd_cli$|pub blocked: a rotation while .ek.next holds the live key stops, says so and changes neither file (F591)

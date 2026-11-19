@@ -21549,3 +21549,54 @@ Spec v1.104: errata 152 (10.2) and 153 (14).
 Counts: 774 mutations, 146 campaigns, 819 anchors; 590 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
 F585 open); spec v1.104, 153 errata; 66 tests.
+
+## V4-324 — what the seventy-fifth review found (F591 to F595)
+
+The seventy-fifth review was an independent read of the code V4-323
+changed and of what the seventy-fourth had not reached: the session
+records, the pending ledger, the AEAD and keystore, the rest of the C
+client's arguments, every handler of the local API, the site's tests and
+the browser's store. It found all of those sound: no sequence number can
+wrap, every receive failure zeroes the keys, no secret reaches a log call.
+Five findings, one Low and four Info, all closed here.
+
+- **F591 (Low).** A rotation run while `.ek.next` holds the live key stops
+  before it makes a key. V4-323 created that state (a `.pub` that cannot be
+  replaced) and tested a login in it and a rotation INTO it, not a rotation
+  from it. That one went on, sealed a new key, and failed with
+  `already-exists` naming the file that holds the only copy of the live
+  key.
+- **F593 (Info).** The site takes only a request target that is a path.
+- **F594 (Info).** A record that is gone is not a confirmed one, and the
+  test of the completed rotation compares the `.pub` with the key in `.ek`.
+- **F595 (Info).** Two counts in the site's tests are matched exactly.
+
+**F592: a correction to V4-323's note.** That entry said the harness
+daemon's ledger was full of handshakes the test had had refused. It was
+full of the tombstones of handshakes it had had ACCEPTED: a refused
+handshake is cancelled when its connection closes, and an accepted one
+leaves a tombstone until it expires (F1). The remedy, moving the clock, was
+right for either.
+
+Not tested, kept here: the enroll page's new sentence in a real browser;
+the `.pub` whose temporary name does not fit, which now also stops the
+promotion; the waits in the site's tests that have no deadline of their
+own.
+
+Campaign v177: two mutations (KR1, KR2), each killed by hand in
+build-asan-p. v158 PO1 moved with this step's code again and was killed
+again, with v176 PR1 and PR3.
+
+Hand controls with `tools/hand_control.py --interpreted`, each KILLED by
+its named check:
+- BT2 (`site_sessions`): a target naming another host is routed on its path.
+- CQ1 (`web_flows`): a record that is gone counts as confirmed.
+  As first written CQ1 deleted the check and survived: without it the next
+  line throws on the missing record, and the catch answers false all the
+  same. The control that means what its name says answers true there.
+
+Spec v1.105: erratum 154 (10.2).
+
+Counts: 776 mutations, 147 campaigns, 821 anchors; 595 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549 and
+F585 open); spec v1.105, 154 errata; 66 tests.

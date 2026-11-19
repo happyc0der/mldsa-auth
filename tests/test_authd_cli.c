@@ -1370,6 +1370,15 @@ static void plant_stale_newpub(void)
     if (write_file(p, "left by a killed rotation\n", 0600) != 0) { child_exit(124); }
 }
 
+/* V4-324: the pumped client's stderr, to a file the test then reads (the
+ * client talks to the harness daemon, so it cannot be run by the capturing
+ * runner, which does not pump it). */
+static char g_child_err_path[600];
+static void child_err_to_file(void)
+{
+    if (freopen(g_child_err_path, "w", stderr) == NULL) { child_exit(123); }
+}
+
 static int run_client_pumped_hook(h_daemon_t *d, char **argv, pump_hook_fn hook, void *ctx)
 {
     fflush(stdout);
@@ -1951,10 +1960,12 @@ static void test_rotate_on_disk(void)
      * leaves .ek and .ek.next as they are for the next run. */
     { char inside[600];
       uint8_t got[MLDSA_PUBLIC_KEY_BYTES];
-      /* The harness's clock stands still, so the handshakes this function
-       * has had refused are all still in the daemon's ledger, which holds
-       * one a slot. Each leg here adds one (the superseded key's probe);
-       * the clock is moved past the ledger's ten seconds before each. */
+      /* The harness's clock stands still, so the tombstone of every
+       * handshake this function has had ACCEPTED is still in the daemon's
+       * ledger, which holds one a slot (a refused one is cancelled when its
+       * connection closes; review 75 corrected this comment). Six came
+       * before; each login here adds two, the accepted probe and the login.
+       * The clock is moved past the ledger's ten seconds before each leg. */
 #define PUB_BLOCKED_FRESH_LEDGER() do { d.app.now_ms += 20000u; h_tick(&d); } while (0)
       PUB_BLOCKED_FRESH_LEDGER();
       (void)snprintf(inside, sizeof inside, "%s/x", pubp);
@@ -1967,6 +1978,26 @@ static void test_rotate_on_disk(void)
                                              "--server-pub", spub, "--port", port, NULL });
       CHECK(rc == 0 && same_bytes(next, sealed_b, nb) && same_bytes(ek, sealed_a, na),
             "pub blocked: the login succeeds with the live key and promotes nothing: .ek.next is kept (F583)");
+      /* V4-324 (F591): and a rotation in that state stops before it makes
+       * anything. It used to seal a new key and fail at the name .ek.next
+       * with `already-exists`, on the file that holds the live key. */
+      PUB_BLOCKED_FRESH_LEDGER();
+      { uint8_t rerr[4096];
+        size_t rn = 0;
+        memset(rerr, 0, sizeof rerr);
+        (void)snprintf(g_child_err_path, sizeof g_child_err_path, "%s/rotate-kept.err", g_dir);
+        g_child_pre = child_err_to_file;
+        rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", ek,
+                                               "--passphrase-file", pass, "--server-id", "authd",
+                                               "--server-pub", spub, "--port", port, NULL });
+        g_child_pre = NULL;
+        (void)read_bytes(g_child_err_path, rerr, sizeof rerr - 1u, &rn);
+        (void)unlink(g_child_err_path);
+        CHECK(rc == 1 && same_bytes(next, sealed_b, nb) && same_bytes(ek, sealed_a, na) &&
+              strstr((const char *)rerr, "not rotating") != NULL &&
+              strstr((const char *)rerr, "holds the LIVE key") != NULL &&
+              strstr((const char *)rerr, "already-exists") == NULL,
+              "pub blocked: a rotation while .ek.next holds the live key stops, says so and changes neither file (F591)"); }
       (void)unlink(inside);
       (void)rmdir(pubp);
       PUB_BLOCKED_FRESH_LEDGER();
@@ -1994,10 +2025,17 @@ static void test_rotate_on_disk(void)
       rc = run_client_pumped(&d, (char *[]){ "authd_client", "login", "--handle", handle, "--key", ek,
                                              "--passphrase-file", pass, "--server-id", "authd",
                                              "--server-pub", spub, "--port", port, NULL });
-      CHECK(rc == 0 && access(next, F_OK) != 0 && !same_bytes(ek, sealed_b, nb) &&
+      /* Review 75: the .pub must name the key that is IN .ek, not merely
+       * some key that is not B. */
+      mldsa_keypair_t now_kp;
+      memset(&now_kp, 0, sizeof now_kp);
+      const int opened = keyfile_open(ek, (const uint8_t *)handle, hlen, PASS, sizeof PASS - 1u, &now_kp, NULL) == KEYFILE_OK;
+      CHECK(rc == 0 && access(next, F_OK) != 0 && !same_bytes(ek, sealed_b, nb) && opened &&
             demo_keys_load_public(pubp, (const uint8_t *)handle, hlen, got) == DEMO_KEYS_OK &&
-            memcmp(got, b.public_key, sizeof got) != 0,
-            "pub blocked: the next login completes that rotation -- .ek and .pub hold the new key (F583)");
+            memcmp(got, b.public_key, sizeof got) != 0 &&
+            memcmp(got, now_kp.public_key, sizeof got) == 0,
+            "pub blocked: the next login completes that rotation -- .ek holds the new key and .pub names it (F583)");
+      mldsa_keypair_free(&now_kp);
 #undef PUB_BLOCKED_FRESH_LEDGER
     }
 

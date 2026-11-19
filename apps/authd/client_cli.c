@@ -247,6 +247,10 @@ static int cs_recv_for_core(client_session_t *cs, uint8_t *buf, size_t *msg_len)
  * nothing about whether the key is live, and `g_open_why` says what it was. */
 static int g_open_judged;
 static int g_open_unanswered;   /* F431: the daemon had the key and could not record the login */
+/* F591: the last client_resolve_key gave back the key in .ek.next WITHOUT
+ * promoting it, because the .pub could not be replaced (F583). A login goes
+ * ahead with that key; a rotation must not. */
+static int g_resolve_kept_next;
 static char g_open_why[96];
 
 static void open_failed_before_key(const char *what, const char *detail)
@@ -838,6 +842,7 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
      * caller looked is a rotation in progress, and this run, unlocked, uses
      * .ek and leaves it alone. */
     const int next_present = next_seen && path_exists(next_path);
+    g_resolve_kept_next = 0;
 
     /* The ordinary case: no interrupted rotation, so open .ek and go. */
     if (!next_present) {
@@ -922,7 +927,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
              * made: .ek.next stays, and the next run comes back here and
              * tries both again. This login goes ahead with the live key. */
             fprintf(stderr, "%s %s: the interrupted rotation is NOT completed: %s is kept, and the next "
-                            "run will try again. Logging in with it\n", prog, sub, next_path);
+                            "run will try again. It holds the live key\n", prog, sub, next_path);
+            g_resolve_kept_next = 1;
             memcpy(kp_out, &next_kp, sizeof next_kp);
             memset(&next_kp, 0, sizeof next_kp);
             rc = EX_OK;
@@ -1130,6 +1136,20 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (rc != EX_OK) {
         authd_secret_free(pass, pass_len);
         return rc;
+    }
+    /* F591: .ek.next holds the live key and could not be promoted (F583).
+     * A rotation needs that name for the key it makes. It used to go on,
+     * seal a new key, and fail at the name with `already-exists` -- on the
+     * one file that must not be removed -- having said "Logging in". It
+     * stops here and says what is in the way. */
+    if (g_resolve_kept_next) {
+        authd_secret_free(pass, pass_len);
+        mldsa_keypair_free(&old_kp);
+        fprintf(stderr, "%s rotate: not rotating: %s holds the LIVE key and could not be put in place, "
+                        "because the device's .pub cannot be replaced. Do NOT remove it. Make the .pub "
+                        "replaceable, log in once (that completes the earlier rotation), then rotate\n",
+                prog, next_path);
+        return EX_FAIL;
     }
 
     /* A leftover .ek.next that the probe did NOT promote is stale -- .ek

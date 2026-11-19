@@ -230,7 +230,9 @@ export async function login(client, store, params, events) {
 // not be cleared, for a caller that has something to tell the user.
 async function confirmQuietly(store, handle) {
   try {
-    if ((await store.get(handle))?.unconfirmed) { await store.confirm(handle); }
+    const rec = await store.get(handle);
+    if (!rec) { return false; }           // F594: gone (storage cleared meanwhile) is not confirmed
+    if (rec.unconfirmed) { await store.confirm(handle); }
     return true;
   } catch { return false; /* still unconfirmed */ }
 }

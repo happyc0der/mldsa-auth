@@ -622,6 +622,15 @@ try {
     const fine = await flows.enroll(client, okStore, want, async () => ({ user: 'u' }));
     check(fine.confirmed === true && (await okStore.get(fine.handle)).unconfirmed !== true,
           'enroll: with a store that records it, the key is confirmed and the caller is told so (the canary)');
+    // V4-324 (F594): a record that is gone when the site answers (storage
+    // cleared meanwhile) is not a confirmed one.
+    const gone = new MemoryStore();
+    const realGet = gone.get.bind(gone);
+    let asked = false;
+    gone.get = async (h) => (asked ? null : realGet(h));
+    const lost = await flows.enroll(client, gone, want, async () => { asked = true; return { user: 'u' }; });
+    check(lost.confirmed === false,
+          'enroll: a record that is gone when the site answers is not reported as confirmed (F594)');
     const store2 = new MemoryStore();
     store2.remove = async () => { throw new Error('transaction aborted'); };
     const no = await flows.enroll(client, store2, want, async () => { throw new flows.EnrollRefused('user-exists'); })

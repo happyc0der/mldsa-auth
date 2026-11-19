@@ -611,7 +611,12 @@ export async function startSite(opt) {
     try {
       // F588: a target that is not a URL (`//`) threw here and was answered
       // 500 `internal`, the site's own error, for a request that was wrong.
+      // F593: and one that names another host is refused too. `//x/api/session`,
+      // `/\x/...` and `http://other/api/session` all parsed, and were routed
+      // on their pathname alone: a front end that filters by path prefix would
+      // have seen a different path from the one served. Only a path is taken.
       let url;
+      if (!/^\/(?![/\\])/.test(req.url)) { return send(res, 400, { error: 'bad request' }); }
       try { url = new URL(req.url, 'http://x'); } catch { return send(res, 400, { error: 'bad request' }); }
       if (!hostAllowed(req.headers.host, opt)) { return send(res, 421, { error: 'unknown host' }); }
       if (req.method === 'POST') {

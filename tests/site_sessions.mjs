@@ -177,7 +177,7 @@ try {
     // 409 since V4-279 (F456): the id was rotated away moments ago.
     check(en.status === 409, 'recovery: the id from before the recovery cannot use its ticket to enroll a key');
     const devices = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
-    check(devices.startsWith('OK count=1'), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
+    check(/^OK count=1( |$)/.test(devices), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
   }
 
   // V4-84, F160: a WebSocket upgrade from another origin is refused; the
@@ -333,6 +333,23 @@ try {
           `bad target: GET // is 400, a bad request, not the site's own error (${bad.status} ${bb.error}) (F588)`);
     const ok = await fetch(`${base}/api/session`);
     check(ok.status === 200, `bad target: and the site still answers afterwards (${ok.status}) (the canary)`);
+    // V4-324 (F593): nor is a target that names another host routed on its
+    // path. Sent raw: fetch would rewrite each of these before sending.
+    const raw = (target) => new Promise((resolve) => {
+      const c = createConnection(port, '127.0.0.1');
+      let got = '';
+      const done = () => { c.destroy(); resolve(/^HTTP\/1\.1 (\d+)/.exec(got)?.[1] ?? `no status (${got.slice(0, 40)})`); };
+      c.setTimeout(3000, done);
+      c.on('data', (d) => { got += d; if (got.includes('\r\n')) { done(); } });
+      c.on('error', done);
+      c.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    const forms = ['//x/api/session', '/\\x/api/session', 'http://other.example/api/session'];
+    const sts = [];
+    for (const f of forms) { sts.push(await raw(f)); }
+    check(sts.every((x) => x === '400'),
+          `bad target: a target that names another host is 400, not routed on its path (${sts.join(', ')}) (F593)`);
+    check(await raw('/api/session') === '200', 'bad target: an ordinary path sent the same way is served (the canary)');
   }
   {
     const ghost = await post('/api/recover', { user: 'nobody-by-this-name', code: '0000000000000000' });
@@ -478,7 +495,7 @@ try {
     const eb = await en.json();
     check(en.status === 403 && eb.error === 'user-exists', `signup: enrolling into an existing account is refused (${en.status} ${eb.error})`);
     const devices = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
-    check(devices.startsWith('OK count=1'), 'signup: the existing account still has exactly one device');
+    check(/^OK count=1( |$)/.test(devices), 'signup: the existing account still has exactly one device');
   }
 
   // V4-269, F418: the two enrollment conflicts are one word to the page. As
