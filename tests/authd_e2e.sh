@@ -2101,7 +2101,9 @@ DPID=""
 # listener-peer-rejected per socket: a reply, even an error, would mean served.
 FOREIGN=$(( $(id -u) + 1 ))
 sed -e '/^listen_port/d' -e "s/^site_uids = .*/site_uids = $FOREIGN/" \
+    -e 's/^rate_per_min = .*/rate_per_min = 2/' \
     -e "s/^admin_uids = .*/admin_uids = $FOREIGN/" "$TMP/authd.conf" > "$TMP/foreign.conf"
+grep -q '^rate_per_min = 2$' "$TMP/foreign.conf" || fail "the foreign-uid config's rate was not derived"
 grep -q "^site_uids = $FOREIGN\$" "$TMP/foreign.conf" && grep -q "^admin_uids = $FOREIGN\$" "$TMP/foreign.conf" \
     || fail "the foreign-uid config was not derived"
 "$DAEMON" --config "$TMP/foreign.conf" > "$TMP/foreign.log" 2>&1 &
@@ -2113,6 +2115,26 @@ while ! grep -q 'event=started' "$TMP/foreign.log" 2>/dev/null; do
     [ "$i" -gt 400 ] && fail "the foreign-uid daemon never logged event=started"
     sleep 0.05
 done
+# F338 (V4-308): the limiter's table is sized from the configuration, and the
+# start says the size. This daemon's rate_per_min = 2 holds 1500 addresses at
+# the default 50 a second and gets 1875 entries; the main daemon above, at 60
+# a minute, kept 1024 (the canary, from its own journal). --check-config
+# states the same figure, and warns when the 16384 ceiling is what will bind.
+grep -q '^info event=limiter-table count=1875$' "$TMP/foreign.log" \
+    || { cat "$TMP/foreign.log"; fail "a daemon at rate_per_min = 2 did not size its limiter table at 1875 (F338)"; }
+grep -q '^info event=limiter-table count=1024$' "$TMP/authd.log" \
+    || fail "the main daemon, at rate_per_min = 60, did not log a 1024-entry limiter table (F338 canary)"
+"$DAEMON" --config "$TMP/foreign.conf" --check-config > "$TMP/rt.out" 2>&1 \
+    || fail "--check-config refuses the rate_per_min = 2 configuration: $(cat "$TMP/rt.out")"
+grep -q ' rate_table=1875 ' "$TMP/rt.out" && ! grep -q 'warning: rate_global_per_sec' "$TMP/rt.out" \
+    || fail "--check-config did not state rate_table=1875, without a warning, at rate_per_min = 2 (F338): $(cat "$TMP/rt.out")"
+sed -e 's/^rate_per_min = .*/rate_per_min = 1/' "$TMP/foreign.conf" > "$TMP/rtmax.conf"
+echo 'rate_global_per_sec = 10000' >> "$TMP/rtmax.conf"
+rc=0; "$DAEMON" --config "$TMP/rtmax.conf" --check-config > "$TMP/rt.out" 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && grep -q ' rate_table=16384 ' "$TMP/rt.out" \
+    && grep -q '^mldsa-authd: warning: rate_global_per_sec = 10000 and rate_per_min = 1 can hold 750000 addresses at once and the limiter.s table holds 16384' "$TMP/rt.out" \
+    || fail "--check-config did not warn that 750000 addresses exceed the 16384-entry table, and pass (F338): exit $rc, $(cat "$TMP/rt.out")"
+echo "PASS: E2E: the limiter's table is sized from the rates (1024, 1875), the start and --check-config say so, and the ceiling is warned of (F338)"
 # Waits for the journal to count one more refusal than $1; the daemon logs it
 # after closing the socket, so the client can be gone first.
 refused_after() {

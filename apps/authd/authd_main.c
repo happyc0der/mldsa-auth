@@ -247,14 +247,32 @@ int main(int argc, char **argv)
                         (unsigned long)shared);
             }
         }
+        /* F338: the limiter's table is sized from these settings, to a
+         * ceiling; say so when the ceiling is what will refuse. */
+        if (cfg.proxy_protocol_v2) {
+            const uint64_t want = ratelimit_entries_wanted(cfg.rate_per_min, cfg.rate_global_per_sec,
+                                                           cfg.max_slots);
+            if (want > (uint64_t)RATELIMIT_ENTRIES_MAX) {
+                fprintf(stderr,
+                        "mldsa-authd: warning: rate_global_per_sec = %u and rate_per_min = %u can hold "
+                        "%llu addresses at once and the limiter's table holds %u: past that, new "
+                        "addresses are refused limiter-table-full. Raise rate_per_min or lower "
+                        "rate_global_per_sec (F338).\n",
+                        cfg.rate_global_per_sec, cfg.rate_per_min, (unsigned long long)want,
+                        (unsigned)RATELIMIT_ENTRIES_MAX);
+            }
+        }
         printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
                "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
                "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "
-               "log_identities=%s log_client_ip=%s)\n",
+               "rate_table=%zu log_identities=%s log_client_ip=%s)\n",
                cfg_path, cfg.max_slots, cfg.handshake_timeout_ms,
                cfg.idle_timeout_ms, cfg.pad_bucket,
                cfg.proxy_protocol_v2 ? "v2" : "none", cfg.rate_per_min,
                cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr,
+               cfg.proxy_protocol_v2
+                   ? ratelimit_entries_for(cfg.rate_per_min, cfg.rate_global_per_sec, cfg.max_slots)
+                   : (size_t)0u,
                authd_log_ids_name(cfg.log_identities), authd_log_ip_name(cfg.log_client_ip));
         return 0;
     }
@@ -417,10 +435,20 @@ int main(int argc, char **argv)
      * would key on "no address", which is not rate limiting, it is one bucket
      * with everyone in it. Req 12 refuses those connections instead. */
     static ratelimit_t limiter;
+    /* F338: its table, sized from the configuration and static for the reason
+     * the ledger's array below is -- demand-zero, and nothing to free at the
+     * early exits. Only the entries the configuration asks for are touched. */
+    static ratelimit_entry_t limiter_table[RATELIMIT_ENTRIES_MAX];
     if (cfg.proxy_protocol_v2) {
-        ratelimit_init(&limiter, cfg.rate_per_min, cfg.rate_burst,
+        const size_t table_n = ratelimit_entries_for(cfg.rate_per_min, cfg.rate_global_per_sec,
+                                                     cfg.max_slots);
+        ratelimit_init(&limiter, limiter_table, table_n,
+                       cfg.rate_per_min, cfg.rate_burst,
                        cfg.rate_global_per_sec, cfg.max_conns_per_addr, app.now_ms);
         app.rl = &limiter;
+        /* In the journal of every start: how many addresses the limiter can
+         * track, which is what refuses when it is too few. */
+        authd_log_num(AUTHD_LOG_INFO, "limiter-table", "count", (uint64_t)limiter.n_entries);
     }
 
     static handshake_pending_store_t pending;

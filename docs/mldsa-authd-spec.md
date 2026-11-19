@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.94, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306)
+# mldsa-authd — deployment specification (v1.95, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1446,7 +1446,7 @@ closed-deadline closed-protocol
 Connection binding and the rate limiter (§7.2, §7.3):
 
 ```
-client-address refused-no-client-address refused-rate-limited
+client-address refused-no-client-address refused-rate-limited limiter-table
 ```
 
 The handshake and the session (§6, §7.3):
@@ -1741,6 +1741,7 @@ The binary is built Release with `-fPIE -pie -Wl,-z,relro -Wl,-z,now
 | Connections per client address | `max_conns_per_addr`, default 8 | §7.2 |
 | Handshakes per address | `rate_per_min` 5, `rate_burst` 10; an authenticated login's token is refunded; the rate holds exactly at every value the configuration accepts, however often an address asks (erratum 109) | §7.2, §7.3 |
 | Handshakes daemon-wide | `rate_global_per_sec`, default 50 | §7.2 |
+| Addresses the limiter tracks | sized at start (erratum 138): the larger of 1024, `max_slots` and 1.25 × ⌈`rate_global_per_sec` × 60 / `rate_per_min`⌉, at most 16384; logged as `limiter-table count=` | §7.2 |
 | The pin's time floor | 10 µs from the start of the lookup, not configurable | §7.3 |
 
 `rotation_due_age_s`, `max_conns_per_addr`, `rate_per_min` and `rate_burst`,
@@ -2488,3 +2489,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 136 | 16 | The locked-memory requirement is page × 10 × `max_slots` with the host's page (`sysconf(_SC_PAGESIZE)`), not 4 KiB × 10 × `max_slots`; 4 KiB is x86_64's figure, and 16 KiB and 64 KiB arm64 kernels need four and sixteen times it | `mlock` works in whole pages. Measured on a 16 KiB host: each secure allocation locks one 16 KiB page, so at 256 slots the need is 40 MiB against the shipped 32M, and the daemon logged the 4 KiB figure at INFO with no warning (F403) |
 | 137 | 15 | `listener-peer-rejected` carries `uid=` and a `detail=` naming the listener: `admin`, `site` or `proxy` | The bare event did not say which allowlist was wrong; both fields were already in §15's list (F450) |
+
+### Revision v1.95 (V4-308)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 138 | 15, 17 | The limiter's table is sized at start from the configuration, between 1024 and 16384 entries, and the start logs `limiter-table count=`; §17 gains the row | It was a fixed 1,024. An address holds its entry until its bucket refills, so `rate_global_per_sec` × 60 / `rate_per_min` are held at once: 1,500 at `rate_per_min = 2`, where every address not already tracked was answered 503, and `max_slots` above 1,024 could not be filled by distinct addresses (F338) |

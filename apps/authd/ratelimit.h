@@ -40,11 +40,21 @@
  * refill and full one millisecond after.
  */
 
-/* Entries. 1024 distinct addresses in flight is far beyond what a
- * single-threaded daemon with a 256-slot default pool can be serving, and the
- * table is deliberately larger than the pool so that a connection's bucket
- * survives the connection. */
-#define RATELIMIT_ENTRIES 1024u
+/* Entries. The table is the CALLER's storage, sized at start from the
+ * configuration (F338, V4-308). An address that connects once holds its entry
+ * until its bucket refills, 60000 / per_min ms, and new addresses are
+ * admitted at up to global_per_sec, so about global_per_sec x 60 / per_min
+ * entries are held at once: 600 at the defaults, but 1,500 at per_min = 2,
+ * past a fixed 1,024, where every address not already in the table was
+ * answered `limiter-table-full` -- and tightening per_min made it easier.
+ * Likewise max_slots above 1,024 could not be filled by distinct addresses.
+ *
+ * RATELIMIT_ENTRIES is the least a table holds (and what the defaults use);
+ * RATELIMIT_ENTRIES_MAX the most, because a refusal at a full table scans
+ * all of it. ratelimit_entries_wanted() is the uncapped figure, so the
+ * daemon can say when the cap is what binds. */
+#define RATELIMIT_ENTRIES      1024u
+#define RATELIMIT_ENTRIES_MAX 16384u
 
 /* Bounds for the operator-set values. The spec fixes no numbers (§17 has no
  * row for them), so these are policy with a documented default, the
@@ -87,7 +97,8 @@ typedef struct {
     uint64_t global_tokens_milli;
     uint64_t global_last_ms;
 
-    ratelimit_entry_t e[RATELIMIT_ENTRIES];
+    ratelimit_entry_t *e;    /* the caller's table (F338) */
+    size_t   n_entries;      /* 0 = no table: every address is DENY_TABLE */
 
     /* observable, for the operator and for tests */
     uint64_t admitted;
@@ -102,9 +113,21 @@ typedef struct {
  * a daemon that has just started does not refuse its first callers. Values
  * outside the documented bounds are clamped rather than rejected: the config
  * parser is the gate, and a limiter that failed to initialise would be worse
- * than one that is slightly stricter than asked. */
-void ratelimit_init(ratelimit_t *r, uint32_t per_min, uint32_t burst,
+ * than one that is slightly stricter than asked.
+ *
+ * `table` is `n_entries` entries of the caller's storage, which must outlive
+ * `r`; it is zeroed here. A NULL or empty table is not an error to crash on:
+ * the limiter then refuses every address with DENY_TABLE. */
+void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
+                    uint32_t per_min, uint32_t burst,
                     uint32_t global_per_sec, uint32_t max_conns, uint64_t now_ms);
+
+/* The entries a configuration can hold at once, with a quarter's headroom:
+ * the larger of RATELIMIT_ENTRIES, max_slots, and
+ * 1.25 x ceil(global_per_sec x 60 / per_min). Uncapped (F338). */
+uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
+/* The same, capped at RATELIMIT_ENTRIES_MAX: the size to give the table. */
+size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots);
 
 /* Admits one connection from `addr`, or says why not.
  *

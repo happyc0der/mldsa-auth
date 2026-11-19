@@ -73,6 +73,11 @@ proxy_uids = 997
 # cannot fix: a prober behind that same address still drains it for everyone
 # there until it refills (§18). If that bites, raise rate_burst; the global
 # bucket below bounds the cost either way.
+#
+# The limiter's table is sized from these at start: room for
+# rate_global_per_sec x 60 / rate_per_min addresses and a quarter more, at
+# least 1024 and max_slots, at most 16384 (`--check-config` prints
+# rate_table= and warns when the ceiling binds).
 rate_per_min = 5
 rate_burst = 10
 rate_global_per_sec = 50

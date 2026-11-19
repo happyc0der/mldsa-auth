@@ -751,6 +751,15 @@ prefix during your busy hours is neighbours being locked out. Raising
 `rate_burst` (say to 30) widens what one address may fail before it is
 refused; `rate_global_per_sec` still bounds the daemon's total signing work.
 
+The limiter tracks one entry per address until that address's bucket has
+refilled, so it needs room for about `rate_global_per_sec × 60 / rate_per_min`
+of them. The daemon sizes the table from those settings at start (since
+V4-308) and says the size: `info event=limiter-table count=1024` in the
+journal, `rate_table=` in the `--check-config` line. The most it holds is
+16384; `--check-config` warns when your rates can exceed that, and past it new
+addresses get a 503. A lower `rate_per_min` needs a larger table, not a
+smaller one.
+
 ## 17. Tell people what the browser cannot do
 
 The enrollment page says these itself; your help page should too.

@@ -52,6 +52,7 @@ typedef struct {
     authd_slot_t              local_slots[H_MAX_LOCAL];
     handshake_pending_store_t pending;
     ratelimit_t               rl;      /* live only when the fixture asked for PROXY v2 */
+    ratelimit_entry_t         rl_table[RATELIMIT_ENTRIES];   /* its table (F338) */
     int                       proxy_v2;
     store_t                  *store;
     mldsa_keypair_t           server_kp;
@@ -138,7 +139,7 @@ static inline int h_start_opts(h_daemon_t *d, const char *dir, const char *dbnam
     if (evloop_set_on_addr(&d->ev, authd_conn_on_addr) != 0) { return -1; }
     d->proxy_v2 = proxy_v2 ? 1 : 0;
     if (d->proxy_v2) {
-        ratelimit_init(&d->rl, RATELIMIT_PER_MIN_DEFAULT, RATELIMIT_BURST_DEFAULT,
+        ratelimit_init(&d->rl, d->rl_table, RATELIMIT_ENTRIES, RATELIMIT_PER_MIN_DEFAULT, RATELIMIT_BURST_DEFAULT,
                        RATELIMIT_GLOBAL_PER_SEC_DEF, RATELIMIT_MAX_CONNS_DEFAULT,
                        d->app.now_ms);
         d->app.rl = &d->rl;

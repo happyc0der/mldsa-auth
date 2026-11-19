@@ -24,13 +24,40 @@ static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
     return v;
 }
 
-void ratelimit_init(ratelimit_t *r, uint32_t per_min, uint32_t burst,
+uint64_t ratelimit_entries_wanted(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots)
+{
+    const uint64_t pm = (uint64_t)clamp_u32(per_min, 1u, RATELIMIT_PER_MIN_MAX);
+    const uint64_t gl = (uint64_t)clamp_u32(global_per_sec, 1u, RATELIMIT_GLOBAL_MAX);
+    const uint64_t held = (gl * 60u + pm - 1u) / pm;       /* rounded up */
+    uint64_t want = held + (held + 3u) / 4u;               /* a quarter's headroom */
+    if (want < (uint64_t)RATELIMIT_ENTRIES) {
+        want = (uint64_t)RATELIMIT_ENTRIES;
+    }
+    if (want < (uint64_t)max_slots) {
+        want = (uint64_t)max_slots;
+    }
+    return want;
+}
+
+size_t ratelimit_entries_for(uint32_t per_min, uint32_t global_per_sec, uint32_t max_slots)
+{
+    const uint64_t want = ratelimit_entries_wanted(per_min, global_per_sec, max_slots);
+    return (want > (uint64_t)RATELIMIT_ENTRIES_MAX) ? (size_t)RATELIMIT_ENTRIES_MAX : (size_t)want;
+}
+
+void ratelimit_init(ratelimit_t *r, ratelimit_entry_t *table, size_t n_entries,
+                    uint32_t per_min, uint32_t burst,
                     uint32_t global_per_sec, uint32_t max_conns, uint64_t now_ms)
 {
     if (r == NULL) {
         return;
     }
     memset(r, 0, sizeof *r);
+    if (table != NULL && n_entries > 0u) {
+        memset(table, 0, n_entries * sizeof *table);
+        r->e = table;
+        r->n_entries = n_entries;
+    }
     crypto_shorthash_keygen(r->hash_key);
     r->per_min        = clamp_u32(per_min, 1u, RATELIMIT_PER_MIN_MAX);
     r->burst          = clamp_u32(burst, 1u, RATELIMIT_BURST_MAX);
@@ -121,7 +148,7 @@ static size_t bucket_of(const ratelimit_t *r, const uint8_t *key, size_t key_len
     for (size_t i = 0; i < sizeof h; i++) {
         v = (v << 8) | (uint64_t)h[i];
     }
-    return (size_t)(v % (uint64_t)RATELIMIT_ENTRIES);
+    return (size_t)(v % (uint64_t)r->n_entries);   /* callers have checked n_entries != 0 */
 }
 
 static int same_key(const ratelimit_entry_t *e, const uint8_t *key, size_t key_len)
@@ -146,24 +173,27 @@ static int reclaimable(const ratelimit_t *r, const ratelimit_entry_t *e, uint64_
     return tmp.tokens_milli >= (uint64_t)r->burst * 1000u;
 }
 
-/* Finds `key`, or RATELIMIT_ENTRIES. Probing stops at the first genuinely free
+/* Finds `key`, or r->n_entries (which is also the answer with no table). Probing stops at the first genuinely free
  * entry, which is where an insert would have put it. An INDEX rather than a
  * pointer so the const and the mutating callers share one implementation
  * instead of one of them casting the qualifier away. */
 static size_t find_idx(const ratelimit_t *r, const uint8_t *key, size_t key_len)
 {
+    if (r->n_entries == 0u) {
+        return 0u;                    /* == r->n_entries: not found */
+    }
     const size_t b = bucket_of(r, key, key_len);
-    for (size_t n = 0; n < RATELIMIT_ENTRIES; n++) {
-        const size_t i = (b + n) % RATELIMIT_ENTRIES;
+    for (size_t n = 0; n < r->n_entries; n++) {
+        const size_t i = (b + n) % r->n_entries;
         const ratelimit_entry_t *e = &r->e[i];
         if (e->key_len == 0u) {
-            return RATELIMIT_ENTRIES;
+            return r->n_entries;
         }
         if (same_key(e, key, key_len)) {
             return i;
         }
     }
-    return RATELIMIT_ENTRIES;
+    return r->n_entries;
 }
 
 /* Finds `key` or makes room for it. NULL means the table is full of entries
@@ -173,12 +203,15 @@ static ratelimit_entry_t *find_or_add(ratelimit_t *r, const uint8_t *key, size_t
                                       uint64_t now_ms)
 {
     const size_t at = find_idx(r, key, key_len);
-    if (at != RATELIMIT_ENTRIES) {
+    if (at != r->n_entries) {
         return &r->e[at];
     }
+    if (r->n_entries == 0u) {
+        return NULL;
+    }
     size_t b = bucket_of(r, key, key_len);
-    for (size_t n = 0; n < RATELIMIT_ENTRIES; n++) {
-        ratelimit_entry_t *c = &r->e[(b + n) % RATELIMIT_ENTRIES];
+    for (size_t n = 0; n < r->n_entries; n++) {
+        ratelimit_entry_t *c = &r->e[(b + n) % r->n_entries];
         if (reclaimable(r, c, now_ms)) {
             memset(c, 0, sizeof *c);
             memcpy(c->key, key, key_len);
@@ -255,7 +288,7 @@ void ratelimit_release(ratelimit_t *r, const authd_addr_t *addr)
         return;
     }
     const size_t at = find_idx(r, key, key_len);
-    if (at != RATELIMIT_ENTRIES && r->e[at].conns > 0u) {
+    if (at != r->n_entries && r->e[at].conns > 0u) {
         r->e[at].conns--;
     }
 }
@@ -271,7 +304,7 @@ void ratelimit_refund(ratelimit_t *r, const authd_addr_t *addr, uint64_t now_ms)
         return;
     }
     const size_t at = find_idx(r, key, key_len);
-    if (at == RATELIMIT_ENTRIES) {
+    if (at == r->n_entries) {
         return;
     }
     ratelimit_entry_t *e = &r->e[at];
@@ -292,7 +325,7 @@ uint64_t ratelimit_tokens_milli(const ratelimit_t *r, const authd_addr_t *addr)
         return 0u;
     }
     const size_t at = find_idx(r, key, key_len);
-    return (at != RATELIMIT_ENTRIES) ? r->e[at].tokens_milli : 0u;
+    return (at != r->n_entries) ? r->e[at].tokens_milli : 0u;
 }
 
 uint32_t ratelimit_conns(const ratelimit_t *r, const authd_addr_t *addr)
@@ -306,5 +339,5 @@ uint32_t ratelimit_conns(const ratelimit_t *r, const authd_addr_t *addr)
         return 0u;
     }
     const size_t at = find_idx(r, key, key_len);
-    return (at != RATELIMIT_ENTRIES) ? r->e[at].conns : 0u;
+    return (at != r->n_entries) ? r->e[at].conns : 0u;
 }

@@ -923,12 +923,13 @@ static void test_login_over_ws(void)
 static void test_ratelimit(void)
 {
     static ratelimit_t r;
+    static ratelimit_entry_t rt[RATELIMIT_ENTRIES];
     const authd_addr_t a = { 4u, { 203u, 0u, 113u, 7u } };
     const authd_addr_t b = { 4u, { 203u, 0u, 113u, 8u } };
     const authd_addr_t none = { 0u, { 0 } };
 
     /* Req 12 again, at the limiter: no address is not a bucket, it is a refusal. */
-    ratelimit_init(&r, 5u, 2u, 1000u, 8u, 1000u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 5u, 2u, 1000u, 8u, 1000u);
     CHECK(ratelimit_admit(&r, &none, 1000u) == RATELIMIT_DENY_NO_ADDR,
           "limiter: a connection with no client address is refused, not pooled");
 
@@ -955,7 +956,7 @@ static void test_ratelimit(void)
     { static const uint32_t rates[] = { 5u, 61u, 100u, 600u, 1000u, 7777u };
       int exact = 1;
       for (size_t k = 0; k < sizeof rates / sizeof rates[0]; k++) {
-          ratelimit_init(&r, rates[k], 10u, 10000u, 8u, 0u);
+          ratelimit_init(&r, rt, RATELIMIT_ENTRIES, rates[k], 10u, 10000u, 8u, 0u);
           uint64_t admitted = 0;
           for (uint64_t ms = 0; ms < 60000u; ms++) {
               for (int j = 0; j < 10; j++) {
@@ -980,7 +981,7 @@ static void test_ratelimit(void)
       CHECK(exact, "limiter: an address asking ten times a millisecond is admitted its burst and its rate, "
                    "at rates that do and do not divide the minute (F310)"); }
     /* ...and the boundary at such a rate: 100 a minute is one token every 600 ms. */
-    ratelimit_init(&r, 100u, 1u, 10000u, 8u, 0u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 100u, 1u, 10000u, 8u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW, "limiter: 100 a minute, the burst of one");
     ratelimit_release(&r, &a);
     { int early = 0;
@@ -993,7 +994,7 @@ static void test_ratelimit(void)
 
     /* The global bucket, which is what bounds the damage when the addresses
      * are many and genuine -- or when the proxy is lying about them. */
-    ratelimit_init(&r, 1000u, 1000u, 2u, 100u, 0u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1000u, 1000u, 2u, 100u, 0u);
     { authd_addr_t c = { 4u, { 198u, 51u, 100u, 0u } };
       c.addr[3] = 1u; CHECK(ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW, "limiter: global 1");
       c.addr[3] = 2u; CHECK(ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW, "limiter: global 2");
@@ -1006,7 +1007,7 @@ static void test_ratelimit(void)
             "limiter: at 500 ms exactly one global token has returned"); }
 
     /* Concurrency, and the release that must balance it. */
-    ratelimit_init(&r, 1000u, 1000u, 10000u, 2u, 0u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1000u, 1000u, 10000u, 2u, 0u);
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
           ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
           ratelimit_conns(&r, &a) == 2u,
@@ -1022,7 +1023,7 @@ static void test_ratelimit(void)
      * spent a token, an address at its connection cap would be rate-limited
      * for something it never got to do. */
     { const uint64_t before = r.admitted;
-      ratelimit_init(&r, 1000u, 1000u, 10000u, 1u, 0u);
+      ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1000u, 1000u, 10000u, 1u, 0u);
       (void)ratelimit_admit(&r, &a, 0u);
       const uint64_t g = r.global_tokens_milli;
       CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_CONNS &&
@@ -1032,7 +1033,7 @@ static void test_ratelimit(void)
 
     /* The table refuses rather than evicting: forgetting the address that is
      * attacking you is the one behaviour a limiter must never have. */
-    ratelimit_init(&r, 1000u, 1000u, 10000u, 4u, 0u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1000u, 1000u, 10000u, 4u, 0u);
     { size_t admitted = 0;
       authd_addr_t c = { 4u, { 10u, 0u, 0u, 0u } };
       for (size_t i = 0; i < RATELIMIT_ENTRIES + 8u; i++) {
@@ -1052,9 +1053,50 @@ static void test_ratelimit(void)
       CHECK(ratelimit_admit(&r, &fresh, 60000u) == RATELIMIT_ALLOW,
             "limiter: an idle, refilled entry is reclaimed so the table recovers"); }
 
+    /* F338 (V4-308): the table is sized from the configuration. The sizes
+     * from literals: what a configuration can hold at once is
+     * global x 60 / per_min, with a quarter's headroom, and never less than
+     * 1024 or max_slots, nor more than the ceiling. */
+    CHECK(ratelimit_entries_for(5u, 50u, 256u) == 1024u,
+          "limiter size: the defaults (600 held, 750 wanted) keep the 1024-entry table (F338)");
+    CHECK(ratelimit_entries_for(2u, 50u, 256u) == 1875u,
+          "limiter size: rate_per_min = 2 holds 1500 addresses and gets 1875 entries (F338)");
+    CHECK(ratelimit_entries_for(5u, 100u, 256u) == 1500u,
+          "limiter size: rate_global_per_sec = 100 holds 1200 and gets 1500 entries (F338)");
+    CHECK(ratelimit_entries_for(5u, 50u, 4096u) == 4096u,
+          "limiter size: max_slots = 4096 gets an entry for every slot (F338)");
+    CHECK(ratelimit_entries_for(7u, 50u, 256u) == 1024u && ratelimit_entries_wanted(7u, 1000u, 256u) == 10715u,
+          "limiter size: a rate that does not divide is rounded up (8572 held, 10715 wanted) (F338)");
+    CHECK(ratelimit_entries_wanted(1u, 10000u, 256u) == 750000u &&
+          ratelimit_entries_for(1u, 10000u, 256u) == 16384u,
+          "limiter size: 750000 wanted is capped at the 16384-entry ceiling, and the uncapped figure says so (F338)");
+    CHECK(ratelimit_entries_for(0u, 0u, 0u) == 1024u,
+          "limiter size: zero rates are clamped, not divided by (F338)");
+    /* ...and the table the limiter is GIVEN is the one it fills: 1875
+     * entries admit 1875 distinct addresses where 1024 admitted 1024. */
+    { static ratelimit_entry_t big[1875];
+      ratelimit_init(&r, big, 1875u, 1000u, 1000u, 10000u, 4u, 0u);
+      size_t admitted = 0;
+      authd_addr_t c = { 4u, { 10u, 0u, 0u, 0u } };
+      for (size_t i = 0; i < 1875u + 8u; i++) {
+          c.addr[1] = (uint8_t)(i >> 16); c.addr[2] = (uint8_t)(i >> 8); c.addr[3] = (uint8_t)i;
+          if (ratelimit_admit(&r, &c, 0u) == RATELIMIT_ALLOW) { admitted++; }
+      }
+      CHECK(admitted == 1875u && r.denied_table == 8u,
+            "limiter size: a 1875-entry table admits 1875 distinct addresses and refuses the next 8 (F338)");
+      c.addr[1] = 0u; c.addr[2] = 0u; c.addr[3] = 5u;
+      CHECK(ratelimit_conns(&r, &c) == 1u,
+            "limiter size: an address in the larger table is still found"); }
+    /* No table is a refusal, not a crash. */
+    ratelimit_init(&r, NULL, 0u, 5u, 2u, 1000u, 8u, 0u);
+    CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_DENY_TABLE && r.denied_table == 1u &&
+          ratelimit_conns(&r, &a) == 0u && ratelimit_tokens_milli(&r, &a) == 0u,
+          "limiter size: a limiter given no table refuses every address as table-full");
+    ratelimit_release(&r, &a); ratelimit_refund(&r, &a, 0u);   /* and these are no-ops, not faults */
+
     /* V4-13d, F81: the refund an authenticated login earns. Exact values in
      * milli-tokens, because "it went up" would pass a refund of two. */
-    ratelimit_init(&r, 1u, 3u, 10000u, 8u, 0u);      /* 1 a minute: no refill inside a second */
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1u, 3u, 10000u, 8u, 0u);      /* 1 a minute: no refill inside a second */
     CHECK(ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW && ratelimit_admit(&r, &a, 0u) == RATELIMIT_ALLOW &&
           ratelimit_tokens_milli(&r, &a) == 1000u,
           "refund: two admissions leave 1 of a burst of 3 (the canary)");
@@ -1071,7 +1113,7 @@ static void test_ratelimit(void)
     CHECK(ratelimit_tokens_milli(&r, &a) == 3000u,
           "refund: never above the burst");
     /* refilled to now FIRST, then credited: 30 s at 1 a minute is half a token */
-    ratelimit_init(&r, 1u, 3u, 10000u, 8u, 0u);
+    ratelimit_init(&r, rt, RATELIMIT_ENTRIES, 1u, 3u, 10000u, 8u, 0u);
     (void)ratelimit_admit(&r, &a, 0u); (void)ratelimit_admit(&r, &a, 0u); (void)ratelimit_admit(&r, &a, 0u);
     ratelimit_refund(&r, &a, 30000u);
     CHECK(ratelimit_tokens_milli(&r, &a) == 1500u,
@@ -1188,7 +1230,7 @@ static void test_proxy_through_loop(void)
      * is the pin: handshake_responder_create_server_hello is what inserts into
      * it, so an empty ledger after a refusal is proof no signature was spent --
      * which is the cost 7.3 assigns to "the rate limiter's problem". */
-    { ratelimit_init(&d.rl, 1u, 1u, 10000u, 8u, d.app.now_ms);
+    { ratelimit_init(&d.rl, d.rl_table, RATELIMIT_ENTRIES, 1u, 1u, 10000u, 8u, d.app.now_ms);
       char resp[512];
       /* V4-270 (F424): each probe carries a real ClientHello, masked as a
        * browser sends it, in the SAME write as its upgrade. Without one the
@@ -1248,7 +1290,7 @@ static void test_proxy_through_loop(void)
      * refund the third login from one address is refused. With it, five in a
      * row get their codes -- the carrier-NAT case -- while handshakes that do
      * not authenticate still drain the address and are refused at the burst. */
-    { ratelimit_init(&d.rl, 1u, 2u, 10000u, 8u, d.app.now_ms);
+    { ratelimit_init(&d.rl, d.rl_table, RATELIMIT_ENTRIES, 1u, 2u, 10000u, 8u, d.app.now_ms);
       int all = 1;
       for (int i = 0; i < 5; i++) {
           h_client_t c;

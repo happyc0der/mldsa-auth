@@ -20750,3 +20750,41 @@ No code.
 Counts: unchanged by this step (724 mutations, 135 campaigns, 769
 anchors; 531 findings, the 16 above open; spec v1.94, 137 errata; 66
 tests).
+
+## V4-308 — the limiter's table is sized from the configuration (F338)
+
+Review 66 corrected why F338 had been left open: no spec text or gate named
+the table's size, so the recommended fix, (b), was the daemon's own business.
+Done here.
+
+- **The size.** The larger of 1,024, `max_slots` and 1.25 × the addresses
+  the rates can hold at once (`rate_global_per_sec` × 60 / `rate_per_min`,
+  rounded up), capped at 16,384. The defaults keep 1,024. `rate_per_min = 2`
+  gets 1,875; `max_slots = 4096` gets 4,096.
+- **No allocation.** The table is the caller's storage. The daemon's is a
+  static array at the ceiling, 768 KiB of demand-zero BSS (48 B an entry), and only the
+  entries in use are touched. This follows the ledger array's precedent in
+  `authd_main.c`, with nothing to free at the early exits. The test harness
+  embeds a 1,024-entry table, so `h_daemon_t` on a test's stack is no larger
+  than before.
+- **Why a ceiling.** A new address arriving at a full table scans all of it
+  before being refused. Measured here, optimised: 5 µs at 1,024 entries, 43 µs
+  at 16,384, which is still less than the signature the limiter exists to
+  price. The largest accepted rates would ask for 750,000 entries; the
+  ceiling holds, and `--check-config` warns with both numbers when the rates
+  can exceed it.
+- **Said aloud.** The start logs `limiter-table count=` (a new event; `count`
+  is an existing field), and the `--check-config` line carries `rate_table=`.
+- **A limiter given no table** refuses every address as table-full. It does
+  not fault.
+- **Not changed, recorded:** probing is linear, and at a full table a
+  lookup of an address that is not there also scans to the end. That is the
+  43 µs above.
+
+Campaign v166: seven mutations (TS1 to TS7).
+
+Spec v1.95, erratum 138.
+
+Counts: 731 mutations, 136 campaigns, 776 anchors; 531 findings (F148,
+F156, F273, F288, F309, F398, F419, F421, F431, F435, F436, F437, F451,
+F453 and F511 open); spec v1.95, 138 errata; 66 tests.
