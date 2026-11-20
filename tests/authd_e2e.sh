@@ -37,6 +37,7 @@ DPID=""
 UPID=""
 SUPID=""
 RESTPID=""
+LOCKPID=""
 RU=""
 cleanup() {
     if [ -n "$DPID" ]; then kill "$DPID" 2>/dev/null || true; fi
@@ -45,7 +46,9 @@ cleanup() {
     # (three such daemons were found hours after a campaign, V4-127). Their
     # variables are not cleared when a leg ends, so only a process that is
     # still this shell's child is signalled.
-    for p in "$SUPID" "$RESTPID"; do
+    # F666: and the process that holds the store's lock for leg 1d, which
+    # would otherwise keep this test's output pipe open for two minutes.
+    for p in "$SUPID" "$RESTPID" "$LOCKPID"; do
         [ -n "$p" ] || continue
         [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "$$" ] && kill "$p" 2>/dev/null
     done

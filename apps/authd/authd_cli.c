@@ -193,6 +193,17 @@ static void init_leftovers(const char *prog, const char *pass_path, const char *
     }
 }
 
+/* F660 (V4-341): `store-corrupt` for a file that is not shaped as a store
+ * says which object it stopped at. A store someone ran ANALYZE on was refused
+ * by V4-339 with that one word and nothing else. */
+static void store_say_shape(const char *prog, store_status_t st)
+{
+    if (st == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
+        fprintf(stderr, "%s: the file is not shaped as this build makes a store; the first difference: %s. "
+                        "Nothing in it was changed\n", prog, store_shape_note());
+    }
+}
+
 static int cmd_init(int argc, char **argv, const char *prog)
 {
     const char *dir = NULL, *id_s = NULL, *pass_path = NULL;
@@ -312,6 +323,7 @@ static int cmd_init(int argc, char **argv, const char *prog)
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (ss != STORE_OK) {
         fprintf(stderr, "%s init: failed: %s: %s\n", prog, db, store_status_name(ss));
+        store_say_shape(prog, ss);
         init_leftovers(prog, pass_path, ek, pub, db);
         return EX_FAIL;
     }
@@ -1020,7 +1032,9 @@ static int cmd_audit_verify(int argc, char **argv, const char *prog)
     const store_status_t so = store_open_existing(db, kek, &store);
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (so != STORE_OK) {
-        return failed(prog, "audit-verify", db, store_status_name(so));
+        const int rf = failed(prog, "audit-verify", db, store_status_name(so));
+        store_say_shape(prog, so);
+        return rf;
     }
 
     /* The verdict, the count and the head all come from ONE walk of the chain
@@ -1138,7 +1152,9 @@ static int cmd_pseudonym(int argc, char **argv, const char *prog)
     const store_status_t so = store_open_existing(db, kek, &store);
     secure_mem_free(kek, STORE_KEK_BYTES);
     if (so != STORE_OK) {
-        return failed(prog, "pseudonym", db, store_status_name(so));
+        const int rf = failed(prog, "pseudonym", db, store_status_name(so));
+        store_say_shape(prog, so);
+        return rf;
     }
     /* F231: the pseudonym is keyed from this key AND this store. Under a key
      * the store was not written with, what would be printed is a well-formed

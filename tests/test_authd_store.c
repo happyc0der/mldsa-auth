@@ -26,6 +26,7 @@
 #include <sqlite3.h>
 
 #include "store.h"
+#include "schema.sql.h"     /* STORE_SCHEMA_SQL: its text is pinned below (F662) */
 #include "mldsa_wrap.h"
 #include "kex.h"          /* kex_hkdf_sha256, to recompute key_log independently */
 
@@ -1430,6 +1431,22 @@ int main(void)
               "prev_mac BLOB, mac BLOB); INSERT INTO audit2 SELECT * FROM audit; DROP TABLE audit; "
               "ALTER TABLE audit2 RENAME TO audit;",
               "shape: a store whose audit table declares a column otherwise is refused at open (F653)" },
+            /* V4-341 (F661, F663): the DEFINITIONS, not only the names and
+             * the column lists. Review 86 opened each of these with V4-339. */
+            { "DROP INDEX one_active_key; CREATE INDEX one_active_key ON device_keys(valid_to);",
+              "shape: a store whose one-active-key index is no longer unique is refused at open (F661)" },
+            { "DROP INDEX one_active_key; "
+              "CREATE UNIQUE INDEX one_active_key ON device_keys(handle) WHERE status='nonsense';",
+              "shape: a store whose one-active-key index has another WHERE is refused at open (F661)" },
+            { "CREATE TABLE audit2(seq INTEGER PRIMARY KEY, at INT, event TEXT CHECK(event <> 'device-revoke'), "
+              "user_id BLOB, handle BLOB, detail TEXT, prev_mac BLOB, mac BLOB); "
+              "INSERT INTO audit2 SELECT * FROM audit; DROP TABLE audit; ALTER TABLE audit2 RENAME TO audit;",
+              "shape: a store whose audit table has a CHECK this build does not write is refused at open (F661)" },
+            { "PRAGMA foreign_keys=OFF; "
+              "CREATE TABLE audit2(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, "
+              "handle BLOB REFERENCES tokens(token_hash) ON DELETE CASCADE, detail TEXT, prev_mac BLOB, mac BLOB); "
+              "INSERT INTO audit2 SELECT * FROM audit; DROP TABLE audit; ALTER TABLE audit2 RENAME TO audit;",
+              "shape: a store whose audit table has a foreign key that deletes its rows is refused at open (F663)" },
             { "CREATE INDEX zz_at ON audit(at);",
               "shape: a store with an index this build does not make is refused at open (F653)" },
             { "CREATE TABLE zz_extra(x);",
@@ -1455,6 +1472,97 @@ int main(void)
             if (w != NULL) { store_close(w); }
             if (t != NULL) { store_close(t); }
         }
+        /* V4-341 (F660): what SQLite itself leaves in a file is not a
+         * difference. V4-339 refused a store on which someone had run
+         * ANALYZE, as `store-corrupt`, at the next start and at every
+         * audit-verify. */
+        { static const struct { const char *sql; const char *what; } KEPT[] = {
+              { "ANALYZE;", "shape: a store on which ANALYZE was run still opens, for the daemon and for a tool (F660)" },
+              { "PRAGMA optimize;", "shape: so does one after PRAGMA optimize (F660)" },
+              { "CREATE TABLE zz_seq(a INTEGER PRIMARY KEY AUTOINCREMENT); DROP TABLE zz_seq;",
+                "shape: and one in which a dropped AUTOINCREMENT table left sqlite_sequence (F660)" },
+              { "VACUUM;", "shape: and one that was vacuumed (the control)" },
+          };
+          for (size_t e = 0; e < sizeof KEPT / sizeof KEPT[0]; e++) {
+              char name[40];
+              snprintf(name, sizeof name, "kept%zu.sqlite3", e);
+              store_t *s = fresh_store(name, dbp, sizeof dbp);
+              if (s == NULL) { printf("FAIL: open kept\n"); return 1; }
+              const int made = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+                               store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK;
+              store_close(s);
+              const int done = made && raw_sql(dbp, KEPT[e].sql) == 0;
+              store_t *w = NULL, *t = NULL;
+              const store_status_t rw = store_open(dbp, KEK, &w);
+              const int note_empty = (store_shape_note()[0] == '\0');
+              const store_status_t rd = store_open_existing(dbp, KEK, &t);
+              CHECK(done && rw == STORE_OK && rd == STORE_OK && note_empty &&
+                    w != NULL && store_audit_verify(w) == STORE_OK, KEPT[e].what);
+              if (w != NULL) { store_close(w); }
+              if (t != NULL) { store_close(t); }
+          }
+          long long n = 0;
+          char txt[32] = "";
+          path(dbp, sizeof dbp, "kept0.sqlite3");
+          CHECK(raw_row(dbp, "SELECT count(*), '' FROM sqlite_master WHERE name = 'sqlite_stat1';", &n, txt, sizeof txt) == 0 && n == 1,
+                "shape: the ANALYZE really left its table in the first of those (the control)"); }
+        /* F660: a refusal says where it stopped. */
+        { store_t *s = fresh_store("note.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open note\n"); return 1; }
+          store_close(s);
+          store_t *w = NULL;
+          CHECK(raw_sql(dbp, "CREATE TABLE zz_extra(x);") == 0 && store_open(dbp, KEK, &w) == STORE_ERR_DAMAGED &&
+                strstr(store_shape_note(), "zz_extra") != NULL,
+                "shape: a refusal names the first object this build did not make (F660)");
+          if (w != NULL) { store_close(w); } }
+        /* F662: since the definitions are compared as text, the TEXT of the
+         * schema is part of every store ever made. One space more in it and
+         * every store the released builds made is refused at the next
+         * start, with every other test passing, because each of them makes
+         * its store and its reference from the same string. This is the
+         * text as it has been since V4-9a (2026-09-17) and in every tagged
+         * build that has a daemon. A change here is a migration, with a new
+         * STORE_SCHEMA_VERSION: it is not made by updating this digest. */
+        { unsigned char dg[crypto_hash_sha256_BYTES];
+          char hex[2 * sizeof dg + 1];
+          crypto_hash_sha256(dg, (const unsigned char *)STORE_SCHEMA_SQL, strlen(STORE_SCHEMA_SQL));
+          (void)sodium_bin2hex(hex, sizeof hex, dg, sizeof dg);
+          const int same = strcmp(hex, "5275e95ceb40c43149bd7565fa55db3cf6f227b28171263baa5cd1e2e19f0b8d") == 0;
+          if (!same) { printf("  the schema's text now hashes to %s\n", hex); }
+          CHECK(same, "shape: the schema's text is, byte for byte, the one every released store was made with (F662)"); }
+        /* V4-341 (F664): the daemon's open LOOKS before it touches. A
+         * database that is not a store was switched to WAL and given nine
+         * tables before it was refused; a store with its index dropped was
+         * given the index back and served. */
+        { char other[512];
+          path(other, sizeof other, "not-a-store.sqlite3");
+          (void)unlink(other);
+          sqlite3 *h = NULL;
+          const int made = sqlite3_open_v2(other, &h, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) == SQLITE_OK &&
+                           sqlite3_exec(h, "CREATE TABLE somebody_elses(x); INSERT INTO somebody_elses VALUES(1);",
+                                        NULL, NULL, NULL) == SQLITE_OK;
+          if (h != NULL) { (void)sqlite3_close(h); }
+          store_t *w = NULL;
+          const store_status_t rw = store_open(other, KEK, &w);
+          long long n = -1;
+          char mode[32] = "";
+          const int read = raw_row(other, "SELECT (SELECT count(*) FROM sqlite_master), journal_mode FROM pragma_journal_mode;",
+                                   &n, mode, sizeof mode) == 0;
+          CHECK(made && rw != STORE_OK && w == NULL && read && n == 1 && strcmp(mode, "wal") != 0,
+                "shape: a database that is not a store is refused and left as it was: one table, not in WAL (F664)");
+          if (w != NULL) { store_close(w); }
+          store_t *s = fresh_store("noindex.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open noindex\n"); return 1; }
+          store_close(s);
+          w = NULL;
+          const int dropped = raw_sql(dbp, "DROP INDEX one_active_key;") == 0;
+          const store_status_t ri = store_open(dbp, KEK, &w);
+          n = -1;
+          CHECK(dropped && ri == STORE_ERR_DAMAGED && w == NULL &&
+                raw_row(dbp, "SELECT count(*), '' FROM sqlite_master WHERE name = 'one_active_key';", &n, mode, sizeof mode) == 0 &&
+                n == 0,
+                "shape: a store whose index was dropped is refused by the daemon too, and is not given it back (F664)");
+          if (w != NULL) { store_close(w); } }
         /* Planted while the store is OPEN: the daemon does not look at the
          * shape again until its next start, and until then nothing the file
          * holds is run. The revocation's row is written. */

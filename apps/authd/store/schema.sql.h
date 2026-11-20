@@ -15,6 +15,14 @@
  * schema_version is stored in meta; STORE_SCHEMA_VERSION below is what this
  * build writes and requires. A store from a newer schema is refused rather
  * than silently mis-read.
+ *
+ * F662 (V4-341): THE TEXT BELOW IS COMPARED, byte for byte, with what every
+ * existing store holds in sqlite_master (store.c, schema_describe). SQLite
+ * keeps each CREATE statement as it was written, spaces included. So an
+ * edit here that changes nothing about the schema -- a space, a reordered
+ * constraint, a keyword's case -- makes every store in the field
+ * `store-corrupt` at its next start. Any change is a migration with a new
+ * STORE_SCHEMA_VERSION. test_authd_store pins the text's digest.
  */
 
 #define STORE_SCHEMA_VERSION STORE_SCHEMA_VERSION_PUBLIC

@@ -339,6 +339,11 @@ int main(int argc, char **argv)
         kek = NULL;
         if (ss != STORE_OK) {
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.store_path, store_status_name(ss));
+            /* F660: which object it stopped at. */
+            if (ss == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
+                fprintf(stderr, "mldsa-authd: the file is not shaped as this build makes a store; the first "
+                                "difference: %s. Nothing in it was changed\n", store_shape_note());
+            }
             mldsa_keypair_free(&server_kp);
             free(slots); free(conns);
             return 1;

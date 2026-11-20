@@ -3,11 +3,14 @@
 
 Usage: mutate_v184.py <repo> <ID>
 
-    SH1   the shape is not checked at open.
-    SH2   the columns are not compared, only the objects and their count.
+    SH1   the shape is not checked inside the open's transaction, which is the only check a tool's open has.
     SH3   triggers the file holds are run.
-    SH5   a tool that only reads does not check the shape.
     SH6   an audit row's detail may be stored as NULL.
+    SH7   an object's definition is not compared (V4-341).
+    SH8   SQLite's own tables are part of the shape.
+    SH9   the daemon writes to a file before it looks at it.
+    SH10  a refusal does not say where it stopped.
+    SH11  one space more in the schema's text (every released store refused).
 """
 import sys, pathlib
 ST = "apps/authd/store/store.c"
@@ -15,12 +18,18 @@ ST = "apps/authd/store/store.c"
 M = {
     "SH1": [(ST, "    if ((r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; }\n",
              "    if (0 && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; } /* MUTATION SH1 */\n")],
-    "SH2": [(ST, "        \"FROM sqlite_master m, pragma_table_xinfo(m.name) x WHERE m.type = 'table' ORDER BY m.name, x.cid;\",\n",
-             "        \"FROM sqlite_master m, pragma_table_xinfo(m.name) x WHERE m.type = 'tablex' ORDER BY m.name, x.cid;\", /* MUTATION SH2 */\n")],
     "SH3": [(ST, "    if (sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_TRIGGER, 0, &on) != SQLITE_OK || on != 0 ||\n        sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_VIEW, 0, &on) != SQLITE_OK || on != 0 ||\n",
              "    if ( /* MUTATION SH3 */\n        sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_VIEW, 0, &on) != SQLITE_OK || on != 0 ||\n")],
-    "SH5": [(ST, "    if ((r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; }\n",
-             "    if (!existing && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; } /* MUTATION SH5 */\n")],
+    "SH7": [(ST, "        \"SELECT type, name, tbl_name, ifnull(sql, '') FROM sqlite_master \"\n",
+             "        \"SELECT type, name, tbl_name, '' FROM sqlite_master \" /* MUTATION SH7 */\n")],
+    "SH8": [(ST, "        \"WHERE NOT (type = 'table' AND name LIKE 'sqlite\\\\_%' ESCAPE '\\\\') ORDER BY type, name;\",\n",
+             "        \"WHERE NOT (type = 'tablex' AND name LIKE 'sqlite\\\\_%' ESCAPE '\\\\') ORDER BY type, name;\", /* MUTATION SH8 */\n")],
+    "SH9": [(ST, "        if (objects > 0 && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail; }\n",
+             "        if (0 && objects > 0 && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail; } /* MUTATION SH9 */\n")],
+    "SH10": [(ST, "            if (r != STORE_OK) { shape_note_set(a, b); }\n",
+              "            if (0 && r != STORE_OK) { shape_note_set(a, b); } /* MUTATION SH10 */\n")],
+    "SH11": [("apps/authd/store/schema.sql.h", "    \"CREATE TABLE IF NOT EXISTS meta(\"\n",
+              "    \"CREATE TABLE IF NOT EXISTS meta( \" /* MUTATION SH11 */\n")],
     "SH6": [(ST, "    return audit_text_ok(st, 2, 0) && audit_text_ok(st, 5, 0);   /* F655: the writer never stored a NULL */\n",
              "    return audit_text_ok(st, 2, 0) && audit_text_ok(st, 5, 1); /* MUTATION SH6 */\n")],
 }

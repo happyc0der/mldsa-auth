@@ -22358,3 +22358,60 @@ No code, test, campaign or spec change.
 
 Counts: 815 mutations, 154 campaigns, 860 anchors; 659 findings (the 18
 above open); spec v1.110, 159 errata; 66 tests.
+
+## V4-341: what the eighty-sixth review found in V4-339 (F660 to F666)
+
+**The eighty-sixth review** read V4-339's commit, ran its own programs
+against stores that build had made, and read the web client's handling of
+secrets. One Medium, four Low, two Info, and one Low found here while
+writing the records. The Medium was in a commit that had not reached main,
+and V4-339 was held back until this step could land with it. The review
+found the corrected `stdout_gone` helper sound, and nothing in the web
+client's handling of secrets.
+
+- **F660 (Medium).** V4-339 refused a store on which `ANALYZE` had been
+  run. Tables SQLite makes for itself are no longer part of the shape, and
+  a refusal names the first object that differs. The message exists
+  because the first thing an operator met with this would ask is "what is
+  wrong with it", and the daemon knew.
+- **F661, F663 (Low).** The check compared names and columns. It now
+  compares each object's `CREATE` text with the text the same schema leaves
+  in an empty in-memory database. That is one query where V4-339 had
+  three, and it sees a constraint removed, an index redefined and a
+  foreign key added, which the three did not.
+  - V4-339's record says the comparison was deliberately "not as text".
+    The reason given then was that text is fragile. It is, in one
+    direction only: the same schema written differently is refused. The
+    other direction, a different schema accepted, is the one that matters
+    to the check, and text has none of it.
+- **F662 (Low), found here.** The fragile direction, then: the schema's
+  text is now part of every store. A test pins its digest, the header says
+  so, and the text was confirmed unchanged since V4-9a and identical in
+  both tagged builds that have a daemon. What the check does not reach is
+  in the row and in erratum 160.
+- **F664 (Low).** The daemon looks before it writes, and makes the schema
+  only in an empty file, in one transaction.
+- **F665 (Info).** Erratum 160. **F666 (Info).** The tests' leftovers.
+- The runbook's "When it will not start" has the new message.
+
+Campaign v184 after this step: SH1 (now: the check inside the open's
+transaction, the only one a tool's open has), SH3, SH6, and new SH7 (a
+definition is not compared), SH8 (SQLite's own tables are part of the
+shape), SH9 (the daemon writes before it looks), SH10 (a refusal does not
+say where), SH11 (one space more in the schema's text). All KILLED by
+hand. Two were removed: SH2 (the columns are not compared), whose code is
+gone, having survived once the text was compared; and SH5 (a tool does
+not check), which had become the same mutant as SH1.
+
+This step moved the anchors of v110 IL1, v130 RD1 and v89 OE8 and OE9;
+each was re-anchored and killed again by hand.
+
+After a batch of hand controls three gate tests failed for a missing
+`libmldsa_authd.a`: `--target` rebuilds leave the library out. The whole
+tree is built before the suite is run.
+
+Spec v1.111: erratum 160 (9.2).
+
+Counts: 818 mutations, 154 campaigns, 863 anchors; 666 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644 and F657 open); spec v1.111, 160 errata; 66 tests.

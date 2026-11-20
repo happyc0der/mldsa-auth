@@ -165,7 +165,7 @@ try {
     // login. It answers ERROR(0x05); it used to close, which read as the key
     // being refused, and with the stale pending key refused too the page said
     // neither key authenticates. The store is made to refuse a new login code
-    // by a trigger written from a second connection, removed afterwards.
+    // by a second connection that holds its write lock for the login.
     const { store, params } = await fresh();
     const stale = client.newIdentity(PASS, params.handle);
     await store.stagePending(params.handle, stale.envelope);
@@ -181,11 +181,15 @@ try {
       'c.execute("BEGIN IMMEDIATE")\nopen(sys.argv[2], "w").close()\ntime.sleep(120)', db, flag], { stdio: 'ignore' });
     for (let i = 0; i < 100 && !existsSync(flag); i++) { await new Promise((r) => setTimeout(r, 50)); }
     const blocked = existsSync(flag);
-    let err = null;
-    try { const s = await flows.login(client, store, params); await s.close(); } catch (e) { err = e; }
-    const unblocked = holder.exitCode === null;        // it held the lock to the end
-    holder.kill();
-    await new Promise((r) => holder.once('exit', r));
+    let err = null, unblocked = false;
+    try {
+      try { const s = await flows.login(client, store, params); await s.close(); } catch (e) { err = e; }
+      unblocked = holder.exitCode === null;            // it held the lock to the end
+    } finally {
+      // F666: whatever happens above, the holder does not outlive it.
+      holder.kill();
+      await new Promise((r) => (holder.exitCode !== null || holder.signalCode !== null ? r() : holder.once('exit', r)));
+    }
     check(blocked && unblocked,
           `recovery, login not recorded: the store was made to refuse a login code, and put back (${blocked}, ${unblocked})`);
     check(err !== null && err.name !== 'RecoveryRefused',

@@ -79,6 +79,11 @@ store_status_t store_open(const char *path, const uint8_t kek[STORE_KEK_BYTES], 
  * second). Only reads may be made through the store it returns. */
 store_status_t store_open_existing(const char *path, const uint8_t kek[STORE_KEK_BYTES], store_t **out);
 
+/* After an open answered STORE_ERR_DAMAGED because the file is not shaped as
+ * this build makes a store (spec 9.2, invariant 5): the first line of the
+ * file's description that differs, for the message. "" otherwise. */
+const char *store_shape_note(void);
+
 /* 1 if the open that returned `s` made the store -- found no store id and
  * generated one -- and 0 if it found a store already there (F199). The
  * daemon says so at start: a mistyped store_path is otherwise a daemon that

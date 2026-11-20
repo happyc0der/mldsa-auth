@@ -55,19 +55,19 @@ M = {
     "OE8": [(CLI, "    const store_status_t so = store_open_existing(db, kek, &store);\n"
                   "    secure_mem_free(kek, STORE_KEK_BYTES);\n"
                   "    if (so != STORE_OK) {\n"
-                  "        return failed(prog, \"audit-verify\", db, store_status_name(so));\n",
+                  "        const int rf = failed(prog, \"audit-verify\", db, store_status_name(so));\n",
                   "    const store_status_t so = store_open(db, kek, &store); /* MUTATION OE8 */\n"
                   "    secure_mem_free(kek, STORE_KEK_BYTES);\n"
                   "    if (so != STORE_OK) {\n"
-                  "        return failed(prog, \"audit-verify\", db, store_status_name(so));\n")],
+                  "        const int rf = failed(prog, \"audit-verify\", db, store_status_name(so));\n")],
     "OE9": [(CLI, "    const store_status_t so = store_open_existing(db, kek, &store);\n"
                   "    secure_mem_free(kek, STORE_KEK_BYTES);\n"
                   "    if (so != STORE_OK) {\n"
-                  "        return failed(prog, \"pseudonym\", db, store_status_name(so));\n",
+                  "        const int rf = failed(prog, \"pseudonym\", db, store_status_name(so));\n",
                   "    const store_status_t so = store_open(db, kek, &store); /* MUTATION OE9 */\n"
                   "    secure_mem_free(kek, STORE_KEK_BYTES);\n"
                   "    if (so != STORE_OK) {\n"
-                  "        return failed(prog, \"pseudonym\", db, store_status_name(so));\n")],
+                  "        const int rf = failed(prog, \"pseudonym\", db, store_status_name(so));\n")],
     "OE10": [(ST, "            \"WHERE user_id=?1 AND status<>?2;\",\n",
                   "            \"WHERE user_id=?1;\", /* MUTATION OE10 */\n")],
     "OE11": [(ST, "            r = (rc == SQLITE_DONE) ? STORE_ERR_NOT_FOUND : (rc == SQLITE_ROW ? STORE_OK : STORE_ERR_DB);\n",

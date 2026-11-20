@@ -2646,7 +2646,7 @@ static void test_local_pool_full_waits(void)
 }
 
 /* Run one statement on the store from a second connection, as a writer beside
- * the daemon would. Used only to plant and remove the triggers below. */
+ * the daemon would. */
 /* V4-339 (F653): a write of the daemon's is made to fail by HOLDING THE
  * WRITE LOCK from a second connection, for as long as the request takes.
  * These tests used to plant a trigger that raised; the daemon's connection
@@ -2719,10 +2719,11 @@ static long long store_int(const char *db, const char *sql)
  * the session (spec §14). RECOVERY-USE dropped the status of the write that
  * counts a wrong code, and answered `invalid` for a guess it had not counted.
  *
- * The write is failed by a trigger planted from a second connection: it lets
- * the first, non-sliding update through (the value does not change) and
- * refuses the one that slides. Each half ends by removing the trigger and
- * showing the ordinary answer, so `internal` is the trigger's doing. */
+ * The sliding write is failed by the store's own fault hook (the second
+ * write of the request; the first, which does not slide, goes through), and
+ * the count's by a second connection holding the write lock (V4-339; both
+ * were planted triggers). Each half ends by removing the obstacle and
+ * showing the ordinary answer, so `internal` is the obstacle's doing. */
 static void test_store_write_failure(void)
 {
     static const char DB[] = "wfail.sqlite3";

@@ -1251,6 +1251,16 @@ Common ones, and what they actually are:
   a backup (step 12). The daemon does not start in either case, because
   every entry it appended would be under a key the chain does not verify
   with.
+- **`…/store.sqlite3: store-corrupt`**, followed by **`the file is not
+  shaped as this build makes a store; the first difference: …`** (exit 1,
+  since V4-341) — the file holds a table, index, trigger or view this
+  build does not make, or lacks one it does, or one of them is defined
+  differently. The line names the first. Nothing in the file was changed
+  by the attempt. If you did not do it (a tool that added an index, a
+  schema edited by hand), treat it as an incident: someone who can write
+  the file has, so restore a backup (step 12) and find out how. Running
+  `ANALYZE`, `PRAGMA optimize` or `VACUUM` on the store does not cause
+  this. A file made by a newer build says `schema-too-new` instead.
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

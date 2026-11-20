@@ -25,9 +25,9 @@ M = {
              "        const char *clash = path_exists(key) ? key : path_exists(pub) ? pub : NULL;\n",
              "        const char *clash = path_exists(key) ? key : NULL; /* MUTATION KS2 */\n")],
     "IL1": [(CL,
-             "        fprintf(stderr, \"%s init: failed: %s: %s\\n\", prog, db, store_status_name(ss));\n"
+             "        store_say_shape(prog, ss);\n"
              "        init_leftovers(prog, pass_path, ek, pub, db);\n",
-             "        fprintf(stderr, \"%s init: failed: %s: %s\\n\", prog, db, store_status_name(ss));\n"
+             "        store_say_shape(prog, ss);\n"
              "        /* MUTATION IL1 */\n")],
     "IL2": [(CL,
              "    const char *paths[4] = { pass_path, ek, pub, db };\n",

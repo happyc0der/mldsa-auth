@@ -609,22 +609,31 @@ static store_status_t has_meta_table(sqlite3 *db, int *found)
  * index that omits a forged row: the chain's readers walk the index and
  * every other reader of the file sees the row (F654).
  *
- * So: triggers and views are switched off on the connection, the schema
- * cannot be written through it, and the objects in the file -- every table,
- * index, trigger and view, every column with its type, its NOT NULL, its
- * default and its place in the key, and each table's kind -- must be exactly
- * those the schema above makes in an empty database. Compared as SQLite
- * itself describes the two, not as text, so it does not turn on how the
- * CREATE statements were spaced by whichever build wrote the file. A store
- * that differs is STORE_ERR_DAMAGED: it is not this daemon's store. */
+ * So: triggers and views are switched off on the connection, and the objects
+ * in the file -- every table, index, trigger and view, each with the text
+ * that defines it -- must be exactly those the schema above makes in an
+ * empty database (V4-341: the definitions; V4-339 compared names and column
+ * lists, and review 86 opened stores with their constraints taken out). A
+ * store that differs is STORE_ERR_DAMAGED: it is not this daemon's store. */
 static store_status_t schema_describe(sqlite3 *db, sqlite3_str *out)
 {
     static const char *const Q[] = {
-        "SELECT type, name, tbl_name FROM sqlite_master ORDER BY type, name;",
-        "SELECT m.name, x.cid, x.name, x.type, x.\"notnull\", ifnull(x.dflt_value, ''), x.pk, x.hidden "
-        "FROM sqlite_master m, pragma_table_xinfo(m.name) x WHERE m.type = 'table' ORDER BY m.name, x.cid;",
-        "SELECT name, type, ncol, wr, strict FROM pragma_table_list "
-        "WHERE schema = 'main' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name;",
+        /* F661 (V4-341): with each object's own CREATE text. Names and
+         * column lists alone let through a table with its CHECKs and
+         * REFERENCES taken out, the one-active-key index made non-unique or
+         * given another WHERE, and a foreign key planted with ON DELETE
+         * CASCADE -- which is run with triggers off (F663). The text is the
+         * file's against that of an empty database the SAME statements have
+         * just made in the same library, so it is equal unless someone
+         * changed it; the statements have not changed since the first store
+         * (V4-7).
+         * F660: SQLite's own tables are not ours to judge. `ANALYZE` or
+         * `PRAGMA optimize` leaves sqlite_stat1, a dropped AUTOINCREMENT
+         * table leaves sqlite_sequence; neither holds anything that runs,
+         * nobody can create a table by such a name, and V4-339 refused the
+         * whole store for them. */
+        "SELECT type, name, tbl_name, ifnull(sql, '') FROM sqlite_master "
+        "WHERE NOT (type = 'table' AND name LIKE 'sqlite\\_%' ESCAPE '\\') ORDER BY type, name;",
     };
     for (size_t q = 0; q < sizeof Q / sizeof Q[0]; q++) {
         sqlite3_stmt *st = NULL;
@@ -651,8 +660,35 @@ static store_status_t schema_describe(sqlite3 *db, sqlite3_str *out)
     return (sqlite3_str_errcode(out) == SQLITE_OK) ? STORE_OK : STORE_ERR_DB;
 }
 
+/* F660: WHICH line of the file's description is the first that this build
+ * would not have written, for the person reading `store-corrupt`. Printable
+ * ASCII only, and short: it is the file's text. */
+static char g_shape_note[160];
+
+const char *store_shape_note(void) { return g_shape_note; }
+
+static void shape_note_set(const char *file, const char *ours)
+{
+    const char *line = file;
+    while (*file != '\0' && *file == *ours) {
+        if (*file == '\n' || *file == '#') { line = file + 1; }
+        file++; ours++;
+    }
+    size_t n = 0;
+    if (*line == '\0') {
+        (void)snprintf(g_shape_note, sizeof g_shape_note, "it lacks something this build makes");
+        return;
+    }
+    for (; line[n] != '\0' && line[n] != '\n' && n + 1u < sizeof g_shape_note; n++) {
+        const unsigned char c = (unsigned char)line[n];
+        g_shape_note[n] = (c >= 0x20u && c <= 0x7eu) ? (char)c : '?';
+    }
+    g_shape_note[n] = '\0';
+}
+
 static store_status_t schema_is_ours(sqlite3 *db)
 {
+    g_shape_note[0] = '\0';
     sqlite3 *ref = NULL;
     store_status_t r = STORE_ERR_DB;
     char *a = NULL, *b = NULL;
@@ -665,6 +701,7 @@ static store_status_t schema_is_ours(sqlite3 *db)
         b = sqlite3_str_finish(sb);
         if (ra == STORE_OK && rb == STORE_OK && a != NULL && b != NULL) {
             r = (strcmp(a, b) == 0) ? STORE_OK : STORE_ERR_DAMAGED;
+            if (r != STORE_OK) { shape_note_set(a, b); }
         }
     }
     sqlite3_free(a);
@@ -685,6 +722,21 @@ static store_status_t connection_harden(sqlite3 *db)
         return STORE_ERR_DB;
     }
     return STORE_OK;
+}
+
+static store_status_t count_objects(sqlite3 *db, int *n)
+{
+    sqlite3_stmt *st = NULL;
+    *n = 0;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM sqlite_master;", -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    const int rc = (sqlite3_step)(st);
+    if (rc == SQLITE_ROW) { *n = sqlite3_column_int(st, 0); }
+    sqlite3_finalize(st);
+    /* A file that is not a database at all fails here, as it did at the
+     * first statement before: STORE_ERR_DB, which the callers already name. */
+    return (rc == SQLITE_ROW) ? STORE_OK : STORE_ERR_DB;
 }
 
 /* Which stored schema versions this build opens: 1 up to its own, as eight
@@ -790,13 +842,30 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * reader (F290): the journal mode and the schema are the file's, and a
      * reader changes neither. */
     if (!existing) {
+        /* F664 (V4-341): a file that already holds anything is LOOKED AT
+         * before it is touched, and the schema is run only into an empty
+         * one. V4-339 switched the file to WAL and ran the schema first: a
+         * database that was not a store was given nine tables and then
+         * refused with them in it (what F290 and F347 were fixed to stop),
+         * and a store with its index dropped was quietly given it back by
+         * the daemon while a tool refused the same file. */
+        int objects = 0;
+        if ((r = count_objects(s->db, &objects)) != STORE_OK) { goto fail; }
+        if (objects > 0 && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail; }
         if (exec_simple(s->db, "PRAGMA journal_mode=WAL;") != STORE_OK ||
             exec_simple(s->db, "PRAGMA synchronous=FULL;") != STORE_OK ||
             exec_simple(s->db, "PRAGMA foreign_keys=ON;") != STORE_OK) {
             r = STORE_ERR_DB;
             goto fail;
         }
-        if (exec_simple(s->db, STORE_SCHEMA_SQL) != STORE_OK) {
+        /* In ONE transaction: a start killed half-way through the schema
+         * must leave an empty file, since a file with some of the tables is
+         * now refused and no longer completed. */
+        if (objects == 0 &&
+            (exec_simple(s->db, "BEGIN IMMEDIATE;") != STORE_OK ||
+             exec_simple(s->db, STORE_SCHEMA_SQL) != STORE_OK ||
+             exec_simple(s->db, "COMMIT;") != STORE_OK)) {
+            (void)sqlite3_exec(s->db, "ROLLBACK;", NULL, NULL, NULL);
             r = STORE_ERR_DB;
             goto fail;
         }
