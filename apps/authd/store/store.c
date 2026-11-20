@@ -746,9 +746,17 @@ static store_status_t schema_is_ours(sqlite3 *db)
         const store_status_t ra = schema_describe(db, sa), rb = schema_describe(ref, sb);
         a = sqlite3_str_finish(sa);
         b = sqlite3_str_finish(sb);
-        if (ra == STORE_OK && rb == STORE_OK && a != NULL && b != NULL) {
-            r = (strcmp(a, b) == 0) ? STORE_OK : STORE_ERR_DAMAGED;
-            if (r != STORE_OK) { shape_note_set(a, b); }
+        if (ra == STORE_OK && rb == STORE_OK && b != NULL) {
+            /* sqlite3_str_finish() gives NULL for a string nothing was
+             * appended to, and a file with no object in it describes itself
+             * so. V4-342 took the description's closing mark away and such a
+             * file became a database error; a reader's older gate, removed
+             * in V4-343, was all that hid it. (A failed allocation is not
+             * taken for emptiness: schema_describe has asked the string's
+             * error code before this.) */
+            const char *fa = (a != NULL) ? a : "";
+            r = (strcmp(fa, b) == 0) ? STORE_OK : STORE_ERR_DAMAGED;
+            if (r != STORE_OK) { shape_note_set(fa, b); }
         }
     }
     sqlite3_free(a);
@@ -880,11 +888,11 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = connection_harden(s->db)) != STORE_OK) {   /* F653 */
         goto fail;
     }
-    if (existing) {
-        int has = 0;
-        if ((r = has_meta_table(s->db, &has)) != STORE_OK) { goto fail; }
-        if (!has) { r = STORE_ERR_DAMAGED; goto fail; }
-    }
+    /* (A reader's own "has it a meta table at all" stood here from V4-213.
+     * Since V4-339 the shape is compared at every open, and a file with no
+     * meta table is refused there, with the same status and with a note
+     * that says what it lacks; the gate had become one a mutant could
+     * remove unseen, v89's OE3, and went in V4-343.) */
     /* F347: a store that already says which version it is, is asked BEFORE
      * anything is done to it. The journal mode and the whole schema used to
      * go into the file first, and the version was read afterwards: an older

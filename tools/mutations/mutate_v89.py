@@ -12,8 +12,9 @@ the directory. Every spec line names the check that must catch it (F90).
 
     OE1   store_open_existing is store_open: a mistyped path becomes a store.
     OE2   the open flags always carry SQLITE_OPEN_CREATE.
-    OE3   a file with no meta table is not refused before the schema runs (it
-          is still refused, for having no store id, but no longer left empty).
+    OE3   a file with no object in it is a database error, not a file that
+          is not a store (V4-343; until then OE3 removed a reader's gate on
+          a file with no meta table, which the shape check had made idle).
     OE4   a database with no store id is given one.
     OE5   the offline open waits only as long as the daemon does.
     OE6   the daemon's handle does not wait at all (what F192 reported).
@@ -38,16 +39,14 @@ M = {
     # read-only and added a second `!found && existing`. Same mutants.)
     "OE2": [(ST, "                        existing ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),\n",
                  "                        (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE), /* MUTATION OE2 */\n")],
-    "OE3": [(ST, "        if (!has) { r = STORE_ERR_DAMAGED; goto fail; }\n",
-                 "        if (0 && !has) { r = STORE_ERR_DAMAGED; goto fail; } /* MUTATION OE3 */\n")],
+    "OE3": [(ST, "        if (ra == STORE_OK && rb == STORE_OK && b != NULL) {\n",
+                 "        if (ra == STORE_OK && rb == STORE_OK && a != NULL && b != NULL) { /* MUTATION OE3 */\n")],
     "OE4": [(ST, "    if (!found && (existing || !blank)) {\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon, or lost its id (F668) */\n",
                  "    if (0 && !found && (existing || !blank)) { /* MUTATION OE4 */\n        r = STORE_ERR_DAMAGED;\n")],
     # (OE5, the reader given the daemon's short busy timeout, is gone since
     # V4-213: a reader opens read-only and takes a read transaction, which a
     # writer holding the store's lock does not block, so no timeout is ever
-    # waited out and the mutant changed nothing a test can see. OE3's kill is
-    # now the status, not the file: an empty file is no longer written to by
-    # a reader whatever the gate does.)
+    # waited out and the mutant changed nothing a test can see.)
     "OE6": [(ST, "#define STORE_BUSY_MS_DAEMON  250\n",
                  "#define STORE_BUSY_MS_DAEMON  0 /* MUTATION OE6 */\n")],
     "OE7": [(ST, "    if (sqlite3_busy_timeout(s->db, existing ? STORE_BUSY_MS_OFFLINE : STORE_BUSY_MS_DAEMON) != SQLITE_OK) {\n",

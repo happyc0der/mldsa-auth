@@ -1050,7 +1050,8 @@ int main(void)
 
         path(empty, sizeof empty, "oe-empty.sqlite3");
         { FILE *f = fopen(empty, "wb"); if (f != NULL) { (void)fclose(f); } }
-        CHECK(store_open_existing(empty, KEK, &t) == STORE_ERR_DAMAGED && t == NULL,
+        CHECK(store_open_existing(empty, KEK, &t) == STORE_ERR_DAMAGED && t == NULL &&
+              strncmp(store_shape_note(), "it lacks ", 9) == 0,
               "existing: an empty file is not a store (F193)");
         CHECK(stat(empty, &sb) == 0 && sb.st_size == 0, "existing: and it is left empty (F193)");
 

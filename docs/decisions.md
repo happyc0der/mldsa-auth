@@ -22496,3 +22496,61 @@ Spec v1.112: erratum 161 (9.2, 16).
 Counts: 832 mutations, 155 campaigns, 881 anchors; 678 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.112, 161 errata; 66 tests.
+
+## V4-343: cleanup after V4-341 and V4-342, a mutant that had become equivalent (v89 OE3), and what its removal uncovered
+
+- **V4-341's nightly (44667158039) failed one job, and was right to.**
+  Campaign v89's OE3 SURVIVED. OE3 removed a reader's own gate, "a file
+  with no meta table is not a store", which dates from V4-213. Since
+  V4-339 the shape is compared at every open, and that refuses the same
+  file with the same status: the gate did nothing the mutant's absence
+  could show. The gate is removed.
+  - This was in V4-339, whose nightly was cancelled as superseded, and in
+    V4-341, where the store's mutants were rerun by hand: OE4, OE8 and OE9
+    of v89, because their anchors had moved, and not the campaign. A step
+    that changes what a function refuses reruns every committed mutant of
+    that function, not the ones whose anchors it touched. This step did:
+    37 mutants of the store's opening and shape code, across nine
+    campaigns.
+- **Removing the gate uncovered a slip of V4-342's, which had not yet
+  reached main.** V4-342 took the closing mark off the shape's
+  description. A file with no object in it then describes itself as
+  nothing, SQLite's string builder returns NULL for nothing, and the
+  comparison took NULL for a failure: `database-error` where the answer is
+  `store-corrupt`. The gate answered first for every such file, so no test
+  and no caller could reach it; with the gate gone the test for an empty
+  file failed at once. NULL is now read as the empty description, and the
+  test also asks for the note. OE3 is kept under its name with this as its
+  mutation.
+  - It was the hand-control tool's new baseline (F675, V4-342) that said
+    so: the first batch of this step's controls was refused, all 37, with
+    "the clean tree does not pass". Before V4-342 the same batch would
+    have reported 37 kills.
+- V4-339 to V4-342 therefore have not landed. They land with this step,
+  on its runs. V4-342's nightly (44674213791) was cancelled while queued:
+  it would have failed on OE3 as V4-341's did.
+- `docs/review/REPRODUCE.md` is unchanged: main is still `7fa5997`, whose
+  runs it cites.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3), F636 and F644. Also open, in the entries
+  named: whether F420's overlap should be refused rather than warned of;
+  the questions in V4-246's, V4-274's, V4-281's, V4-284's, V4-285's,
+  V4-291's and V4-300's entries; a budget for `RECOVERY-ISSUE` (F39, F625,
+  F630), whether `BACKUP` should refuse a destination outside the store's
+  directory (F624), and whether Caddy offers browsers WebSocket over
+  HTTP/2 (F622), in V4-332's; whether the pending ledger's lifetime should
+  be extended by time the daemon was blocked (F629), in V4-333's; a least
+  age for a key before `ROTATE` (F644) and a list of translator prefixes
+  (F651), in V4-338's; a lock beside the store (F678), in V4-342's.
+
+No spec change. One gate removed, one comparison corrected, one mutant
+given a new mutation.
+
+Killed by hand, each after the test passed on the clean tree: v89 OE1 to
+OE4, OE6 and OE7 (OE3 new); v117 MM1; v130 RD1 to RD4; v145 SV1; v184's
+eight (SH10 re-anchored); v185 RS1 to RS10; v77 SD2 to SD5; v86 DG5; v90
+SC1, SC3 and SC4. 38 of 38.
+
+Counts: 832 mutations, 155 campaigns, 881 anchors; 678 findings (the 17
+above open); spec v1.112, 161 errata; 66 tests.
