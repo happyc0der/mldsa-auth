@@ -31,7 +31,10 @@ M = {
     "BP3": [(EV, "    conn_io_sent(&s->io, (size_t)n);\n",
                  "    conn_io_sent(&s->io, pending); /* MUTATION BP3: a partial write counted as whole */\n")],
     "BP4": [(EV, "            if (s->state == SLOT_FREE || s->deadline_ms == 0u) {\n",
-                 "            if (s->state == SLOT_FREE || s->deadline_ms == 0u || conn_io_pending(&s->io) > 0u) { /* MUTATION BP4: a stalled peer outlives its deadline */\n")],
+                 "            if (s->state == SLOT_FREE || s->deadline_ms == 0u || conn_io_pending(&s->io) > 0u) { /* MUTATION BP4: a stalled peer outlives its deadline */\n"),
+            # V4-351: and in the reclaim before the accept, which closes the same slots sooner in the turn (F728).
+            (EV, "            all[npfd + i].revents == 0) {\n",
+                 "            all[npfd + i].revents == 0 && conn_io_pending(&s->io) == 0u) { /* MUTATION BP4 */\n")],
     "BP5": [(EV, "            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u) {\n",
                  "            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u && 0) { /* MUTATION BP5: F127, a pipelined frame waits */\n")],
     "BP6": [(EV, "        n = read(s->fd, buf, (room < sizeof buf) ? room : sizeof buf);\n",

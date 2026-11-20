@@ -561,6 +561,32 @@ static int slot_writable(evloop_t *ev, authd_slot_t *s)
     return 0;
 }
 
+int evloop_wait_ms(const evloop_t *ev, uint64_t now_ms, int cap_ms)
+{
+    if (ev == NULL || cap_ms <= 0) {
+        return (cap_ms < 0) ? 0 : cap_ms;
+    }
+    uint64_t wait = (uint64_t)cap_ms;
+    for (int pool = 0; pool < 2; pool++) {
+        const authd_slot_t *arr = (pool == 0) ? ev->slots : ev->local_slots;
+        const size_t n = (pool == 0) ? ev->n_slots : ev->n_local_slots;
+        if (arr == NULL) {
+            continue;
+        }
+        for (size_t i = 0; i < n; i++) {
+            const authd_slot_t *s = &arr[i];
+            if (s->deadline_ms == 0u || s->state == SLOT_FREE) {
+                continue;
+            }
+            const uint64_t left = (s->deadline_ms > now_ms) ? s->deadline_ms - now_ms : 0u;
+            if (left < wait) {
+                wait = left;
+            }
+        }
+    }
+    return (int)wait;
+}
+
 int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
 {
     if (ev == NULL) {
@@ -661,6 +687,26 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
     }
 
     int activity = 0;
+
+    /* F728 (V4-351): slots whose deadline has passed and that have nothing
+     * to say this turn are given back BEFORE anything is accepted. The sweep
+     * at the end of this function closes exactly these; it ran after the
+     * accept, so with every slot held by connections past their deadline
+     * the arrival that woke the loop was refused for want of a slot, and
+     * the slots were freed a moment later for the one after it. A slot with
+     * something to read or write this turn is left to be served and judged
+     * by that sweep as before: nothing here changes which connections are
+     * closed, only when in the turn. */
+    for (size_t i = 0; i < nspfd; i++) {
+        authd_slot_t *s = slot_ref[i];
+        if (s->state != SLOT_FREE && s->deadline_ms != 0u && now_ms >= s->deadline_ms &&
+            all[npfd + i].revents == 0) {
+            ev->closed_deadline++;
+            authd_log_slot(AUTHD_LOG_INFO, "closed-deadline", s->index);
+            evloop_close_slot(ev, s);
+            activity++;
+        }
+    }
 
     /* F307: in turn, starting after the listener that accepted last. They
      * were always served in registration order, site before admin, and both

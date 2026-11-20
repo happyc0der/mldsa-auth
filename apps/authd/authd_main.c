@@ -842,7 +842,10 @@ int main(int argc, char **argv)
         }
         authd_app_maybe_sweep(&app);
         /* F340: never past the moment the next ping is due. */
-        const int idle_wait_ms = authd_sd_watchdog_wait_ms(wd_ms, app.now_ms - wd_last_ms, 1000);
+        /* F728 (V4-351): and never past the nearest deadline of a
+         * connection. */
+        const int idle_wait_ms = evloop_wait_ms(&ev, app.now_ms,
+                                                authd_sd_watchdog_wait_ms(wd_ms, app.now_ms - wd_last_ms, 1000));
         if (evloop_run_once(&ev, draining ? 50 : idle_wait_ms, app.now_ms) < 0) {
             if (errno == EINTR) {
                 continue;

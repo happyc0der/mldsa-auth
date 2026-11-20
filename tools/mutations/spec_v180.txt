@@ -5,4 +5,4 @@ LT4|^test_authd_evloop$|ev: a time earlier than one already noted is ignored (F6
 LT5|^test_authd_evloop$|ev: a handshake in flight is not charged for the time a handler blocked either (F623)
 LT6|^test_authd_localapi$|backup clock: the clock is read again after a RECOVERY-ISSUE (F625)
 LT7|^test_authd_localapi$|backup clock: and after a RECOVERY-USE (F625)
-LT8|^test_authd_evloop$|overdue: a connection already past its deadline is closed, though a handler then blocked for longer than it was overdue (F630)
+LT8|^test_authd_evloop$|overdue: and the one that was not overdue is moved on by the block (F623, the canary)

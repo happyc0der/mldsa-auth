@@ -1,0 +1,3 @@
+RG1|^test_authd_evloop$|due: with every slot held past its deadline, the connection that arrives is accepted, not refused (F728)
+RG2|^test_authd_evloop$|due: the wait is the time to the nearest deadline when that is sooner than the cap (F728)
+RG3|^test_authd_evloop$|due: and nothing once a deadline has passed (F728)

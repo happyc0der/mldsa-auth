@@ -290,6 +290,13 @@ int evloop_drained(const evloop_t *ev);
 
 size_t evloop_active(const evloop_t *ev);
 
+/* F728 (V4-351): how long the caller may wait in evloop_run_once() before
+ * something is due: `cap_ms`, or the time to the nearest armed deadline if
+ * that is sooner, and 0 if one has passed. The daemon waited its whole
+ * second whatever was due, so a connection past its deadline kept its slot
+ * until the loop next woke, up to a second more than was configured. */
+int evloop_wait_ms(const evloop_t *ev, uint64_t now_ms, int cap_ms);
+
 /* Closes every slot (and calls on_close for each). Listeners are NOT closed
  * here -- the caller owns them. */
 void evloop_close_all(evloop_t *ev);

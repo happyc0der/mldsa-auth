@@ -23007,3 +23007,84 @@ Counts: 851 mutations, 161 campaigns, 900 anchors; 732 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644, F725 and F728 open); spec v1.118, 167 errata; 66
 tests.
+
+## V4-351: deadlines acted on when they are due (F728)
+
+**F728**, which the ninety-third review found and V4-350 left open. Two
+changes, each small.
+
+- **The wait.** The daemon asked the loop to wait a second, or less if a
+  watchdog ping was due. It now asks first how long until the nearest
+  deadline of any connection (`evloop_wait_ms`). A connection past its
+  deadline was closed when the loop next woke, half a second late on
+  average and a second at worst.
+- **The order.** The loop accepted, served, and swept deadlines last, "so
+  a frame served this iteration has already re-armed". That reason stands
+  and the sweep stays where it is. What is new is a pass before the accept
+  that gives back the slots the sweep was going to close anyway: past
+  their deadline, and with nothing to read or write this turn. A slot
+  with something to say is left for the sweep, after it has been served.
+  So which connections are closed is as before, and the arrival that woke
+  the loop finds the slots free.
+  - Considered and not done: moving the sweep ahead of the accept. A
+    connection whose frame arrives at its deadline would then be closed
+    with the frame unread, which the unit tests pin as served.
+- v83's BP4 (a stalled peer outlives its deadline) mutated the sweep
+  alone. With the pass before the accept closing the same slot it would
+  have survived; it now mutates both.
+- The line in the daemon's main that passes the new wait to the loop has
+  no test that would fail. The row says so.
+
+No spec change. F725 (the key schedule's stack arrays) stays open: it
+changes the locked-memory count the unit's limit is derived from, and is
+the next bug step's by itself.
+
+Campaign v192: RG1 (slots past their deadline are not given back before
+the accept), RG2 (the wait ignores the deadlines), RG3 (a deadline that
+has passed still earns a wait).
+
+Every committed mutant in the loop, and those in the daemon's main that
+touch its wait, were rerun by hand on macOS: 49, each after its test
+passed on the clean tree. 48 were killed by their named checks. v180's LT8
+(a deadline is moved on before it is looked at) was KILLED(other): the
+overdue connection its check was written for is now given back by the new
+pass before the handler ever blocks, so that check passes with the mutant
+in, and four others fail. Its line in the campaign names one of those,
+and it was killed again. Re-anchored: v83 BP4 (two sites now), v100 WD4.
+
+**The Linux run, before the push**, in the same container as before: the
+gate, and the daemon's nine test programs twice, all passed; and with each
+of RG1, RG2 and RG3 built in, `test_authd_evloop` failed by the line the
+campaign names.
+
+**V4-350's nightly (44769328808) failed one job while this step was being
+verified, and was right to: campaign v104's RK1.** RK1 makes the client
+forget that the daemon was shown a key. V4-347 stopped the client probing
+its second key when the first probe never reached the daemon (F705), and
+with RK1 in, every probe looks like that: the leg RK1 named now prints the
+message it asks for, and RK1 dies two legs earlier, by the check that two
+refused keys are reported as a device to re-enrol. Killed, by another
+name; the campaign's line is corrected here.
+
+- How it was missed is the lesson of V4-343 again, one level out. In
+  V4-347 the client's mutants were rerun for the function that was
+  edited, and RK1 mutates a function that feeds it. The rule was "every
+  mutant of the function a step changes"; it is every mutant of the FILE,
+  and of the files that call into it.
+- So this step reran, by hand, every committed mutant in every source
+  changed since V4-344 that had been rerun only in part: the client's
+  three files, the configuration, the notify socket, the listener and the
+  descriptor limit. 114 mutants, each after
+  its test passed on the clean tree: 113 killed by the checks their
+  campaigns name, RK1 by its corrected one among them; v186's RA7
+  SURVIVED on macOS, as recorded, and is killed on Linux (V4-350's nightly
+  again). One control, v128's SF3, was first run against the wrong binary
+  and came back VOID; run against `authd_admin` it was killed. No other
+  campaign line was found stale. Four mutants whose test is a replay of
+  the fuzz corpus were not rerun by hand; the nightly ran them green.
+- V4-345 to V4-350 therefore land with this step, on its runs. V4-350's
+  nightly was left to finish, so that anything else in it would be seen.
+
+Counts: 854 mutations, 162 campaigns, 904 anchors; 732 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644 and F725 open); spec v1.118, 167 errata; 66 tests.

@@ -1625,6 +1625,53 @@ static void test_accept_burst(void)
     (void)close(lfd);
 }
 
+/* ------------------- deadlines are acted on when they are due (F728) ----
+ *
+ * Two things. The daemon asked the loop to wait a second whatever was due,
+ * so a connection past its deadline kept its slot for up to a second more:
+ * evloop_wait_ms() is what it asks first now. And the loop accepted before
+ * it swept, so with every slot held by a connection past its deadline the
+ * arrival that woke it was refused. */
+static void test_deadline_due(void)
+{
+    enum { NSLOTS = 2 };
+    static authd_slot_t slots[NSLOTS];
+    evloop_t ev;
+    harness_t h;
+    int lfd = -1, c[3] = { -1, -1, -1 };
+    uint16_t port = 0;
+    memset(&h, 0, sizeof h);
+    CHECK(listener_open_loopback(0, 64, &lfd, &port) == LISTENER_OK, "due: listener");
+    CHECK(evloop_init(&ev, slots, NSLOTS, 500u, 20000u, on_frame, on_close, &h) == 0, "due: init");
+    CHECK(evloop_add_listener(&ev, lfd, (uid_t)-1) == 0, "due: listener registered");
+    CHECK(evloop_wait_ms(&ev, 1000u, 1000) == 1000,
+          "due: with no connection the wait is the caller's cap (F728)");
+    c[0] = dial(port);
+    c[1] = dial(port);
+    (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 2u);
+    CHECK(c[0] >= 0 && c[1] >= 0 && evloop_active(&ev) == 2u, "due: two silent connections hold both slots");
+    CHECK(evloop_wait_ms(&ev, 1000u, 1000) == 500 && evloop_wait_ms(&ev, 1400u, 1000) == 100,
+          "due: the wait is the time to the nearest deadline when that is sooner than the cap (F728)");
+    CHECK(evloop_wait_ms(&ev, 1400u, 50) == 50, "due: and the cap when the cap is sooner (F728)");
+    CHECK(evloop_wait_ms(&ev, 1500u, 1000) == 0 && evloop_wait_ms(&ev, 9000u, 1000) == 0,
+          "due: and nothing once a deadline has passed (F728)");
+    /* Both deadlines are 100 ms past, and a third connection arrives. The
+     * turn that accepts it must have the slots to give. */
+    c[2] = dial(port);
+    const uint64_t refused0 = ev.refused_no_slot, closed0 = ev.closed_deadline;
+    int turns = 0;
+    while (turns < 2000 && ev.closed_deadline == closed0 && ev.refused_no_slot == refused0) {
+        (void)evloop_run_once(&ev, 10, 1600u);
+        turns++;
+    }
+    (void)PUMP_UNTIL(&ev, 1600, evloop_active(&ev) == 1u || ev.refused_no_slot != refused0);
+    CHECK(c[2] >= 0 && ev.refused_no_slot == refused0 && ev.closed_deadline == closed0 + 2u && evloop_active(&ev) == 1u,
+          "due: with every slot held past its deadline, the connection that arrives is accepted, not refused (F728)");
+    for (int i = 0; i < 3; i++) { if (c[i] >= 0) { (void)close(c[i]); } }
+    evloop_close_all(&ev);
+    (void)close(lfd);
+}
+
 /* ------------------- the admin listener is not starved by the site (F307) */
 
 static int g_f308_lines = 0;
@@ -2394,6 +2441,7 @@ int main(void)
     test_ws_close();
     test_ws_pipelined_upgrade();
     test_accept_burst();
+    test_deadline_due();
     test_listener_turns();
     test_hangup_long_request();
     test_backpressure();

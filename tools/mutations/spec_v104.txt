@@ -1,4 +1,4 @@
-RK1|^authd_e2e$|recovery, login not recorded: the client did not say the daemon could not record the login (F431)
+RK1|^authd_e2e$|recovery REFUSE: two keys the daemon refused were not reported as a device to re-enrol (F225)
 RK2|^authd_e2e$|recovery, no daemon: the client told the user to re-enrol the device (F225)
 RK3|^authd_e2e$|recovery, wrong passphrase: neither key file opened and the exit was not 3 (F543)
 RK4|^authd_e2e$|recovery, no daemon: the client told the user to re-enrol the device (F225)
