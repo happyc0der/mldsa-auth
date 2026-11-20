@@ -22324,3 +22324,37 @@ Spec v1.110: erratum 159 (9.2).
 Counts: 815 mutations, 154 campaigns, 860 anchors; 659 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644 and F657 open); spec v1.110, 159 errata; 66 tests.
+
+## V4-340: cleanup after V4-338 and V4-339
+
+- `docs/review/REPRODUCE.md` now cites the runs on `7fa5997` (V4-338,
+  main since 2026-11-19): CI 44647499539 (16/16) and nightly 44647531368
+  (168/168, 153 campaigns), each on its first attempt. V4-336 and V4-337
+  had landed before it; V4-336's nightly (44633878594, on
+  `bc30e5b`) needed a second attempt for one job, the clean suite of
+  campaign v178, which lost the race in `tests/authd_e2e.sh` that F659
+  describes. V4-338 still carries that race and did not lose it; V4-339
+  removes it.
+- V4-339 is not on main yet, on purpose. The eighty-sixth review, which
+  read it, found that its check of the store's shape refuses a store on
+  which `ANALYZE` or `PRAGMA optimize` was run, as `store-corrupt`, at the
+  next start (F660, Medium). The remedy is V4-341, and the two land
+  together.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3), F636 and F644. F657 is open for the next
+  bug step, not for the owner. Also open, in the entries named: whether
+  F420's overlap should be refused rather than warned of; the questions
+  in V4-246's, V4-274's, V4-281's, V4-284's, V4-285's, V4-291's and
+  V4-300's entries; a budget for `RECOVERY-ISSUE` (F39, F625, F630),
+  whether `BACKUP` should refuse a destination outside the store's
+  directory (F624), and whether Caddy offers browsers WebSocket over
+  HTTP/2 (F622), in V4-332's; whether the pending ledger's lifetime
+  should be extended by time the daemon was blocked (F629), in V4-333's;
+  a least age for a key before `ROTATE` (F644) and a list of translator
+  prefixes (F651), in V4-338's.
+
+No code, test, campaign or spec change.
+
+Counts: 815 mutations, 154 campaigns, 860 anchors; 659 findings (the 18
+above open); spec v1.110, 159 errata; 66 tests.
