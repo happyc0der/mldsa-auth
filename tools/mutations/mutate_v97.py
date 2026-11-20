@@ -18,8 +18,10 @@ import sys, pathlib
 MAIN = "apps/authd/authd_main.c"
 
 M = {
-    "SH1": [(MAIN, "    (void)sigaction(SIGHUP, &sa, NULL);\n",
-                   "    (void)0; /* MUTATION SH1 */\n")],
+    "SH1": [(MAIN, "        (void)sigaction(SIGHUP, &sa, NULL);\n        signal(SIGPIPE, SIG_IGN);",
+                   "        (void)0; /* MUTATION SH1 */\n        signal(SIGPIPE, SIG_IGN);"),
+            (MAIN, "        (void)sigaction(SIGHUP, &sa, NULL);\n    }\n    /* F657: the last look",
+                   "        (void)0; /* MUTATION SH1 */\n    }\n    /* F657: the last look")],
     "SH2": [(MAIN, "    if (sig == SIGHUP) {\n",
                    "    if (0 && sig == SIGHUP) { /* MUTATION SH2 */\n")],
     "SH3": [(MAIN, "            authd_log_event(AUTHD_LOG_WARN, \"sighup-ignored\");\n",

@@ -90,6 +90,13 @@ const char *store_shape_note(void);
  * starts, on a new and empty store beside the real one. */
 int store_was_created(const store_t *s);
 
+/* 1 if the file holds, now, exactly what a creating open leaves: the three
+ * meta values and no other row. F681 (V4-344): the daemon asks before it
+ * removes a store its start created, since "created by this start" says
+ * nothing of what another process has written to the file since. 0 on any
+ * failure to ask. */
+int store_is_as_created(store_t *s);
+
 /* Closes and frees; wipes key_audit and key_log. Idempotent on NULL. */
 void store_close(store_t *s);
 

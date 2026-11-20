@@ -58,7 +58,11 @@ int authd_sd_notify(const char *msg)
         (void)fcntl(g_notify_fd, F_SETFD, FD_CLOEXEC);
     }
     const size_t ml = strlen(msg);
-    const ssize_t w = sendto(g_notify_fd, msg, ml, 0, (const struct sockaddr *)&a, alen);
+    /* F685 (V4-344): never waits. The loop is one thread, and a notify
+     * socket whose queue is full would have stopped it serving for as long
+     * as systemd did not read. A ping that cannot be queued is a failed
+     * ping: the caller says so or, for the watchdog, lets systemd act. */
+    const ssize_t w = sendto(g_notify_fd, msg, ml, MSG_DONTWAIT, (const struct sockaddr *)&a, alen);
     return (w == (ssize_t)ml) ? 1 : -1;
 }
 

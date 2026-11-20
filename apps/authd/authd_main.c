@@ -435,10 +435,6 @@ int main(int argc, char **argv)
     if (store_created) {
         fprintf(stderr, "mldsa-authd: %s: created a new, empty store (no store was there)\n", cfg.store_path);
     }
-    /* F657: a stop that came while the store was being made. */
-    if (g_stop) {
-        goto stopped_early;
-    }
 
     app.conns = conns;
     app.n_conns = (size_t)cfg.max_slots;
@@ -664,8 +660,26 @@ int main(int argc, char **argv)
         goto listener_failed;
     }
 
+    /* F679 (V4-344): start-up is over, and the handlers stop restarting
+     * interrupted calls. SA_RESTART was right for the calls of start-up
+     * and wrong for the running daemon: a daemon blocked writing a log line
+     * to a standard error nobody reads (a stalled journal) restarted that
+     * write on every SIGTERM and could only be killed. Without it the write
+     * fails, the line is lost, and the loop sees the stop. Before the look
+     * below, so that no signal falls between the two regimes. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_signal;
+        (void)sigaction(SIGTERM, &sa, NULL);
+        (void)sigaction(SIGINT, &sa, NULL);
+        (void)sigaction(SIGHUP, &sa, NULL);
+    }
     /* F657: the last look before the daemon says it has started. A stop
-     * after this is the loop's, and drains. */
+     * seen here ends the start; one that arrives after this line is the
+     * loop's, and drains (the spec says "seen", erratum 162). V4-342 also
+     * looked right after the store was made; nothing a test can observe
+     * told that look from this one, so it went (F683). */
     if (g_stop) {
         goto stopped_early;
     }
@@ -775,6 +789,18 @@ listener_failed:
     /* The log's pseudonym callback holds the store (a stop seen after the
      * privacy modes were applied comes this way since F657). */
     (void)authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL);
+    /* F681 (V4-344): asked while the store is still open. "Created by this
+     * start" is about the past. A start that made the store and was then
+     * held up -- on a standard error nobody read, in review 88's run --
+     * while a second daemon opened the same file, bound the sockets and
+     * enrolled a device, failed `in-use` when it came round and unlinked a
+     * populated store. If the file holds anything now but what a creation
+     * leaves, it is not removed. */
+    if (store_created && !store_is_as_created(store)) {
+        fprintf(stderr, "mldsa-authd: %s: this start created the store, but it holds more now than a new store "
+                        "does: something else has written to it, and it is left in place\n", cfg.store_path);
+        store_created = 0;
+    }
     store_close(store);
     /* F361: a store THIS start created goes with the start that failed. Left
      * behind, it was found by the next start, which then had nothing to say:

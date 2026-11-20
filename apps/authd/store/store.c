@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <unistd.h>
 #include "schema.sql.h"
 
@@ -798,6 +799,44 @@ static store_status_t rows_none(sqlite3 *db, int *none)
     return (rc == SQLITE_ROW) ? STORE_OK : STORE_ERR_DB;
 }
 
+/* F681 (V4-344): does the file hold exactly what a creating open leaves --
+ * the three meta values and no other row? */
+static store_status_t rows_as_created(sqlite3 *db, int *yes)
+{
+    sqlite3_stmt *st = NULL;
+    *yes = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT (SELECT count(*) FROM meta) = 3 AND "
+            "(SELECT count(*) FROM meta WHERE key IN ('schema_version','store_id','decoy_pk')) = 3 AND "
+            "EXISTS(SELECT 1 FROM users) + EXISTS(SELECT 1 FROM devices) + EXISTS(SELECT 1 FROM device_keys) + "
+            "EXISTS(SELECT 1 FROM login_codes) + EXISTS(SELECT 1 FROM tokens) + EXISTS(SELECT 1 FROM recovery_codes) + "
+            "EXISTS(SELECT 1 FROM enroll_tickets) + EXISTS(SELECT 1 FROM audit) = 0;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    const int rc = (sqlite3_step)(st);
+    if (rc == SQLITE_ROW) { *yes = (sqlite3_column_int(st, 0) == 1); }
+    sqlite3_finalize(st);
+    return (rc == SQLITE_ROW) ? STORE_OK : STORE_ERR_DB;
+}
+
+/* F680 (V4-344): a file that holds rows and lacks one of the store's three
+ * meta values. Asked BEFORE the journal mode is touched, and said. */
+static store_status_t meta_whole(sqlite3 *db, int *whole)
+{
+    sqlite3_stmt *st = NULL;
+    *whole = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT count(*) FROM meta WHERE key IN ('schema_version','store_id','decoy_pk');",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    const int rc = (sqlite3_step)(st);
+    if (rc == SQLITE_ROW) { *whole = (sqlite3_column_int(st, 0) == 3); }
+    sqlite3_finalize(st);
+    return (rc == SQLITE_ROW) ? STORE_OK : STORE_ERR_DB;
+}
+
 static store_status_t count_objects(sqlite3 *db, int *n)
 {
     sqlite3_stmt *st = NULL;
@@ -856,6 +895,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     /* ":memory:" is SQLite's name for no file at all, not a path (F246): the
      * pre-creation below made an empty file of that name in the working
      * directory for every in-memory store. */
+    int was_there = 0;
     if (!existing && strcmp(path, ":memory:") != 0) {
         /* A store this call creates is 0600 whatever the caller's umask is
          * (F200): SQLite would create it 0644 under a shell's 022, and give
@@ -866,6 +906,8 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         if (fd >= 0) {
             (void)fchmod(fd, 0600);
             (void)close(fd);
+        } else if (errno == EEXIST) {
+            was_there = 1;      /* F682: and if it turns out empty, see below */
         }
     }
     /* V4-213, F290: a tool that reads a store opens it READ-ONLY. It used to
@@ -925,7 +967,6 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     /* Spec §9: WAL, durable commits, foreign keys enforced. None of it for a
      * reader (F290): the journal mode and the schema are the file's, and a
      * reader changes neither. */
-    int blank = 0;      /* F668: nothing in the file but, at most, an empty schema */
     if (!existing) {
         /* F664 (V4-341): a file that already holds anything is LOOKED AT
          * before it is touched, and the schema is run only into an empty
@@ -937,6 +978,42 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         int objects = 0;
         if ((r = count_objects(s->db, &objects)) != STORE_OK) { goto fail; }
         if (objects > 0 && (r = schema_is_ours(s->db)) != STORE_OK) { goto fail; }
+        /* F668 (V4-342): the open CREATES a store's three meta values only
+         * in a file that holds no row at all. It used to write whichever
+         * was missing: a store with a user, a device and an audit chain
+         * whose `store_id` row had gone was given a new random id,
+         * committed, and reported as "created" -- which the daemon takes as
+         * leave to remove the file if the start then fails (F361, F657). A
+         * store that holds anything and lacks one of the three is damaged,
+         * and is left.
+         * F680 (V4-344): refused HERE, before the journal mode. V4-342
+         * refused it inside the transaction below, after the file had been
+         * switched to WAL: a refused store in rollback mode came back with
+         * its header changed and a -wal beside it. And it said only
+         * `store-corrupt`. The checks in the transaction are a reader's
+         * again; kept beside this one they could each be removed unseen. */
+        if (objects > 0) {
+            int none = 0, whole = 0;
+            if ((r = rows_none(s->db, &none)) != STORE_OK || (r = meta_whole(s->db, &whole)) != STORE_OK) { goto fail; }
+            if (!none && !whole) {
+                (void)snprintf(g_shape_note, sizeof g_shape_note,
+                               "it holds rows and lacks its store_id, its decoy key or its schema version");
+                r = STORE_ERR_DAMAGED;
+                goto fail;
+            }
+        }
+        /* F682 (V4-344): a file that was there and empty is made 0600 like
+         * one this open creates. It kept the mode it had -- 0644 in the
+         * review's run -- and the daemon then said it had created the store,
+         * which the spec says is 0600. Through a descriptor that does not
+         * follow a link, as the creation above. */
+        if (objects == 0 && was_there) {
+            const int fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+            if (fd >= 0) {
+                (void)fchmod(fd, 0600);
+                (void)close(fd);
+            }
+        }
         if (exec_simple(s->db, "PRAGMA journal_mode=WAL;") != STORE_OK ||
             exec_simple(s->db, "PRAGMA synchronous=FULL;") != STORE_OK ||
             exec_simple(s->db, "PRAGMA foreign_keys=ON;") != STORE_OK) {
@@ -964,14 +1041,6 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     /* F653: inside it, so that what is checked is what the rest of the open
      * reads. */
     if ((r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; }
-    /* F668 (V4-342): the open CREATES a store's three meta values only in a
-     * file that holds no row at all. It used to write whichever was
-     * missing: a store with a user, a device and an audit chain whose
-     * `store_id` row had gone was given a new random id, committed, and
-     * reported as "created" -- which the daemon takes as leave to remove the
-     * file if the start then fails (F361, F657). A store that holds
-     * anything and lacks one of the three is damaged, and is left. */
-    if (!existing && (r = rows_none(s->db, &blank)) != STORE_OK) { goto fail_tx; }
 
     /* schema_version. Zeroed, so a value shorter than 8 bytes can never be
      * read together with stack bytes, even if the length check went. */
@@ -983,8 +1052,8 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     }
     if (found) {
         if ((r = schema_version_known(vbuf, vlen)) != STORE_OK) { goto fail_tx; }
-    } else if (existing || !blank) {
-        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290); nor is a store completed (F668) */
+    } else if (existing) {
+        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
         goto fail_tx;
     } else {
         uint8_t nv[8];
@@ -997,8 +1066,8 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = meta_get(s->db, "store_id", s->store_id, sizeof s->store_id, &n, &found)) != STORE_OK) {
         goto fail_tx;
     }
-    if (!found && (existing || !blank)) {
-        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon, or lost its id (F668) */
+    if (!found && existing) {
+        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */
         goto fail_tx;
     }
     if (!found) {
@@ -1016,7 +1085,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = meta_get(s->db, "decoy_pk", s->decoy_pk, sizeof s->decoy_pk, &n, &found)) != STORE_OK) {
         goto fail_tx;
     }
-    if (!found && (existing || !blank)) {
+    if (!found && existing) {
         r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
         goto fail_tx;
     }
@@ -1123,6 +1192,15 @@ void store_close(store_t *s)
     }
     sodium_memzero(s->store_id, sizeof s->store_id);
     free(s);
+}
+
+int store_is_as_created(store_t *s)
+{
+    int yes = 0;
+    if (s == NULL || s->db == NULL || rows_as_created(s->db, &yes) != STORE_OK) {
+        return 0;
+    }
+    return yes;
 }
 
 int store_was_created(const store_t *s)

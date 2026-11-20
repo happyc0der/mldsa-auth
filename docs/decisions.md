@@ -22554,3 +22554,80 @@ SC1, SC3 and SC4. 38 of 38.
 
 Counts: 832 mutations, 155 campaigns, 881 anchors; 678 findings (the 17
 above open); spec v1.112, 161 errata; 66 tests.
+
+## V4-344: what the eighty-eighth review found in V4-342 (F679 to F690)
+
+**The eighty-eighth review** read V4-342's commit, built it in its own
+directory and ran it, and read the notify, descriptor-limit and unit files.
+No High or Medium. Three Low, nine Info. Everything it ran was on macOS;
+what it says of Linux is inferred and marked so in the rows.
+
+- **F679 (Low).** `SA_RESTART` was right for start-up and wrong after it.
+  The handlers are installed a second time, without it, before the last
+  look for a stop. The test for it sends SIGTERM repeatedly: each one ends
+  one waiting write, and where the next line waits again it takes one a
+  line. That is what the fix gives and the row says it is less than
+  "stopped by one SIGTERM".
+- **F683 (Low).** Three looks for a stop, and a test that passed with any
+  one of them gone. The middle one is removed: held where the test holds
+  it, a daemon without it is caught by the last, with nothing to tell the
+  two apart. The first and the last each have a leg and a mutant now.
+  - The first cannot be held. The daemon prints nothing before its key is
+    open and makes no file. So the signal is sent at a growing delay after
+    the spawn, an attempt that came before the handlers is taken again,
+    and the first attempt the daemon handled is judged. One that came
+    after the key, on a loaded machine, is forgiven twice. This is a test
+    by timing, with its retries stated, and not one held open.
+- **F684 (Low), inferred.** A default ACL narrows a new socket's mode after
+  the umask has. The listener says `mode` now and the runbook says what to
+  do. The mode is not forced: that was F676.
+- **F681 (Info) narrows F678 without a lock.** Before removing a store it
+  created, the start asks whether the file still holds only what a
+  creation leaves. F678 stays as recorded for what is left: a second
+  daemon that has opened the store and not yet written.
+- **F680, F682, F685, F686, F687, F688, F690 (Info).** Fixed. **F689
+  (Info).** The comment fixed, the note's ordering recorded.
+
+**Open for the owner.** Nothing new. F678's lock is still the owner's.
+
+Campaign v186: RA1 (the handlers go on restarting once the daemon runs),
+RA2 (a stop is not looked for before the store is opened), RA3 (a created
+store is removed whatever was written to it since), RA4 (a lost meta value
+is given a new one), RA9 (it is refused only after the switch to WAL), RA5
+(a file that was there keeps its mode), RA6 ("as created" does not count the meta values), RA7 (the
+notify socket is written to with a call that waits), RA8 (a short hard
+limit leaves the soft limit where it was). v185's SE2 is now the one look
+before `started`.
+
+Every committed mutant in the code this step changes was rerun by hand,
+each after its test passed on the clean tree: 87 in the first batch, across
+the store's opening, the daemon's start-up and epilogue, the listener, the
+notify socket and the descriptor limit. 81 were killed by their named
+checks. The other six, and what each showed:
+
+- **v185 RS3, RS4 and RS5 SURVIVED.** They removed F668's three checks
+  inside the open's transaction. F680's check, ahead of the journal mode,
+  now refuses the same store first, so the three could each go unseen.
+  They went, with their mutants; RA4 removes the one check there is, and
+  RA9, new, puts the switch to WAL ahead of it.
+- **v90 SC3 SURVIVED.** F682's `fchmod` was first applied to every empty
+  file, the ones this open had just created among them, which made the
+  creation's own 0600 removable unseen. It applies to a file that was
+  already there, and SC3 is killed again.
+- **v184 SH9 was KILLED(other).** Its check asked only that a database
+  that is not a store be refused; with the mutant F680's check now fails
+  on such a file as a database error. The check asks for `store-corrupt`.
+- **v186 RA7 SURVIVED, on macOS,** which refuses a full datagram queue at
+  once whatever the flag. It is killed where a sender waits: Linux. Not
+  run there by hand; the nightly runs it.
+
+After those changes the 36 mutants of the store's opening and shape code
+were rerun: 36 of 36 killed. Re-anchored in this step: v97 SH1 (two
+handler blocks now), v167 NS1, v130 RD2 and v89 OE4 (back to their
+V4-341 text).
+
+Spec v1.113: erratum 162 (16).
+
+Counts: 838 mutations, 156 campaigns, 887 anchors; 690 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.113, 162 errata; 66 tests.

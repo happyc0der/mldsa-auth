@@ -2546,6 +2546,28 @@ static void test_sd_notify(void)
               printf("SKIP: sd_notify: this platform will not lower RLIMIT_NOFILE to 0; the kept socket is not staged (F437)\n");
           }
       } }
+    /* F685 (V4-344): a notify socket nobody reads never holds the daemon.
+     * Its queue is filled -- nothing here reads `rs` -- and the call that
+     * finds it full must come back, and say it could not send. In a child
+     * with a clock on it: a call that waits would wait for ever. */
+    { fflush(NULL);
+      const pid_t kid = fork();
+      if (kid == 0) {
+          (void)alarm(20u);
+          int refused = 0;
+          for (int i = 0; i < 200000 && !refused; i++) {
+              if (authd_sd_notify("WATCHDOG=1") == -1) { refused = 1; }
+          }
+          _exit(refused ? 0 : 1);
+      }
+      int st = -1;
+      const int back = kid > 0 && waitpid(kid, &st, 0) == kid;
+      CHECK(back && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+            "sd_notify: with systemd's queue full the call comes back, refused: the loop is never held (F685)");
+      if (rs >= 0) {      /* empty the queue for the checks below */
+          char sink[64];
+          while (recv(rs, sink, sizeof sink, MSG_DONTWAIT) > 0) { }
+      } }
     /* Closed, the next notification opens one again. */
     authd_sd_notify_close();
     authd_sd_notify_close();                    /* twice is harmless */

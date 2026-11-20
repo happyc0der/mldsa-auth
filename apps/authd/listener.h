@@ -30,7 +30,8 @@ typedef enum {
     LISTENER_ERR_PATH,       /* unix path too long, or refused */
     LISTENER_AGAIN,          /* accept: nothing pending right now */
     LISTENER_ERR_PEER,       /* accept: peer credential check failed */
-    LISTENER_ERR_IN_USE      /* unix path: a socket something is listening on (F204) */
+    LISTENER_ERR_IN_USE,     /* unix path: a socket something is listening on (F204) */
+    LISTENER_ERR_MODE        /* unix path: bind made the socket with another mode than asked (F684) */
 } listener_status_t;
 
 const char *listener_status_name(listener_status_t st);

@@ -1233,8 +1233,15 @@ Common ones, and what they actually are:
   you copied by hand is held to the first rule and may not meet it.
 - **`unix listener …: path`** — the socket path cannot be used: longer than
   `sun_path` (104–108 bytes), something that is not a socket is already
-  there, a stale socket that cannot be removed, or its mode cannot be set.
+  there, or a stale socket that cannot be removed.
   `--check-config` refuses the first two before the daemon tries to bind.
+- **`unix listener …: mode`** (also `site socket` and `admin socket`; since
+  V4-344) — the socket was made with a mode other than the one the daemon
+  asks for (0660, or 0600 for the admin socket). The daemon makes it with
+  the right mode in one step and does not change it afterwards, so
+  something else narrowed it: in practice a default ACL on the socket's
+  directory (`getfacl` shows `default:` lines). Remove the default ACL
+  (`setfacl -k <directory>`). The unit's own runtime directory has none.
 - **`loopback listener: bind`** — another program, or a second daemon, holds
   `listen_port` (8443 in the example) on 127.0.0.1 (F448).
 - **`unix listener …: in-use`** (also `site socket` and `admin socket`) —
@@ -1268,6 +1275,14 @@ Common ones, and what they actually are:
   start, while it was still making the tables, leaves a file with some of
   them, which is refused from then on (`it lacks …`). It never held
   anything: delete it and start again.
+- **`…/store.sqlite3: store-corrupt`**, followed by **`… the first
+  difference: it holds rows and lacks its store_id, its decoy key or its
+  schema version`** (since V4-344) — the file is shaped as a store and
+  has users, devices or audit entries in it, but one of the three values
+  every store is given when it is made is gone. The daemon will not give
+  it a new one: the audit chain is keyed from the store's id. Nothing
+  removes those values in normal running, so treat it as an incident and
+  restore a backup (step 12).
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

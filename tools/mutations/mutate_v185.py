@@ -4,14 +4,15 @@
 Usage: mutate_v185.py <repo> <ID>
 
     SE1   SIGTERM is handled only once the listeners are bound, as before V4-342.
-    SE2   a stop is not looked for before `started`: the daemon starts, then drains.
+    SE2   a stop is not looked for before `started`: the daemon starts, then drains
+          (since V4-344 that is one look, the last; V4-342 had a second after the
+          store was made, which nothing could tell from it).
     SE3   a daemon stopped before it started exits 1.
     SE4   SIGHUP is handled only once the listeners are bound.
     RS1   any table whose name begins sqlite_ is SQLite's own (as in V4-341).
     RS2   sqlite_stat1 is exempt whatever its definition.
-    RS3   a populated store with no store_id is given one (and called created).
-    RS4   ... with no decoy key is given one.
-    RS5   ... with no schema version is given one.
+    (RS3 to RS5, the three checks inside the open's transaction, went in
+    V4-344 with those checks: v186's RA4 removes the one check there is now.)
     RS6   a tool's open does not ask the version before the shape.
     RS7   a meta table that cannot be read is a database error, not the shape's.
     RS8   a refused file is checkpointed on close.
@@ -27,10 +28,8 @@ M = {
              "        (void)sigaction(SIGHUP, &sa, NULL); /* MUTATION SE1 */\n        signal(SIGPIPE, SIG_IGN);\n"),
             (A, "    /* How much of this daemon's memory can actually be locked (spec 16,\n",
              "    { struct sigaction sl; memset(&sl, 0, sizeof sl); sl.sa_handler = on_signal; (void)sigaction(SIGTERM, &sl, NULL); (void)sigaction(SIGINT, &sl, NULL); } /* MUTATION SE1 */\n    /* How much of this daemon's memory can actually be locked (spec 16,\n")],
-    "SE2": [(A, "    /* F657: a stop that came while the store was being made. */\n    if (g_stop) {\n",
-             "    /* F657: a stop that came while the store was being made. */\n    if (0 && g_stop) { /* MUTATION SE2 */\n"),
-            (A, "     * after this is the loop's, and drains. */\n    if (g_stop) {\n",
-             "     * after this is the loop's, and drains. */\n    if (0 && g_stop) { /* MUTATION SE2 */\n")],
+    "SE2": [(A, "     * told that look from this one, so it went (F683). */\n    if (g_stop) {\n",
+             "     * told that look from this one, so it went (F683). */\n    if (0 && g_stop) { /* MUTATION SE2 */\n")],
     "SE3": [(A, "    early_rc = 0;\nlistener_failed:\n",
              "    early_rc = 1; /* MUTATION SE3 */\nlistener_failed:\n")],
     "SE4": [(A, "        (void)sigaction(SIGINT, &sa, NULL);\n        (void)sigaction(SIGHUP, &sa, NULL);\n        signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */\n",
@@ -41,12 +40,6 @@ M = {
              "        \"(name LIKE 'sqlite_%'))) \" /* MUTATION RS1 */\n")],
     "RS2": [(ST, "        \"(name = 'sqlite_stat1' AND sql = 'CREATE TABLE sqlite_stat1(tbl,idx,stat)') OR \"\n",
              "        \"(name = 'sqlite_stat1') OR \" /* MUTATION RS2 */\n")],
-    "RS3": [(ST, "    if (!found && (existing || !blank)) {\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon, or lost its id (F668) */\n",
-             "    if (!found && existing) { /* MUTATION RS3 */\n        r = STORE_ERR_DAMAGED;\n")],
-    "RS4": [(ST, "    if (!found && (existing || !blank)) {\n        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */\n",
-             "    if (!found && existing) { /* MUTATION RS4 */\n        r = STORE_ERR_DAMAGED;\n")],
-    "RS5": [(ST, "    } else if (existing || !blank) {\n",
-             "    } else if (existing) { /* MUTATION RS5 */\n")],
     "RS6": [(ST, "        if ((r = has_meta_table(s->db, &has_meta)) != STORE_OK) { goto fail; }\n        if (has_meta) {\n",
              "        if ((r = has_meta_table(s->db, &has_meta)) != STORE_OK) { goto fail; }\n        if (has_meta && !existing) { /* MUTATION RS6 */\n")],
     "RS7": [(ST, "                if (r == STORE_ERR_DB && schema_is_ours(s->db) == STORE_ERR_DAMAGED) { r = STORE_ERR_DAMAGED; }\n",

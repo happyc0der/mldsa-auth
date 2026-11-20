@@ -36,6 +36,7 @@ const char *listener_status_name(listener_status_t st)
     case LISTENER_AGAIN:       return "again";
     case LISTENER_ERR_PEER:    return "peer-credential";
     case LISTENER_ERR_IN_USE:  return "in-use";
+    case LISTENER_ERR_MODE:    return "mode";
     default:                   return "unknown";
     }
 }
@@ -179,7 +180,9 @@ listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode,
      * chmod follows a symbolic link: whoever could write the socket's
      * directory could put a link there between the two calls and have a
      * file of the daemon's -- the store -- made 0660. Now nothing is done
-     * to the path after bind; it is only looked at, without following. */
+     * to the path after bind but look at it, without following, and
+     * remove it by name where this function fails (unlink does not follow
+     * a link either). */
     const mode_t old = umask((mode_t)(0777 & ~mode));
     const int brc = bind(s, (const struct sockaddr *)&a, sizeof a);
     (void)umask(old);
@@ -189,9 +192,19 @@ listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode,
     }
     {
         struct stat made;
-        if (lstat(path, &made) != 0 || !S_ISSOCK(made.st_mode) || (made.st_mode & 07777) != mode) {
+        if (lstat(path, &made) != 0 || !S_ISSOCK(made.st_mode)) {
             (void)close(s);
             return LISTENER_ERR_PATH;    /* not unlinked: whatever is there now is not this socket */
+        }
+        /* F684 (V4-344): its own answer. The umask is not the only thing
+         * between bind() and the mode: on Linux a directory's default ACL
+         * masks it further, 0660 to 0640 say. chmod() used to force the
+         * mode; nothing does now, so the start fails, and it says which
+         * kind of failure. The socket is this call's and is removed. */
+        if ((made.st_mode & 07777) != mode) {
+            (void)close(s);
+            (void)unlink(path);
+            return LISTENER_ERR_MODE;
         }
     }
     if (listen(s, backlog) != 0) {

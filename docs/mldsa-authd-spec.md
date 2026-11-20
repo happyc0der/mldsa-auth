@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.112, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342)
+# mldsa-authd — deployment specification (v1.113, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1654,11 +1654,16 @@ and inode, and the same name). The start does not ask about the store: it
 opens it and reports what it finds, exit 1.
 
 **Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
-They are handled from before the server key is read (erratum 161): a daemon
-told to stop before it has logged `started` does not start. It says so on
-standard error, removes a store that start created, as a start that failed
-does, and exits 0. A `SIGHUP` in that time is ignored and logged once the
-daemon has started.
+They are handled from before the server key is read (erratum 161). The
+daemon looks for a stop twice while it starts: before it opens its store,
+and last thing before it logs `started`. A stop it sees at either ends the
+start: it says so on standard error, removes a store that start created, as
+a start that failed does, and exits 0. One that arrives after the second
+look is the running daemon's, which logs `started` and then drains (erratum
+162). A `SIGHUP` in that time is ignored and logged once the daemon has
+started. Once the daemon runs, a signal also ends a write to standard error
+that is waiting on a reader: the line being written is lost, and the daemon
+is not held by a log nobody reads (erratum 162).
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -1811,11 +1816,15 @@ keeps the mode it has.
 **The daemon creates a store only in a file that holds no row** (erratum
 161). The store's identifier, its decoy key and its schema version are
 written by the start that creates it and by no other: a file that holds a
-row in any table and lacks one of the three is `store-corrupt` and is left
-as it is.
+row in any table and lacks one of the three is `store-corrupt`, is refused
+before its journal mode is touched, and has no table, index or row changed
+(erratum 162). A file that was there and empty is made mode 0600, as one
+the daemon creates is.
 
 **A start that creates the store and then fails removes it again** (erratum
-114), and says so on standard error. Otherwise the next start would find
+114), and says so on standard error. It asks first whether the file still
+holds only what a creation leaves, and if it holds more, written by some
+other process since, leaves it and says that (erratum 162). Otherwise the next start would find
 the file, take it for its store and say nothing: the warning above would
 have gone to a start that never served. A store that was already there is
 never removed.
@@ -2710,3 +2719,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 161 | 9.2, 16 | Signals are handled from before the key is read, and a stop before `started` exits 0 without serving and removes a store that start created; the daemon writes a store's identifier, decoy key and schema version only into a file that holds no row; of SQLite's own tables only `sqlite_stat1`, `sqlite_stat4` and `sqlite_sequence`, as SQLite defines them, are outside the shape; a refused file has no table, index or row changed | The handlers were installed after the last socket was bound: a `SIGTERM` during start-up left a store that start had created, and a `SIGHUP` there, which this section says is ignored, ended the daemon (F657). A populated store that had lost its identifier row was given a new one and reported as created, which is leave to remove it (F668). Erratum 160 exempted every table named `sqlite_…`, and a table can be renamed to that with one write (F667). And "is not changed" was not true of the bytes of a refused file in WAL mode, which was checkpointed as it was closed; it no longer is (F671) |
+
+### Revision v1.113 (V4-344)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 162 | 16 | A stop is looked for at two points of start-up, and one that arrives after the second is the running daemon's; a running daemon's write to standard error is ended by a signal; a store that holds rows and lacks a meta value is refused before its journal mode is touched; a file that was there and empty is made 0600; a start removes a store it created only if the file still holds what a creation leaves | Erratum 161 said a daemon told to stop before `started` does not start, which is not true of a stop that arrives between the last look and the line (F688). The handlers of erratum 161 restarted interrupted calls for the life of the daemon, so one blocked writing a log line nobody read could not be stopped by `SIGTERM` (F679). A store refused for a lost identifier had been switched to WAL first (F680). A store made in a file that was already there kept that file's mode (F682). And a start held up after creating its store could remove it after another daemon had begun to serve it (F681) |

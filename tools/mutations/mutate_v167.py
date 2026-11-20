@@ -13,8 +13,8 @@ SD = "apps/authd/sdnotify.c"
 EV = "apps/authd/evloop.c"
 
 M = {
-    "NS1": [(SD, "    const ssize_t w = sendto(g_notify_fd, msg, ml, 0, (const struct sockaddr *)&a, alen);\n",
-             "    const ssize_t w = sendto(g_notify_fd, msg, ml, 0, (const struct sockaddr *)&a, alen);\n    authd_sd_notify_close(); /* MUTATION NS1 */\n")],
+    "NS1": [(SD, "    const ssize_t w = sendto(g_notify_fd, msg, ml, MSG_DONTWAIT, (const struct sockaddr *)&a, alen);\n",
+             "    const ssize_t w = sendto(g_notify_fd, msg, ml, MSG_DONTWAIT, (const struct sockaddr *)&a, alen);\n    authd_sd_notify_close(); /* MUTATION NS1 */\n")],
     "RS1": [(EV, "    return (free_slots >= 2u) ? s : NULL;\n",
              "    return (free_slots >= 1u) ? s : NULL; /* MUTATION RS1 */\n")],
     "RS2": [(EV, "    if (s == NULL || kind != SLOT_KIND_LOCAL || ev->listen_is_admin[li] || ev->n_local_slots < 2u) {\n",

@@ -1952,12 +1952,20 @@ static void test_fdlimit(void)
         if (setrlimit(RLIMIT_NOFILE, &hard) != 0) {
             _exit(77);
         }
+        /* The canary first, from a soft limit of 90: a hard limit EQUAL to
+         * the need is enough. Then the soft limit is put back to 90 and the
+         * need is one more than the hard limit allows. */
+        const fdlimit_status_t b = fdlimit_ensure(150u, NULL);
+        hard.rlim_cur = 90u;
+        if (setrlimit(RLIMIT_NOFILE, &hard) != 0) {
+            _exit(77);
+        }
         uint64_t lim = 0u;
         const fdlimit_status_t a = fdlimit_ensure(151u, &lim);
         struct rlimit after;
-        const int kept = (getrlimit(RLIMIT_NOFILE, &after) == 0 && after.rlim_cur == 90u);
-        const fdlimit_status_t b = fdlimit_ensure(150u, NULL);
-        _exit((a == FDLIMIT_LOW ? 1 : 0) | (lim == 90u ? 2 : 0) | (kept ? 4 : 0) |
+        /* F686 (V4-344): LOW, and as much as the hard limit gives. */
+        const int took = (getrlimit(RLIMIT_NOFILE, &after) == 0 && after.rlim_cur == 150u && after.rlim_max == 150u);
+        _exit((a == FDLIMIT_LOW ? 1 : 0) | (lim == 150u ? 2 : 0) | (took ? 4 : 0) |
               (b == FDLIMIT_RAISED ? 8 : 0));
     }
     int wst = 0;
@@ -1967,8 +1975,8 @@ static void test_fdlimit(void)
     } else {
         const int r = WIFEXITED(wst) ? WEXITSTATUS(wst) : 0;
         CHECK((r & 1) != 0, "fdlimit: a hard limit one below the need is LOW (F205)");
-        CHECK((r & 2) != 0, "fdlimit: LOW reports the soft limit in force");
-        CHECK((r & 4) != 0, "fdlimit: LOW changes nothing");
+        CHECK((r & 2) != 0, "fdlimit: LOW reports the limit now in force, which is the hard limit (F686)");
+        CHECK((r & 4) != 0, "fdlimit: LOW raises the soft limit as far as the hard limit allows (F686)");
         CHECK((r & 8) != 0, "fdlimit: a hard limit equal to the need is enough (canary: LOW is not unconditional)");
     }
     (void)setrlimit(RLIMIT_NOFILE, &saved);

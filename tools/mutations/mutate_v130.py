@@ -27,7 +27,7 @@ M = {
              "                        existing ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),\n",
              "                        existing ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE), /* MUTATION RD2 */\n"),
             (ST,
-             "    if (!found && (existing || !blank)) {\n        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */\n        goto fail_tx;\n    }\n    if (!found) {\n        mldsa_keypair_t kp;\n",
+             "    if (!found && existing) {\n        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */\n        goto fail_tx;\n    }\n    if (!found) {\n        mldsa_keypair_t kp;\n",
              "    if (!found) {\n        mldsa_keypair_t kp;\n")],
     "RD3": [(ST,
              "    if (v == 0u || v > (uint64_t)STORE_SCHEMA_VERSION) { return STORE_ERR_SCHEMA; }\n",

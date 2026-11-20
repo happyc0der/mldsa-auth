@@ -14,6 +14,7 @@
  * shipped library never contains the fault-injection code.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1670,6 +1671,59 @@ int main(void)
                 m1.st_size == m0.st_size && w1.st_size == w0.st_size,
                 "shape: a refused database in WAL mode keeps its WAL and its size: it is not checkpointed on the way out (F671)");
           if (w != NULL) { store_close(w); } }
+        /* V4-344, review 88. */
+        /* F680: a store that has lost a meta value is refused before its
+         * journal mode is touched, and the refusal says why. In rollback
+         * mode, where the switch to WAL would show in the header. */
+        { store_t *s = fresh_store("lost-id.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open lost-id\n"); return 1; }
+          const int filled = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK;
+          store_close(s);
+          char wal[560];
+          (void)snprintf(wal, sizeof wal, "%s-wal", dbp);
+          const int cut = raw_sql(dbp, "PRAGMA journal_mode=DELETE; DELETE FROM meta WHERE key = 'store_id';") == 0;
+          unsigned char h0[32] = {0}, h1[32] = {0};
+          FILE *f = fopen(dbp, "rb");
+          const int read0 = f != NULL && fread(h0, 1, sizeof h0, f) == sizeof h0;
+          if (f != NULL) { (void)fclose(f); }
+          struct stat sb0, sb1, sbw;
+          const int st0 = stat(dbp, &sb0) == 0;
+          store_t *w = NULL;
+          const store_status_t ro = store_open(dbp, KEK, &w);
+          f = fopen(dbp, "rb");
+          const int read1 = f != NULL && fread(h1, 1, sizeof h1, f) == sizeof h1;
+          if (f != NULL) { (void)fclose(f); }
+          CHECK(filled && cut && read0 && read1 && st0 && ro == STORE_ERR_DAMAGED && w == NULL &&
+                stat(dbp, &sb1) == 0 && sb1.st_size == sb0.st_size && memcmp(h0, h1, sizeof h0) == 0 &&
+                stat(wal, &sbw) != 0,
+                "created: a store refused for a lost store_id keeps its header and gets no WAL: it is refused before the journal mode (F680)");
+          CHECK(strncmp(store_shape_note(), "it holds rows and lacks", 23) == 0,
+                "created: and the refusal says it holds rows and lacks a meta value (F680)");
+          if (w != NULL) { store_close(w); } }
+        /* F681: what a creation leaves, and nothing more. */
+        { store_t *s = fresh_store("as-created.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open as-created\n"); return 1; }
+          CHECK(store_is_as_created(s) == 1, "created: a store just made holds exactly what a creation leaves (F681)");
+          CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK && store_is_as_created(s) == 0,
+                "created: with one user in it, it no longer does (F681)");
+          store_close(s);
+          s = fresh_store("as-created.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: reopen as-created\n"); return 1; }
+          CHECK(raw_sql(dbp, "INSERT INTO meta(key, value) VALUES('other', x'00');") == 0 && store_is_as_created(s) == 0,
+                "created: nor with a fourth meta value written by another connection (F681)");
+          store_close(s); }
+        /* F682: a file that was there, empty and readable by all. */
+        { char pre[512];
+          path(pre, sizeof pre, "pre-empty.sqlite3");
+          (void)unlink(pre);
+          const int fd = open(pre, O_WRONLY | O_CREAT | O_EXCL, 0644);
+          const int made = fd >= 0 && fchmod(fd, 0644) == 0;
+          if (fd >= 0) { (void)close(fd); }
+          store_t *w = NULL;
+          CHECK(made && mode_of_path(pre) == 0644 && store_open(pre, KEK, &w) == STORE_OK && w != NULL &&
+                store_was_created(w) == 1 && mode_of_path(pre) == 0600,
+                "created: a store made in a file that was there, empty and 0644, is 0600 (F682)");
+          if (w != NULL) { store_close(w); } }
         /* V4-341 (F664): the daemon's open LOOKS before it touches. A
          * database that is not a store was switched to WAL and given nine
          * tables before it was refused; a store with its index dropped was
@@ -1688,7 +1742,7 @@ int main(void)
           char mode[32] = "";
           const int read = raw_row(other, "SELECT (SELECT count(*) FROM sqlite_master), journal_mode FROM pragma_journal_mode;",
                                    &n, mode, sizeof mode) == 0;
-          CHECK(made && rw != STORE_OK && w == NULL && read && n == 1 && strcmp(mode, "wal") != 0,
+          CHECK(made && rw == STORE_ERR_DAMAGED && w == NULL && read && n == 1 && strcmp(mode, "wal") != 0,
                 "shape: a database that is not a store is refused and left as it was: one table, not in WAL (F664)");
           if (w != NULL) { store_close(w); }
           store_t *s = fresh_store("noindex.sqlite3", dbp, sizeof dbp);
