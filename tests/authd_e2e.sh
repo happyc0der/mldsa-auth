@@ -2593,8 +2593,12 @@ loglines=$(grep -cE '^(debug|info|warn|error) ' "$TMP/authd.log")
 [ "$loglines" -gt 50 ] || fail "only $loglines log lines to look at, so the shape check shows nothing"
 odd=$(grep -E '^(debug|info|warn|error) ' "$TMP/authd.log" | grep -vE '^(debug|info|warn|error)( [a-z]+=[^ =]+)+$' | head -3)
 [ -z "$odd" ] || fail "a daemon log line is not a level followed by key=value words (F369): $odd"
-grep -qE '^warn event=recovery-use slot=[0-9]+ detail=(ok|ok-revoke-all|invalid|invalid-locked|locked)$' "$TMP/authd.log" \
-    || fail "no recovery-use line with a one-word detail was logged, so the shape check did not see one (F369)"
+# (Only where the recovery leg ran: it needs node, which is optional. Without
+# node this line failed the whole test, F722.)
+if [ -n "$NODE" ] && [ -n "$RECOVERY" ] && [ -x "$NODE" ]; then
+    grep -qE '^warn event=recovery-use slot=[0-9]+ detail=(ok|ok-revoke-all|invalid|invalid-locked|locked)$' "$TMP/authd.log" \
+        || fail "no recovery-use line with a one-word detail was logged, so the shape check did not see one (F369)"
+fi
 echo "PASS: E2E: all $loglines daemon log lines are a level and key=value words (F369)"
 
 # V4-181, F257: the scan above looks for the DEVICE passphrase, which no
@@ -2754,7 +2758,7 @@ fi
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm" "$TMP/fsa.sock"
 SG=0
 python3 - "$DAEMON" "$TMP/fs.conf" "$TMP/fs/new.sqlite3" "$TMP/fsp.sock" > "$TMP/sig.txt" 2>&1 <<'PYEOF' || SG=$?
-import fcntl, os, signal, socket, sqlite3, subprocess, sys, time
+import fcntl, os, resource, signal, socket, sqlite3, subprocess, sys, time
 daemon, conf, store, psock = sys.argv[1:5]
 CREATED = "created a new, empty store"
 STOPPED = "stopped by a signal before it had started"
@@ -2765,11 +2769,25 @@ def gone():
         try: os.unlink(store + s)
         except FileNotFoundError: pass
 
-def spawn(stderr, env=None, alarm_blocked=False):
-    # alarm_blocked (F712): started as from a shell that had SIGALRM blocked.
-    pre = (lambda: signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})) if alarm_blocked else None
+def spawn(stderr, env=None, alarm_blocked=False, short_memlock=False):
+    # alarm_blocked (F712, F719): started as from a shell that had SIGALRM
+    # and SIGTERM blocked.
+    # short_memlock (F723): with a soft RLIMIT_MEMLOCK of 1 MiB, so that the
+    # start prints its warning about it -- on every host, not only on those
+    # whose default is short. That line was a plain write, and a daemon held
+    # on its standard error that reached it could not be stopped.
+    def pre():
+        if alarm_blocked:      # and SIGTERM with it (F719)
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, signal.SIGTERM})
+        if short_memlock:
+            hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)[1]
+            want = 1 << 20
+            if hard != resource.RLIM_INFINITY and hard < want:
+                want = hard
+            resource.setrlimit(resource.RLIMIT_MEMLOCK, (want, hard))
     p = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=stderr, env=env, preexec_fn=pre)
+                         stdout=subprocess.DEVNULL, stderr=stderr, env=env,
+                         preexec_fn=pre if (alarm_blocked or short_memlock) else None)
     kids.append(p)
     return p
 
@@ -2792,7 +2810,7 @@ def held(until_path):
     `until_path` is what shows it got that far: a file it makes just before."""
     r, w = os.pipe()
     filled = fill(w)
-    p = spawn(w)
+    p = spawn(w, short_memlock=True)
     os.close(w)
     end = time.monotonic() + 30
     while not os.path.exists(until_path):
@@ -3008,6 +3026,47 @@ def main():
         print(f"IDLE: exit {rc}"); return 10
     print("IDLE: an idle daemon whose standard error nobody reads was stopped by one SIGTERM, exit 0")
 
+    # Leg 12 (F720): a stop that finds the daemon waiting in a log line, to
+    # a log that is read again at once. The line in flight is lost; the
+    # shutdown is not. Before V4-349 the stop signal itself closed the log.
+    # The reading must begin within the daemon's quarter second, so an
+    # attempt in which this process was held up longer says nothing and is
+    # made again, three times in all.
+    logged = False
+    for attempt in range(3):
+        r, w = os.pipe()
+        p = spawn(w)
+        got = drain(r, p, until=b"event=started")
+        if b"event=started" not in got:
+            print(f"MID: the daemon did not start (exit {p.poll()})"); return 9
+        time.sleep(0.2)
+        fill(w)
+        os.close(w)
+        p.send_signal(signal.SIGHUP)              # logs, and blocks
+        time.sleep(0.5)
+        t0 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        os.set_blocking(r, False)
+        try:
+            first = os.read(r, 65536)
+        except BlockingIOError:
+            first = b""
+        prompt = (time.monotonic() - t0) < 0.15
+        got = first + drain(r, p)
+        rc = ended(p)
+        os.close(r)
+        if rc != 0:
+            print(f"MID: exit {rc}"); return 12
+        if b"event=stopped" in got:
+            logged = True
+            break
+        if prompt:
+            break                                  # read in time, and still nothing
+    if not logged:
+        print("MID: a daemon stopped while it waited in a log line logged none of its shutdown to a log that was read at once")
+        return 12
+    print("MID: a stop that found the daemon in a log line cost that line, and the shutdown was logged")
+
     # Leg 7 (F691): a line lost to a signal is ONE line. The daemon is
     # blocked in a log line as above, a second SIGHUP ends that write, and
     # the pipe is then read: the next thing it logs must arrive.
@@ -3116,6 +3175,7 @@ case "$SG" in
 8) cat "$TMP/sig.txt"; fail "a READY=1 that could not be sent when the daemon started was never sent again (F693)" ;;
 10) cat "$TMP/sig.txt"; fail "an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)" ;;
 11) cat "$TMP/sig.txt"; fail "a daemon held on its first line of output while starting was not stopped by one SIGTERM (F710)" ;;
+12) cat "$TMP/sig.txt"; fail "a stop that found the daemon waiting in a log line closed the log, to a reader that was there (F720)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"

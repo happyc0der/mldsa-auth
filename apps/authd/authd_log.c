@@ -136,9 +136,13 @@ static volatile sig_atomic_t g_in_line = 0;
 
 #define LOG_STOPPING_LINE_USEC 250000
 
+/* F720 (V4-349): the timer ended this line -- not some other signal. */
+static volatile sig_atomic_t g_timer_fired = 0;
+
 static void on_line_timer(int sig)
 {
-    (void)sig;      /* its only work is to end the write */
+    (void)sig;      /* its work is to end the write, and to say that it did */
+    g_timer_fired = 1;
 }
 
 /* F711 (V4-348): an INTERVAL, not one shot. One shot could be spent before
@@ -193,6 +197,7 @@ static void line_begin(FILE *f)
 {
     clearerr(f);
     errno = 0;
+    g_timer_fired = 0;
     g_in_line = 1;      /* before the look at the flag: see authd_log_on_stop_signal */
     if (g_stop_flag != NULL && *g_stop_flag) {
         line_timer(LOG_STOPPING_LINE_USEC);
@@ -213,7 +218,14 @@ static void line_end(FILE *f)
      * for an interrupted one. */
     if (flushed != 0 || ferror(f)) {
         clearerr(f);
-        if (why == EINTR && g_stop_flag != NULL && *g_stop_flag) {
+        /* F720 (V4-349): the log is closed by a line that had its quarter
+         * second and was not written, and by nothing less. It was closed by
+         * ANY signal that ended a line while stopping, the stop signal
+         * itself among them: a daemon that happened to be waiting in a line
+         * when it was told to stop logged none of its shutdown, to a journal
+         * that was read again ten milliseconds later. A line another signal
+         * ends is lost; the next has its own quarter second. */
+        if (why == EINTR && g_timer_fired && g_stop_flag != NULL && *g_stop_flag) {
             g_muted = 1;
         }
     }

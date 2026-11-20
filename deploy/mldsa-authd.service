@@ -60,7 +60,9 @@ WatchdogSec=30s
 # connection's deadline passes, so a stop can take as long as the larger of
 # handshake_timeout_ms and idle_timeout_ms (60 s as shipped). This is
 # systemd's default, written down so that it is seen beside that: raise it
-# if you raise idle_timeout_ms past it, or the stop ends in SIGKILL.
+# if you raise idle_timeout_ms past it, or the stop ends in SIGKILL. A
+# BACKUP that is running is finished first, however long the copy takes
+# (authd_admin allows it ten minutes): a stop during one waits for it too.
 TimeoutStopSec=90s
 WatchdogSignal=SIGKILL
 

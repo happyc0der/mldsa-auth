@@ -22870,3 +22870,78 @@ Spec v1.116: erratum 165 (16).
 Counts: 847 mutations, 159 campaigns, 896 anchors; 716 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.116, 165 errata; 66 tests.
+
+## V4-349: cleanup after V4-347 and V4-348, and what the ninety-second review found (F717 to F725)
+
+**Nothing has landed since V4-344.** V4-345's CI failed on Linux (F708),
+V4-347's did (F715), and V4-348's did (F723, below). Each was fixed in the
+step after it, and each step after it then failed for a reason of its own.
+`docs/review/REPRODUCE.md` still cites the runs on `48061ef`, which is
+still main. V4-345 to V4-348 land with this step, on its runs.
+
+**The ninety-second review** built V4-348's commit on Linux and on macOS
+and ran nine held states on each; and read the protocol core against the
+protocol specification as a cryptographic reviewer would. One Medium, two
+Low, five Info, and one Info left open. The core was found sound.
+
+- **F723 (Medium): the fifth step on one sentence**, and the plainest.
+  V4-348's remedy was right and its application was a text search for one
+  spelling of a call. Two calls were spelt otherwise. The daemon reaches
+  one of them on every by-hand start on Linux.
+  - What is different this time is not the fix, which is two words. It is
+    that the property is now checked by a program and not by a reader: a
+    gate fails on any write to standard error past the handlers that does
+    not go through the log, whatever its spelling. And the test no longer
+    depends on the host to print the warning.
+  - **And the test was run on Linux before the push.** Three pushes in a
+    row failed CI on something only Linux decides (a datagram queue's
+    length, `/bin/sh` being a link, the default memlock limit). After the
+    second, the mechanism was run in a container; that was not enough,
+    because the failure was not in the mechanism. For this step the tree
+    was built in a Linux container, as a user who is not root, with the
+    default limits and without node, and the daemon's tests were run
+    there. That is now part of a step's verification whenever the daemon
+    or its tests change.
+- **F720 (Low).** The log is closed only by a line that had its quarter
+  second. The review measured the loss exactly: none in two hundred
+  ordinary stops, all of forty when the stop found the daemon in a line.
+- **F718 (Low).** A hint that said there was no store when there was.
+- **F717, F719, F721, F722, F724 (Info).** Fixed.
+- **F725 (Info), open for the next bug step.** The key schedule's stack
+  arrays against Req 4.2.
+
+**Open for the owner.** Nothing new. The list is V4-346's, with F706's
+question (a refusal the client can authenticate) from V4-347.
+
+Campaign v190: RE1 (the memlock warning is a plain write again), RE2 (any
+signal that ends a line while stopping closes the log), RE3 (SIGTERM is
+left blocked).
+
+Every committed mutant in the daemon's main and the log was rerun by hand,
+59, each after its test passed on the clean tree. 57 were killed by their
+named checks, v190's three among them. v188's RC1 was KILLED(other): with
+F720's change a stopping daemon whose line has no timer now hangs in an
+earlier leg than the one RC1 named, and its line in the campaign names
+that leg. v99's LF1 SURVIVED on macOS, as always.
+
+**The Linux run, before the push.** The tree was built in an Ubuntu 24.04
+container (gcc, uid 1000, the default 8 MiB memlock limit, a datagram
+queue of 512, no node) and the daemon's seven test programs were run in it.
+
+- The first run failed, in a leg this step had not touched: four watchdog
+  pings spanned 3.0 s against a bound of 2. The hand controls were running
+  on the same machine. Run again with the machine quiet, that leg passed
+  every time; it is a bound on time, and it was load.
+- The second failure was this step's own. F722's fix asked whether the
+  node variable was set, where every other leg asks whether it names
+  something that can be run; without node the test still failed. CI's
+  runners have node and would not have shown it. Corrected.
+- Then `authd_e2e` passed three times in three, and the other six
+  programs passed. The gate was run there too, on the clean file and on
+  one with a raw line put back.
+
+Spec v1.117: erratum 166 (16).
+
+Counts: 850 mutations, 160 campaigns, 899 anchors; 725 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644 and F725 open); spec v1.117, 166 errata; 66 tests.

@@ -1,3 +1,3 @@
-RC1|^authd_e2e$|an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)
+RC1|^authd_e2e$|a running daemon blocked on a standard error nobody reads could not be stopped by SIGTERM (F679)
 RC2|^test_authd_evloop$|cfg: a store_path that is a symbolic link, to a store or to nothing, is refused by the store check (F704)
 RC3|^test_authd_cli$|sd_notify: and is said to be unusable, so that nobody goes on trying it (F702)

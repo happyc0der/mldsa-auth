@@ -160,6 +160,10 @@ jobs:
       - name: Error codes, log events and log fields match the daemon both ways
         run: python3 tools/audit/check_spec_vocabularies.py "$PWD"
 
+      # V4-349 (F723): spec §16's "each line it writes to standard error".
+      - name: The daemon writes nothing to standard error past its signal handlers except through the log
+        run: sh tools/audit/check_daemon_stderr.sh "$PWD"
+
       # V4-14b: the review packet's claim map. Every security requirement of
       # both specifications has an entry, and everything an entry cites -- a
       # test's check text, a mutation, a ProVerif query, a CI job -- still

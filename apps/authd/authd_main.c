@@ -305,6 +305,15 @@ int main(int argc, char **argv)
         (void)sigaction(SIGINT, &sa, NULL);
         (void)sigaction(SIGHUP, &sa, NULL);
         signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */
+        /* F719 (V4-349): and none of the three is blocked. The mask is
+         * inherited: started from a shell that had SIGTERM blocked, the
+         * daemon was not stopped by SIGTERM at all. (systemd resets it.) */
+        sigset_t ours;
+        (void)sigemptyset(&ours);
+        (void)sigaddset(&ours, SIGTERM);
+        (void)sigaddset(&ours, SIGINT);
+        (void)sigaddset(&ours, SIGHUP);
+        (void)sigprocmask(SIG_UNBLOCK, &ours, NULL);
     }
 
     authd_slot_t *slots = calloc((size_t)cfg.max_slots, sizeof *slots);
@@ -417,6 +426,7 @@ int main(int argc, char **argv)
                                         "or append-only\n");
                     }
                 } else if (ss == STORE_ERR_IO && (errno == ENOENT || errno == EACCES)) {
+                    const int errno_of_lstat = errno;
                     /* F713 (V4-348): no store there, and none could be
                      * made. That is the first start with store_path outside
                      * the state directory, the mistake the lines above were
@@ -438,9 +448,14 @@ int main(int argc, char **argv)
                             authd_log_say("mldsa-authd: there is no store, and its directory is on a read-only "
                                           "file system: under the shipped unit only the state directory can be "
                                           "written (StateDirectory=, ReadWritePaths=)\n");
+                        } else if (why == EACCES && errno_of_lstat == EACCES) {
+                            /* F718: a store may well be there. Its directory
+                             * cannot be searched, so nobody here can say. */
+                            authd_log_say("mldsa-authd: the store's directory cannot be searched by this user, so "
+                                          "whether a store is there cannot be seen\n");
                         } else if (why == EACCES) {
                             authd_log_say("mldsa-authd: there is no store, and this user cannot create one in "
-                                          "its directory, or cannot reach that directory\n");
+                                          "its directory\n");
                         } else if (why == ENOENT) {
                             authd_log_say("mldsa-authd: there is no store, and the directory it is to be in "
                                           "does not exist\n");
@@ -677,7 +692,7 @@ int main(int argc, char **argv)
         const memlock_status_t ms = memlock_check(cfg.max_slots, &lim, &need);
         authd_log_num(memlock_log_level(ms), "memlock-limit", "need", need);
         if (ms == MEMLOCK_LOW) {
-            fprintf(stderr,
+            authd_log_say(
                     "mldsa-authd: RLIMIT_MEMLOCK is %llu bytes but %u slots need %llu "
                     "(%llu-byte page x %u blocks x max_slots): secrets may be swapped "
                     "to disk. Set LimitMEMLOCK in the service unit (spec 16).\n",
@@ -703,7 +718,7 @@ int main(int argc, char **argv)
                 authd_log_say("mldsa-authd: cannot hold the slot table to %u connections\n", cap);
                 goto listener_failed;
             }
-            fprintf(stderr,
+            authd_log_say(
                     "mldsa-authd: RLIMIT_NOFILE is %llu but max_slots = %u and max_local_slots = %u "
                     "need %llu open files: the daemon will hold at most %u connections and refuse "
                     "the rest. Set LimitNOFILE in the service unit (spec 16).\n",
@@ -758,7 +773,9 @@ int main(int argc, char **argv)
      * never told: it would time the start out and kill a daemon that was
      * serving, and do it again at every restart. */
     int ready_pending = 0;
-    if (authd_sd_notify("READY=1") < 0) {
+    /* (Not by a daemon that has been told to stop since the last look:
+     * F717.) */
+    if (!g_stop && authd_sd_notify("READY=1") < 0) {
         /* F702 (V4-347): tried again only where trying can help. */
         if (authd_sd_notify_usable()) {
             authd_log_say("mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");

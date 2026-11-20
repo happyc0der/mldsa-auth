@@ -993,7 +993,8 @@ sudo diff -u /etc/systemd/system/mldsa-authd.service \
 for u in mldsa-authd-audit.service mldsa-authd-audit.timer; do
     sudo diff -u /etc/systemd/system/$u /usr/local/share/mldsa-authd/$u && echo "$u is unchanged"
 done
-sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf
+systemctl is-active --quiet mldsa-authd \
+    && sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf
 sudo systemctl restart mldsa-authd
 journalctl -u mldsa-authd -n 5 --no-pager
 ```
@@ -1010,7 +1011,10 @@ should show `event=started` again, and an existing device logs in as before.
 The `--check-config` line is the new build's, run while the old daemon is
 still serving: if it refuses your configuration (exit 3), stop there and
 read what it says before the restart takes the service down. It checks
-less than the start does, as the operator and without the passphrase.
+less than the start does, as the operator and without the passphrase. It
+is run only while the service is active: the passphrase is a credential
+systemd holds for a running unit (step 6), and with the service down the
+check would report that file missing from a configuration that is right.
 
 If it does not start, the unit's `ExecStartPre` has run the new build's
 `--check-config` on your configuration, and the journal names what it
@@ -1308,7 +1312,11 @@ Common ones, and what they actually are:
   - **`there is no store, and …`** (since V4-348) — the first start, and
     the directory `store_path` is in cannot be written: it is on a
     read-only file system (the same remedy as above), or the service user
-    cannot write or reach it, or it does not exist.
+    cannot write it.
+  - **`the store's directory cannot be searched by this user, so whether a
+    store is there cannot be seen`** (since V4-349) — the service user
+    lacks the `x` bit on the directory. A store may be in it: one restored
+    as root into a root-only directory is the usual way to get here.
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so
