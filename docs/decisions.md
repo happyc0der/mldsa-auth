@@ -22183,3 +22183,37 @@ No spec change.
 Counts: 801 mutations, 152 campaigns, 846 anchors; 642 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609 and F636 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-337: cleanup after V4-335 and V4-336
+
+- `docs/review/REPRODUCE.md` now cites the runs on `21019b8` (V4-335,
+  main since 2026-11-19): CI 44624438312 (16/16) and nightly 44624444342
+  (167/167, 152 campaigns), each on its first attempt. V4-332 to V4-334
+  had landed before it on nightly 44604189388 (166/166, on `6ec9266`).
+- V4-336's CI (44633820751) ran the rehearsal with the probe F639 asked
+  for, on both Ubuntus: a backup into a directory the service user owns
+  outside the store's directory is refused `internal` and leaves no file.
+  That is the runbook's sentence "even a directory the service user
+  owns", measured. The other six lines read as they did in V4-335's run.
+- What the measuring changed, for the record. Five claims about the
+  shipped unit were written into the runbook and the tool's warnings in
+  V4-332 and V4-333 from systemd's documentation, and marked as not run
+  under systemd. Four held. The fifth, that every other place is read-only
+  to the daemon, was wrong (`/dev/shm`), and it was a review's doubt that
+  it rested on, not a failure anyone saw. The rehearsal now asserts all of
+  them on every CI run.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3) and F636. Also open, in the entries named:
+  whether F420's overlap should be refused rather than warned of; the
+  questions in V4-246's, V4-274's, V4-281's, V4-284's, V4-285's, V4-291's
+  and V4-300's entries; a budget for `RECOVERY-ISSUE` (F39, F625, F630),
+  whether `BACKUP` should refuse a destination outside the store's
+  directory (F624), and whether Caddy offers browsers WebSocket over
+  HTTP/2 (F622), in V4-332's; whether the pending ledger's lifetime
+  should be extended by time the daemon was blocked (F629), in V4-333's.
+
+No code, test, campaign or spec change.
+
+Counts: 801 mutations, 152 campaigns, 846 anchors; 642 findings (the 16
+above open); spec v1.109, 158 errata; 66 tests.
