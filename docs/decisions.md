@@ -22695,3 +22695,46 @@ Spec v1.114: erratum 163 (16).
 Counts: 843 mutations, 157 campaigns, 892 anchors; 699 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.114, 163 errata; 66 tests.
+
+## V4-346: cleanup after V4-344 and V4-345
+
+- `docs/review/REPRODUCE.md` now cites the runs on `48061ef` (V4-344,
+  main since 2026-11-20): CI 44690933223 (16/16) and nightly 44690936917
+  (171/171, 156 campaigns), each on its first attempt. V4-339 to V4-343
+  had landed before it, together, on V4-343's runs (CI 44680877528,
+  nightly 44680881150, 170/170).
+- **v186's RA7 was killed on Linux**, in that nightly. It SURVIVES on
+  macOS and was committed on the strength of how Linux queues datagrams,
+  not of a run; V4-345 ran the kernel's behaviour in a container, and the
+  nightly ran the mutant.
+- What the last four bug steps were, for the record. V4-339 added a check
+  of the store's shape. V4-341, V4-342, V4-344 and V4-345 are each what a
+  review found in the step before it, and two of those steps (V4-342 and
+  V4-344) introduced a Low defect of their own that the next review
+  found. No step in the chain reached main with a defect a review had
+  already found in it: V4-339 was held for V4-341, and V4-341's nightly
+  failed on a mutant (v89 OE3) before anything landed. What changed in the
+  method along the way: the hand-control tool runs the test on the clean
+  tree first (V4-342), and a step that changes what a function refuses
+  reruns every committed mutant of that function (V4-343, done for 38, 87
+  and 73 mutants in the three steps since).
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3), F636 and F644. Also open, in the entries
+  named: whether F420's overlap should be refused rather than warned of;
+  the questions in V4-246's, V4-274's, V4-281's, V4-284's, V4-285's,
+  V4-291's and V4-300's entries; a budget for `RECOVERY-ISSUE` (F39, F625,
+  F630), whether `BACKUP` should refuse a destination outside the store's
+  directory (F624), and whether Caddy offers browsers WebSocket over
+  HTTP/2 (F622), in V4-332's; whether the pending ledger's lifetime should
+  be extended by time the daemon was blocked (F629), in V4-333's; a least
+  age for a key before `ROTATE` (F644) and a list of translator prefixes
+  (F651), in V4-338's; a lock beside the store (F678), in V4-342's; a
+  deadline carried by a request on the site socket (F696), and whether the
+  daemon should follow a symbolic link at `store_path` where V4-345
+  refuses one (F694), in V4-345's.
+
+No code, test, campaign or spec change.
+
+Counts: 843 mutations, 157 campaigns, 892 anchors; 699 findings (the 17
+above open); spec v1.114, 163 errata; 66 tests.
