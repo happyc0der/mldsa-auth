@@ -1724,6 +1724,47 @@ int main(void)
                 store_was_created(w) == 1 && mode_of_path(pre) == 0600,
                 "created: a store made in a file that was there, empty and 0644, is 0600 (F682)");
           if (w != NULL) { store_close(w); } }
+        /* V4-345, review 89. */
+        /* F694: the daemon's store is the file its path names. */
+        { char link[512], target[512];
+          path(link, sizeof link, "link.sqlite3");
+          path(target, sizeof target, "link-target.sqlite3");
+          (void)unlink(link); (void)unlink(target);
+          struct stat sb;
+          store_t *w = NULL;
+          /* The link names its target beside itself: the fixture's paths are relative. */
+          CHECK(symlink("link-target.sqlite3", link) == 0 && store_open(link, KEK, &w) == STORE_ERR_IO && w == NULL &&
+                stat(target, &sb) != 0,
+                "link: a store path that is a link to nothing is refused, and nothing is made where it points (F694)");
+          if (w != NULL) { store_close(w); w = NULL; }
+          store_t *s = fresh_store("link-target.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open link-target\n"); return 1; }
+          store_close(s);
+          CHECK(store_open(link, KEK, &w) == STORE_ERR_IO && w == NULL,
+                "link: a store path that is a link to a store is refused by the daemon's open (F694)");
+          if (w != NULL) { store_close(w); w = NULL; }
+          CHECK(store_open_existing(link, KEK, &w) == STORE_OK && w != NULL,
+                "link: and opened by a tool's, which may follow one (the control) (F694)");
+          if (w != NULL) { store_close(w); }
+          (void)unlink(link); }
+        /* F695: a store the daemon cannot write is not opened. */
+        { store_t *s = fresh_store("readonly.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open readonly\n"); return 1; }
+          store_close(s);
+          if (geteuid() == 0) {
+              printf("SKIP: readonly: root writes a file of any mode, so a store that cannot be written is not staged (F695)\n");
+          } else {
+              /* Out of WAL first, so that the mode alone decides. */
+              store_t *w = NULL;
+              CHECK(raw_sql(dbp, "PRAGMA journal_mode=DELETE;") == 0 && chmod(dbp, 0400) == 0 &&
+                    store_open(dbp, KEK, &w) == STORE_ERR_IO && w == NULL,
+                    "readonly: a store whose mode refuses writing is not opened by the daemon (F695)");
+              if (w != NULL) { store_close(w); w = NULL; }
+              CHECK(store_open_existing(dbp, KEK, &w) == STORE_OK && w != NULL,
+                    "readonly: and is read by a tool as before (the control) (F695)");
+              if (w != NULL) { store_close(w); }
+              (void)chmod(dbp, 0600);
+          } }
         /* V4-341 (F664): the daemon's open LOOKS before it touches. A
          * database that is not a store was switched to WAL and given nine
          * tables before it was refused; a store with its index dropped was

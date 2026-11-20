@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <sodium.h>
@@ -288,7 +289,7 @@ int main(int argc, char **argv)
      * had created stayed, for the next start to come up on without a word
      * (what F361 was fixed to prevent). A SIGHUP there, which the spec says
      * is ignored, ended the daemon. Now a stop that arrives before `started`
-     * is seen at the next of three places below and leaves by the epilogue.
+     * is seen at the next of two places below and leaves by the epilogue.
      * SA_RESTART: nothing in start-up is written to expect an interrupted
      * call, and poll(), which the loop relies on a signal to end (erratum
      * 119), is never restarted. */
@@ -387,6 +388,16 @@ int main(int argc, char **argv)
         kek = NULL;
         if (ss != STORE_OK) {
             fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.store_path, store_status_name(ss));
+            /* F694 (V4-345): the two refusals of `io` that have a reason
+             * worth a line. */
+            {
+                struct stat lk;
+                if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0 && S_ISLNK(lk.st_mode)) {
+                    fprintf(stderr, "mldsa-authd: store_path is a symbolic link; name the file itself\n");
+                } else if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0 && access(cfg.store_path, W_OK) != 0) {
+                    fprintf(stderr, "mldsa-authd: the store cannot be written by this user\n");
+                }
+            }
             /* F660: which object it stopped at. */
             if (ss == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
                 fprintf(stderr, "mldsa-authd: the file is not shaped as this build makes a store; the first "
@@ -667,6 +678,7 @@ int main(int argc, char **argv)
      * write on every SIGTERM and could only be killed. Without it the write
      * fails, the line is lost, and the loop sees the stop. Before the look
      * below, so that no signal falls between the two regimes. */
+    authd_log_stop_flag(&g_stop);              /* F692: and the log is told which flag says "stop" */
     {
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
@@ -691,8 +703,15 @@ int main(int argc, char **argv)
      * `systemctl start`/`restart` return only now. Not under systemd, this is
      * nothing; a failure is said on stderr, and systemd then times the start
      * out rather than calling a deaf daemon started. */
+    /* F693 (V4-345): and tried again on every turn of the loop until it
+     * goes. It was sent once. Since V4-344 the send does not wait (F685),
+     * so a notify queue that was full at that one instant left systemd
+     * never told: it would time the start out and kill a daemon that was
+     * serving, and do it again at every restart. */
+    int ready_pending = 0;
     if (authd_sd_notify("READY=1") < 0) {
-        fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET\n");
+        fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");
+        ready_pending = 1;
     }
 
     /* F209 (V4-126): the unit sets WatchdogSec=, and systemd kills a daemon
@@ -718,6 +737,9 @@ int main(int argc, char **argv)
      * service down. */
     int loop_failed = 0;
     for (;;) {
+        if (ready_pending && authd_sd_notify("READY=1") > 0) {
+            ready_pending = 0;
+        }
         if (g_hup) {
             /* Cleared before it is logged: one that lands in between is
              * logged on the next turn, never lost. */
@@ -797,8 +819,9 @@ listener_failed:
      * populated store. If the file holds anything now but what a creation
      * leaves, it is not removed. */
     if (store_created && !store_is_as_created(store)) {
-        fprintf(stderr, "mldsa-authd: %s: this start created the store, but it holds more now than a new store "
-                        "does: something else has written to it, and it is left in place\n", cfg.store_path);
+        fprintf(stderr, "mldsa-authd: %s: this start created the store, but it could not be seen to hold only "
+                        "what a new store does: something else has written to it, or it could not be read; it is "
+                        "left in place\n", cfg.store_path);
         store_created = 0;
     }
     store_close(store);

@@ -61,7 +61,9 @@ try {
   const client = await AuthdClient.load(createMldsaClient);
   const start = async (extra = {}) => {
     const st = await startSite({ authdSite: info.site, authdWs: `127.0.0.1:${info.ws_port}`, serverId: info.server_id,
-                                 serverPub, moduleDir: `${repo}/web`, invite: 'the-invite', ...extra });
+                                 serverPub, moduleDir: `${repo}/web`, invite: 'the-invite',
+                                 signupBurst: 1000,      // this file guesses wrong on purpose, many times; F697 has its own site below
+                                 ...extra });
     servers.push(st.server);
     return st;
   };
@@ -393,6 +395,24 @@ try {
     const st = [];
     for (let i = 0; i < 3; i++) { st.push((await lpost({ user: 'nobody-by-this-name', code: '0000000000000000' })).status); }
     check(st[0] === 403 && st[1] === 403 && st[2] === 429, `recover: the third attempt past a burst of two is 429 (${st.join(', ')})`);
+    // V4-345 (F697): guesses at the invitation are counted too, apart from
+    // recovery's. Two wrong ones spend the burst; then even the right
+    // invitation is refused, unseen; and recovery from the same address
+    // still has its own attempts. A right invitation spends nothing.
+    { const sg = await start({ signupBurst: 2, recoverBurst: 2, recoverRefillMs: 60 * 60 * 1000 });
+      const sbase = `http://127.0.0.1:${sg.port}`;
+      const sp = (path, obj) => fetch(`${sbase}${path}`, { method: 'POST', body: JSON.stringify(obj),
+                                                           headers: { Origin: sbase, 'Content-Type': 'application/json' } });
+      const ok = [];
+      for (let i = 0; i < 4; i++) { ok.push((await sp('/api/signup', { user: `limit${i}`, invite: 'the-invite' })).status); }
+      check(ok.every((x) => x === 200), `signup: four signups with the right invitation spend no attempt (${ok.join(', ')}) (F697)`);
+      const g = [];
+      for (let i = 0; i < 3; i++) { g.push((await sp('/api/signup', { user: 'guesser', invite: `guess-${i}` })).status); }
+      check(g[0] === 403 && g[1] === 403 && g[2] === 429, `signup: the third wrong invitation past a burst of two is 429 (${g.join(', ')}) (F697)`);
+      const right = await sp('/api/signup', { user: 'guesser', invite: 'the-invite' });
+      check(right.status === 429, `signup: and with no attempt left the right invitation is refused too, unseen (${right.status}) (F697)`);
+      const rec = await sp('/api/recover', { user: 'nobody-by-this-name', code: '0000000000000000' });
+      check(rec.status === 403, `signup: the invitation's attempts are not recovery's (${rec.status}) (F697)`); }
     // V4-79, F159: behind a proxy the key is the RIGHTMOST X-Forwarded-For
     // entry, the proxy's; a client rotating the entries it prepends stays in
     // its own bucket.

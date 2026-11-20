@@ -1,5 +1,7 @@
 #include "authd_log.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <string.h>
 
 #include <sodium.h>
@@ -103,9 +105,44 @@ static FILE *out(void)
     return (g_dest != NULL) ? g_dest : stderr;
 }
 
+/* F691, F692 (V4-345): what happens after a line that could not be written.
+ * The daemon's handlers do not restart interrupted calls once it runs
+ * (F679), so a line waiting on a standard error nobody reads is ended by a
+ * signal, and lost.
+ *   - On macOS stdio then refused every later write to the stream, with the
+ *     pipe long since emptied: one interrupted line and the daemon logged
+ *     nothing more for as long as it ran. The error is cleared.
+ *   - And if the signal was the one that asks the daemon to stop, the log
+ *     is closed for what is left of this process: the lines of a shutdown
+ *     (draining, stopped) would each wait in their turn, one more signal
+ *     apiece, and a stop that was asked for once would end in systemd's
+ *     timeout. A daemon that is stopping says nothing more to a log that is
+ *     not being read. */
+static const volatile sig_atomic_t *g_stop_flag = NULL;
+static int g_muted = 0;
+
+void authd_log_stop_flag(const volatile sig_atomic_t *flag)
+{
+    g_stop_flag = flag;
+    g_muted = 0;
+}
+
+static void line_done(void)
+{
+    FILE *f = out();
+    const int bad = (fflush(f) != 0) || ferror(f);
+    if (bad) {
+        const int why = errno;
+        clearerr(f);
+        if (why == EINTR && g_stop_flag != NULL && *g_stop_flag) {
+            g_muted = 1;
+        }
+    }
+}
+
 static int enabled(authd_log_level_t l)
 {
-    return (int)l <= (int)g_min;
+    return !g_muted && (int)l <= (int)g_min;
 }
 
 /* F369: `detail` is one word on the line, whatever the caller passes. It is
@@ -135,7 +172,7 @@ void authd_log_event(authd_log_level_t lvl, const char *event)
         return;
     }
     fprintf(out(), "%s event=%s\n", level_name(lvl), event ? event : "?");
-    fflush(out());
+    line_done();
 }
 
 void authd_log_slot(authd_log_level_t lvl, const char *event, size_t slot)
@@ -144,7 +181,7 @@ void authd_log_slot(authd_log_level_t lvl, const char *event, size_t slot)
         return;
     }
     fprintf(out(), "%s event=%s slot=%zu\n", level_name(lvl), event ? event : "?", slot);
-    fflush(out());
+    line_done();
 }
 
 void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
@@ -157,7 +194,7 @@ void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
     if (g_ip == AUTHD_LOG_IP_OFF) {
         fprintf(out(), "%s event=%s slot=%zu detail=%s\n",
                 level_name(lvl), event ? event : "?", slot, detail_word(detail, "-", word));
-        fflush(out());
+        line_done();
         return;
     }
     /* PREFIX renders a COPY with the host part zeroed -- the caller's address,
@@ -183,7 +220,7 @@ void authd_log_slot_addr(authd_log_level_t lvl, const char *event, size_t slot,
     fprintf(out(), "%s event=%s slot=%zu src=%s%s detail=%s\n",
             level_name(lvl), event ? event : "?", slot, src, suffix, detail_word(detail, "-", word));
     sodium_memzero(&a, sizeof a);
-    fflush(out());
+    line_done();
 }
 
 void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot, const char *detail)
@@ -194,7 +231,7 @@ void authd_log_slot_detail(authd_log_level_t lvl, const char *event, size_t slot
     char word[DETAIL_FIELD_MAX + 1u];
     fprintf(out(), "%s event=%s slot=%zu detail=%s\n",
             level_name(lvl), event ? event : "?", slot, detail_word(detail, "?", word));
-    fflush(out());
+    line_done();
 }
 
 void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
@@ -205,7 +242,7 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
     }
     if (g_ids == AUTHD_LOG_IDS_OFF) {
         fprintf(out(), "%s event=%s slot=%zu\n", level_name(lvl), event ? event : "?", slot);
-        fflush(out());
+        line_done();
         return;
     }
     if (g_ids == AUTHD_LOG_IDS_HASHED) {
@@ -227,7 +264,7 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
         sodium_memzero(p, sizeof p);
         fprintf(out(), "%s event=%s slot=%zu idh=%s\n",
                 level_name(lvl), event ? event : "?", slot, hex);
-        fflush(out());
+        line_done();
         return;
     }
     char field[ID_FIELD_MAX + 4u];
@@ -247,7 +284,7 @@ void authd_log_slot_id(authd_log_level_t lvl, const char *event, size_t slot,
     field[j] = '\0';
     fprintf(out(), "%s event=%s slot=%zu id=%s\n",
             level_name(lvl), event ? event : "?", slot, field);
-    fflush(out());
+    line_done();
 }
 
 void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
@@ -275,7 +312,7 @@ void authd_log_local(authd_log_level_t lvl, const char *event, const char *cmd,
         fprintf(out(), "%s event=%s cmd=%s uid=%lu pid=unavailable detail=%s\n",
                 level_name(lvl), event ? event : "?", safe, uid, detail ? detail : "-");
     }
-    fflush(out());
+    line_done();
 }
 
 void authd_fp_of_pk(authd_fp_t *out, const uint8_t pk[AUTHD_FP_PK_BYTES])
@@ -296,7 +333,7 @@ void authd_log_fp(authd_log_level_t lvl, const char *event, const authd_fp_t *fp
     }
     hex[64] = '\0';
     fprintf(out(), "%s event=%s fp=%s\n", level_name(lvl), event ? event : "?", hex);
-    fflush(out());
+    line_done();
 }
 
 void authd_log_peer(authd_log_level_t lvl, const char *event, int uid_known,
@@ -312,7 +349,7 @@ void authd_log_peer(authd_log_level_t lvl, const char *event, int uid_known,
         fprintf(out(), "%s event=%s uid=unavailable detail=%s\n",
                 level_name(lvl), event ? event : "?", detail ? detail : "-");
     }
-    fflush(out());
+    line_done();
 }
 
 void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, uint64_t value)
@@ -323,5 +360,5 @@ void authd_log_num(authd_log_level_t lvl, const char *event, const char *key, ui
     fprintf(out(), "%s event=%s %s=%llu\n",
             level_name(lvl), event ? event : "?", key ? key : "n",
             (unsigned long long)value);
-    fflush(out());
+    line_done();
 }

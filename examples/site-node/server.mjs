@@ -205,6 +205,11 @@ export async function startSite(opt) {
   const RECOVER_REFILL_MS = opt.recoverRefillMs ?? 60 * 1000;
   const RECOVER_KEYS_MAX = 10000;
   const recoverBuckets = new Map();
+  // F697 (V4-345): guesses at the invitation have a table of their own,
+  // with the same rule, so that a wrong invitation does not spend an
+  // attempt at recovery or the other way about.
+  const SIGNUP_BURST = opt.signupBurst ?? 10;
+  const signupBuckets = new Map();
   const clientKey = (req) => {
     let addr = req.socket.remoteAddress || '';
     if (opt.trustProxy) {
@@ -218,22 +223,25 @@ export async function startSite(opt) {
     }
     return limiterKey(addr);
   };
-  const takeRecoverToken = (req) => {
+  // `spend` false only asks whether the client has an attempt left (F697).
+  const takeToken = (buckets, burst, req, spend) => {
     const key = clientKey(req), now = monoMs();
-    let b = recoverBuckets.get(key);
+    let b = buckets.get(key);
     if (b) {
-      recoverBuckets.delete(key);       // re-inserted below: the Map's order is least recently used first
-      b.tokens = Math.min(RECOVER_BURST, b.tokens + Math.floor((now - b.at) / RECOVER_REFILL_MS));
-      if (b.tokens < RECOVER_BURST) { b.at += Math.floor((now - b.at) / RECOVER_REFILL_MS) * RECOVER_REFILL_MS; } else { b.at = now; }
+      buckets.delete(key);              // re-inserted below: the Map's order is least recently used first
+      b.tokens = Math.min(burst, b.tokens + Math.floor((now - b.at) / RECOVER_REFILL_MS));
+      if (b.tokens < burst) { b.at += Math.floor((now - b.at) / RECOVER_REFILL_MS) * RECOVER_REFILL_MS; } else { b.at = now; }
     } else {
-      b = { tokens: RECOVER_BURST, at: now };
+      b = { tokens: burst, at: now };
     }
-    recoverBuckets.set(key, b);
-    if (recoverBuckets.size > RECOVER_KEYS_MAX) { recoverBuckets.delete(recoverBuckets.keys().next().value); }
+    buckets.set(key, b);
+    if (buckets.size > RECOVER_KEYS_MAX) { buckets.delete(buckets.keys().next().value); }
     if (b.tokens <= 0) { return false; }
-    b.tokens--;
+    if (spend) { b.tokens--; }
     return true;
   };
+  const takeRecoverToken = (req) => takeToken(recoverBuckets, RECOVER_BURST, req, true);
+  const takeSignupToken = (req, spend) => takeToken(signupBuckets, SIGNUP_BURST, req, spend);
 
   // A site started with no invite refuses to start (V4-129, F212): the old
   // comparison was `invite !== opt.invite`, and with neither side set that is
@@ -257,11 +265,20 @@ export async function startSite(opt) {
   // F210): a daemon that accepts and never answers held the browser's request
   // open for as long as it stayed that way.
   const AUTHD_TIMEOUT_MS = opt.authdTimeoutMs ?? 10 * 1000;
-  const withAuthd = async (fn) => {
+  // F696 (V4-345): a request that SPENDS something at the daemon -- a
+  // recovery code, a login code -- is waited for three times as long. The
+  // daemon acts on a request it has read whether or not the site is still
+  // listening: answered a moment after the deadline, RECOVERY-USE had used
+  // one of the user's five codes and the visitor was told "unavailable".
+  // A longer wait does not close that, it makes it need a daemon thirty
+  // seconds behind; closing it is the daemon's (a request that carries its
+  // own deadline), and is recorded.
+  const AUTHD_SPEND_TIMEOUT_MS = opt.authdSpendTimeoutMs ?? 3 * AUTHD_TIMEOUT_MS;
+  const withAuthd = async (fn, ms = AUTHD_TIMEOUT_MS) => {
     const a = new Authd(opt.authdSite);
     let timer, late = false;
     const limit = new Promise((_, reject) => {
-      timer = setTimeout(() => { late = true; reject(new Error('authd: no answer')); }, AUTHD_TIMEOUT_MS);
+      timer = setTimeout(() => { late = true; reject(new Error('authd: no answer')); }, ms);
     });
     try {
       await Promise.race([a.connect(), limit]);
@@ -485,7 +502,7 @@ export async function startSite(opt) {
       const state = s.state;
       s.state = null;               // one state, one login
       try {
-        const r = await withAuthd((a) => exchange(a, code, state));
+        const r = await withAuthd((a) => exchange(a, code, state), AUTHD_SPEND_TIMEOUT_MS);
         await retire(s);
         authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
@@ -529,8 +546,15 @@ export async function startSite(opt) {
     // right. Hashing first also makes the two inputs the same length.
     'POST /api/signup': async (req, res, s) => {
       const { user, invite: offered } = await body(req);
+      // F697 (V4-345): guesses at the invitation are counted, as
+      // /api/recover's are. Three hundred wrong ones from one address were
+      // each answered 403. A client with no attempt left is refused before
+      // the invitation is looked at, right or wrong; only a wrong one
+      // spends an attempt, so signing up is not limited.
+      if (!takeSignupToken(req, false)) { return send(res, 429, { error: 'rate-limited' }); }
       const vouched = typeof offered === 'string' &&
         timingSafeEqual(createHash('sha256').update(offered).digest(), INVITE_DIGEST);
+      if (!vouched) { takeSignupToken(req, true); }
       if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || !vouched) {
         return send(res, 403, { error: 'signup refused' });
       }
@@ -578,7 +602,7 @@ export async function startSite(opt) {
       const state = s.state;
       s.state = null;               // one state, one login
       let again;
-      try { again = await withAuthd((a) => exchange(a, code, state)); }
+      try { again = await withAuthd((a) => exchange(a, code, state), AUTHD_SPEND_TIMEOUT_MS); }
       catch (e) { return away(e) ? unavailable(res) : send(res, 403, { error: 'login-failed' }); }   // F166, F210, as /api/login
       // The session keeps the token it had; this login's token is not kept.
       try { await withAuthd((a) => logout(a, again.token)); } catch { /* already gone */ }
@@ -593,7 +617,7 @@ export async function startSite(opt) {
       // token, and the refusal is the same single reply as every other.
       if (typeof user !== 'string' || typeof code !== 'string') { return send(res, 403, { error: 'recover-failed' }); }
       try {
-        const t = await withAuthd((a) => recoveryUse(a, user, code));
+        const t = await withAuthd((a) => recoveryUse(a, user, code), AUTHD_SPEND_TIMEOUT_MS);
         await retire(s);
         rotate(res, s).ticket = { user, ticket: t.ticket, expires: t.expires };  // stays on the server, under a new id (F131)
         send(res, 200, { user });

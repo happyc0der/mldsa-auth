@@ -22631,3 +22631,67 @@ Spec v1.113: erratum 162 (16).
 Counts: 838 mutations, 156 campaigns, 887 anchors; 690 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.113, 162 errata; 66 tests.
+
+## V4-345: what the eighty-ninth review found (F691 to F699)
+
+**The eighty-ninth review** read V4-344's commit and ran it, and read and
+ran the reference site against a stub daemon. No High or Medium. Seven
+Low, two Info. Two of the Low are V4-344's own.
+
+- **F692 (Low), V4-344's.** Erratum 162 said a signal frees the daemon from
+  a log nobody reads, and the code freed it from one line. Two ways to
+  close the gap: say less, or do more. Done: a line a signal ends while
+  the stop flag is set is the last the log attempts, so one SIGTERM stops
+  the daemon, and the test sends one.
+  - V4-344's test passed on macOS for a reason that was itself a defect
+    (F691): stdio there drops every line after the first that fails. The
+    review ran the same stdio calls in a Linux container and found one
+    signal a line. The test sent SIGTERM in a loop, which hid both.
+- **F691 (Low).** The stream's error is cleared after a failed line. There
+  is no mutant: it changes nothing on Linux, where the campaigns run.
+- **F693 (Low), V4-344's.** `READY=1` is sent again until it goes.
+- **F694 (Low).** The daemon refuses a `store_path` whose last component
+  is a symbolic link. Following it properly (resolve once, act on the
+  target throughout) was the alternative; refusing is the smaller change
+  and leaves nothing to get wrong, at the cost that a deployment which
+  linked the file must name its target. SQLite's own no-follow flag was
+  not used: it refuses a link anywhere on the path, and `/var` and `/tmp`
+  are links on macOS.
+- **F695 (Low).** The daemon does not open a store it cannot write.
+- **F696 (Low), narrowed.** The site waits three times as long for the two
+  requests that spend something. **F697 (Low).** Invitation guesses are
+  counted.
+- **F698, F699 (Info).** The test's three weaknesses, and wording.
+
+**Open for the owner, new here.** Whether a request on the site socket
+should carry a deadline after which the daemon does not act on it (F696):
+it is what closes "the code was spent and nobody was told", and it is a
+change to the local protocol.
+
+Campaign v187: RB1 (a READY=1 that could not be sent is not sent again),
+RB2 (the log is not closed when a stop interrupts a line), RB3 (the
+daemon's open follows a link), RB4 (the daemon opens a store it cannot
+write), RB5 (an early stop leaves the proxy-facing socket).
+
+Every committed mutant in the code this step changes was rerun by hand,
+each after its test passed on the clean tree: 73, across the store's
+opening, the log, the notify socket and the daemon's start-up, signals and
+epilogue. 72 were killed by their named checks, v187's five among them.
+The other is v186's RA7, which SURVIVES on macOS as V4-344 recorded; what
+it rests on was run this time, in a Linux container: a blocking `sendto`
+to a full Unix datagram queue waits there (after 11 datagrams), which is
+what kills the mutant where the campaigns run. Two site mutants were
+killed by hand with `--interpreted` (J1: a client with no attempt left is
+not refused first; J2: a wrong invitation spends nothing). Re-anchored:
+none; two anchors this step's first form broke (v117 MM1, v97 SH1) were
+kept by moving the new lines.
+
+V4-339 to V4-343 landed while this step was being made, on V4-343's runs:
+CI 44680877528 (16/16) and nightly 44680881150 (170/170), each on its
+first attempt. main is `f91264d`.
+
+Spec v1.114: erratum 163 (16).
+
+Counts: 843 mutations, 157 campaigns, 892 anchors; 699 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.114, 163 errata; 66 tests.

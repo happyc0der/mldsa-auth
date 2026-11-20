@@ -2735,7 +2735,7 @@ echo "PASS: E2E: after every key operation, still no plaintext secret-key file a
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm" "$TMP/fsa.sock"
 SG=0
 python3 - "$DAEMON" "$TMP/fs.conf" "$TMP/fs/new.sqlite3" "$TMP/fsp.sock" > "$TMP/sig.txt" 2>&1 <<'PYEOF' || SG=$?
-import fcntl, os, signal, sqlite3, subprocess, sys, time
+import fcntl, os, signal, socket, sqlite3, subprocess, sys, time
 daemon, conf, store, psock = sys.argv[1:5]
 CREATED = "created a new, empty store"
 STOPPED = "stopped by a signal before it had started"
@@ -2746,9 +2746,9 @@ def gone():
         try: os.unlink(store + s)
         except FileNotFoundError: pass
 
-def spawn(stderr):
+def spawn(stderr, env=None):
     p = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=stderr)
+                         stdout=subprocess.DEVNULL, stderr=stderr, env=env)
     kids.append(p)
     return p
 
@@ -2840,6 +2840,22 @@ def main():
     # while it is held. The store is no longer this start's to remove.
     gone()
     p, r, filled = held(store)
+    # Not on a pause alone (F698): the row goes in once the daemon's own
+    # three are there. Written before them, it would make the daemon refuse
+    # the file, rightly, and this leg would report F681.
+    end = time.monotonic() + 20
+    while True:
+        try:
+            ro = sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=5)
+            n = ro.execute("SELECT count(*) FROM meta").fetchone()[0]
+            ro.close()
+        except sqlite3.Error:
+            n = -1
+        if n == 3:
+            break
+        if time.monotonic() > end:
+            print(f"OTHER: the held daemon's store never held its three meta values ({n})"); return 9
+        time.sleep(0.02)
     db = sqlite3.connect(store, timeout=10)
     db.execute("INSERT INTO meta(key, value) VALUES('written-by-another', x'00')")
     db.commit(); db.close()
@@ -2911,8 +2927,10 @@ def main():
         if p.returncode == 0 and STOPPED in text and "event=listening" not in text and "event=started" not in text:
             print(f"KEY: a SIGTERM {delay * 1000:.0f} ms after the spawn ended the start before anything was bound")
             break
+        # Too late, by however much (F698: one that had already started is
+        # late like any other, and was failed outright).
         late += 1
-        if late >= 3 or p.returncode != 0 or "event=started" in text:
+        if late >= 3 or p.returncode != 0:
             print(f"KEY: exit {p.returncode} at {delay * 1000:.0f} ms:\n{text}"); return 4
     else:
         print("KEY: no attempt was handled in fourteen"); return 9
@@ -2931,20 +2949,86 @@ def main():
     os.close(w)
     p.send_signal(signal.SIGHUP)              # makes it log, and so block
     time.sleep(0.5)
-    rc, end = None, time.monotonic() + 10
-    while rc is None and time.monotonic() < end:
-        p.send_signal(signal.SIGTERM)
-        try:
-            rc = p.wait(timeout=0.25)
-        except subprocess.TimeoutExpired:
-            pass
-    if rc is None:
-        p.kill(); p.wait(); os.close(r)
-        print("RUN: ten seconds of SIGTERMs did not stop a daemon blocked on its standard error"); return 5
+    # ONE SIGTERM (F692). It ends the write that is waiting; the lines of
+    # the shutdown would each wait in their turn, and are not attempted.
+    p.send_signal(signal.SIGTERM)
+    rc = ended(p, limit=10)
     os.close(r)
+    if rc is None:
+        print("RUN: one SIGTERM did not stop a daemon blocked on its standard error in ten seconds"); return 5
     if rc != 0:
         print(f"RUN: exit {rc}"); return 5
-    print("RUN: a daemon blocked on its standard error was stopped by SIGTERM, exit 0")
+    print("RUN: a daemon blocked on its standard error was stopped by one SIGTERM, exit 0")
+
+    # Leg 7 (F691): a line lost to a signal is ONE line. The daemon is
+    # blocked in a log line as above, a second SIGHUP ends that write, and
+    # the pipe is then read: the next thing it logs must arrive.
+    r, w = os.pipe()
+    p = spawn(w)
+    got = drain(r, p, until=b"event=started")
+    if b"event=started" not in got:
+        print(f"LOG: the daemon did not start (exit {p.poll()})"); return 9
+    time.sleep(0.2)
+    fill(w)
+    os.close(w)
+    p.send_signal(signal.SIGHUP)              # logs, and blocks
+    time.sleep(0.5)
+    p.send_signal(signal.SIGHUP)              # ends that write; it may block again in the next
+    time.sleep(0.5)
+    drain(r, p, limit=1.0)                    # the pipe is read: whatever was waiting goes
+    p.send_signal(signal.SIGHUP)
+    got = drain(r, p, until=b"event=sighup-ignored", limit=5.0)
+    if b"event=sighup-ignored" not in got:
+        print("LOG: after one interrupted line the daemon logged nothing more, with its pipe read"); return 7
+    p.send_signal(signal.SIGTERM)
+    got += drain(r, p)
+    rc = ended(p)
+    os.close(r)
+    if rc != 0 or b"event=stopped" not in got:
+        print(f"LOG: exit {rc}; the shutdown of a daemon whose log is read was not logged:\n{got.decode('utf-8', 'replace')}"); return 7
+    print("LOG: a line lost to a signal was one line; the log went on, and the shutdown was logged")
+
+    # Leg 8 (F693): READY=1 that could not be sent is sent again. systemd's
+    # socket is stood in for, with its queue full when the daemon starts.
+    npath = os.path.join(os.path.dirname(psock), "nfy.sock")
+    try: os.unlink(npath)
+    except FileNotFoundError: pass
+    ns = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    ns.bind(npath)
+    tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    tx.setblocking(False)
+    sent = 0
+    try:
+        while sent < 1000000:
+            tx.sendto(b"FILL", npath); sent += 1
+    except (BlockingIOError, OSError):
+        pass
+    tx.close()
+    env = dict(os.environ, NOTIFY_SOCKET=npath)
+    env.pop("WATCHDOG_USEC", None)
+    r, w = os.pipe()
+    p = spawn(w, env=env)
+    os.close(w)
+    got = drain(r, p, until=b"event=started")
+    got += drain(r, p, until=b"could not send READY=1", limit=3.0)
+    if b"event=started" not in got or b"could not send READY=1" not in got:
+        p.send_signal(signal.SIGTERM); drain(r, p); ended(p); os.close(r); ns.close()
+        print(f"READY: the stand-in's queue was not full for the daemon ({sent} datagrams): this leg shows nothing\n{got.decode('utf-8', 'replace')}")
+        return 9
+    ns.setblocking(False)
+    ready, end = False, time.monotonic() + 8
+    while not ready and time.monotonic() < end:
+        try:
+            ready = (ns.recv(64) == b"READY=1")
+        except BlockingIOError:
+            time.sleep(0.05)
+    p.send_signal(signal.SIGTERM)
+    drain(r, p); rc = ended(p); os.close(r); ns.close()
+    try: os.unlink(npath)
+    except FileNotFoundError: pass
+    if not ready or rc != 0:
+        print(f"READY: with the queue emptied no READY=1 came in eight seconds (exit {rc})"); return 8
+    print("READY: a READY=1 that found the queue full was sent again once there was room")
     return 0
 
 rc = 9
@@ -2969,9 +3053,11 @@ case "$SG" in
 4) cat "$TMP/sig.txt"; fail "a SIGTERM while the key was being opened did not end the start before anything was bound (F683)" ;;
 5) cat "$TMP/sig.txt"; fail "a running daemon blocked on a standard error nobody reads could not be stopped by SIGTERM (F679)" ;;
 6) cat "$TMP/sig.txt"; fail "a start that created its store removed it although something else had written to it since (F681)" ;;
+7) cat "$TMP/sig.txt"; fail "after one log line was lost to a signal the daemon logged nothing more, or did not log its shutdown (F691)" ;;
+8) cat "$TMP/sig.txt"; fail "a READY=1 that could not be sent when the daemon started was never sent again (F693)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"
-echo "PASS: E2E: a SIGTERM while the daemon is starting stops it with exit 0 at either look, and removes the store that start created unless something else has written to it; a SIGHUP there is logged and ignored; a running daemon blocked on its standard error is stopped by SIGTERM (F657, F679, F681, F683)"
+echo "PASS: E2E: a SIGTERM while the daemon is starting stops it with exit 0 at either look, and removes the store that start created unless something else has written to it; a SIGHUP there is logged and ignored; a running daemon blocked on its standard error is stopped by one SIGTERM, and one whose log is read again goes on logging; a READY=1 that could not be sent is sent again (F657, F679, F681, F683, F691, F692, F693)"
 
 echo "All checks passed"

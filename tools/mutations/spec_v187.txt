@@ -1,0 +1,5 @@
+RB1|^authd_e2e$|a READY=1 that could not be sent when the daemon started was never sent again (F693)
+RB2|^authd_e2e$|a running daemon blocked on a standard error nobody reads could not be stopped by SIGTERM (F679)
+RB3|^test_authd_store$|link: a store path that is a link to nothing is refused, and nothing is made where it points (F694)
+RB4|^test_authd_store$|readonly: a store whose mode refuses writing is not opened by the daemon (F695)
+RB5|^authd_e2e$|a SIGTERM after the sockets were bound and before the daemon had started did not end the start cleanly (F683)

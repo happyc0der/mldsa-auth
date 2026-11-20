@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 
 /*
@@ -33,6 +34,11 @@ typedef enum {
  * leaves the stream unchanged. Used by the tests to capture output. It does
  * not touch the privacy modes below. */
 void authd_log_init(FILE *dest, authd_log_level_t min_level);
+
+/* F692 (V4-345): the daemon's "asked to stop" flag. A log line that a signal
+ * ended while that flag is set is the last the log attempts: see
+ * authd_log.c. NULL (the default, and every tool and test) never mutes. */
+void authd_log_stop_flag(const volatile sig_atomic_t *flag);
 
 /*
  * What the two peer-influenced fields may reveal (V4-13d, audit finding F14,

@@ -896,6 +896,19 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * pre-creation below made an empty file of that name in the working
      * directory for every in-memory store. */
     int was_there = 0;
+    /* F694 (V4-345): the daemon's store is the file its path names, not one
+     * a link there points to. Through a link the two opens below that do
+     * not follow one did nothing: the store was made with the umask's mode,
+     * a file that was there kept its own, and a failed start "removed" the
+     * link and left the store. A tool reading a store may follow one. Only
+     * the last component: directories on the way are the operator's. */
+    {
+        struct stat lk;
+        if (!existing && lstat(path, &lk) == 0 && S_ISLNK(lk.st_mode)) {
+            r = STORE_ERR_IO;
+            goto fail;
+        }
+    }
     if (!existing && strcmp(path, ":memory:") != 0) {
         /* A store this call creates is 0600 whatever the caller's umask is
          * (F200): SQLite would create it 0644 under a shell's 022, and give
@@ -920,6 +933,14 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if (sqlite3_open_v2(path, &s->db,
                         existing ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE),
                         NULL) != SQLITE_OK) {
+        r = STORE_ERR_IO;
+        goto fail;
+    }
+    /* F695 (V4-345): a store the daemon cannot write is not opened. SQLite
+     * falls back to a read-only handle when the file's mode refuses writing,
+     * and the daemon then logged `started`, told systemd it was ready, and
+     * failed every enrolment, login and sweep. */
+    if (!existing && sqlite3_db_readonly(s->db, "main") == 1) {
         r = STORE_ERR_IO;
         goto fail;
     }

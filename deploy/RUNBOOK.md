@@ -1277,12 +1277,22 @@ Common ones, and what they actually are:
   anything: delete it and start again.
 - **`…/store.sqlite3: store-corrupt`**, followed by **`… the first
   difference: it holds rows and lacks its store_id, its decoy key or its
-  schema version`** (since V4-344) — the file is shaped as a store and
-  has users, devices or audit entries in it, but one of the three values
+  schema version`** (since V4-344) — the file has a store's tables, with
+  users, devices or audit entries in them, but one of the three values
   every store is given when it is made is gone. The daemon will not give
   it a new one: the audit chain is keyed from the store's id. Nothing
   removes those values in normal running, so treat it as an incident and
   restore a backup (step 12).
+- **`…/store.sqlite3: io`** followed by **`store_path is a symbolic link;
+  name the file itself`** (since V4-345) — the daemon does not open its
+  store through a link: it could not keep the store's mode, or remove it
+  after a failed first start. Put the target's own path in `store_path`. A
+  directory on the way may be a link.
+- **`…/store.sqlite3: io`** followed by **`the store cannot be written by
+  this user`** (since V4-345) — the file is there but its mode or owner
+  refuses writing to the service user. The daemon used to start on such a
+  store and fail every request. `chown` it to the service user, mode 0600
+  (step 4).
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

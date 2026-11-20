@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.113, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344)
+# mldsa-authd — deployment specification (v1.114, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1662,8 +1662,12 @@ a start that failed does, and exits 0. One that arrives after the second
 look is the running daemon's, which logs `started` and then drains (erratum
 162). A `SIGHUP` in that time is ignored and logged once the daemon has
 started. Once the daemon runs, a signal also ends a write to standard error
-that is waiting on a reader: the line being written is lost, and the daemon
-is not held by a log nobody reads (erratum 162).
+that is waiting on a reader, and the line being written is lost (erratum
+162). If the signal was one that stops the daemon, it logs nothing more:
+the lines of its shutdown would each wait in their turn. So one `SIGTERM`
+stops a daemon whose log nobody reads, without `draining` or `stopped` in
+the journal; any other signal costs the one line, and the log goes on
+(erratum 163).
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -1713,11 +1717,14 @@ record.
 
 The systemd unit is `Type=notify` — the daemon sends `READY=1` to
 `$NOTIFY_SOCKET` once its key is unsealed and every listener is bound, so
-`systemctl start` returns only then (erratum 78) — and sets `NoNewPrivileges`, `ProtectSystem=strict`,
+`systemctl start` returns only then (erratum 78); the send never waits, and
+one that could not be made is made again on each turn of the loop until it
+is (erratum 163) — and sets `NoNewPrivileges`, `ProtectSystem=strict`,
 `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
 `ProtectControlGroups`, `ProtectProc=invisible`, `RestrictAddressFamilies=AF_UNIX AF_INET`,
 `RestrictNamespaces`, `RestrictSUIDSGID`, `LockPersonality`,
 `MemoryDenyWriteExecute`, `SystemCallFilter=@system-service`,
+`SystemCallArchitectures=native`,
 `CapabilityBoundingSet=`, `UMask=0077`, `LimitCORE=0`, and
 **`LimitMEMLOCK` derived from the configured slot count**, because libsodium
 returns unlocked memory silently when the limit is exhausted (V4-2 S1) — this
@@ -1819,7 +1826,10 @@ written by the start that creates it and by no other: a file that holds a
 row in any table and lacks one of the three is `store-corrupt`, is refused
 before its journal mode is touched, and has no table, index or row changed
 (erratum 162). A file that was there and empty is made mode 0600, as one
-the daemon creates is.
+the daemon creates is. **`store_path` names the store itself**: a symbolic
+link there is refused by the daemon (`io`), though a tool that only reads
+may follow one, and so is a store the daemon cannot write (`io`), which it
+would otherwise open and fail every request on (erratum 163).
 
 **A start that creates the store and then fails removes it again** (erratum
 114), and says so on standard error. It asks first whether the file still
@@ -2725,3 +2735,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 162 | 16 | A stop is looked for at two points of start-up, and one that arrives after the second is the running daemon's; a running daemon's write to standard error is ended by a signal; a store that holds rows and lacks a meta value is refused before its journal mode is touched; a file that was there and empty is made 0600; a start removes a store it created only if the file still holds what a creation leaves | Erratum 161 said a daemon told to stop before `started` does not start, which is not true of a stop that arrives between the last look and the line (F688). The handlers of erratum 161 restarted interrupted calls for the life of the daemon, so one blocked writing a log line nobody read could not be stopped by `SIGTERM` (F679). A store refused for a lost identifier had been switched to WAL first (F680). A store made in a file that was already there kept that file's mode (F682). And a start held up after creating its store could remove it after another daemon had begun to serve it (F681) |
+
+### Revision v1.114 (V4-345)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 163 | 16 | A daemon stopped by a signal that ended a log line logs nothing more; `READY=1` is sent again until it goes; the daemon refuses a `store_path` that is a symbolic link and a store it cannot write; the unit sets `SystemCallArchitectures=native` | Erratum 162 said a signal frees a daemon from a log nobody reads. It frees it from one line: each line of the shutdown then waited in its turn, so one `SIGTERM` did not stop it (F692). `READY=1` was sent once, and since erratum 162's change that send does not wait: a notify queue full at that instant left systemd never told (F693). Through a link the store was made with the umask's mode and a failed start removed the link and left the store (F694). A store whose mode refused writing was opened, and the daemon logged `started` and failed every write (F695). And the unit's line, added in V4-344, had not reached this section |
