@@ -22738,3 +22738,63 @@ No code, test, campaign or spec change.
 
 Counts: 843 mutations, 157 campaigns, 892 anchors; 699 findings (the 17
 above open); spec v1.114, 163 errata; 66 tests.
+
+## V4-347: what the ninetieth review found (F700 to F709)
+
+**The ninetieth review** read V4-345's commit and ran it, on macOS and, for
+libc and the kernel, in Linux containers; and read and ran the
+command-line client. No High. Two Medium, six Low, two Info as recorded
+here. Both Medium are V4-345's, which had not reached main and has not.
+
+- **F700 (Medium).** V4-345 made "one SIGTERM stops a daemon whose log
+  nobody reads" true of a daemon that was inside a log line when the
+  signal came, and said it of every daemon. An idle one was not stopped.
+  This is the third step on the one sentence (F679, F692, F700), and each
+  earlier remedy was tested in the state it had been written for. The
+  remedy now does not depend on the state: a stopping daemon's log line
+  has a quarter of a second, by a timer. The test has the idle case, with
+  nothing sent before the one SIGTERM.
+  - Considered and not done: asking `poll()` whether standard error can
+    be written before each line. It answers for one byte, and a line
+    needs its whole length; the review's own run with thirty bytes of
+    room showed a line getting out and the next one waiting.
+  - v187's RB2 went. It removed the closing of the log, and with the
+    timer that only makes a stop slower, by a quarter second a line: a
+    difference in time, and no test here is decided by one.
+- **F708 (Medium), and it happened.** The READY case could not fill a
+  long datagram queue from one socket. The review predicted that for the
+  CI runners; V4-345's CI then failed on exactly that, in all six Linux
+  jobs. The case was written and run on macOS, whose queue behaves
+  otherwise. It was the second thing in V4-345 that Linux decides and
+  that was not run on Linux before it was pushed; the first, v186's RA7,
+  happened to hold. The fill was run this time in a container at both
+  queue lengths before the push.
+- **F701, F703, F704 (Low).** Fixed. **F705 (Low).** The double wait
+  fixed, the double login recorded. **F706 (Low).** The message.
+- **F702, F707, F709 (Info).**
+
+**Open for the owner, new here.** Whether the daemon should refuse a key
+with a frame the client can authenticate, where it closes the connection
+now (F706): it is what would let a client tell a refusal from a restart.
+
+Campaign v188: RC1 (a stopping daemon's log line has no time limit), RC2
+(`--check-config` passes a linked `store_path`), RC3 (an unusable
+`NOTIFY_SOCKET` is said to be usable).
+
+Every committed mutant in the code this step changes was rerun by hand,
+each after its test passed on the clean tree: 50, across the log, the
+notify socket, the configuration's store check, the client's choice of
+key, and the daemon's signals and start-up. 49 were killed by their named
+checks, v188's three among them. The other is v186's RA7, which SURVIVES
+on macOS and was killed on Linux in V4-344's nightly. Re-anchored: v187
+RB1 (the retry now also asks whether the daemon is stopping).
+
+V4-345's nightly (44702686457) was cancelled while it ran: every
+campaign's clean suite would have failed on F708, as its CI had. V4-345,
+V4-346 and this step land together, on this step's runs.
+
+Spec v1.115: erratum 164 (16).
+
+Counts: 845 mutations, 158 campaigns, 894 anchors; 709 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.115, 164 errata; 66 tests.

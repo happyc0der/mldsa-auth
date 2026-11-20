@@ -4,7 +4,9 @@
 Usage: mutate_v187.py <repo> <ID>
 
     RB1   a READY=1 that could not be sent is not sent again.
-    RB2   the log is not closed when a stop interrupts a line.
+    (RB2, the log not closed when a stop interrupts a line, went in V4-347: with
+    that step's timer each line of a shutdown waits a quarter of a second at
+    most, closed log or not, and the mutant differs only in how long a stop takes.)
     RB3   the daemon's open follows a link at the store's path.
     RB4   the daemon opens a store it cannot write.
     RB5   a start that is stopped with its sockets bound leaves the proxy-facing one.
@@ -12,13 +14,10 @@ Usage: mutate_v187.py <repo> <ID>
 import sys, pathlib
 A = "apps/authd/authd_main.c"
 ST = "apps/authd/store/store.c"
-LG = "apps/authd/authd_log.c"
 
 M = {
-    "RB1": [(A, "        if (ready_pending && authd_sd_notify(\"READY=1\") > 0) {\n",
-             "        if (0 && ready_pending && authd_sd_notify(\"READY=1\") > 0) { /* MUTATION RB1 */\n")],
-    "RB2": [(LG, "            g_muted = 1;\n",
-             "            g_muted = 0; /* MUTATION RB2 */\n")],
+    "RB1": [(A, "        if (ready_pending && !g_stop && authd_sd_notify(\"READY=1\") > 0) {\n",
+             "        if (0 && ready_pending && !g_stop && authd_sd_notify(\"READY=1\") > 0) { /* MUTATION RB1 */\n")],
     "RB3": [(ST, "        if (!existing && lstat(path, &lk) == 0 && S_ISLNK(lk.st_mode)) {\n",
              "        if (0 && !existing && lstat(path, &lk) == 0 && S_ISLNK(lk.st_mode)) { /* MUTATION RB3 */\n")],
     "RB4": [(ST, "    if (!existing && sqlite3_db_readonly(s->db, \"main\") == 1) {\n",

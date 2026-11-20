@@ -2960,6 +2960,27 @@ def main():
         print(f"RUN: exit {rc}"); return 5
     print("RUN: a daemon blocked on its standard error was stopped by one SIGTERM, exit 0")
 
+    # Leg 9 (F700): the same, for a daemon that was IDLE when its standard
+    # error stopped being read: no SIGHUP first, so the SIGTERM finds it in
+    # poll() and it is the first line of its shutdown that waits, with no
+    # second signal coming. V4-345's remedy needed one.
+    r, w = os.pipe()
+    p = spawn(w)
+    got = drain(r, p, until=b"event=started")
+    if b"event=started" not in got:
+        print(f"IDLE: the daemon did not start (exit {p.poll()})"); return 9
+    time.sleep(0.2)
+    fill(w)
+    os.close(w)
+    p.send_signal(signal.SIGTERM)
+    rc = ended(p, limit=10)
+    os.close(r)
+    if rc is None:
+        print("IDLE: one SIGTERM did not stop an idle daemon whose standard error nobody reads, in ten seconds"); return 10
+    if rc != 0:
+        print(f"IDLE: exit {rc}"); return 10
+    print("IDLE: an idle daemon whose standard error nobody reads was stopped by one SIGTERM, exit 0")
+
     # Leg 7 (F691): a line lost to a signal is ONE line. The daemon is
     # blocked in a log line as above, a second SIGHUP ends that write, and
     # the pipe is then read: the next thing it logs must arrive.
@@ -2995,15 +3016,26 @@ def main():
     except FileNotFoundError: pass
     ns = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     ns.bind(npath)
-    tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    tx.setblocking(False)
-    sent = 0
-    try:
-        while sent < 1000000:
-            tx.sendto(b"FILL", npath); sent += 1
-    except (BlockingIOError, OSError):
-        pass
-    tx.close()
+    # Filled from as many sockets as it takes (F708). One sender stops at
+    # its OWN send buffer, which on a host whose queue is long (512, what
+    # systemd sets) comes before the receiver's queue is full: the daemon's
+    # socket, a new one, then sent at once and this case showed nothing.
+    # The queue is full when a socket that has sent nothing is refused.
+    senders, sent = [], 0
+    while len(senders) < 64:
+        tx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        tx.setblocking(False)
+        senders.append(tx)
+        first = True
+        try:
+            while sent < 1000000:
+                tx.sendto(b"FILL", npath); sent += 1; first = False
+        except (BlockingIOError, OSError):
+            pass
+        if first:
+            break
+    for tx in senders:
+        tx.close()
     env = dict(os.environ, NOTIFY_SOCKET=npath)
     env.pop("WATCHDOG_USEC", None)
     r, w = os.pipe()
@@ -3055,6 +3087,7 @@ case "$SG" in
 6) cat "$TMP/sig.txt"; fail "a start that created its store removed it although something else had written to it since (F681)" ;;
 7) cat "$TMP/sig.txt"; fail "after one log line was lost to a signal the daemon logged nothing more, or did not log its shutdown (F691)" ;;
 8) cat "$TMP/sig.txt"; fail "a READY=1 that could not be sent when the daemon started was never sent again (F693)" ;;
+10) cat "$TMP/sig.txt"; fail "an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"

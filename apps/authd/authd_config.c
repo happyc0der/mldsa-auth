@@ -642,6 +642,13 @@ authd_config_status_t authd_config_check_store(const authd_config_t *cfg, char *
     const char *path = cfg->store_path;
     static const char magic[16] = "SQLite format 3";      /* with its NUL: 16 bytes */
     struct stat st;
+    /* F704 (V4-347): what the start refuses since V4-345, said here first.
+     * Whether the SERVICE user can write the store is not asked: whoever
+     * runs this check is often not that user. */
+    if (lstat(path, &st) == 0 && S_ISLNK(st.st_mode)) {
+        detail_set(detail, cap, K_STORE, path, "is a symbolic link; name the file itself");
+        return AUTHD_CFG_ERR_VALUE;
+    }
     if (stat(path, &st) != 0) {
         return AUTHD_CFG_OK;                              /* absent: store_open creates it */
     }

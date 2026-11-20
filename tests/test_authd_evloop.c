@@ -167,6 +167,20 @@ static void test_config(void)
           (void)snprintf(absent, sizeof absent, "%s/not-there.sqlite3", d);
           CHECK(empty_ok && STORE_CHECK(db) == AUTHD_CFG_OK && STORE_CHECK(absent) == AUTHD_CFG_OK,
                 "cfg: an empty file, a file with a database's first bytes and no file at all pass the store check (the controls)");
+          /* V4-347 (F704): what the start refuses since V4-345. To a store
+           * that is there, and to nothing. */
+          { char lk[176], lk2[176];
+            (void)snprintf(lk, sizeof lk, "%s/link.sqlite3", d);
+            (void)snprintf(lk2, sizeof lk2, "%s/dangling.sqlite3", d);
+            (void)unlink(lk); (void)unlink(lk2);
+            const int linked = symlink(db, lk) == 0 && symlink("no-such-target", lk2) == 0;
+            const authd_config_status_t a = STORE_CHECK(lk);
+            const int said = strstr(detail, "is a symbolic link; name the file itself") != NULL;
+            const authd_config_status_t b = STORE_CHECK(lk2);
+            CHECK(linked && a == AUTHD_CFG_ERR_VALUE && said && b == AUTHD_CFG_ERR_VALUE &&
+                      strstr(detail, "is a symbolic link") != NULL,
+                  "cfg: a store_path that is a symbolic link, to a store or to nothing, is refused by the store check (F704)");
+            (void)unlink(lk); (void)unlink(lk2); }
           CHECK(PATHS("/bin/sh", "listen_port = 9\n") == AUTHD_CFG_OK,
                 "cfg: and the path check the start runs does not ask it: the start reports its store itself, exit 1 (F126)");
 #undef STORE_CHECK

@@ -1288,11 +1288,17 @@ Common ones, and what they actually are:
   store through a link: it could not keep the store's mode, or remove it
   after a failed first start. Put the target's own path in `store_path`. A
   directory on the way may be a link.
-- **`…/store.sqlite3: io`** followed by **`the store cannot be written by
-  this user`** (since V4-345) — the file is there but its mode or owner
-  refuses writing to the service user. The daemon used to start on such a
-  store and fail every request. `chown` it to the service user, mode 0600
-  (step 4).
+- **`…/store.sqlite3: io`** followed by a line that says why the store
+  cannot be written (since V4-345; three lines since V4-347). The daemon
+  used to start on such a store and fail every request.
+  - **`the store cannot be written by this user (its mode or its owner)`**
+    — `chown` it to the service user, mode 0600 (step 4).
+  - **`the store is on a read-only file system`** — under the shipped unit
+    everything but the state directory is read-only to the daemon
+    (`ProtectSystem=strict`). Keep `store_path` under
+    `/var/lib/mldsa-authd`, or add its directory to `ReadWritePaths=`.
+  - **`the file is marked immutable or append-only`** — `lsattr` shows it
+    (`chattr -i`, `chattr -a`).
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

@@ -208,6 +208,9 @@ export async function startSite(opt) {
   // F697 (V4-345): guesses at the invitation have a table of their own,
   // with the same rule, so that a wrong invitation does not spend an
   // attempt at recovery or the other way about.
+  // One client is whatever clientKey() says it is. Behind a proxy and
+  // without trustProxy that is the proxy, for every visitor: ten wrong
+  // invitations from anyone would then refuse everyone's, right ones too.
   const SIGNUP_BURST = opt.signupBurst ?? 10;
   const signupBuckets = new Map();
   const clientKey = (req) => {

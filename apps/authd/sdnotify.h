@@ -26,6 +26,12 @@
  * the watchdog ping. authd_sd_notify_close() closes it: at exit, and in tests.
  */
 int authd_sd_notify(const char *msg);
+
+/* F702 (V4-347): 0 if $NOTIFY_SOCKET is set to something authd_sd_notify
+ * can never use (a relative path, one longer than sun_path), 1 otherwise --
+ * unset, empty, or usable. For the caller that would otherwise go on
+ * trying. */
+int authd_sd_notify_usable(void);
 void authd_sd_notify_close(void);
 
 /*

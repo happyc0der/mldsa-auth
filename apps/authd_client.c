@@ -9,6 +9,7 @@
  * the tests drive them without fork/exec. This binary links no store and no
  * sqlite3; client_links_no_sqlite checks that on every build.
  */
+#include <sys/resource.h>
 #include <stdio.h>
 
 #include <sodium.h>
@@ -21,6 +22,14 @@ int main(int argc, char **argv)
     /* V4-201, F280: before anything is opened. A CLI whose standard output
      * was closed has nowhere to put its result -- and without this, on Linux,
      * its socket took descriptor 1 and the result was written into it. */
+    /* F707 (V4-347): no core file. The session keys of a login are in this
+     * process's memory, and a crash would have written them to disk under
+     * whatever the system's core pattern is. The daemon's unit sets
+     * LimitCORE=0; nothing did it for the client. */
+    {
+        struct rlimit none = { 0, 0 };
+        (void)setrlimit(RLIMIT_CORE, &none);
+    }
     const int closed = stdfds_ensure_open();
     if (closed < 0) {
         return 1;

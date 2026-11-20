@@ -27,6 +27,15 @@ void authd_sd_notify_close(void)
     }
 }
 
+int authd_sd_notify_usable(void)
+{
+    const char *p = getenv("NOTIFY_SOCKET");
+    if (p == NULL || p[0] == '\0') {
+        return 1;
+    }
+    return (p[0] == '/' || p[0] == '@') && strlen(p) < sizeof ((struct sockaddr_un *)0)->sun_path;
+}
+
 int authd_sd_notify(const char *msg)
 {
     const char *p = getenv("NOTIFY_SOCKET");

@@ -2577,9 +2577,15 @@ static void test_sd_notify(void)
       CHECK(n == 7, "sd_notify: and that READY=1 arrives"); }
     (void)setenv("NOTIFY_SOCKET", "relative/notify", 1);
     CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a relative NOTIFY_SOCKET is refused (-1), not guessed at");
+    CHECK(authd_sd_notify_usable() == 0, "sd_notify: and is said to be unusable, so that nobody goes on trying it (F702)");
+    (void)setenv("NOTIFY_SOCKET", sp, 1);
+    CHECK(authd_sd_notify_usable() == 1, "sd_notify: an absolute path is usable (the control) (F702)");
+    (void)unsetenv("NOTIFY_SOCKET");
+    CHECK(authd_sd_notify_usable() == 1, "sd_notify: and no NOTIFY_SOCKET at all is nothing to give up on (F702)");
     { char longp[200]; memset(longp, 'x', sizeof longp - 1u); longp[0] = '/'; longp[sizeof longp - 1u] = '\0';
       (void)setenv("NOTIFY_SOCKET", longp, 1);
-      CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a NOTIFY_SOCKET longer than sun_path is refused (-1)"); }
+      CHECK(authd_sd_notify("READY=1") == -1, "sd_notify: a NOTIFY_SOCKET longer than sun_path is refused (-1)");
+      CHECK(authd_sd_notify_usable() == 0, "sd_notify: and one longer than sun_path is unusable too (F702)"); }
 #ifdef __linux__
     { const int as = socket(AF_UNIX, SOCK_DGRAM, 0);
       struct sockaddr_un b; memset(&b, 0, sizeof b); b.sun_family = AF_UNIX;

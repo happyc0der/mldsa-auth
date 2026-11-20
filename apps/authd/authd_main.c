@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <sodium.h>
@@ -394,8 +395,25 @@ int main(int argc, char **argv)
                 struct stat lk;
                 if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0 && S_ISLNK(lk.st_mode)) {
                     fprintf(stderr, "mldsa-authd: store_path is a symbolic link; name the file itself\n");
-                } else if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0 && access(cfg.store_path, W_OK) != 0) {
-                    fprintf(stderr, "mldsa-authd: the store cannot be written by this user\n");
+                } else if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0) {
+                    /* F703 (V4-347): WHY it cannot be written, asked of the
+                     * kernel. One line used to cover three causes, and the
+                     * runbook's remedy, chown and chmod, mends one. */
+                    const int fd = open(cfg.store_path, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+                    const int why = errno;
+                    if (fd >= 0) {
+                        (void)close(fd);
+                    } else if (why == EROFS) {
+                        fprintf(stderr, "mldsa-authd: the store is on a read-only file system: under the shipped "
+                                        "unit only the state directory can be written (StateDirectory=, "
+                                        "ReadWritePaths=)\n");
+                    } else if (why == EACCES) {
+                        fprintf(stderr, "mldsa-authd: the store cannot be written by this user (its mode or "
+                                        "its owner)\n");
+                    } else if (why == EPERM) {
+                        fprintf(stderr, "mldsa-authd: the store cannot be written: the file is marked immutable "
+                                        "or append-only\n");
+                    }
                 }
             }
             /* F660: which object it stopped at. */
@@ -710,8 +728,15 @@ int main(int argc, char **argv)
      * serving, and do it again at every restart. */
     int ready_pending = 0;
     if (authd_sd_notify("READY=1") < 0) {
-        fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");
-        ready_pending = 1;
+        /* F702 (V4-347): tried again only where trying can help. */
+        if (authd_sd_notify_usable()) {
+            fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");
+            ready_pending = 1;
+        } else {
+            fprintf(stderr, "mldsa-authd: $NOTIFY_SOCKET is not a path this daemon can use (absolute, or "
+                            "abstract with a leading @, and short enough for a socket address): "
+                            "READY=1 is not sent\n");
+        }
     }
 
     /* F209 (V4-126): the unit sets WatchdogSec=, and systemd kills a daemon
@@ -737,7 +762,7 @@ int main(int argc, char **argv)
      * service down. */
     int loop_failed = 0;
     for (;;) {
-        if (ready_pending && authd_sd_notify("READY=1") > 0) {
+        if (ready_pending && !g_stop && authd_sd_notify("READY=1") > 0) {
             ready_pending = 0;
         }
         if (g_hup) {

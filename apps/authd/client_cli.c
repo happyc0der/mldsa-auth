@@ -892,7 +892,11 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
     if (!ek_ok) {
         ks_next = keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL);
     }
-    if (!ek_ok && ks_next == KEYFILE_OK) {
+    /* F705 (V4-347): not when the first probe never reached the point of
+     * showing the daemon a key. A daemon that could not be reached was
+     * waited for twice, forty seconds for one that twenty had shown to be
+     * away, to arrive at the same "cannot ask the daemon". */
+    if (!ek_ok && ks_next == KEYFILE_OK && !unasked) {
         if (client_open_session(prog, sub, 1, &next_kp, a->hid, a->hid_len, a->sid, a->sid_len,
                                 server_pk, a->unix_path, a->port, a->state, a->proxy_v2, a->ws, &probe) == EX_OK) {
             next_ok = 1;
@@ -976,8 +980,14 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
                     prog, sub, (ks_ek == KEYFILE_OK) ? a->key_path : next_path,
                     (ks_ek == KEYFILE_OK) ? next_path : a->key_path);
         } else {
-            fprintf(stderr, "%s %s: neither %s nor %s authenticates. NOTHING has been deleted; "
-                            "an administrator must re-enrol this device.\n",
+            /* F706 (V4-347): the daemon refuses a key by closing the
+             * connection, and so does a daemon that is stopping or a proxy
+             * that resets. From here the two cannot be told apart, so the
+             * advice begins with the cheap one. */
+            fprintf(stderr, "%s %s: neither %s nor %s authenticates: the connection was closed after each "
+                            "key was offered, which is how the daemon refuses one, and also what a daemon "
+                            "being restarted does. NOTHING has been deleted; run this again, and if it says "
+                            "the same, an administrator must re-enrol this device.\n",
                     prog, sub, a->key_path, next_path);
         }
         break;

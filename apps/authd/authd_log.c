@@ -1,5 +1,6 @@
 #include "authd_log.h"
 
+#include <sys/time.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -117,22 +118,61 @@ static FILE *out(void)
  *     (draining, stopped) would each wait in their turn, one more signal
  *     apiece, and a stop that was asked for once would end in systemd's
  *     timeout. A daemon that is stopping says nothing more to a log that is
- *     not being read. */
+ *     not being read.
+ *
+ * F700 (V4-347): and the line gets its signal from HERE if nobody sends
+ * one. V4-345 closed the log when a line was ended by a signal with the
+ * stop flag set, which needs a signal to arrive while the line waits. A
+ * daemon that was idle when it was told to stop took its SIGTERM in poll(),
+ * began to write `draining`, and waited there with no second signal coming:
+ * the ordinary case, and one SIGTERM did not stop it. So once the stop flag
+ * is set, each line is given a quarter of a second. A timer ends the write
+ * that outlasts it, and that is a line ended by a signal while stopping. */
 static const volatile sig_atomic_t *g_stop_flag = NULL;
 static int g_muted = 0;
+static int g_timed = 0;
+
+#define LOG_STOPPING_LINE_USEC 250000
+
+static void on_line_timer(int sig)
+{
+    (void)sig;      /* its only work is to end the write */
+}
 
 void authd_log_stop_flag(const volatile sig_atomic_t *flag)
 {
     g_stop_flag = flag;
     g_muted = 0;
+    if (flag != NULL) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_line_timer;      /* no SA_RESTART: it must end the write */
+        (void)sigaction(SIGALRM, &sa, NULL);
+    }
+}
+
+static void line_timer(long usec)
+{
+    struct itimerval tv;
+    memset(&tv, 0, sizeof tv);
+    tv.it_value.tv_usec = (suseconds_t)usec;
+    (void)setitimer(ITIMER_REAL, &tv, NULL);
 }
 
 static void line_done(void)
 {
     FILE *f = out();
-    const int bad = (fflush(f) != 0) || ferror(f);
-    if (bad) {
-        const int why = errno;
+    const int flushed = fflush(f);
+    const int why = errno;
+    if (g_timed) {
+        line_timer(0);
+        g_timed = 0;
+    }
+    /* F701: the stream's error flag was cleared when this line began (in
+     * enabled()), and errno zeroed, so both are THIS line's. Judged on a
+     * flag an earlier, direct write to the stream had left, a line written
+     * in full was taken for an interrupted one. */
+    if (flushed != 0 || ferror(f)) {
         clearerr(f);
         if (why == EINTR && g_stop_flag != NULL && *g_stop_flag) {
             g_muted = 1;
@@ -142,7 +182,16 @@ static void line_done(void)
 
 static int enabled(authd_log_level_t l)
 {
-    return !g_muted && (int)l <= (int)g_min;
+    if (g_muted || (int)l > (int)g_min) {
+        return 0;
+    }
+    clearerr(out());
+    errno = 0;
+    if (g_stop_flag != NULL && *g_stop_flag) {
+        g_timed = 1;
+        line_timer(LOG_STOPPING_LINE_USEC);
+    }
+    return 1;
 }
 
 /* F369: `detail` is one word on the line, whatever the caller passes. It is
