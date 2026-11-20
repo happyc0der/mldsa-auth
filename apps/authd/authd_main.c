@@ -442,17 +442,19 @@ int main(int argc, char **argv)
                     } else {
                         *slash = '\0';
                     }
-                    if (access(dir, W_OK) != 0) {
+                    if (errno_of_lstat == EACCES) {
+                        /* F718: a store may well be there. Its directory
+                         * cannot be searched, so nobody here can say. Asked
+                         * FIRST (F732): on a read-only file system access()
+                         * answers EROFS whatever the directory's mode is. */
+                        authd_log_say("mldsa-authd: the store's directory cannot be searched by this user, so "
+                                      "whether a store is there cannot be seen\n");
+                    } else if (access(dir, W_OK) != 0) {
                         const int why = errno;
                         if (why == EROFS) {
                             authd_log_say("mldsa-authd: there is no store, and its directory is on a read-only "
                                           "file system: under the shipped unit only the state directory can be "
                                           "written (StateDirectory=, ReadWritePaths=)\n");
-                        } else if (why == EACCES && errno_of_lstat == EACCES) {
-                            /* F718: a store may well be there. Its directory
-                             * cannot be searched, so nobody here can say. */
-                            authd_log_say("mldsa-authd: the store's directory cannot be searched by this user, so "
-                                          "whether a store is there cannot be seen\n");
                         } else if (why == EACCES) {
                             authd_log_say("mldsa-authd: there is no store, and this user cannot create one in "
                                           "its directory\n");

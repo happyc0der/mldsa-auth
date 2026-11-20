@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.117, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349)
+# mldsa-authd — deployment specification (v1.118, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1666,7 +1666,8 @@ that is waiting on a reader, and the line being written is lost (erratum
 162). **A daemon that has been told to stop gives each line it writes to
 standard error a quarter of a second** (errata 164 and 165), an event or
 any other line, and one that was already waiting when the signal came has
-that long from the signal: a line that has not been written by then is
+that long from the first such signal, however many follow (erratum 167): a
+line that has not been written by then is
 lost, and the daemon writes nothing more; a line that a signal ends sooner
 is lost, and the next has its own quarter second (erratum 166). That holds
 while it starts as while it runs. So one `SIGTERM` stops a
@@ -1676,7 +1677,12 @@ journal, and, if it was starting, without the line that says it stopped
 before it had started. Before it is told to stop, a signal that ends a
 waiting line costs that line, and the log goes on. The unit sets
 `TimeoutStopSec=90s`, systemd's default, beside the 60 s a drain can take
-as shipped (`idle_timeout_ms`).
+as shipped (`idle_timeout_ms`). What the daemon writes is meant: liboqs
+prints a line before it exits on a failed allocation inside a hash, and the
+C library prints one before it aborts on a smashed stack or a failed
+assertion; those are written by neither the log nor this rule, and a
+daemon in that state whose standard error nobody reads is ended by the
+watchdog (erratum 167).
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -2769,3 +2775,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 166 | 16 | Only a line that had its quarter second and was not written closes the log; a daemon told to stop does not send `READY=1` | Erratum 165 closed the log on any signal that ended a line while stopping, the stop signal among them: a daemon that was waiting in a line when it was told to stop logged none of its shutdown to a journal that was read again ten milliseconds later (F720). And a daemon stopped between its last look and `READY=1` sent it (F717). Erratum 165's "every line" was also untrue of two start-up warnings, which is a defect of the code and not of the sentence (F723) |
+
+### Revision v1.118 (V4-350)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 167 | 16 | A waiting line's quarter second counts from the first stop signal; the lines liboqs and the C library print before they end the process are outside the rule | Every stop signal started the quarter second again, so signals a tenth of a second apart never ended a daemon held on a line while it started (F727). And "each line it writes" could be read to cover lines the daemon does not write (F730) |

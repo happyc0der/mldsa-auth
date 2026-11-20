@@ -3027,13 +3027,19 @@ def main():
     print("IDLE: an idle daemon whose standard error nobody reads was stopped by one SIGTERM, exit 0")
 
     # Leg 12 (F720): a stop that finds the daemon waiting in a log line, to
-    # a log that is read again at once. The line in flight is lost; the
-    # shutdown is not. Before V4-349 the stop signal itself closed the log.
-    # The reading must begin within the daemon's quarter second, so an
-    # attempt in which this process was held up longer says nothing and is
-    # made again, three times in all.
-    logged = False
-    for attempt in range(3):
+    # a log that is read again within its quarter second. The line in flight
+    # is lost; the shutdown is not. Before V4-349 the stop signal itself
+    # closed the log.
+    # V4-350 (F726): the reading begins 80 ms AFTER the signal, not at once.
+    # Read at once, on Linux, the pipe was emptied before the daemon's
+    # blocked write had seen the signal: the line was written, not ended,
+    # and a daemon with the defect logged its shutdown like any other. So
+    # an attempt counts only if (a) the read began between 50 and 200 ms
+    # after the signal and (b) the line in flight is NOT in what was read:
+    # then, and only then, the signal ended a line, and the shutdown must
+    # be there. Anything else is made again, eight times at most.
+    judged = False
+    for attempt in range(8):
         r, w = os.pipe()
         p = spawn(w)
         got = drain(r, p, until=b"event=started")
@@ -3046,26 +3052,49 @@ def main():
         time.sleep(0.5)
         t0 = time.monotonic()
         p.send_signal(signal.SIGTERM)
-        os.set_blocking(r, False)
-        try:
-            first = os.read(r, 65536)
-        except BlockingIOError:
-            first = b""
-        prompt = (time.monotonic() - t0) < 0.15
-        got = first + drain(r, p)
+        time.sleep(0.08)
+        began = time.monotonic() - t0
+        got = drain(r, p)
         rc = ended(p)
         os.close(r)
         if rc != 0:
             print(f"MID: exit {rc}"); return 12
-        if b"event=stopped" in got:
-            logged = True
-            break
-        if prompt:
-            break                                  # read in time, and still nothing
-    if not logged:
-        print("MID: a daemon stopped while it waited in a log line logged none of its shutdown to a log that was read at once")
-        return 12
-    print("MID: a stop that found the daemon in a log line cost that line, and the shutdown was logged")
+        text = got.decode("utf-8", "replace")
+        if not (0.05 <= began <= 0.20) or "event=sighup-ignored" in text:
+            continue                               # late, or no line was lost: says nothing
+        judged = True
+        if "event=stopped" not in text:
+            print(f"MID: a stop ended the line the daemon was waiting in, and the daemon then logged none of its "
+                  f"shutdown to a log that was read {began * 1000:.0f} ms later:\n{text}")
+            return 12
+        break
+    if not judged:
+        print("MID: in eight attempts the stop never ended a line that was in flight: this leg shows nothing"); return 9
+    print("MID: a stop that ended the line the daemon was waiting in cost that line, and the shutdown was logged")
+
+    # Leg 13 (F727): stop signals that keep coming. Held on its first line
+    # while it starts, and sent SIGTERM every tenth of a second: the line's
+    # quarter second counts from the first, and the daemon is gone long
+    # before the three seconds of signals are.
+    gone()
+    p, r, filled = held(store)
+    t0, rc = time.monotonic(), None
+    while rc is None and time.monotonic() - t0 < 3.0:
+        p.send_signal(signal.SIGTERM)
+        try:
+            rc = p.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+    took = time.monotonic() - t0
+    if rc is None:
+        rc2 = ended(p, limit=5)
+        os.close(r)
+        print(f"AGAIN: three seconds of SIGTERMs a tenth of a second apart did not end a daemon held on its first line (it ended {'after they stopped' if rc2 is not None else 'never'})")
+        return 13
+    os.close(r)
+    if rc != 0 or os.path.exists(store):
+        print(f"AGAIN: exit {rc}, store there: {os.path.exists(store)}"); return 13
+    print(f"AGAIN: SIGTERM every tenth of a second ended a held daemon in {took:.2f} s")
 
     # Leg 7 (F691): a line lost to a signal is ONE line. The daemon is
     # blocked in a log line as above, a second SIGHUP ends that write, and
@@ -3176,6 +3205,7 @@ case "$SG" in
 10) cat "$TMP/sig.txt"; fail "an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)" ;;
 11) cat "$TMP/sig.txt"; fail "a daemon held on its first line of output while starting was not stopped by one SIGTERM (F710)" ;;
 12) cat "$TMP/sig.txt"; fail "a stop that found the daemon waiting in a log line closed the log, to a reader that was there (F720)" ;;
+13) cat "$TMP/sig.txt"; fail "stop signals that kept coming kept a held daemon from stopping (F727)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"

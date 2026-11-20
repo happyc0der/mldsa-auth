@@ -152,12 +152,16 @@ static void on_line_timer(int sig)
  * two; either way nothing ended the write that then waited. It fires until
  * the line is done. setitimer() is async-signal-safe: the handler of a stop
  * signal calls this too. */
+/* F727 (V4-350): the line's timer is running. */
+static volatile sig_atomic_t g_timer_armed = 0;
+
 static void line_timer(long usec)
 {
     struct itimerval tv;
     memset(&tv, 0, sizeof tv);
     tv.it_value.tv_usec = (suseconds_t)usec;
     tv.it_interval.tv_usec = (suseconds_t)usec;
+    g_timer_armed = (usec != 0);
     (void)setitimer(ITIMER_REAL, &tv, NULL);
 }
 
@@ -185,10 +189,16 @@ void authd_log_stop_flag(const volatile sig_atomic_t *flag)
  * ends the write; while it starts, its handlers restart interrupted calls
  * (F657), so the write went on waiting and no number of SIGTERMs stopped a
  * daemon held on its first line. Only when a line is in flight: a timer
- * armed at any other moment would end some other call. */
+ * armed at any other moment would end some other call.
+ *
+ * F727 (V4-350): and only if the timer is not running already. Every stop
+ * signal armed it afresh, so a line's quarter second began again with each
+ * one: SIGTERM sent every tenth of a second -- `while kill -0 $pid; do kill
+ * $pid; sleep 0.1; done`, a common way to stop a thing -- never ended a
+ * daemon held on a line while it started. The time counts from the FIRST. */
 void authd_log_on_stop_signal(void)
 {
-    if (g_in_line) {
+    if (g_in_line && !g_timer_armed) {
         line_timer(LOG_STOPPING_LINE_USEC);
     }
 }

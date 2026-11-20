@@ -12,10 +12,10 @@ LG = "apps/authd/authd_log.c"
 A = "apps/authd/authd_main.c"
 
 M = {
-    "RD1": [(LG, "    if (g_in_line) {\n        line_timer(LOG_STOPPING_LINE_USEC);\n",
-             "    if (0 && g_in_line) { /* MUTATION RD1 */\n        line_timer(LOG_STOPPING_LINE_USEC);\n")],
-    "RD2": [(A, "                    if (access(dir, W_OK) != 0) {\n",
-             "                    if (0 && access(dir, W_OK) != 0) { /* MUTATION RD2 */\n")],
+    "RD1": [(LG, "    if (g_in_line && !g_timer_armed) {\n        line_timer(LOG_STOPPING_LINE_USEC);\n",
+             "    if (0 && g_in_line && !g_timer_armed) { /* MUTATION RD1 */\n        line_timer(LOG_STOPPING_LINE_USEC);\n")],
+    "RD2": [(A, "                    } else if (access(dir, W_OK) != 0) {\n",
+             "                    } else if (0 && access(dir, W_OK) != 0) { /* MUTATION RD2 */\n")],
     "RD3": [(LG, "        (void)sigprocmask(SIG_UNBLOCK, &one, NULL);\n",
              "        /* MUTATION RD3 */\n")],
 }

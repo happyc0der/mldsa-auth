@@ -22945,3 +22945,65 @@ Spec v1.117: erratum 166 (16).
 Counts: 850 mutations, 160 campaigns, 899 anchors; 725 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644 and F725 open); spec v1.117, 166 errata; 66 tests.
+
+## V4-350: what the ninety-third review found (F726 to F732)
+
+**V4-349's CI was green**, all sixteen jobs (run 44747068181): the first
+since V4-344's. Its nightly (44747072634) was cancelled with 81 jobs
+passed and none failed, because the ninety-third review had shown by then
+that one job in it, campaign v190's, could not pass (F726). V4-345 to
+V4-349 land with this step.
+
+**The ninety-third review** rebuilt V4-349 on Linux and macOS and held the
+daemon at every line it prints while it starts: 111 held states on Linux,
+88 on macOS, each stopped by one signal in 0.25 to 0.32 s with exit 0 and
+the disk as it should be. The sentence five steps were spent on held. It
+then read the network layer and ran 17,500 fuzzed connections at ASan and
+UBSan builds on both systems without a report. One Medium, three Low,
+three Info.
+
+- **F726 (Medium), a test and not the daemon.** F720's leg read the pipe
+  the instant it had sent the signal. On macOS the daemon's write has seen
+  the signal by then; on Linux, 38 times in 40, it has not, and the line
+  is written. The leg then passed whatever the daemon did. The mutant was
+  killed by hand on macOS, and would have survived the nightly.
+  - The Linux run made before V4-349's push ran the test, and the test
+    passed: a test that passes proves nothing about whether it can fail.
+    What was missing was the other half, the mutant on Linux. That is now
+    done for a step's new mutants where the kernel has a say: RE2 and this
+    step's RF1 were built into a daemon in the container and the test run
+    against each.
+- **F727 (Low).** The handler arms the line's timer once.
+- **F728 (Low), open for the next bug step.** Deadlines and the order of
+  the loop.
+- **F729 (Low).** The gate now looks for the name of standard error.
+  V4-349's record said "whatever its spelling" of a gate that knew five
+  spellings.
+- **F730, F731, F732 (Info).**
+
+**Open for the owner.** Nothing new.
+
+Campaign v191: RF1 (every stop signal starts the waiting line's quarter
+second again).
+
+**The Linux run, before the push**, in the same container as V4-349's
+(Ubuntu 24.04, uid 1000, 8 MiB memlock, a datagram queue of 512, no node),
+on a machine doing nothing else:
+
+- the gate passed, and the eight `test_authd_` programs;
+- `authd_e2e` passed three times in three;
+- with v190's RE2 built into the daemon it failed twice in two, by F720's
+  line, the read having begun 86 and 90 ms after the signal;
+- with this step's RF1 built in it failed, by F727's line.
+
+Every committed mutant in the daemon's main and the log was then rerun by
+hand on macOS, 60, each after its test passed on the clean tree: 59 killed
+by their named checks, RF1 and v190's three among them. v99's LF1 SURVIVED
+on macOS, as always. Re-anchored: v189 RD1 and RD2.
+
+Spec v1.118: erratum 167 (16).
+
+Counts: 851 mutations, 161 campaigns, 900 anchors; 732 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644, F725 and F728 open); spec v1.118, 167 errata; 66
+tests.

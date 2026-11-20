@@ -1,0 +1,1 @@
+RF1|^authd_e2e$|stop signals that kept coming kept a held daemon from stopping (F727)
