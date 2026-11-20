@@ -10,6 +10,9 @@
  * sqlite3; client_links_no_sqlite checks that on every build.
  */
 #include <sys/resource.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <stdio.h>
 
 #include <sodium.h>
@@ -29,6 +32,11 @@ int main(int argc, char **argv)
     {
         struct rlimit none = { 0, 0 };
         (void)setrlimit(RLIMIT_CORE, &none);
+#ifdef __linux__
+        /* F714 (V4-348): and not dumpable. A core pattern that pipes to a
+         * handler (systemd-coredump, apport) is fed whatever the limit is. */
+        (void)prctl(PR_SET_DUMPABLE, 0);
+#endif
     }
     const int closed = stdfds_ensure_open();
     if (closed < 0) {

@@ -101,8 +101,8 @@ M = {
                "                      : path_exists(pass_path) ? pass_path : NULL;",
                "    const char *clash = NULL; /* MUTATION I1: init over an existing store */")]),
  # a listener failure leaks the decrypted server key and every allocation
- "R1": (MN, [("        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            fprintf(stderr, \"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            goto listener_failed;\n        }",
-              "        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            fprintf(stderr, \"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            free(slots); return 1; /* MUTATION R1: epilogue skipped, server key unwiped */\n        }")]),
+ "R1": (MN, [("        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            authd_log_say(\"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            goto listener_failed;\n        }",
+              "        const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);\n        if (ls != LISTENER_OK) {\n            authd_log_say(\"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            free(slots); return 1; /* MUTATION R1: epilogue skipped, server key unwiped */\n        }")]),
  # a store backup is written with the daemon's umask instead of the store's mode.
  # V4-59: the backup is now created 0600 BEFORE the copy and chmod'd after, so
  # the umask's mode needs both undone (a lone chmod removal is equivalent).

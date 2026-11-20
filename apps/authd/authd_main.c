@@ -59,6 +59,7 @@ static void on_signal(int sig)
         g_hup = 1;
     } else {
         g_stop = 1;
+        authd_log_on_stop_signal();     /* F710: a line already waiting gets its time limit */
     }
 }
 
@@ -140,7 +141,7 @@ static void remove_created_store(const char *path)
             (void)unlink(name);
         }
     }
-    fprintf(stderr, "mldsa-authd: %s: this start created the store and did not get as far as serving it, "
+    authd_log_say("mldsa-authd: %s: this start created the store and did not get as far as serving it, "
                     "so it is removed again; the next start will create it and say so\n", path);
 }
 
@@ -294,6 +295,7 @@ int main(int argc, char **argv)
      * SA_RESTART: nothing in start-up is written to expect an interrupted
      * call, and poll(), which the loop relies on a signal to end (erratum
      * 119), is never restarted. */
+    authd_log_stop_flag(&g_stop);      /* F692, F710: from the first handler on, the log knows which flag says "stop" */
     {
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
@@ -308,7 +310,7 @@ int main(int argc, char **argv)
     authd_slot_t *slots = calloc((size_t)cfg.max_slots, sizeof *slots);
     authd_conn_t *conns = calloc((size_t)cfg.max_slots, sizeof *conns);
     if (slots == NULL || conns == NULL) {
-        fprintf(stderr, "mldsa-authd: cannot allocate %u slots\n", cfg.max_slots);
+        authd_log_say("mldsa-authd: cannot allocate %u slots\n", cfg.max_slots);
         free(slots); free(conns);
         return 1;
     }
@@ -324,7 +326,7 @@ int main(int argc, char **argv)
     memset(&server_kp, 0, sizeof server_kp);
     uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
     if (kek == NULL) {
-        fprintf(stderr, "mldsa-authd: cannot allocate secure memory for the store key\n");
+        authd_log_say("mldsa-authd: cannot allocate secure memory for the store key\n");
         free(slots); free(conns);
         return 1;
     }
@@ -333,7 +335,7 @@ int main(int argc, char **argv)
         uint8_t *pass = NULL;
         const authd_secret_status_t ps = authd_secret_read(cfg.key_passphrase_file, &pass, &pass_len);
         if (ps != AUTHD_SECRET_OK) {
-            fprintf(stderr, "mldsa-authd: passphrase file %s: %s\n",
+            authd_log_say("mldsa-authd: passphrase file %s: %s\n",
                     cfg.key_passphrase_file, authd_secret_status_name(ps));
             secure_mem_free(kek, STORE_KEK_BYTES);
             free(slots); free(conns);
@@ -347,7 +349,7 @@ int main(int argc, char **argv)
                                                  (const char *)pass, pass_len, &server_kp, kek);
         authd_secret_free(pass, pass_len);
         if (ks != KEYFILE_OK) {
-            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(ks));
+            authd_log_say("mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(ks));
             secure_mem_free(kek, STORE_KEK_BYTES);
             free(slots); free(conns);
             /* F126: missing, unsafe, malformed, or not opened by the configured
@@ -375,7 +377,7 @@ int main(int argc, char **argv)
     /* F657: a stop that came while the key was being opened. Nothing has
      * been created yet, so nothing is. */
     if (g_stop) {
-        fprintf(stderr, "mldsa-authd: stopped by a signal before it had started\n");
+        authd_log_say("mldsa-authd: stopped by a signal before it had started\n");
         secure_mem_free(kek, STORE_KEK_BYTES);
         mldsa_keypair_free(&server_kp);
         free(slots); free(conns);
@@ -388,13 +390,13 @@ int main(int argc, char **argv)
         secure_mem_free(kek, STORE_KEK_BYTES);   /* the store holds its own derived key now */
         kek = NULL;
         if (ss != STORE_OK) {
-            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.store_path, store_status_name(ss));
+            authd_log_say("mldsa-authd: %s: %s\n", cfg.store_path, store_status_name(ss));
             /* F694 (V4-345): the two refusals of `io` that have a reason
              * worth a line. */
             {
                 struct stat lk;
                 if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0 && S_ISLNK(lk.st_mode)) {
-                    fprintf(stderr, "mldsa-authd: store_path is a symbolic link; name the file itself\n");
+                    authd_log_say("mldsa-authd: store_path is a symbolic link; name the file itself\n");
                 } else if (ss == STORE_ERR_IO && lstat(cfg.store_path, &lk) == 0) {
                     /* F703 (V4-347): WHY it cannot be written, asked of the
                      * kernel. One line used to cover three causes, and the
@@ -404,21 +406,51 @@ int main(int argc, char **argv)
                     if (fd >= 0) {
                         (void)close(fd);
                     } else if (why == EROFS) {
-                        fprintf(stderr, "mldsa-authd: the store is on a read-only file system: under the shipped "
+                        authd_log_say("mldsa-authd: the store is on a read-only file system: under the shipped "
                                         "unit only the state directory can be written (StateDirectory=, "
                                         "ReadWritePaths=)\n");
                     } else if (why == EACCES) {
-                        fprintf(stderr, "mldsa-authd: the store cannot be written by this user (its mode or "
+                        authd_log_say("mldsa-authd: the store cannot be written by this user (its mode or "
                                         "its owner)\n");
                     } else if (why == EPERM) {
-                        fprintf(stderr, "mldsa-authd: the store cannot be written: the file is marked immutable "
+                        authd_log_say("mldsa-authd: the store cannot be written: the file is marked immutable "
                                         "or append-only\n");
+                    }
+                } else if (ss == STORE_ERR_IO && (errno == ENOENT || errno == EACCES)) {
+                    /* F713 (V4-348): no store there, and none could be
+                     * made. That is the first start with store_path outside
+                     * the state directory, the mistake the lines above were
+                     * written for, and it got none of them: they began with
+                     * an lstat() of the store that has to succeed. */
+                    char dir[AUTHD_PATH_MAX + 2u];
+                    (void)snprintf(dir, sizeof dir, "%s", cfg.store_path);
+                    char *slash = strrchr(dir, '/');
+                    if (slash == NULL) {
+                        (void)snprintf(dir, sizeof dir, ".");
+                    } else if (slash == dir) {
+                        dir[1] = '\0';
+                    } else {
+                        *slash = '\0';
+                    }
+                    if (access(dir, W_OK) != 0) {
+                        const int why = errno;
+                        if (why == EROFS) {
+                            authd_log_say("mldsa-authd: there is no store, and its directory is on a read-only "
+                                          "file system: under the shipped unit only the state directory can be "
+                                          "written (StateDirectory=, ReadWritePaths=)\n");
+                        } else if (why == EACCES) {
+                            authd_log_say("mldsa-authd: there is no store, and this user cannot create one in "
+                                          "its directory, or cannot reach that directory\n");
+                        } else if (why == ENOENT) {
+                            authd_log_say("mldsa-authd: there is no store, and the directory it is to be in "
+                                          "does not exist\n");
+                        }
                     }
                 }
             }
             /* F660: which object it stopped at. */
             if (ss == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
-                fprintf(stderr, "mldsa-authd: the file is not shaped as this build makes a store; the first "
+                authd_log_say("mldsa-authd: the file is not shaped as this build makes a store; the first "
                                 "difference: %s. No table, index or row of it was changed\n", store_shape_note());
             }
             mldsa_keypair_free(&server_kp);
@@ -440,7 +472,7 @@ int main(int argc, char **argv)
     {
         const store_status_t ts = store_audit_tail_check(store);
         if (ts != STORE_OK) {
-            fprintf(stderr, "mldsa-authd: %s: %s%s\n", cfg.store_path, store_status_name(ts),
+            authd_log_say("mldsa-authd: %s: %s%s\n", cfg.store_path, store_status_name(ts),
                     (ts == STORE_ERR_CORRUPT)
                         ? ": the last audit entry was not written under this server key -- "
                           "key_path names another server's key, or the store was altered; "
@@ -462,7 +494,7 @@ int main(int argc, char **argv)
      * daemon cannot tell the two apart, so it says which happened, here and
      * as a WARN event beside `started`. */
     if (store_created) {
-        fprintf(stderr, "mldsa-authd: %s: created a new, empty store (no store was there)\n", cfg.store_path);
+        authd_log_say("mldsa-authd: %s: created a new, empty store (no store was there)\n", cfg.store_path);
     }
 
     app.conns = conns;
@@ -492,7 +524,7 @@ int main(int argc, char **argv)
         /* F515: every lifetime is on this clock; with none, nothing can be
          * judged expired, so the daemon does not start. */
         authd_log_event(AUTHD_LOG_ERROR, "clock-unreadable");
-        fprintf(stderr, "mldsa-authd: the wall clock cannot be read; refusing to start\n");
+        authd_log_say("mldsa-authd: the wall clock cannot be read; refusing to start\n");
         goto listener_failed;
     }
 
@@ -528,7 +560,7 @@ int main(int argc, char **argv)
     if (handshake_pending_store_init_ext(&pending, ledger_slots, ledger_cap,
                                          (uint64_t)cfg.handshake_timeout_ms,
                                          authd_app_clock, &app) != PENDING_OK) {
-        fprintf(stderr, "mldsa-authd: pending ledger init failed\n");
+        authd_log_say("mldsa-authd: pending ledger init failed\n");
         goto listener_failed;
     }
     app.pending = &pending;
@@ -537,7 +569,7 @@ int main(int argc, char **argv)
      * the site out of EXCHANGE (spec 8 / V4-9a decision 1). */
     local_slots = calloc((size_t)cfg.max_local_slots, sizeof *local_slots);
     if (local_slots == NULL) {
-        fprintf(stderr, "mldsa-authd: cannot allocate %u local slots\n", cfg.max_local_slots);
+        authd_log_say("mldsa-authd: cannot allocate %u local slots\n", cfg.max_local_slots);
         goto listener_failed;
     }
 
@@ -545,20 +577,20 @@ int main(int argc, char **argv)
     if (evloop_init(&ev, slots, (size_t)cfg.max_slots,
                     cfg.handshake_timeout_ms, cfg.idle_timeout_ms,
                     authd_conn_on_frame, authd_conn_on_close, &app) != 0) {
-        fprintf(stderr, "mldsa-authd: event loop init failed\n");
+        authd_log_say("mldsa-authd: event loop init failed\n");
         goto listener_failed;
     }
     app.ev = &ev;
     if (evloop_set_on_addr(&ev, authd_conn_on_addr) != 0) {
-        fprintf(stderr, "mldsa-authd: address callback init failed\n");
+        authd_log_say("mldsa-authd: address callback init failed\n");
         goto listener_failed;
     }
     if (evloop_set_clock(&ev, loop_clock, &app) != 0) {
-        fprintf(stderr, "mldsa-authd: clock init failed\n");
+        authd_log_say("mldsa-authd: clock init failed\n");
         goto listener_failed;
     }
     if (evloop_set_local(&ev, local_slots, (size_t)cfg.max_local_slots, localapi_on_line) != 0) {
-        fprintf(stderr, "mldsa-authd: local pool init failed\n");
+        authd_log_say("mldsa-authd: local pool init failed\n");
         goto listener_failed;
     }
 
@@ -566,7 +598,7 @@ int main(int argc, char **argv)
         uint16_t bound = 0;
         const listener_status_t ls = listener_open_loopback(cfg.listen_port, 64, &tcp_fd, &bound);
         if (ls != LISTENER_OK) {
-            fprintf(stderr, "mldsa-authd: loopback listener: %s\n", listener_status_name(ls));
+            authd_log_say("mldsa-authd: loopback listener: %s\n", listener_status_name(ls));
             goto listener_failed;
         }
         /* Checked, like the two local listeners below. AUTHD_MAX_LISTENERS is
@@ -574,7 +606,7 @@ int main(int argc, char **argv)
          * ever polls: the daemon would log "listening" and serve nobody. That
          * exact defect cost V4-9a a debugging session when the limit was 2. */
         if (evloop_add_listener(&ev, tcp_fd, (uid_t)-1) != 0) {
-            fprintf(stderr, "mldsa-authd: cannot register the loopback listener\n");
+            authd_log_say("mldsa-authd: cannot register the loopback listener\n");
             goto listener_failed;
         }
         authd_log_num(AUTHD_LOG_INFO, "listening-loopback", "port", (uint64_t)bound);
@@ -582,7 +614,7 @@ int main(int argc, char **argv)
     if (unix_path != NULL) {
         const listener_status_t ls = listener_open_unix(unix_path, 64, LISTENER_MODE_GROUP, &unix_fd);
         if (ls != LISTENER_OK) {
-            fprintf(stderr, "mldsa-authd: unix listener %s: %s\n", unix_path, listener_status_name(ls));
+            authd_log_say("mldsa-authd: unix listener %s: %s\n", unix_path, listener_status_name(ls));
             goto listener_failed;
         }
         /* The proxy-facing listener speaks WebSocket (spec §7.1): a browser
@@ -599,7 +631,7 @@ int main(int argc, char **argv)
         if (evloop_add_ws_listener(&ev, unix_fd,
                                    cfg.n_proxy_uids ? cfg.proxy_uids : NULL,
                                    cfg.n_proxy_uids, cfg.proxy_protocol_v2) != 0) {
-            fprintf(stderr, "mldsa-authd: cannot register the unix listener\n");
+            authd_log_say("mldsa-authd: cannot register the unix listener\n");
             goto listener_failed;
         }
         authd_log_event(AUTHD_LOG_INFO, "listening-unix");
@@ -611,11 +643,11 @@ int main(int argc, char **argv)
     if (site_path != NULL) {
         const listener_status_t ls = listener_open_unix(site_path, AUTHD_SITE_BACKLOG, LISTENER_MODE_GROUP, &site_fd);
         if (ls != LISTENER_OK) {
-            fprintf(stderr, "mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
+            authd_log_say("mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
             goto listener_failed;
         }
         if (evloop_add_local_listener(&ev, site_fd, cfg.site_uids, cfg.n_site_uids, 0) != 0) {
-            fprintf(stderr, "mldsa-authd: cannot register the site listener\n");
+            authd_log_say("mldsa-authd: cannot register the site listener\n");
             goto listener_failed;
         }
         authd_log_event(AUTHD_LOG_INFO, "listening-site");
@@ -623,11 +655,11 @@ int main(int argc, char **argv)
     if (admin_path != NULL) {
         const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);
         if (ls != LISTENER_OK) {
-            fprintf(stderr, "mldsa-authd: admin socket %s: %s\n", admin_path, listener_status_name(ls));
+            authd_log_say("mldsa-authd: admin socket %s: %s\n", admin_path, listener_status_name(ls));
             goto listener_failed;
         }
         if (evloop_add_local_listener(&ev, admin_fd, cfg.admin_uids, cfg.n_admin_uids, 1) != 0) {
-            fprintf(stderr, "mldsa-authd: cannot register the admin listener\n");
+            authd_log_say("mldsa-authd: cannot register the admin listener\n");
             goto listener_failed;
         }
         authd_log_event(AUTHD_LOG_INFO, "listening-admin");
@@ -668,7 +700,7 @@ int main(int argc, char **argv)
         if (fs == FDLIMIT_LOW) {
             const uint32_t cap = fdlimit_slot_cap(lim, cfg.max_slots, cfg.max_local_slots);
             if (evloop_set_slot_cap(&ev, (size_t)cap) != 0) {
-                fprintf(stderr, "mldsa-authd: cannot hold the slot table to %u connections\n", cap);
+                authd_log_say("mldsa-authd: cannot hold the slot table to %u connections\n", cap);
                 goto listener_failed;
             }
             fprintf(stderr,
@@ -685,7 +717,7 @@ int main(int argc, char **argv)
      * line carries an identifier or an address. The store is the callback's
      * context, so the key stays inside the store. */
     if (authd_log_set_privacy(cfg.log_identities, cfg.log_client_ip, log_pseudonym, store) != 0) {
-        fprintf(stderr, "mldsa-authd: cannot apply log_identities/log_client_ip\n");
+        authd_log_say("mldsa-authd: cannot apply log_identities/log_client_ip\n");
         goto listener_failed;
     }
 
@@ -696,7 +728,6 @@ int main(int argc, char **argv)
      * write on every SIGTERM and could only be killed. Without it the write
      * fails, the line is lost, and the loop sees the stop. Before the look
      * below, so that no signal falls between the two regimes. */
-    authd_log_stop_flag(&g_stop);              /* F692: and the log is told which flag says "stop" */
     {
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
@@ -730,10 +761,10 @@ int main(int argc, char **argv)
     if (authd_sd_notify("READY=1") < 0) {
         /* F702 (V4-347): tried again only where trying can help. */
         if (authd_sd_notify_usable()) {
-            fprintf(stderr, "mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");
+            authd_log_say("mldsa-authd: could not send READY=1 to $NOTIFY_SOCKET; it is tried again\n");
             ready_pending = 1;
         } else {
-            fprintf(stderr, "mldsa-authd: $NOTIFY_SOCKET is not a path this daemon can use (absolute, or "
+            authd_log_say("mldsa-authd: $NOTIFY_SOCKET is not a path this daemon can use (absolute, or "
                             "abstract with a leading @, and short enough for a socket address): "
                             "READY=1 is not sent\n");
         }
@@ -825,7 +856,7 @@ stopped_early:
     /* F657: asked to stop before it had started. Not a failure (erratum 89:
      * a daemon stopped by a signal exits 0), and nothing was served, so what
      * this start made is unmade as for a start that failed. */
-    fprintf(stderr, "mldsa-authd: stopped by a signal before it had started\n");
+    authd_log_say("mldsa-authd: stopped by a signal before it had started\n");
     early_rc = 0;
 listener_failed:
     listener_close(&site_fd, site_path);
@@ -844,7 +875,7 @@ listener_failed:
      * populated store. If the file holds anything now but what a creation
      * leaves, it is not removed. */
     if (store_created && !store_is_as_created(store)) {
-        fprintf(stderr, "mldsa-authd: %s: this start created the store, but it could not be seen to hold only "
+        authd_log_say("mldsa-authd: %s: this start created the store, but it could not be seen to hold only "
                         "what a new store does: something else has written to it, or it could not be read; it is "
                         "left in place\n", cfg.store_path);
         store_created = 0;

@@ -3,7 +3,9 @@
 
 Usage: mutate_v186.py <repo> <ID>
 
-    RA1   the handlers go on restarting interrupted calls once the daemon runs.
+    (RA1, the handlers still restarting calls once the daemon runs, went in V4-348:
+    the stop signal's handler now times a line that is in flight, so the mutant
+    differs only by the quarter second that takes.)
     RA2   a stop is not looked for before the store is opened.
     RA3   a created store is removed whatever has been written to it since.
     RA4   a populated store that lost a meta value is given a new one.
@@ -20,10 +22,8 @@ SD = "apps/authd/sdnotify.c"
 FD = "apps/authd/fdlimit.c"
 
 M = {
-    "RA1": [(A, "        struct sigaction sa;\n        memset(&sa, 0, sizeof sa);\n        sa.sa_handler = on_signal;\n        (void)sigaction(SIGTERM, &sa, NULL);\n",
-             "        struct sigaction sa;\n        memset(&sa, 0, sizeof sa);\n        sa.sa_handler = on_signal;\n        sa.sa_flags = SA_RESTART; /* MUTATION RA1 */\n        (void)sigaction(SIGTERM, &sa, NULL);\n")],
-    "RA2": [(A, "    if (g_stop) {\n        fprintf(stderr, \"mldsa-authd: stopped by a signal before it had started\\n\");\n        secure_mem_free(kek, STORE_KEK_BYTES);\n",
-             "    if (0 && g_stop) { /* MUTATION RA2 */\n        fprintf(stderr, \"mldsa-authd: stopped by a signal before it had started\\n\");\n        secure_mem_free(kek, STORE_KEK_BYTES);\n")],
+    "RA2": [(A, "    if (g_stop) {\n        authd_log_say(\"mldsa-authd: stopped by a signal before it had started\\n\");\n        secure_mem_free(kek, STORE_KEK_BYTES);\n",
+             "    if (0 && g_stop) { /* MUTATION RA2 */\n        authd_log_say(\"mldsa-authd: stopped by a signal before it had started\\n\");\n        secure_mem_free(kek, STORE_KEK_BYTES);\n")],
     "RA3": [(A, "    if (store_created && !store_is_as_created(store)) {\n",
              "    if (0 && store_created && !store_is_as_created(store)) { /* MUTATION RA3 */\n")],
     "RA4": [(ST, "            if (!none && !whole) {\n",

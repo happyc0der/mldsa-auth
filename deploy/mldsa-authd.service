@@ -56,6 +56,12 @@ RestartSec=2s
 # asked for a core dump, and a daemon that is stopped or stuck in the kernel
 # would not act on anything gentler.
 WatchdogSec=30s
+# The daemon's drain ends when the last queued reply is written or its
+# connection's deadline passes, so a stop can take as long as the larger of
+# handshake_timeout_ms and idle_timeout_ms (60 s as shipped). This is
+# systemd's default, written down so that it is seen beside that: raise it
+# if you raise idle_timeout_ms past it, or the stop ends in SIGKILL.
+TimeoutStopSec=90s
 WatchdogSignal=SIGKILL
 
 # The passphrase that opens the MLDSAEK1 server key (spec §12). systemd

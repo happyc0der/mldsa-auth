@@ -1,6 +1,7 @@
 #include "authd_log.h"
 
 #include <sys/time.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -130,13 +131,30 @@ static FILE *out(void)
  * that outlasts it, and that is a line ended by a signal while stopping. */
 static const volatile sig_atomic_t *g_stop_flag = NULL;
 static int g_muted = 0;
-static int g_timed = 0;
+/* F710 (V4-348): a line is being written. Read by the stop signal's handler. */
+static volatile sig_atomic_t g_in_line = 0;
 
 #define LOG_STOPPING_LINE_USEC 250000
 
 static void on_line_timer(int sig)
 {
     (void)sig;      /* its only work is to end the write */
+}
+
+/* F711 (V4-348): an INTERVAL, not one shot. One shot could be spent before
+ * the write it was for had begun -- a process kept off the CPU for a quarter
+ * second between arming and writing, which is the kind of host a stalled
+ * journal is found on -- or on the first part of a line a terminal took in
+ * two; either way nothing ended the write that then waited. It fires until
+ * the line is done. setitimer() is async-signal-safe: the handler of a stop
+ * signal calls this too. */
+static void line_timer(long usec)
+{
+    struct itimerval tv;
+    memset(&tv, 0, sizeof tv);
+    tv.it_value.tv_usec = (suseconds_t)usec;
+    tv.it_interval.tv_usec = (suseconds_t)usec;
+    (void)setitimer(ITIMER_REAL, &tv, NULL);
 }
 
 void authd_log_stop_flag(const volatile sig_atomic_t *flag)
@@ -148,30 +166,51 @@ void authd_log_stop_flag(const volatile sig_atomic_t *flag)
         memset(&sa, 0, sizeof sa);
         sa.sa_handler = on_line_timer;      /* no SA_RESTART: it must end the write */
         (void)sigaction(SIGALRM, &sa, NULL);
+        /* F712: and not blocked. A daemon started by hand from a shell that
+         * had SIGALRM blocked inherited the mask, and the timer did nothing. */
+        sigset_t one;
+        (void)sigemptyset(&one);
+        (void)sigaddset(&one, SIGALRM);
+        (void)sigprocmask(SIG_UNBLOCK, &one, NULL);
     }
 }
 
-static void line_timer(long usec)
+/* F710 (V4-348): called from the handler of a signal that stops the daemon.
+ * A line that was ALREADY waiting when the signal came is not helped by a
+ * timer armed when a line begins. While the daemon runs the signal itself
+ * ends the write; while it starts, its handlers restart interrupted calls
+ * (F657), so the write went on waiting and no number of SIGTERMs stopped a
+ * daemon held on its first line. Only when a line is in flight: a timer
+ * armed at any other moment would end some other call. */
+void authd_log_on_stop_signal(void)
 {
-    struct itimerval tv;
-    memset(&tv, 0, sizeof tv);
-    tv.it_value.tv_usec = (suseconds_t)usec;
-    (void)setitimer(ITIMER_REAL, &tv, NULL);
+    if (g_in_line) {
+        line_timer(LOG_STOPPING_LINE_USEC);
+    }
 }
 
-static void line_done(void)
+static void line_begin(FILE *f)
 {
-    FILE *f = out();
+    clearerr(f);
+    errno = 0;
+    g_in_line = 1;      /* before the look at the flag: see authd_log_on_stop_signal */
+    if (g_stop_flag != NULL && *g_stop_flag) {
+        line_timer(LOG_STOPPING_LINE_USEC);
+    }
+}
+
+static void line_end(FILE *f)
+{
     const int flushed = fflush(f);
     const int why = errno;
-    if (g_timed) {
+    g_in_line = 0;
+    if (g_stop_flag != NULL) {
         line_timer(0);
-        g_timed = 0;
     }
-    /* F701: the stream's error flag was cleared when this line began (in
-     * enabled()), and errno zeroed, so both are THIS line's. Judged on a
-     * flag an earlier, direct write to the stream had left, a line written
-     * in full was taken for an interrupted one. */
+    /* F701: the stream's error flag was cleared when this line began, and
+     * errno zeroed, so both are THIS line's. Judged on a flag an earlier,
+     * direct write to the stream had left, a line written in full was taken
+     * for an interrupted one. */
     if (flushed != 0 || ferror(f)) {
         clearerr(f);
         if (why == EINTR && g_stop_flag != NULL && *g_stop_flag) {
@@ -180,18 +219,37 @@ static void line_done(void)
     }
 }
 
+static void line_done(void)
+{
+    line_end(out());
+}
+
 static int enabled(authd_log_level_t l)
 {
     if (g_muted || (int)l > (int)g_min) {
         return 0;
     }
-    clearerr(out());
-    errno = 0;
-    if (g_stop_flag != NULL && *g_stop_flag) {
-        g_timed = 1;
-        line_timer(LOG_STOPPING_LINE_USEC);
-    }
+    line_begin(out());
     return 1;
+}
+
+/* F710 (V4-348): what the daemon says on standard error that is not an
+ * event -- "created a new, empty store", "could not send READY=1", "stopped
+ * by a signal before it had started". They were plain fprintf()s, with
+ * neither the time limit nor the closed log of a stopping daemon, and a
+ * daemon whose standard error nobody read waited in them for ever: in the
+ * READY line after `started`, and in the very line that says it stopped. */
+void authd_log_say(const char *fmt, ...)
+{
+    if (g_muted) {
+        return;
+    }
+    line_begin(stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    (void)vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    line_end(stderr);
 }
 
 /* F369: `detail` is one word on the line, whatever the caller passes. It is
@@ -371,7 +429,7 @@ void authd_fp_of_pk(authd_fp_t *out, const uint8_t pk[AUTHD_FP_PK_BYTES])
 
 void authd_log_fp(authd_log_level_t lvl, const char *event, const authd_fp_t *fp)
 {
-    if (!enabled(lvl) || fp == NULL) {
+    if (fp == NULL || !enabled(lvl)) {       /* in this order: enabled() begins a line */
         return;
     }
     static const char hexd[] = "0123456789abcdef";

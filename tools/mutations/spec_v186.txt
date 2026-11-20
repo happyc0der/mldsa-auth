@@ -1,4 +1,3 @@
-RA1|^authd_e2e$|a running daemon blocked on a standard error nobody reads could not be stopped by SIGTERM (F679)
 RA2|^authd_e2e$|a SIGTERM while the key was being opened did not end the start before anything was bound (F683)
 RA3|^authd_e2e$|a start that created its store removed it although something else had written to it since (F681)
 RA4|^test_authd_store$|created: a populated store whose store_id row is gone is refused, not given a new id and called created (F668)

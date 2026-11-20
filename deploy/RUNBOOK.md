@@ -993,6 +993,7 @@ sudo diff -u /etc/systemd/system/mldsa-authd.service \
 for u in mldsa-authd-audit.service mldsa-authd-audit.timer; do
     sudo diff -u /etc/systemd/system/$u /usr/local/share/mldsa-authd/$u && echo "$u is unchanged"
 done
+sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf
 sudo systemctl restart mldsa-authd
 journalctl -u mldsa-authd -n 5 --no-pager
 ```
@@ -1005,6 +1006,11 @@ the new unit over (keeping your own `LimitMEMLOCK`, step 8), and run
 new daemon is listening (`Type=notify`, V4-104: as `Type=simple` it returned at
 fork, and a login sent straight after found nothing listening). The journal
 should show `event=started` again, and an existing device logs in as before.
+
+The `--check-config` line is the new build's, run while the old daemon is
+still serving: if it refuses your configuration (exit 3), stop there and
+read what it says before the restart takes the service down. It checks
+less than the start does, as the operator and without the passphrase.
 
 If it does not start, the unit's `ExecStartPre` has run the new build's
 `--check-config` on your configuration, and the journal names what it
@@ -1299,6 +1305,10 @@ Common ones, and what they actually are:
     `/var/lib/mldsa-authd`, or add its directory to `ReadWritePaths=`.
   - **`the file is marked immutable or append-only`** — `lsattr` shows it
     (`chattr -i`, `chattr -a`).
+  - **`there is no store, and …`** (since V4-348) — the first start, and
+    the directory `store_path` is in cannot be written: it is on a
+    read-only file system (the same remedy as above), or the service user
+    cannot write or reach it, or it does not exist.
 - **`warn event=accept-failed`** in the journal of a running daemon — an
   `accept()` failed, which in practice means the process is out of open
   files. A daemon that knows its limit is short holds fewer connections so

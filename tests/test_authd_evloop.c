@@ -148,6 +148,13 @@ static void test_config(void)
           made = made && f != NULL && fclose(f) == 0;
           f = fopen(db, "w");
           made = made && f != NULL && fwrite("SQLite format 3\0rest of a header", 1u, 32u, f) == 32u && fclose(f) == 0;
+          /* Not /bin/sh, which this used until V4-348: on Ubuntu that is a
+           * symbolic link, and since V4-347 a link is refused before its
+           * contents are looked at (the six Linux jobs of that step's CI). */
+          char junk[160];
+          (void)snprintf(junk, sizeof junk, "%s/not-a-database", d);
+          f = fopen(junk, "w");
+          made = made && f != NULL && fwrite("#!/bin/sh\nexit 0\n# sixteen bytes and more\n", 1u, 42u, f) == 42u && fclose(f) == 0;
           CHECK(made, "cfg: the scratch files are made");
 #define PATHS(store, extra) \
           ((void)snprintf(text, sizeof text, "store_path = %s\nkey_path = /bin/sh\nkey_passphrase_file = /bin/sh\n" \
@@ -159,7 +166,7 @@ static void test_config(void)
                                                              : AUTHD_CFG_ERR_SYNTAX)
           CHECK(STORE_CHECK(sub) == AUTHD_CFG_ERR_VALUE && strstr(detail, "is not a regular file") != NULL,
                 "cfg: a store_path that names a directory is refused by --check-config's store check (F362)");
-          CHECK(STORE_CHECK("/bin/sh") == AUTHD_CFG_ERR_VALUE &&
+          CHECK(STORE_CHECK(junk) == AUTHD_CFG_ERR_VALUE &&
                     strstr(detail, "is not a store (not an SQLite database)") != NULL,
                 "cfg: a store_path that names a file which is not a database is refused by the store check (F362)");
           const int empty_ok = STORE_CHECK(empty) == AUTHD_CFG_OK;

@@ -22798,3 +22798,75 @@ Spec v1.115: erratum 164 (16).
 Counts: 845 mutations, 158 campaigns, 894 anchors; 709 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.115, 164 errata; 66 tests.
+
+## V4-348: what the ninety-first review found (F710 to F716)
+
+**The ninety-first review** was asked to run every claim about Linux in a
+container, and did: it built the daemon and both tools from V4-347's commit
+on Ubuntu and on macOS and ran the same matrix on each. No High or Medium.
+Four Low, three Info as recorded here. It also read `deploy/` and the
+runbook's backup, upgrade and restore steps and found nothing that loses
+data or leaves a secret readable.
+
+- **F710 (Low). The fourth step on one sentence** (F679, F692, F700,
+  F710): "one SIGTERM stops a daemon whose standard error nobody reads".
+  Each remedy was right for the state it was tested in. What was left this
+  time: lines that are not log events, and a line already waiting when the
+  signal comes while the daemon is starting. The remedy is no longer about
+  states. Every line the daemon writes to standard error, from the moment
+  it has a signal handler, goes through one writer; that writer times
+  every line once a stop has been asked for; and the stop signal's handler
+  times the line that is in flight. The review's table of states, with the
+  two that failed, is the list the end-to-end test now walks: idle, inside
+  a log line, held on the first line while starting, and held with the
+  sockets bound.
+  - The handler arms a timer only if a line is in flight. Armed at any
+    other moment it would end some other call, a store write or an
+    `fsync`, with an error the code does not expect.
+  - A held daemon that is stopped says nothing: its log is closed by the
+    line it lost. So the test's legs that used to read "created a new,
+    empty store" and "stopped by a signal" out of the pipe afterwards now
+    ask what the daemon did: its exit status, the store, the socket.
+- **F715 (Low), and it happened again.** V4-347's CI failed on Linux
+  because a test called `/bin/sh` a regular file. That is the third thing
+  in three steps that only Linux decides and that was run only on macOS
+  (F708's queue, this, and before them v186's RA7, which held). For this
+  step the new mechanism was run as a standalone C program in a Linux
+  container before the code was written around it.
+- **F711 (Low).** An interval timer. **F713 (Low).** A line for a store
+  that is not there and cannot be made.
+- **F712, F714, F716 (Info).**
+
+**Open for the owner.** Nothing new.
+
+Campaign v189: RD1 (a stop signal does not time a line that is already
+waiting), RD2 (no store and nowhere to make one says only `io`), RD3 (the
+line timer is left blocked).
+
+Every committed mutant in the two files this step changes throughout, the
+daemon's main and the log, was rerun by hand: 57, each after its test
+passed on the clean tree. 55 were killed by their named checks, v189's
+three among them. The other two:
+
+- **v186 RA1 SURVIVED, and went.** It left the handlers restarting calls
+  once the daemon runs, which V4-344's test caught as a daemon that could
+  not be stopped. Since this step the stop signal's handler times a line
+  that is in flight, so such a daemon stops a quarter second later. The
+  second installation of the handlers is kept, for that quarter second;
+  no test is decided by it.
+- **v99 LF1 SURVIVED** on macOS, as always: its leg needs Linux's
+  `prlimit`.
+
+Re-anchored, because their anchors were lines the daemon prints: v147 FS3,
+v186 RA2, v49b R1, v81 SU1 to SU3, v90 SC5; and v188 RC1, whose line moved
+into the log's `line_begin`. All killed.
+
+V4-347's nightly (44717674410) was cancelled while it ran, failing in
+every campaign's clean suite on F715. V4-345 to V4-347 land with this
+step.
+
+Spec v1.116: erratum 165 (16).
+
+Counts: 847 mutations, 159 campaigns, 896 anchors; 716 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.116, 165 errata; 66 tests.

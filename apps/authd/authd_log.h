@@ -40,6 +40,19 @@ void authd_log_init(FILE *dest, authd_log_level_t min_level);
  * authd_log.c. NULL (the default, and every tool and test) never mutes. */
 void authd_log_stop_flag(const volatile sig_atomic_t *flag);
 
+/* F710 (V4-348): for the handler of a signal that stops the daemon, after it
+ * has set the flag. Async-signal-safe. */
+void authd_log_on_stop_signal(void);
+
+/* F710: a line on standard error that is not an event, under the same rules
+ * as one: a stopping daemon gives it a quarter of a second, and writes
+ * nothing once a line has been lost. printf's format. */
+void authd_log_say(const char *fmt, ...)
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
+
 /*
  * What the two peer-influenced fields may reveal (V4-13d, audit finding F14,
  * spec §15 `log_identities` / `log_client_ip`).

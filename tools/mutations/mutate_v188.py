@@ -13,8 +13,8 @@ CF = "apps/authd/authd_config.c"
 SD = "apps/authd/sdnotify.c"
 
 M = {
-    "RC1": [(LG, "        g_timed = 1;\n        line_timer(LOG_STOPPING_LINE_USEC);\n",
-             "        g_timed = 1; /* MUTATION RC1 */\n")],
+    "RC1": [(LG, "    if (g_stop_flag != NULL && *g_stop_flag) {\n        line_timer(LOG_STOPPING_LINE_USEC);\n    }\n}\n",
+             "    if (0 && g_stop_flag != NULL && *g_stop_flag) { /* MUTATION RC1 */\n        line_timer(LOG_STOPPING_LINE_USEC);\n    }\n}\n")],
     "RC2": [(CF, "    if (lstat(path, &st) == 0 && S_ISLNK(st.st_mode)) {\n        detail_set(detail, cap, K_STORE, path, \"is a symbolic link; name the file itself\");\n",
              "    if (0 && lstat(path, &st) == 0 && S_ISLNK(st.st_mode)) { /* MUTATION RC2 */\n        detail_set(detail, cap, K_STORE, path, \"is a symbolic link; name the file itself\");\n")],
     "RC3": [(SD, "    return (p[0] == '/' || p[0] == '@') && strlen(p) < sizeof ((struct sockaddr_un *)0)->sun_path;\n",

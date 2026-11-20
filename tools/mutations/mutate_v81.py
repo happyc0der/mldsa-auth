@@ -17,12 +17,12 @@ import sys, pathlib
 MAIN = "apps/authd/authd_main.c"
 
 M = {
-    "SU1": [(MAIN, "        if (ps != AUTHD_SECRET_OK) {\n            fprintf(stderr, \"mldsa-authd: passphrase file %s: %s\\n\",\n",
-                   "        if (ps != AUTHD_SECRET_OK && 0) { /* MUTATION SU1: refusal ignored */\n            fprintf(stderr, \"mldsa-authd: passphrase file %s: %s\\n\",\n")],
-    "SU2": [(MAIN, "        if (ks != KEYFILE_OK) {\n            fprintf(stderr, \"mldsa-authd: %s: %s\\n\", cfg.key_path, keyfile_status_name(ks));\n",
-                   "        if (ks != KEYFILE_OK && 0) { /* MUTATION SU2: refusal ignored */\n            fprintf(stderr, \"mldsa-authd: %s: %s\\n\", cfg.key_path, keyfile_status_name(ks));\n")],
-    "SU3": [(MAIN, "        if (ss != STORE_OK) {\n            fprintf(stderr, \"mldsa-authd: %s: %s\\n\", cfg.store_path, store_status_name(ss));\n",
-                   "        if (ss != STORE_OK && 0) { /* MUTATION SU3: refusal ignored */\n            fprintf(stderr, \"mldsa-authd: %s: %s\\n\", cfg.store_path, store_status_name(ss));\n")],
+    "SU1": [(MAIN, "        if (ps != AUTHD_SECRET_OK) {\n            authd_log_say(\"mldsa-authd: passphrase file %s: %s\\n\",\n",
+                   "        if (ps != AUTHD_SECRET_OK && 0) { /* MUTATION SU1: refusal ignored */\n            authd_log_say(\"mldsa-authd: passphrase file %s: %s\\n\",\n")],
+    "SU2": [(MAIN, "        if (ks != KEYFILE_OK) {\n            authd_log_say(\"mldsa-authd: %s: %s\\n\", cfg.key_path, keyfile_status_name(ks));\n",
+                   "        if (ks != KEYFILE_OK && 0) { /* MUTATION SU2: refusal ignored */\n            authd_log_say(\"mldsa-authd: %s: %s\\n\", cfg.key_path, keyfile_status_name(ks));\n")],
+    "SU3": [(MAIN, "        if (ss != STORE_OK) {\n            authd_log_say(\"mldsa-authd: %s: %s\\n\", cfg.store_path, store_status_name(ss));\n",
+                   "        if (ss != STORE_OK && 0) { /* MUTATION SU3: refusal ignored */\n            authd_log_say(\"mldsa-authd: %s: %s\\n\", cfg.store_path, store_status_name(ss));\n")],
 }
 
 

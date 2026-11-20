@@ -40,9 +40,9 @@ M = {
                  "        if (fd >= 0) {\n"
                  "            (void)fchmod(fd, 0600);\n")],
     "SC5": [(MAIN, "    if (store_created) {\n"
-                   "        fprintf(stderr, \"mldsa-authd: %s: created a new, empty store (no store was there)\\n\", cfg.store_path);\n",
+                   "        authd_log_say(\"mldsa-authd: %s: created a new, empty store (no store was there)\\n\", cfg.store_path);\n",
                    "    if (0 && store_created) { /* MUTATION SC5 */\n"
-                   "        fprintf(stderr, \"mldsa-authd: %s: created a new, empty store (no store was there)\\n\", cfg.store_path);\n")],
+                   "        authd_log_say(\"mldsa-authd: %s: created a new, empty store (no store was there)\\n\", cfg.store_path);\n")],
     "SC6": [(MAIN, "    if (store_created) {\n"
                    "        authd_log_event(AUTHD_LOG_WARN, \"store-created\");\n",
                    "    if (0 && store_created) { /* MUTATION SC6 */\n"

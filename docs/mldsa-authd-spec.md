@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.115, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347)
+# mldsa-authd — deployment specification (v1.116, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1663,13 +1663,19 @@ look is the running daemon's, which logs `started` and then drains (erratum
 162). A `SIGHUP` in that time is ignored and logged once the daemon has
 started. Once the daemon runs, a signal also ends a write to standard error
 that is waiting on a reader, and the line being written is lost (erratum
-162). **A daemon that has been told to stop gives each log line a quarter
-of a second** (erratum 164): a line that has not been written by then, or
-that any signal ends first, is lost, and the daemon logs nothing more. So
-one `SIGTERM` stops a daemon whose log nobody reads, a quarter of a second
-later than one whose log is read, and without `draining` or `stopped` in
-the journal. Before it is told to stop, a signal that ends a waiting line
-costs that line, and the log goes on.
+162). **A daemon that has been told to stop gives each line it writes to
+standard error a quarter of a second** (errata 164 and 165), an event or
+any other line, and one that was already waiting when the signal came has
+that long from the signal: a line that has not been written by then, or
+that any signal ends first, is lost, and the daemon writes nothing more.
+That holds while it starts as while it runs. So one `SIGTERM` stops a
+daemon whose standard error nobody reads, about a quarter of a second
+later than one whose log is read, without `draining` or `stopped` in the
+journal, and, if it was starting, without the line that says it stopped
+before it had started. Before it is told to stop, a signal that ends a
+waiting line costs that line, and the log goes on. The unit sets
+`TimeoutStopSec=90s`, systemd's default, beside the 60 s a drain can take
+as shipped (`idle_timeout_ms`).
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -2749,3 +2755,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 164 | 16 | A stopping daemon gives each log line a quarter of a second and logs nothing more after one that is lost; `--check-config` refuses a `store_path` that is a symbolic link | Erratum 163 said one `SIGTERM` stops a daemon whose log nobody reads. The code closed the log only when a signal ended a line that was already waiting, and a daemon idle when it was told to stop began its first line after the only signal had come: it waited there (F700). And 163's "any other signal costs the one line" was untrue once the daemon was stopping (F709). The start has refused a linked `store_path` since erratum 163, and `--check-config` called the same configuration valid (F704) |
+
+### Revision v1.116 (V4-348)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 165 | 16 | The quarter second covers every line the daemon writes to standard error, from the first signal handler on, and a line already waiting when the stop signal comes; the unit states `TimeoutStopSec=90s` | Erratum 164's limit was on log events, set when a line began. The lines that are not events were plain writes: a daemon waited for ever in "could not send READY=1", and in the line that says it was stopped before it had started (F710). And while the daemon starts, its handlers restart interrupted calls, so a line already waiting when the signal came was never ended: no number of `SIGTERM`s stopped a daemon held on its first line, and systemd's kill then left a store that start had created (F710). The timer was one shot, and could be spent before the write it was for (F711) |

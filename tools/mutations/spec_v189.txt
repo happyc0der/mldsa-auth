@@ -1,0 +1,3 @@
+RD1|^authd_e2e$|a daemon held on its first line of output while starting was not stopped by one SIGTERM (F710)
+RD2|^authd_e2e$|a start whose store could not be created did not say that its directory cannot be written (F713)
+RD3|^authd_e2e$|an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)

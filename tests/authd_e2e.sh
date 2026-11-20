@@ -2721,6 +2721,25 @@ for f in $(find "$TMP" -type f); do
 done
 [ -z "$found" ] || fail "a plaintext MLDSASK file was written: $found (Req 10)"
 echo "PASS: E2E: after every key operation, still no plaintext secret-key file anywhere under the work directory"
+# V4-348 (F713): no store, and nowhere to make one. A start with store_path
+# in a directory the daemon cannot write said `io` and nothing else, which
+# is the first start of a deployment that put the store outside the state
+# directory. (As root every directory can be written, so there it is a SKIP.)
+if [ "$(id -u)" -eq 0 ]; then
+    echo "SKIP: E2E: root can write any directory, so a store that cannot be created is not staged (F713)"
+else
+    mkdir -p "$TMP/ro" || fail "could not make the read-only directory"
+    sed "s|^store_path = .*|store_path = $TMP/ro/store.sqlite3|" "$TMP/fs.conf" > "$TMP/ro.conf"
+    chmod 0555 "$TMP/ro"
+    rc=0
+    "$DAEMON" --config "$TMP/ro.conf" > "$TMP/ro.log" 2>&1 || rc=$?
+    chmod 0755 "$TMP/ro"
+    [ "$rc" -eq 1 ] || fail "a start whose store could not be created exited $rc, expected 1: $(cat "$TMP/ro.log")"
+    grep -qF "there is no store, and this user cannot create one in its directory" "$TMP/ro.log" \
+        || fail "a start whose store could not be created did not say that its directory cannot be written (F713): $(cat "$TMP/ro.log")"
+    [ ! -e "$TMP/ro/store.sqlite3" ] || fail "a store appeared in a directory that could not be written"
+    echo "PASS: E2E: a start with no store and a directory it cannot write says so (F713)"
+fi
 # V4-342 (F657): a signal DURING start-up. The handlers were installed after
 # the last socket was bound, so a SIGTERM before that killed the daemon where
 # it stood and left a store that start had created; a SIGHUP there, which the
@@ -2746,9 +2765,11 @@ def gone():
         try: os.unlink(store + s)
         except FileNotFoundError: pass
 
-def spawn(stderr, env=None):
+def spawn(stderr, env=None, alarm_blocked=False):
+    # alarm_blocked (F712): started as from a shell that had SIGALRM blocked.
+    pre = (lambda: signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})) if alarm_blocked else None
     p = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=stderr, env=env)
+                         stdout=subprocess.DEVNULL, stderr=stderr, env=env, preexec_fn=pre)
     kids.append(p)
     return p
 
@@ -2819,22 +2840,25 @@ def ended(p, limit=20):
 
 def main():
     # Leg 1: SIGTERM, held on the line that says the store was created.
+    # Since V4-348 (F710) the pipe is NOT read to let it go: one SIGTERM
+    # must end a daemon that is held on its first line, by itself. The line
+    # it was held on is lost and it says nothing more, so what is asked is
+    # what it did: exit 0, the store it created gone, nothing served.
     gone()
     p, r, filled = held(store)
     p.send_signal(signal.SIGTERM)
-    time.sleep(0.2)
-    killed = p.poll()
+    rc = ended(p, limit=10)
+    if rc is None:
+        os.close(r)
+        print("TERM: one SIGTERM did not end a daemon held on its first line of output, in ten seconds")
+        return 11
     got = drain(r, p)
-    rc = ended(p)
     os.close(r)
     text = got[filled:].decode("utf-8", "replace")
-    if CREATED not in text:
-        print(f"TERM: the daemon never printed the line it was held on (exit {rc}): {text!r}")
-        return 1 if killed is not None else 9
     left = [s for s in ("", "-wal", "-shm") if os.path.exists(store + s)]
-    if rc != 0 or left or STOPPED not in text or "event=started" in text:
+    if rc != 0 or left or "event=started" in text:
         print(f"TERM: exit {rc}, left {left}:\n{text}"); return 1
-    print("TERM: exit 0, the created store removed, never started")
+    print("TERM: exit 0 by itself, the created store removed, never started")
 
     # Leg 6 (F681): the same start, but something else writes to the store
     # while it is held. The store is no longer this start's to remove.
@@ -2860,11 +2884,13 @@ def main():
     db.execute("INSERT INTO meta(key, value) VALUES('written-by-another', x'00')")
     db.commit(); db.close()
     p.send_signal(signal.SIGTERM)
+    rc = ended(p, limit=10)
     got = drain(r, p)
-    rc = ended(p)
     os.close(r)
     text = got[filled:].decode("utf-8", "replace")
-    if rc != 0 or not os.path.exists(store) or "it is left in place" not in text or "removed again" in text:
+    # (What it would say of it is not asked: a daemon stopped while its
+    # standard error is unread says nothing more, F710.)
+    if rc != 0 or not os.path.exists(store) or "removed again" in text:
         print(f"OTHER: exit {rc}, store there: {os.path.exists(store)}:\n{text}"); return 6
     print("OTHER: a created store something else wrote to is left in place")
 
@@ -2893,11 +2919,11 @@ def main():
     # listening-unix, after the proxy-facing socket is bound: held there.
     p, r, filled = held(psock)
     p.send_signal(signal.SIGTERM)
+    rc = ended(p, limit=10)
     got = drain(r, p)
-    rc = ended(p)
     os.close(r)
     text = got[filled:].decode("utf-8", "replace")
-    if (rc != 0 or STOPPED not in text or "event=started" in text or "event=listening-unix" not in text
+    if (rc != 0 or "event=started" in text
             or os.path.exists(psock) or not os.path.exists(store) or "removed again" in text):
         print(f"BOUND: exit {rc}, socket there: {os.path.exists(psock)}, store there: {os.path.exists(store)}:\n{text}")
         return 3
@@ -2963,9 +2989,10 @@ def main():
     # Leg 9 (F700): the same, for a daemon that was IDLE when its standard
     # error stopped being read: no SIGHUP first, so the SIGTERM finds it in
     # poll() and it is the first line of its shutdown that waits, with no
-    # second signal coming. V4-345's remedy needed one.
+    # second signal coming. V4-345's remedy needed one. And started with
+    # SIGALRM blocked (F712), which the daemon's time limit must not mind.
     r, w = os.pipe()
-    p = spawn(w)
+    p = spawn(w, alarm_blocked=True)
     got = drain(r, p, until=b"event=started")
     if b"event=started" not in got:
         print(f"IDLE: the daemon did not start (exit {p.poll()})"); return 9
@@ -3088,6 +3115,7 @@ case "$SG" in
 7) cat "$TMP/sig.txt"; fail "after one log line was lost to a signal the daemon logged nothing more, or did not log its shutdown (F691)" ;;
 8) cat "$TMP/sig.txt"; fail "a READY=1 that could not be sent when the daemon started was never sent again (F693)" ;;
 10) cat "$TMP/sig.txt"; fail "an idle daemon whose standard error nobody reads was not stopped by one SIGTERM (F700)" ;;
+11) cat "$TMP/sig.txt"; fail "a daemon held on its first line of output while starting was not stopped by one SIGTERM (F710)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"
