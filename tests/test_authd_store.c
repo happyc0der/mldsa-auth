@@ -1326,6 +1326,12 @@ int main(void)
               "audit shape: an event stored as bytes with a NUL and a tail is not the row that was written (F643)", 1 },
             { "UPDATE audit SET event = CAST(event AS BLOB) WHERE seq=2;",
               "audit shape: an event stored as bytes, the same bytes, is not the row that was written (F643)", 0 },
+            /* V4-339 (F656): the handle and the previous MAC, which the two
+             * rows below this one left to the user id and the MAC. */
+            { "UPDATE audit SET handle = CAST(handle AS TEXT) WHERE seq=2;",
+              "audit shape: a handle stored as text is not the row that was written (F656)", 0 },
+            { "UPDATE audit SET prev_mac = CAST(prev_mac AS TEXT) WHERE seq=2;",
+              "audit shape: a previous MAC stored as text is not the row that was written (F656)", 0 },
             { "UPDATE audit SET user_id = CAST(user_id AS TEXT) WHERE seq=1;",
               "audit shape: a user id stored as text is not the row that was written (F643)", 0 },
             { "UPDATE audit SET mac = CAST(mac AS TEXT) WHERE seq=3;",
@@ -1372,6 +1378,107 @@ int main(void)
             }
             if (t != NULL) { store_close(t); }
         }
+    }
+    {
+        /* V4-339 (F655): the writer has never stored a NULL detail. An empty
+         * one and a NULL make the same MAC, so only how the row is stored
+         * tells them apart, and a reader's `WHERE detail IS NULL` answers
+         * differently. The row here is a revocation with nothing said of who
+         * made it: its detail is empty. (The first form of this check edited
+         * a row whose detail was not empty; the MAC refused it, and a
+         * verifier that allowed NULL passed.) */
+        store_t *s = fresh_store("nulldetail.sqlite3", dbp, sizeof dbp);
+        if (s == NULL) { printf("FAIL: open nulldetail\n"); return 1; }
+        const int made = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+                         store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK &&
+                         store_revoke_device(s, H1, sizeof H1, "", NULL, 0) == STORE_OK &&
+                         store_audit_verify(s) == STORE_OK;
+        store_close(s);
+        long long len = -1;
+        char ev[64] = "";
+        CHECK(made && raw_row(dbp, "SELECT length(detail), event FROM audit WHERE seq=3;", &len, ev, sizeof ev) == 0 &&
+              len == 0 && strcmp(ev, "device-revoke") == 0,
+              "audit shape: the third row is a revocation with an empty detail (the control)");
+        store_t *t = NULL;
+        CHECK(raw_sql(dbp, "UPDATE audit SET detail = NULL WHERE seq=3;") == 0 &&
+              store_open(dbp, KEK, &t) == STORE_OK && t != NULL && store_audit_verify(t) == STORE_ERR_CORRUPT,
+              "audit shape: a detail stored as NULL is not the row that was written (F655)");
+        if (t != NULL) { store_close(t); }
+    }
+    {
+        /* V4-339 (F653, F654): the store's SHAPE. Each of these is one write
+         * to the file by someone without the server key; review 85 ran the
+         * first three against the library and each did what it was planted
+         * to do while every check passed. A store that is not shaped as this
+         * build makes one is refused, by the daemon's open and by a tool's. */
+        static const struct { const char *sql; const char *what; } PLANT[] = {
+            { "CREATE TRIGGER audit_idx BEFORE INSERT ON audit WHEN NEW.event='device-revoke' "
+              "BEGIN SELECT RAISE(IGNORE); END;",
+              "shape: a store with a trigger that drops audit rows is refused at open (F653)" },
+            { "CREATE TRIGGER dev_back AFTER UPDATE OF status ON devices "
+              "BEGIN UPDATE devices SET status='active' WHERE handle=NEW.handle; END;",
+              "shape: a store with a trigger that undoes revocations is refused at open (F653)" },
+            { "ALTER TABLE audit RENAME TO audit_all; CREATE VIEW audit AS SELECT * FROM audit_all WHERE seq <= 2;",
+              "shape: a store whose audit table is a view over another is refused at open (F653)" },
+            { "ALTER TABLE audit ADD COLUMN note TEXT DEFAULT 'VOID: entered in error';",
+              "shape: a store whose audit table has a column more is refused at open (F653)" },
+            { "CREATE TABLE audit2(seq INT PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB, detail TEXT, "
+              "prev_mac BLOB, mac BLOB); INSERT INTO audit2 SELECT * FROM audit; DROP TABLE audit; "
+              "ALTER TABLE audit2 RENAME TO audit;",
+              "shape: a store whose audit sequence has an index of its own is refused at open (F654)" },
+            { "CREATE TABLE audit2(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB, detail BLOB, "
+              "prev_mac BLOB, mac BLOB); INSERT INTO audit2 SELECT * FROM audit; DROP TABLE audit; "
+              "ALTER TABLE audit2 RENAME TO audit;",
+              "shape: a store whose audit table declares a column otherwise is refused at open (F653)" },
+            { "CREATE INDEX zz_at ON audit(at);",
+              "shape: a store with an index this build does not make is refused at open (F653)" },
+            { "CREATE TABLE zz_extra(x);",
+              "shape: a store with a table this build does not make is refused at open (F653)" },
+        };
+        for (size_t e = 0; e < sizeof PLANT / sizeof PLANT[0]; e++) {
+            char name[40];
+            snprintf(name, sizeof name, "plant%zu.sqlite3", e);
+            store_t *s = fresh_store(name, dbp, sizeof dbp);
+            if (s == NULL) { printf("FAIL: open plant\n"); return 1; }
+            const int made = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+                             store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK;
+            store_close(s);
+            store_t *w = NULL, *t = NULL;
+            const int clean = made && store_open(dbp, KEK, &w) == STORE_OK && w != NULL;
+            if (w != NULL) { store_close(w); w = NULL; }
+            const int planted = clean && raw_sql(dbp, PLANT[e].sql) == 0;
+            const store_status_t rw = store_open(dbp, KEK, &w);
+            const store_status_t rd = store_open_existing(dbp, KEK, &t);
+            CHECK(planted && rw == STORE_ERR_DAMAGED && w == NULL, PLANT[e].what);
+            CHECK(planted && rd == STORE_ERR_DAMAGED && t == NULL,
+                  "shape: and a tool that only reads refuses it too (F653)");
+            if (w != NULL) { store_close(w); }
+            if (t != NULL) { store_close(t); }
+        }
+        /* Planted while the store is OPEN: the daemon does not look at the
+         * shape again until its next start, and until then nothing the file
+         * holds is run. The revocation's row is written. */
+        { store_t *s = fresh_store("plant-live.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open plant-live\n"); return 1; }
+          CHECK(store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK &&
+                store_enroll_device(s, H1, sizeof H1, U1, sizeof U1, pkA, "site", "admin", NULL, 0) == STORE_OK,
+                "shape, live: a user and a device");
+          CHECK(raw_sql(dbp, PLANT[0].sql) == 0 && raw_sql(dbp, PLANT[1].sql) == 0,
+                "shape, live: both triggers are planted in the open store (the control)");
+          int64_t before = -1, after = -1;
+          uint8_t head[STORE_AUDIT_MAC_BYTES];
+          uint8_t pk[STORE_PK_BYTES];
+          CHECK(store_audit_verify_report(s, &before, head) == STORE_OK &&
+                store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK &&
+                store_audit_verify_report(s, &after, head) == STORE_OK && after == before + 1,
+                "shape, live: a revocation made while a trigger to drop its audit row is planted is still recorded (F653)");
+          CHECK(store_lookup_active(s, H1, sizeof H1, pk, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
+                "shape, live: and with a trigger to undo it planted, the device is still revoked (F653)");
+          store_close(s);
+          store_t *again = NULL;
+          CHECK(store_open(dbp, KEK, &again) == STORE_ERR_DAMAGED && again == NULL,
+                "shape, live: and the next start refuses the store (F653)");
+          if (again != NULL) { store_close(again); } }
     }
     {
         /* F229: the tail check the daemon makes at every start. One row, one

@@ -411,12 +411,19 @@ set_tests_properties(client_links_no_sqlite_control PROPERTIES WILL_FAIL TRUE)
 add_test(NAME liboqs_minimal
          COMMAND /bin/sh ${CMAKE_CURRENT_SOURCE_DIR}/liboqs_minimal.sh $<TARGET_FILE:oqs>)
 
-add_executable(test_authd_localapi test_authd_localapi.c)
-# sqlite3 directly too: test_store_write_failure plants triggers from a second
-# connection (V4-143).
+# V4-339: this target compiles store.c ITSELF with the fault hook, as
+# test_authd_store does, so that ONE write of a request can be made to fail
+# (F222's sliding update is the second write of a VERIFY). It was done with a
+# trigger planted in the store, which the daemon no longer runs (F653). The
+# executable's own store.o satisfies every store symbol, so the one in
+# mldsa_authd is not pulled in beside it.
+add_executable(test_authd_localapi test_authd_localapi.c ${PROJECT_SOURCE_DIR}/apps/authd/store/store.c)
+target_include_directories(test_authd_localapi PRIVATE ${PROJECT_SOURCE_DIR}/apps/authd/store)
+# sqlite3 directly too: test_store_write_failure reads and locks the store
+# from a second connection (V4-143, V4-339).
 target_link_libraries(test_authd_localapi PRIVATE mldsa_authd sqlite3)
 target_compile_options(test_authd_localapi PRIVATE ${MLDSA_HARDENING_FLAGS} ${MLDSA_SANITIZE_FLAGS})
-target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1)
+target_compile_definitions(test_authd_localapi PRIVATE ${MLDSA_HARDENING_DEFS} _GNU_SOURCE=1 MLDSA_STORE_FAULT_HOOK=1)
 target_link_options(test_authd_localapi PRIVATE ${MLDSA_SANITIZE_FLAGS} ${MLDSA_HARDENING_LINK_FLAGS})
 add_test(NAME test_authd_localapi COMMAND test_authd_localapi)
 

@@ -415,7 +415,11 @@ three minutes. After that, on Linux, the queue is full and the command
 prints `daemon-busy` (since V4-320): that one was not sent, and can simply
 be run again later.
 The copy is one piece of work for the daemon: nothing else is served until
-it ends, so take a large store's backup at a quiet hour. The reference site
+it ends, so take a large store's backup at a quiet hour. A `systemctl stop`
+is not acted on until it ends either: if the copy outlasts systemd's stop
+timeout (ninety seconds unless you have set another) the daemon is killed,
+and the half-written backup has to be removed before its name is used
+again. The reference site
 gives up on a request after ten seconds and answers 503. A request it gave
 up on has still been sent: when the copy ends the daemon carries it out, with
 nobody left to read the answer. A recovery code typed during a long backup

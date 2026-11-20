@@ -10,6 +10,8 @@ Usage: mutate_v183.py <repo> <ID>
     AS5   the MACs may be stored as text.
     AS6   the check of the last row at start does not look at how it is stored.
     AS7   the reader that shows rows does not.
+    AS8   the handle may be stored as text (V4-339).
+    AS9   the previous MAC may be.
 """
 import sys, pathlib
 ST = "apps/authd/store/store.c"
@@ -25,6 +27,10 @@ M = {
              "    if (!audit_blob_ok(st, 4, 1)) { /* MUTATION AS4 */\n")],
     "AS5": [(ST, "    if (with_macs && (!audit_blob_ok(st, 6, 0) || !audit_blob_ok(st, 7, 0))) {\n",
              "    if (with_macs && !audit_blob_ok(st, 6, 0)) { /* MUTATION AS5 */\n")],
+    "AS8": [(ST, "    if (!audit_blob_ok(st, 3, 1) || !audit_blob_ok(st, 4, 1)) {\n",
+             "    if (!audit_blob_ok(st, 3, 1)) { /* MUTATION AS8 */\n")],
+    "AS9": [(ST, "    if (with_macs && (!audit_blob_ok(st, 6, 0) || !audit_blob_ok(st, 7, 0))) {\n",
+             "    if (with_macs && !audit_blob_ok(st, 7, 0)) { /* MUTATION AS9 */\n")],
     "AS6": [(ST, "    if (rc == SQLITE_ROW && !audit_row_shape_ok(st, 1)) {\n        r = STORE_ERR_CORRUPT;                                               /* F643 */\n",
              "    if (rc == SQLITE_ROW && !audit_row_shape_ok(st, 1) && rc != SQLITE_ROW) { /* MUTATION AS6 */\n        r = STORE_ERR_CORRUPT;                                               /* F643 */\n")],
     "AS7": [(ST, "            if (!audit_row_shape_ok(st, 0)) { r = STORE_ERR_CORRUPT; break; }\n",

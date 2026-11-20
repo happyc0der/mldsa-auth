@@ -2647,6 +2647,38 @@ static void test_local_pool_full_waits(void)
 
 /* Run one statement on the store from a second connection, as a writer beside
  * the daemon would. Used only to plant and remove the triggers below. */
+/* V4-339 (F653): a write of the daemon's is made to fail by HOLDING THE
+ * WRITE LOCK from a second connection, for as long as the request takes.
+ * These tests used to plant a trigger that raised; the daemon's connection
+ * no longer runs anything the file holds, which is the point of F653, so a
+ * planted trigger now does nothing at all. The daemon waits its busy timeout
+ * (a quarter of a second) and the write fails, as it would behind a stuck
+ * backup or a second writer. Readers are not held: the store is in WAL. */
+void store_fault_arm_write(int n_writes);   /* test-only, from store.c under the hook: fail the n-th writing step */
+int store_fault_arm_write_left(void);       /* -1 once that fault has fired */
+
+static sqlite3 *store_lock(const char *db)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", g_dir, db);
+    sqlite3 *h = NULL;
+    if (sqlite3_open_v2(path, &h, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
+        sqlite3_busy_timeout(h, 2000) != SQLITE_OK ||
+        sqlite3_exec(h, "BEGIN IMMEDIATE;", NULL, NULL, NULL) != SQLITE_OK) {
+        (void)sqlite3_close(h);
+        return NULL;
+    }
+    return h;
+}
+
+static int store_unlock(sqlite3 *h)
+{
+    if (h == NULL) { return -1; }
+    const int ok = sqlite3_exec(h, "ROLLBACK;", NULL, NULL, NULL) == SQLITE_OK;
+    (void)sqlite3_close(h);
+    return ok ? 0 : -1;
+}
+
 static int store_exec(const char *db, const char *sql)
 {
     char path[512];
@@ -2729,18 +2761,23 @@ static void test_store_write_failure(void)
     snprintf(vreq, sizeof vreq, "VERIFY token=%s", token_hex);
 
     d.app.now_unix += 10;   /* so that sliding the window changes its value */
-    CHECK(store_exec(DB,
-              "CREATE TRIGGER wfail_slide BEFORE UPDATE OF idle_expires_at ON tokens"
-              " WHEN NEW.idle_expires_at <> OLD.idle_expires_at"
-              " BEGIN SELECT RAISE(ABORT, 'wfail'); END;") == 0,
-          "wfail: a trigger that refuses the sliding update is planted");
+    /* V4-339: the store's own test hook fails the next step that WRITES,
+     * counted from 0: a VERIFY writes twice, once when it looks up the role
+     * and once to slide the window, and it is the SECOND that F222 is about.
+     * It was a planted trigger, which the daemon no longer runs (F653). The
+     * held lock used below will not do for this one: it fails the first
+     * write, and campaign v102's SW1 and SW2 (the second's status is
+     * dropped) then pass. */
+    store_fault_arm_write(1);
     { char *log = logged_cmd(&d, fd, vreq, resp, sizeof resp);
       CHECK(starts(resp, "ERR code=internal"),
             "wfail: VERIFY whose sliding write fails answers internal, not a verdict (F222)");
       CHECK(log != NULL && strstr(log, "error event=local-internal") != NULL && strstr(log, "cmd=VERIFY") != NULL,
             "wfail: ...and the journal says so at ERROR, naming the command (F432)");
       free(log); }
-    CHECK(store_exec(DB, "DROP TRIGGER wfail_slide;") == 0, "wfail: the trigger is removed");
+    CHECK(store_fault_arm_write_left() == -1, "wfail: the write that was made to fail was reached (the control)");
+    store_fault_arm_write(-1);
+    sqlite3 *held = NULL;
     CHECK(h_local_cmd(&d, fd, vreq, resp, sizeof resp) == 0 && starts(resp, "OK user="),
           "wfail: the same token verifies once the write can succeed");
 
@@ -2753,13 +2790,11 @@ static void test_store_write_failure(void)
     char wrong[BASE32_CODE_CHARS + 1u];
     memset(wrong, '0', BASE32_CODE_CHARS); wrong[BASE32_CODE_CHARS] = '\0';
     snprintf(req, sizeof req, "RECOVERY-USE user=%s code=%s", uh, wrong);
-    CHECK(store_exec(DB,
-              "CREATE TRIGGER wfail_count BEFORE UPDATE OF recovery_fail_count ON users"
-              " BEGIN SELECT RAISE(ABORT, 'wfail'); END;") == 0,
-          "wfail: a trigger that refuses the failure count is planted");
+    held = store_lock(DB);
+    CHECK(held != NULL, "wfail: the write lock is held again, so the failure cannot be counted");
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=internal"),
           "wfail: a wrong recovery code that could not be counted answers internal (F223)");
-    CHECK(store_exec(DB, "DROP TRIGGER wfail_count;") == 0, "wfail: the second trigger is removed");
+    CHECK(store_unlock(held) == 0, "wfail: the lock is let go again");
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=invalid"),
           "wfail: the same wrong code is invalid once it can be counted");
 
@@ -2944,14 +2979,11 @@ static void test_store_read_failure(void)
 /* V4-312 (F431): a login code the store will not take is answered, not
  * dropped. The peer has proved its key by then; a bare close read to both
  * clients as that key being refused, and with a pending rotation as "an
- * administrator must re-enrol this device". The insert is failed by a trigger
- * written from a second connection, and the trigger is then removed. */
+ * administrator must re-enrol this device". The insert is failed by a second
+ * connection holding the write lock (V4-339; it was a planted trigger). */
 static void test_login_code_not_stored(void)
 {
     static const char DB[] = "nocode.sqlite3";
-    static const char BLOCK[] =
-        "CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END;";
-    static const char UNBLOCK[] = "DROP TRIGGER v312_block;";
     char *buf = NULL;
     size_t len = 0;
     FILE *f = open_memstream(&buf, &len);
@@ -2968,7 +3000,8 @@ static void test_login_code_not_stored(void)
       h_client_close(&c0); }
 
     authd_log_init(f, AUTHD_LOG_INFO);
-    CHECK(store_exec(DB, BLOCK) == 0, "nocode: the store is made to refuse a new login code");
+    sqlite3 *held = store_lock(DB);
+    CHECK(held != NULL, "nocode: the store is made to refuse a new login code");
     { h_client_t c1;
       uint8_t first[64];
       size_t fl = 0;
@@ -2990,7 +3023,7 @@ static void test_login_code_not_stored(void)
     CHECK(store_int(DB, "SELECT COUNT(*) FROM login_codes;") == 1,
           "nocode: no code was stored (the canary's is the only one)");
 
-    CHECK(store_exec(DB, UNBLOCK) == 0, "nocode: the obstacle is removed");
+    CHECK(store_unlock(held) == 0, "nocode: the obstacle is removed");
     { h_client_t c2;
       CHECK(h_login(&d, &c2, HANDLE1, sizeof HANDLE1, &kp) == 0 && h_get_login_code(&d, &c2, code) == 0,
             "nocode: and the same device then logs in");

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.109, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330)
+# mldsa-authd — deployment specification (v1.110, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -757,6 +757,20 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    `audit-verify` hourly and puts the head MAC and entry count in the journal
    (§18, erratum 76). Getting it off the host -- the second trust domain -- is
    the deployment's (erratum 134: this said publication was not implemented).
+5. **The file is shaped as §9.1 says, and nothing in it is run** (erratum
+   159). At every open, the daemon's and a tool's, the tables, the indexes
+   and every column of the file must be those of §9.1 and no others, with no
+   trigger and no view; a file that differs is `store-corrupt` and is not
+   served from or verified. On the connection triggers and views are
+   switched off and the schema cannot be written, so what is planted in the
+   file while the daemon runs is not run either, and is refused at the next
+   start. And an audit entry is the one its MAC was made over only when each
+   of its columns is stored as the type §9.1 gives it, its text ending where
+   its bytes end: an entry stored otherwise is `audit-chain-corrupt`, to
+   `audit-verify`, to the check at start, and to `audit-tail`. Invariant 4
+   says the entries are the daemon's; this says the file cannot be made to
+   leave one out as it is written, or to show another reader something the
+   MAC was not made over.
 
 ### 9.3 One transaction per operation
 
@@ -2659,3 +2673,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 158 | 7.1 | What is forwarded is an HTTP/1.1 upgrade whose target is in origin form. An absolute-form target and an extended `CONNECT` (WebSocket over HTTP/2 or HTTP/3) are not forwarded | Erratum 157 compares the target as sent and erratum 156 requires `GET`; neither said what that leaves out. A proxy that advertised extended `CONNECT` to browsers would send their logins to the site, which has no such path (F622). The absolute form is tested in a real Caddy; the extended `CONNECT` is from reading and is not tested |
+
+### Revision v1.110 (V4-339)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 159 | 9.2 | Invariant 5: the store's tables, indexes and columns are exactly §9.1's, with no trigger and no view, checked at every open; triggers and views are not run and the schema is not writable on the daemon's connection; an audit entry's columns are stored as the types §9.1 gives | One write to the file, without the server key, planted a trigger that dropped chosen audit entries as they were written, or undid a revocation that was then audited as made, or a view that hid entries; the chain verified throughout, as an extension of every head recorded off the host (F653). A table redefined to give `seq` an index of its own hid a forged entry from the chain's readers alone (F654). And an entry stored as another type read the same through SQLite's conversions and said something else to every other reader (F643, V4-338, which changed the code without an erratum) |

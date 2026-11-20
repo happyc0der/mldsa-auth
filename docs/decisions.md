@@ -22265,3 +22265,62 @@ No spec change.
 Counts: 808 mutations, 153 campaigns, 853 anchors; 652 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.109, 158 errata; 66 tests.
+
+## V4-339: what the eighty-fifth review found (F653 to F658), and a test that failed a clean tree (F659)
+
+**The eighty-fifth review** read V4-338's commit, what an attacker who can
+write the store's file without the key can do with it, the daemon's
+start-up and shutdown, and the login and recovery pages. It ran its own
+programs against the built library. No High or Medium by its count; it
+called the first finding's second scenario arguably Medium. Two Low, four
+Info. It found that no store written by an earlier version is refused by
+V4-338's check, that the pages read nothing from the address and navigate
+nowhere but a constant, and that the exit codes match the unit.
+
+- **F653, F654 (Low).** V4-338 made the audit chain's readers check how
+  each row is stored. The review asked the next question: what does the
+  FILE do when the daemon writes. A trigger planted in it ran inside the
+  daemon and dropped chosen entries as they were written, or undid a
+  revocation that was then recorded as made; the chain verified. The
+  store now refuses a file that is not shaped exactly as this build makes
+  one, and runs nothing a file holds. Erratum 159 says so as an invariant,
+  and covers V4-338's change, which had none.
+  - It is recorded as Low because whoever can write the file can already
+    add a device, which the threat model says. It is fixed without waiting
+    because the audit chain is what the operator has to learn that from,
+    and it could be made to leave the evidence out.
+  - **The tests that failed a write by planting a trigger had to change**,
+    since the daemon no longer runs one. Three ways replace it, each where
+    it fits: a second connection holding the write lock (the login code
+    that cannot be stored, in all three test suites; the recovery count);
+    and the store's own fault hook, compiled into `test_authd_localapi` as
+    it is into `test_authd_store`, for the one case where the SECOND write
+    of a request must fail and the first succeed (F222). The lock was tried
+    there first: campaign v102's SW1 and SW2 SURVIVED, because the lock
+    fails the first write and the code they mutate is never reached. The
+    hand controls said so before the commit.
+  - `tools/check_store_fault_hook.sh` allows the hook in that second test
+    binary by name. Neither is installed.
+- **F655 (Info).** A NULL `detail` is refused. The first form of its test
+  edited a row whose detail was not empty: the MAC refused it, and the
+  mutant SURVIVED. The test now uses a row whose detail is empty and checks
+  that it is.
+- **F656 (Info).** Two more edits, two more mutations.
+- **F657 (Info), open for the next bug step.** **F658 (Info), documented.**
+- **F659 (Info).** A nightly job failed on a clean tree: a race in the
+  test, there since V4-194 and lost once. A
+  pipe into `true` is closed when `true` exits, not before the command
+  writes. The pipe is now closed first.
+
+Campaign v184, all KILLED by hand: SH1 (the shape is not checked), SH2
+(the columns are not compared), SH3 (triggers in the file are run), SH5 (a
+tool that only reads does not check), SH6 (a detail may be NULL). v183's
+AS1 to AS9 were killed again, AS8 and AS9 new. Killed again after the
+tests' change of method: v102 SW1, SW2, SW4, SW5; v155 LI1; v169 LR2, LR4
+and CL1; v104 RK1.
+
+Spec v1.110: erratum 159 (9.2).
+
+Counts: 815 mutations, 154 campaigns, 860 anchors; 659 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644 and F657 open); spec v1.110, 159 errata; 66 tests.

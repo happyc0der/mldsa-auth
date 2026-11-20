@@ -1118,13 +1118,23 @@ echo "PASS: E2E: the same login works over the raw loopback listener (the operat
 # whose reader has gone, with SIGPIPE ignored so that the write fails and the
 # process lives to report it. (V4-201: this used to be `>&-`, which is a
 # different defect with its own check below.)
-( trap '' PIPE
-  rc=0
-  "$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
-      --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
-      --port "$PORT" 2> "$TMP/login-closed.err" || rc=$?
-  echo "$rc" > "$TMP/login-closed.rc" ) | true
-rc=$(cat "$TMP/login-closed.rc")
+# V4-339 (F659): with a pipe whose reading end is ALREADY closed when the
+# command starts. This was `( ... ) | true`, which closes it when `true`
+# exits: a command that wrote first wrote into the pipe's buffer, succeeded
+# and exited 0. The login is slow enough never to have won that race;
+# list-users, below, won it once on a CI runner (nightly 44633878594, the
+# clean suite of campaign v178), and a clean tree failed.
+stdout_gone() {
+    python3 -I -c 'import os, signal, subprocess, sys
+r, w = os.pipe()
+os.close(r)
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+sys.exit(subprocess.call(sys.argv[1:], stdout=w, restore_signals=False))' "$@"
+}
+rc=0
+stdout_gone "$CLIENT" login --handle "$HANDLE" --key "$TMP/dev/$HANDLE.ek" \
+    --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
+    --port "$PORT" 2> "$TMP/login-closed.err" || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'the login code could not be written' "$TMP/login-closed.err" \
     || fail "a login with its standard output closed exited $rc, expected 1 and a reason (F272): $(cat "$TMP/login-closed.err")"
 echo "PASS: E2E: a login whose code cannot be written to standard output exits 1 and says so (F272)"
@@ -1132,19 +1142,13 @@ echo "PASS: E2E: a login whose code cannot be written to standard output exits 1
 # V4-218, F295: the same for every other command whose result is what it
 # prints. The admin tool wrote the daemon's answer with an unchecked fwrite
 # and exited 0; keygen printed the new handle the same way.
-( trap '' PIPE
-  rc=0
-  "$ADMIN" list-users --socket "$TMP/a.sock" 2> "$TMP/lu-closed.err" || rc=$?
-  echo "$rc" > "$TMP/lu-closed.rc" ) | true
-rc=$(cat "$TMP/lu-closed.rc")
+rc=0
+stdout_gone "$ADMIN" list-users --socket "$TMP/a.sock" 2> "$TMP/lu-closed.err" || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'its output could not be written' "$TMP/lu-closed.err" \
     || fail "list-users with its standard output gone exited $rc, expected 1 and a reason (F295): $(cat "$TMP/lu-closed.err")"
 mkdir "$TMP/kg-closed"
-( trap '' PIPE
-  rc=0
-  "$CLIENT" keygen --dir "$TMP/kg-closed" --passphrase-file "$TMP/opass" 2> "$TMP/kg-closed.err" || rc=$?
-  echo "$rc" > "$TMP/kg-closed.rc" ) | true
-rc=$(cat "$TMP/kg-closed.rc")
+rc=0
+stdout_gone "$CLIENT" keygen --dir "$TMP/kg-closed" --passphrase-file "$TMP/opass" 2> "$TMP/kg-closed.err" || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'its output could not be written' "$TMP/kg-closed.err" \
     || fail "keygen with its standard output gone exited $rc, expected 1 and a reason (F295): $(cat "$TMP/kg-closed.err")"
 echo "PASS: E2E: list-users and keygen exit 1 when what they print cannot be written (F295)"
@@ -1429,22 +1433,27 @@ echo "PASS: E2E: recovery with a stale .ek.next -- a wrong passphrase and an unr
 #    the connection, the client counted that as .ek refused, .ek.next (the
 #    superseded key) is refused, and the user was told to re-enrol a device
 #    whose key is live. The daemon now answers ERROR(0x05) and the client says
-#    that it could not be asked. The store is made to refuse the code by a
-#    trigger written from a second connection, and the trigger is removed.
-store_sql() {
-    python3 -I -c 'import sqlite3, sys
-c = sqlite3.connect(sys.argv[1], timeout=5)
-c.execute(sys.argv[2])
-c.commit()
-c.close()' "$TMP/d/store.sqlite3" "$1"
-}
-store_sql "CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END" \
-    || fail "recovery, login not recorded: could not stage the store"
+#    that it could not be asked.
+# V4-339 (F653): by a second connection HOLDING THE WRITE LOCK while the
+# login runs. It was a planted trigger; the daemon no longer runs anything
+# the file holds, so a trigger there does nothing. The daemon waits its busy
+# timeout and the insert fails.
+rm -f "$TMP/lock.held"
+python3 -I -c 'import sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1], timeout=5, isolation_level=None)
+c.execute("BEGIN IMMEDIATE")
+open(sys.argv[2], "w").close()
+time.sleep(120)' "$TMP/d/store.sqlite3" "$TMP/lock.held" &
+LOCKPID=$!
+i=0
+while [ ! -e "$TMP/lock.held" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+[ -e "$TMP/lock.held" ] || { kill "$LOCKPID" 2>/dev/null || true; fail "recovery, login not recorded: could not stage the store"; }
 rc=0
 "$CLIENT" login --handle "$HANDLE" --key "$EK" \
     --passphrase-file "$TMP/opass" --server-id authd --server-pub "$TMP/d/server.pub" \
     --unix "$TMP/p.sock" --proxy-v2 > /dev/null 2> "$TMP/rec1d.err" || rc=$?
-store_sql "DROP TRIGGER v312_block" || fail "recovery, login not recorded: could not put the store back"
+kill "$LOCKPID" 2>/dev/null || fail "recovery, login not recorded: the lock was not held to the end"
+wait "$LOCKPID" 2>/dev/null || true
 [ "$rc" -ne 0 ] || fail "recovery, login not recorded: login succeeded with the store refusing the code"
 [ -e "$NEXT" ] && [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery, login not recorded: a key file was touched"
 if grep -q "re-enrol" "$TMP/rec1d.err"; then

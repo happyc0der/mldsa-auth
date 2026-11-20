@@ -5,3 +5,5 @@ AS4|^test_authd_store$|audit shape: a user id stored as text is not the row that
 AS5|^test_authd_store$|audit shape: a MAC stored as text is not the row that was written (F643)
 AS6|^test_authd_store$|audit shape: and the check the daemon makes of the last row at every start refuses it (F643)
 AS7|^test_authd_store$|audit shape: and the rows are shown up to it, not through it (F643)
+AS8|^test_authd_store$|audit shape: a handle stored as text is not the row that was written (F656)
+AS9|^test_authd_store$|audit shape: a previous MAC stored as text is not the row that was written (F656)

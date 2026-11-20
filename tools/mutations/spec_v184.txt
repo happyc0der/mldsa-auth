@@ -1,0 +1,5 @@
+SH1|^test_authd_store$|shape: a store with a trigger that drops audit rows is refused at open (F653)
+SH2|^test_authd_store$|shape: a store whose audit table declares a column otherwise is refused at open (F653)
+SH3|^test_authd_store$|shape, live: a revocation made while a trigger to drop its audit row is planted is still recorded (F653)
+SH5|^test_authd_store$|shape: and a tool that only reads refuses it too (F653)
+SH6|^test_authd_store$|audit shape: a detail stored as NULL is not the row that was written (F655)

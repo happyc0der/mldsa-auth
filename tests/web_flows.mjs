@@ -26,7 +26,7 @@
 // The IndexedDB store itself (its transactions) is tested in a real browser.
 import { spawn, spawnSync } from 'node:child_process';
 import { argon2Sync } from 'node:crypto';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -171,15 +171,23 @@ try {
     await store.stagePending(params.handle, stale.envelope);
     const before = await store.get(params.handle);
     const db = join(dirname(info.site), 'wasm.sqlite3');
-    const sql = (q) => spawnSync('python3', ['-I', '-c',
-      'import sqlite3, sys\nc = sqlite3.connect(sys.argv[1], timeout=5)\nc.execute(sys.argv[2])\nc.commit()\nc.close()',
-      db, q], { encoding: 'utf8' });
-    const blocked = sql("CREATE TRIGGER v312_block BEFORE INSERT ON login_codes BEGIN SELECT RAISE(ABORT, 'v312'); END");
+    // V4-339 (F653): by a second connection HOLDING THE WRITE LOCK while
+    // the login runs; it was a planted trigger, and the daemon no longer
+    // runs anything the file holds.
+    const flag = join(dirname(info.site), 'lock.held');
+    rmSync(flag, { force: true });
+    const holder = spawn('python3', ['-I', '-c',
+      'import sqlite3, sys, time\nc = sqlite3.connect(sys.argv[1], timeout=5, isolation_level=None)\n' +
+      'c.execute("BEGIN IMMEDIATE")\nopen(sys.argv[2], "w").close()\ntime.sleep(120)', db, flag], { stdio: 'ignore' });
+    for (let i = 0; i < 100 && !existsSync(flag); i++) { await new Promise((r) => setTimeout(r, 50)); }
+    const blocked = existsSync(flag);
     let err = null;
     try { const s = await flows.login(client, store, params); await s.close(); } catch (e) { err = e; }
-    const unblocked = sql('DROP TRIGGER v312_block');
-    check(blocked.status === 0 && unblocked.status === 0,
-          `recovery, login not recorded: the store was made to refuse a login code, and put back (${blocked.stderr}${unblocked.stderr})`);
+    const unblocked = holder.exitCode === null;        // it held the lock to the end
+    holder.kill();
+    await new Promise((r) => holder.once('exit', r));
+    check(blocked && unblocked,
+          `recovery, login not recorded: the store was made to refuse a login code, and put back (${blocked}, ${unblocked})`);
     check(err !== null && err.name !== 'RecoveryRefused',
           `recovery, login not recorded: not reported as two keys the daemon refused (${err?.name}) (F431)`);
     check(err !== null && err.name === 'RecoveryUnresolved' &&

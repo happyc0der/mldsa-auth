@@ -64,8 +64,11 @@ fi
 # every executable under the build dir except the test that is allowed to have
 # it (discovered, never enumerated -- the standing rule from the other tools)
 while IFS= read -r exe; do
+    # V4-339: test_authd_localapi compiles the store with the hook too (one
+    # write of a request is made to fail there; it was done with a planted
+    # trigger, which the daemon no longer runs). Neither is installed.
     case "$(basename "$exe")" in
-        test_authd_store) continue ;;
+        test_authd_store|test_authd_localapi) continue ;;
     esac
     case "$(file -b "$exe")" in
         *Mach-O*executable*|*ELF*executable*|*ELF*pie*) ;;

@@ -269,7 +269,7 @@ static int audit_row_shape_ok(sqlite3_stmt *st, int with_macs)
     if (with_macs && (!audit_blob_ok(st, 6, 0) || !audit_blob_ok(st, 7, 0))) {
         return 0;
     }
-    return audit_text_ok(st, 2, 0) && audit_text_ok(st, 5, 1);
+    return audit_text_ok(st, 2, 0) && audit_text_ok(st, 5, 0);   /* F655: the writer never stored a NULL */
 }
 
 static void be64(uint8_t out[8], int64_t v)
@@ -392,6 +392,8 @@ static store_status_t audit_append(store_t *s, const char *event,
         r = STORE_ERR_DB;
     } else if (sqlite3_step(st) != SQLITE_DONE) {
         r = STORE_ERR_DB;
+    } else if (sqlite3_changes(s->db) != 1) {
+        r = STORE_ERR_DB;       /* F653: a row that was not written was not appended */
     }
     sqlite3_finalize(st);
     return r;
@@ -587,6 +589,104 @@ static store_status_t has_meta_table(sqlite3 *db, int *found)
     return (rc == SQLITE_DONE) ? STORE_OK : STORE_ERR_DB;
 }
 
+/* F653 (V4-339): the store's SHAPE is checked at every open, and nothing in
+ * the file runs.
+ *
+ * The audit chain's MACs say that the rows are the ones this daemon wrote.
+ * They say nothing of what the file does when the daemon writes the next
+ * one. Review 85 planted three things in a store, each with one write and
+ * without the server key, and ran the library against them:
+ *   - a TRIGGER that drops every `device-revoke` row before it is inserted:
+ *     the revocation answers OK, no row is written, later rows chain to the
+ *     head before it, and the chain verifies over a history with the
+ *     revocation missing -- a valid extension of every head recorded off the
+ *     host, which a truncation is not;
+ *   - TRIGGERs that set a revoked device's status back: the revoke answers
+ *     OK, is audited, and does nothing;
+ *   - a VIEW named `audit` over the real table, renamed: verification sees
+ *     the rows the view lets through and every later append is discarded.
+ * And, with the table redefined so that `seq` has an index of its own, an
+ * index that omits a forged row: the chain's readers walk the index and
+ * every other reader of the file sees the row (F654).
+ *
+ * So: triggers and views are switched off on the connection, the schema
+ * cannot be written through it, and the objects in the file -- every table,
+ * index, trigger and view, every column with its type, its NOT NULL, its
+ * default and its place in the key, and each table's kind -- must be exactly
+ * those the schema above makes in an empty database. Compared as SQLite
+ * itself describes the two, not as text, so it does not turn on how the
+ * CREATE statements were spaced by whichever build wrote the file. A store
+ * that differs is STORE_ERR_DAMAGED: it is not this daemon's store. */
+static store_status_t schema_describe(sqlite3 *db, sqlite3_str *out)
+{
+    static const char *const Q[] = {
+        "SELECT type, name, tbl_name FROM sqlite_master ORDER BY type, name;",
+        "SELECT m.name, x.cid, x.name, x.type, x.\"notnull\", ifnull(x.dflt_value, ''), x.pk, x.hidden "
+        "FROM sqlite_master m, pragma_table_xinfo(m.name) x WHERE m.type = 'table' ORDER BY m.name, x.cid;",
+        "SELECT name, type, ncol, wr, strict FROM pragma_table_list "
+        "WHERE schema = 'main' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name;",
+    };
+    for (size_t q = 0; q < sizeof Q / sizeof Q[0]; q++) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, Q[q], -1, &st, NULL) != SQLITE_OK) {
+            return STORE_ERR_DB;
+        }
+        int rc;
+        /* (sqlite3_step): the store's fault hook counts the steps that
+         * write, and these read. */
+        while ((rc = (sqlite3_step)(st)) == SQLITE_ROW) {
+            const int n = sqlite3_column_count(st);
+            for (int c = 0; c < n; c++) {
+                const unsigned char *t = sqlite3_column_text(st, c);
+                sqlite3_str_appendf(out, "%d:%s|", sqlite3_column_bytes(st, c), t != NULL ? (const char *)t : "");
+            }
+            sqlite3_str_appendchar(out, 1, '\n');
+        }
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) {
+            return STORE_ERR_DB;
+        }
+        sqlite3_str_appendchar(out, 1, '#');
+    }
+    return (sqlite3_str_errcode(out) == SQLITE_OK) ? STORE_OK : STORE_ERR_DB;
+}
+
+static store_status_t schema_is_ours(sqlite3 *db)
+{
+    sqlite3 *ref = NULL;
+    store_status_t r = STORE_ERR_DB;
+    char *a = NULL, *b = NULL;
+    if (sqlite3_open_v2(":memory:", &ref, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_MEMORY,
+                        NULL) == SQLITE_OK &&
+        sqlite3_exec(ref, STORE_SCHEMA_SQL, NULL, NULL, NULL) == SQLITE_OK) {
+        sqlite3_str *sa = sqlite3_str_new(db), *sb = sqlite3_str_new(ref);
+        const store_status_t ra = schema_describe(db, sa), rb = schema_describe(ref, sb);
+        a = sqlite3_str_finish(sa);
+        b = sqlite3_str_finish(sb);
+        if (ra == STORE_OK && rb == STORE_OK && a != NULL && b != NULL) {
+            r = (strcmp(a, b) == 0) ? STORE_OK : STORE_ERR_DAMAGED;
+        }
+    }
+    sqlite3_free(a);
+    sqlite3_free(b);
+    if (ref != NULL) { (void)sqlite3_close(ref); }
+    return r;
+}
+
+/* Nothing stored in the file is run, and the schema is not writable through
+ * this connection (F653). */
+static store_status_t connection_harden(sqlite3 *db)
+{
+    int on = -1;
+    if (sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_TRIGGER, 0, &on) != SQLITE_OK || on != 0 ||
+        sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_VIEW, 0, &on) != SQLITE_OK || on != 0 ||
+        sqlite3_db_config(db, SQLITE_DBCONFIG_DEFENSIVE, 1, &on) != SQLITE_OK || on != 1 ||
+        sqlite3_db_config(db, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, &on) != SQLITE_OK || on != 0) {
+        return STORE_ERR_DB;
+    }
+    return STORE_OK;
+}
+
 /* Which stored schema versions this build opens: 1 up to its own, as eight
  * big-endian bytes. Anything else is STORE_ERR_SCHEMA. `ver` must be 8 bytes
  * of storage, zero-filled beyond `len`, so a short value is never read
@@ -658,6 +758,9 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         r = STORE_ERR_DB;
         goto fail;
     }
+    if ((r = connection_harden(s->db)) != STORE_OK) {   /* F653 */
+        goto fail;
+    }
     if (existing) {
         int has = 0;
         if ((r = has_meta_table(s->db, &has)) != STORE_OK) { goto fail; }
@@ -704,6 +807,10 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = existing ? exec_simple(s->db, "BEGIN;") : tx_begin(s)) != STORE_OK) {
         goto fail;
     }
+    /* F653: inside it, so that what is checked is what the rest of the open
+     * reads. After the creating open has run the schema: tables a newer
+     * build adds are there by now, and anything else is not ours. */
+    if ((r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; }
 
     /* schema_version. Zeroed, so a value shorter than 8 bytes can never be
      * read together with stack bytes, even if the length check went. */
