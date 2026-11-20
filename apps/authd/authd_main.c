@@ -281,6 +281,28 @@ int main(int argc, char **argv)
     /* Slots and connections: two allocations, at startup, sized by the
      * operator's budget. After this neither the loop nor the connection layer
      * allocates anything per connection. */
+    /* F657 (V4-342): the handlers are in place BEFORE the key is read and
+     * the store opened. They were installed after the last socket was bound,
+     * so a SIGTERM during start-up -- most of a second of it is the key's
+     * Argon2 -- took its default action: no epilogue, and a store this start
+     * had created stayed, for the next start to come up on without a word
+     * (what F361 was fixed to prevent). A SIGHUP there, which the spec says
+     * is ignored, ended the daemon. Now a stop that arrives before `started`
+     * is seen at the next of three places below and leaves by the epilogue.
+     * SA_RESTART: nothing in start-up is written to expect an interrupted
+     * call, and poll(), which the loop relies on a signal to end (erratum
+     * 119), is never restarted. */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_signal;
+        sa.sa_flags = SA_RESTART;
+        (void)sigaction(SIGTERM, &sa, NULL);
+        (void)sigaction(SIGINT, &sa, NULL);
+        (void)sigaction(SIGHUP, &sa, NULL);
+        signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */
+    }
+
     authd_slot_t *slots = calloc((size_t)cfg.max_slots, sizeof *slots);
     authd_conn_t *conns = calloc((size_t)cfg.max_slots, sizeof *conns);
     if (slots == NULL || conns == NULL) {
@@ -300,6 +322,7 @@ int main(int argc, char **argv)
     memset(&server_kp, 0, sizeof server_kp);
     uint8_t *kek = secure_mem_alloc(STORE_KEK_BYTES);
     if (kek == NULL) {
+        fprintf(stderr, "mldsa-authd: cannot allocate secure memory for the store key\n");
         free(slots); free(conns);
         return 1;
     }
@@ -332,6 +355,31 @@ int main(int argc, char **argv)
         }
     }
 
+    /* Everything the epilogue (listener_failed) reads is declared HERE,
+     * before the first jump to it: a goto over an initialiser leaves the
+     * variable indeterminate, and the epilogue would close and free
+     * whatever was there. F657 made every early return after the store's
+     * opening leave by that epilogue; five of them used to close the store
+     * and return, leaving one this start had created. */
+    int tcp_fd = -1, unix_fd = -1, site_fd = -1, admin_fd = -1;
+    const char *unix_path = (cfg.listen_unix[0] != '\0') ? cfg.listen_unix : NULL;
+    const char *site_path = (cfg.site_socket[0] != '\0') ? cfg.site_socket : NULL;
+    const char *admin_path = (cfg.admin_socket[0] != '\0') ? cfg.admin_socket : NULL;
+    authd_slot_t *local_slots = NULL;
+    int store_created = 0;
+    int early_rc = 1;
+    static handshake_pending_store_t pending;   /* zeroed: wiping it unused is nothing */
+
+    /* F657: a stop that came while the key was being opened. Nothing has
+     * been created yet, so nothing is. */
+    if (g_stop) {
+        fprintf(stderr, "mldsa-authd: stopped by a signal before it had started\n");
+        secure_mem_free(kek, STORE_KEK_BYTES);
+        mldsa_keypair_free(&server_kp);
+        free(slots); free(conns);
+        return 0;
+    }
+
     store_t *store = NULL;
     {
         const store_status_t ss = store_open(cfg.store_path, kek, &store);
@@ -342,13 +390,16 @@ int main(int argc, char **argv)
             /* F660: which object it stopped at. */
             if (ss == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
                 fprintf(stderr, "mldsa-authd: the file is not shaped as this build makes a store; the first "
-                                "difference: %s. Nothing in it was changed\n", store_shape_note());
+                                "difference: %s. No table, index or row of it was changed\n", store_shape_note());
             }
             mldsa_keypair_free(&server_kp);
             free(slots); free(conns);
             return 1;
         }
     }
+    /* Asked at once (F657): from here on a failure removes a store this
+     * start created, whichever failure it is. */
+    store_created = store_was_created(store);
 
     /* F229: the audit chain is keyed from the store root key in the server
      * key file. A store another key wrote -- a backup restored beside a new
@@ -366,10 +417,13 @@ int main(int argc, char **argv)
                           "key_path names another server's key, or the store was altered; "
                           "not started, so nothing is appended to it"
                         : "");
-            store_close(store);
-            mldsa_keypair_free(&server_kp);
-            free(slots); free(conns);
-            return 1;
+            /* Never removed, whatever the flag says (F668): a store whose
+             * last entry is wrong HAS a last entry, and so was not made by
+             * this start. Review 87 took one row out of a populated store
+             * and the open called it created; the open no longer does, and
+             * this is the second lock on the same door. */
+            store_created = 0;
+            goto listener_failed;
         }
     }
 
@@ -378,9 +432,12 @@ int main(int argc, char **argv)
      * means store_path names the wrong file and every user is unknown. The
      * daemon cannot tell the two apart, so it says which happened, here and
      * as a WARN event beside `started`. */
-    const int store_created = store_was_created(store);
     if (store_created) {
         fprintf(stderr, "mldsa-authd: %s: created a new, empty store (no store was there)\n", cfg.store_path);
+    }
+    /* F657: a stop that came while the store was being made. */
+    if (g_stop) {
+        goto stopped_early;
     }
 
     app.conns = conns;
@@ -411,11 +468,7 @@ int main(int argc, char **argv)
          * judged expired, so the daemon does not start. */
         authd_log_event(AUTHD_LOG_ERROR, "clock-unreadable");
         fprintf(stderr, "mldsa-authd: the wall clock cannot be read; refusing to start\n");
-        store_close(store);
-        if (store_created) { remove_created_store(cfg.store_path); }
-        mldsa_keypair_free(&server_kp);
-        free(slots); free(conns);
-        return 1;
+        goto listener_failed;
     }
 
     /* The limiter exists only where a client address does. Attaching it to a
@@ -439,7 +492,6 @@ int main(int argc, char **argv)
         authd_log_num(AUTHD_LOG_INFO, "limiter-table", "count", (uint64_t)limiter.n_entries);
     }
 
-    static handshake_pending_store_t pending;
     /* The ledger's backing array, static beside the store it backs. calloc was
      * the obvious alternative and was rejected on a count: `slots` and `conns`
      * are already freed at eleven early-exit sites below, and a fourth pointer
@@ -452,59 +504,38 @@ int main(int argc, char **argv)
                                          (uint64_t)cfg.handshake_timeout_ms,
                                          authd_app_clock, &app) != PENDING_OK) {
         fprintf(stderr, "mldsa-authd: pending ledger init failed\n");
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns);
-        return 1;
+        goto listener_failed;
     }
     app.pending = &pending;
 
     /* The local API gets its own pool, so a burst of handshakes can never lock
      * the site out of EXCHANGE (spec 8 / V4-9a decision 1). */
-    authd_slot_t *local_slots = calloc((size_t)cfg.max_local_slots, sizeof *local_slots);
+    local_slots = calloc((size_t)cfg.max_local_slots, sizeof *local_slots);
     if (local_slots == NULL) {
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns);
-        return 1;
+        fprintf(stderr, "mldsa-authd: cannot allocate %u local slots\n", cfg.max_local_slots);
+        goto listener_failed;
     }
 
     evloop_t ev;
     if (evloop_init(&ev, slots, (size_t)cfg.max_slots,
                     cfg.handshake_timeout_ms, cfg.idle_timeout_ms,
                     authd_conn_on_frame, authd_conn_on_close, &app) != 0) {
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: event loop init failed\n");
-        return 1;
+        goto listener_failed;
     }
     app.ev = &ev;
     if (evloop_set_on_addr(&ev, authd_conn_on_addr) != 0) {
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: address callback init failed\n");
-        return 1;
+        goto listener_failed;
     }
     if (evloop_set_clock(&ev, loop_clock, &app) != 0) {
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: clock init failed\n");
-        return 1;
+        goto listener_failed;
     }
     if (evloop_set_local(&ev, local_slots, (size_t)cfg.max_local_slots, localapi_on_line) != 0) {
-        store_close(store); mldsa_keypair_free(&server_kp);
-        free(slots); free(conns); free(local_slots);
         fprintf(stderr, "mldsa-authd: local pool init failed\n");
-        return 1;
+        goto listener_failed;
     }
-
-    /* All four listener fds and paths are declared TOGETHER, before the first
-     * failure path that can jump to listener_failed. Declaring the local pair
-     * further down would mean a goto from the protocol listeners jumped over
-     * their initialisers, and the epilogue would then close indeterminate
-     * descriptors -- a worse bug than the leak this epilogue exists to fix. */
-    int tcp_fd = -1, unix_fd = -1, site_fd = -1, admin_fd = -1;
-    const char *unix_path = (cfg.listen_unix[0] != '\0') ? cfg.listen_unix : NULL;
-    const char *site_path = (cfg.site_socket[0] != '\0') ? cfg.site_socket : NULL;
-    const char *admin_path = (cfg.admin_socket[0] != '\0') ? cfg.admin_socket : NULL;
 
     if (cfg.listen_port != 0u) {
         uint16_t bound = 0;
@@ -577,14 +608,6 @@ int main(int argc, char **argv)
         authd_log_event(AUTHD_LOG_INFO, "listening-admin");
     }
 
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_signal;
-    (void)sigaction(SIGTERM, &sa, NULL);
-    (void)sigaction(SIGINT, &sa, NULL);
-    (void)sigaction(SIGHUP, &sa, NULL);
-    signal(SIGPIPE, SIG_IGN);   /* a peer that vanishes mid-write is routine */
-
     /* How much of this daemon's memory can actually be locked (spec 16,
      * V4-2 S1). Logged unconditionally so the number is in the journal of
      * every deployment, and raised to WARN when it is short -- the failure
@@ -641,6 +664,11 @@ int main(int argc, char **argv)
         goto listener_failed;
     }
 
+    /* F657: the last look before the daemon says it has started. A stop
+     * after this is the loop's, and drains. */
+    if (g_stop) {
+        goto stopped_early;
+    }
     if (store_created) {
         authd_log_event(AUTHD_LOG_WARN, "store-created");
     }
@@ -732,24 +760,34 @@ int main(int argc, char **argv)
     free(local_slots);
     return loop_failed ? 1 : 0;
 
+stopped_early:
+    /* F657: asked to stop before it had started. Not a failure (erratum 89:
+     * a daemon stopped by a signal exits 0), and nothing was served, so what
+     * this start made is unmade as for a start that failed. */
+    fprintf(stderr, "mldsa-authd: stopped by a signal before it had started\n");
+    early_rc = 0;
 listener_failed:
     listener_close(&site_fd, site_path);
     listener_close(&admin_fd, admin_path);
     listener_close(&tcp_fd, NULL);
     listener_close(&unix_fd, unix_path);
     handshake_pending_store_wipe(&pending);
+    /* The log's pseudonym callback holds the store (a stop seen after the
+     * privacy modes were applied comes this way since F657). */
+    (void)authd_log_set_privacy(AUTHD_LOG_IDS_FULL, AUTHD_LOG_IP_FULL, NULL, NULL);
     store_close(store);
     /* F361: a store THIS start created goes with the start that failed. Left
      * behind, it was found by the next start, which then had nothing to say:
      * the one warning that store_path may name the wrong file (F199) had
      * been spent on a start that never served, and a unit that restarts on
      * failure came up two seconds later on an empty store with a clean
-     * journal. Nothing can be in it: it did not exist when this process
-     * opened it, and this process never served it. */
+     * journal. Nothing can be in it: it held no row in any table when this
+     * process opened it (F668; a file that was there and empty counts, and
+     * goes too), and this process never served it. */
     if (store_created) {
         remove_created_store(cfg.store_path);
     }
     mldsa_keypair_free(&server_kp);
     free(conns); free(slots); free(local_slots);
-    return 1;
+    return early_rc;
 }

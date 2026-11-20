@@ -1530,6 +1530,145 @@ int main(void)
           const int same = strcmp(hex, "5275e95ceb40c43149bd7565fa55db3cf6f227b28171263baa5cd1e2e19f0b8d") == 0;
           if (!same) { printf("  the schema's text now hashes to %s\n", hex); }
           CHECK(same, "shape: the schema's text is, byte for byte, the one every released store was made with (F662)"); }
+        /* V4-342, review 87. */
+        /* F670: the note says has or lacks, and names the object itself. */
+        { static const struct { const char *sql, *want, *what; } NOTE[] = {
+              { "DROP INDEX one_active_key;", "it lacks index one_active_key",
+                "shape: a dropped index is named as lacking, not the next object the file has (F670)" },
+              { "DROP TABLE enroll_tickets;", "it lacks index sqlite_autoindex_enroll_tickets_1",
+                "shape: a dropped table is named by the first of its objects that is missing (F670)" },
+              { "CREATE TABLE zz_extra(x);", "it has table zz_extra, which this build does not make",
+                "shape: an added table is named as added (F670)" },
+              { "DROP INDEX one_active_key; CREATE INDEX one_active_key ON device_keys(handle);",
+                "it has index one_active_key, defined otherwise",
+                "shape: a redefined index is named as defined otherwise (F670)" },
+          };
+          for (size_t i = 0; i < sizeof NOTE / sizeof NOTE[0]; i++) {
+              store_t *s = fresh_store("note2.sqlite3", dbp, sizeof dbp);
+              if (s == NULL) { printf("FAIL: open note2 %zu\n", i); return 1; }
+              store_close(s);
+              store_t *w = NULL;
+              const int ok = raw_sql(dbp, NOTE[i].sql) == 0 && store_open(dbp, KEK, &w) == STORE_ERR_DAMAGED &&
+                             strncmp(store_shape_note(), NOTE[i].want, strlen(NOTE[i].want)) == 0;
+              if (!ok) { printf("  the note was: %s\n", store_shape_note()); }
+              CHECK(ok, NOTE[i].what);
+              if (w != NULL) { store_close(w); }
+          }
+          /* F677: and an open that fails for another reason has no note. */
+          store_t *w = NULL;
+          path(dbp, sizeof dbp, "no-such-file.sqlite3");
+          (void)unlink(dbp);
+          CHECK(store_open_existing(dbp, KEK, &w) != STORE_OK && store_shape_note()[0] == '\0',
+                "shape: an open that failed for another reason carries no note from the one before (F677)");
+          if (w != NULL) { store_close(w); } }
+        /* F667: a table is SQLite's own by its name AND its definition. */
+        { static const struct { const char *sql, *what; } HID[] = {
+              { "CREATE TABLE zz(a REFERENCES tokens(user_id)); PRAGMA writable_schema=ON; "
+                "UPDATE sqlite_master SET name='sqlite_zz', tbl_name='sqlite_zz', "
+                "sql='CREATE TABLE sqlite_zz(a REFERENCES tokens(user_id))' WHERE name='zz'; PRAGMA writable_schema=OFF;",
+                "shape: a table renamed to begin sqlite_ is refused at open (F667)" },
+              { "CREATE TABLE zz(x); PRAGMA writable_schema=ON; "
+                "UPDATE sqlite_master SET name='sqlite_stat1', tbl_name='sqlite_stat1', "
+                "sql='CREATE TABLE sqlite_stat1(x)' WHERE name='zz'; PRAGMA writable_schema=OFF;",
+                "shape: so is a table named sqlite_stat1 that is not defined as SQLite defines it (F667)" },
+          };
+          for (size_t i = 0; i < sizeof HID / sizeof HID[0]; i++) {
+              store_t *s = fresh_store("hid.sqlite3", dbp, sizeof dbp);
+              if (s == NULL) { printf("FAIL: open hid %zu\n", i); return 1; }
+              store_close(s);
+              store_t *w = NULL, *t = NULL;
+              long long n = 0;
+              char txt[32] = "";
+              const int planted = raw_sql(dbp, HID[i].sql) == 0 &&
+                                  raw_row(dbp, "SELECT count(*), '' FROM sqlite_master WHERE name LIKE 'sqlite\\_%' ESCAPE '\\' AND type = 'table';",
+                                          &n, txt, sizeof txt) == 0 && n == 1;
+              CHECK(planted && store_open(dbp, KEK, &w) == STORE_ERR_DAMAGED &&
+                    store_open_existing(dbp, KEK, &t) == STORE_ERR_DAMAGED, HID[i].what);
+              if (w != NULL) { store_close(w); }
+              if (t != NULL) { store_close(t); }
+          } }
+        /* F668: the open completes nothing in a store that holds anything. */
+        { static const struct { const char *key, *what; } GONE[] = {
+              { "store_id", "created: a populated store whose store_id row is gone is refused, not given a new id and called created (F668)" },
+              { "decoy_pk", "created: nor is one whose decoy key is gone given another (F668)" },
+              { "schema_version", "created: nor one whose schema version is gone (F668)" },
+          };
+          for (size_t i = 0; i < sizeof GONE / sizeof GONE[0]; i++) {
+              store_t *s = fresh_store("gone.sqlite3", dbp, sizeof dbp);
+              if (s == NULL) { printf("FAIL: open gone %zu\n", i); return 1; }
+              const int filled = store_add_user(s, U1, sizeof U1, STORE_ROLE_USER) == STORE_OK;
+              store_close(s);
+              char sql[128];
+              (void)snprintf(sql, sizeof sql, "DELETE FROM meta WHERE key = '%s';", GONE[i].key);
+              store_t *w = NULL;
+              const int cut = raw_sql(dbp, sql) == 0;
+              const store_status_t ro = store_open(dbp, KEK, &w);
+              long long n = -1;
+              char txt[32] = "";
+              (void)snprintf(sql, sizeof sql, "SELECT count(*), '' FROM meta WHERE key = '%s';", GONE[i].key);
+              CHECK(filled && cut && ro == STORE_ERR_DAMAGED && w == NULL &&
+                    raw_row(dbp, sql, &n, txt, sizeof txt) == 0 && n == 0, GONE[i].what);
+              if (w != NULL) { store_close(w); }
+          }
+          /* The other side: a schema with no row in it -- a creation that
+           * was cut short after its first transaction -- is completed, and
+           * that IS a creation. */
+          store_t *s = fresh_store("blank.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open blank\n"); return 1; }
+          store_close(s);
+          store_t *w = NULL;
+          CHECK(raw_sql(dbp, "DELETE FROM audit; DELETE FROM meta;") == 0 && store_open(dbp, KEK, &w) == STORE_OK &&
+                w != NULL && store_was_created(w) == 1,
+                "created: a schema that holds no row is completed, and the open says it created the store (F668)");
+          if (w != NULL) { store_close(w); } }
+        /* F669: a newer build's store is a newer build's store to a tool too. */
+        { store_t *s = fresh_store("newer.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open newer\n"); return 1; }
+          store_close(s);
+          store_t *w = NULL, *t = NULL;
+          const int made = raw_sql(dbp, "UPDATE meta SET value = x'0000000000000063' WHERE key = 'schema_version'; "
+                                        "CREATE TABLE passkeys(id BLOB PRIMARY KEY);") == 0;
+          const store_status_t rw = store_open(dbp, KEK, &w), rt = store_open_existing(dbp, KEK, &t);
+          CHECK(made && rw == STORE_ERR_SCHEMA && rt == STORE_ERR_SCHEMA,
+                "shape: a store of a newer schema with a table this build lacks is 'newer' to a tool as to the daemon, not corrupt (F669)");
+          if (w != NULL) { store_close(w); }
+          if (t != NULL) { store_close(t); } }
+        /* F672: a meta table that cannot be read as ours is the shape's. */
+        { store_t *s = fresh_store("meta-col.sqlite3", dbp, sizeof dbp);
+          if (s == NULL) { printf("FAIL: open meta-col\n"); return 1; }
+          store_close(s);
+          store_t *w = NULL;
+          CHECK(raw_sql(dbp, "ALTER TABLE meta RENAME COLUMN value TO v;") == 0 &&
+                store_open(dbp, KEK, &w) == STORE_ERR_DAMAGED && strstr(store_shape_note(), "table meta") != NULL,
+                "shape: a meta table with a column renamed is store-corrupt from the daemon, and named (F672)");
+          if (w != NULL) { store_close(w); } }
+        /* F671: a refused file is not checkpointed on the way out. A
+         * database that is not a store, in WAL mode, whose writer died with
+         * its rows still in the WAL. */
+        { char other[512], wal[530];
+          path(other, sizeof other, "wal-other.sqlite3");
+          (void)snprintf(wal, sizeof wal, "%s-wal", other);
+          (void)unlink(other); (void)unlink(wal);
+          const pid_t kid = fork();
+          if (kid == 0) {
+              sqlite3 *h = NULL;
+              const int ok = sqlite3_open_v2(other, &h, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) == SQLITE_OK &&
+                             sqlite3_exec(h, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; "
+                                             "CREATE TABLE somebody_elses(x); INSERT INTO somebody_elses VALUES(zeroblob(9000));",
+                                          NULL, NULL, NULL) == SQLITE_OK;
+              _exit(ok ? 0 : 1);      /* no close: the WAL stays as a dead writer leaves it */
+          }
+          int st = -1;
+          const int wrote = kid > 0 && waitpid(kid, &st, 0) == kid && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+          struct stat m0, w0, m1, w1;
+          const int before = stat(other, &m0) == 0 && stat(wal, &w0) == 0 && w0.st_size > 0;
+          store_t *w = NULL;
+          const store_status_t rw = store_open(other, KEK, &w);
+          const int after = stat(other, &m1) == 0 && stat(wal, &w1) == 0;
+          CHECK(wrote && before && rw == STORE_ERR_DAMAGED && w == NULL && after &&
+                m1.st_size == m0.st_size && w1.st_size == w0.st_size,
+                "shape: a refused database in WAL mode keeps its WAL and its size: it is not checkpointed on the way out (F671)");
+          if (w != NULL) { store_close(w); } }
         /* V4-341 (F664): the daemon's open LOOKS before it touches. A
          * database that is not a store was switched to WAL and given nine
          * tables before it was refused; a store with its index dropped was

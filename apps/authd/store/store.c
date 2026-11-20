@@ -628,12 +628,23 @@ static store_status_t schema_describe(sqlite3 *db, sqlite3_str *out)
          * changed it; the statements have not changed since the first store
          * (V4-7).
          * F660: SQLite's own tables are not ours to judge. `ANALYZE` or
-         * `PRAGMA optimize` leaves sqlite_stat1, a dropped AUTOINCREMENT
-         * table leaves sqlite_sequence; neither holds anything that runs,
-         * nobody can create a table by such a name, and V4-339 refused the
-         * whole store for them. */
+         * `PRAGMA optimize` leaves sqlite_stat1 (and sqlite_stat4 in a
+         * library built for it), a dropped AUTOINCREMENT table leaves
+         * sqlite_sequence; none holds anything that runs, and V4-339
+         * refused the whole store for them.
+         * F667 (V4-342): THOSE THREE, each with the definition SQLite gives
+         * it, and nothing else. V4-341 let through every table whose name
+         * began `sqlite_`, on the ground that nobody can create one. With
+         * `PRAGMA writable_schema` anybody who can write the file can
+         * rename one: review 87 hid a table with a foreign key into
+         * `tokens` that way, the store opened and verified, and every
+         * revoke, logout and sweep then failed. */
         "SELECT type, name, tbl_name, ifnull(sql, '') FROM sqlite_master "
-        "WHERE NOT (type = 'table' AND name LIKE 'sqlite\\_%' ESCAPE '\\') ORDER BY type, name;",
+        "WHERE NOT (type = 'table' AND tbl_name = name AND ("
+        "(name = 'sqlite_stat1' AND sql = 'CREATE TABLE sqlite_stat1(tbl,idx,stat)') OR "
+        "(name = 'sqlite_stat4' AND sql = 'CREATE TABLE sqlite_stat4(tbl,idx,neq,nlt,ndlt,sample)') OR "
+        "(name = 'sqlite_sequence' AND sql = 'CREATE TABLE sqlite_sequence(name,seq)'))) "
+        "ORDER BY type, name;",
     };
     for (size_t q = 0; q < sizeof Q / sizeof Q[0]; q++) {
         sqlite3_stmt *st = NULL;
@@ -655,35 +666,71 @@ static store_status_t schema_describe(sqlite3 *db, sqlite3_str *out)
         if (rc != SQLITE_DONE) {
             return STORE_ERR_DB;
         }
-        sqlite3_str_appendchar(out, 1, '#');
     }
     return (sqlite3_str_errcode(out) == SQLITE_OK) ? STORE_OK : STORE_ERR_DB;
 }
 
-/* F660: WHICH line of the file's description is the first that this build
- * would not have written, for the person reading `store-corrupt`. Printable
- * ASCII only, and short: it is the file's text. */
+/* F660: WHICH object is the first that differs, for the person reading
+ * `store-corrupt`. Printable ASCII only, and short: it is the file's text.
+ *
+ * F670 (V4-342): said as "has" or "lacks", with the object's type and name.
+ * The first form printed the file's line at the first differing byte, in
+ * the encoding below. For an object that was MISSING that is the next
+ * object the file does have, which is not altered at all: a dropped
+ * one_active_key was reported as sqlite_autoindex_device_keys_1. Both
+ * descriptions are sorted by type and name, so the lines are walked as a
+ * merge: where ours sorts first, the file lacks it. */
 static char g_shape_note[160];
 
 const char *store_shape_note(void) { return g_shape_note; }
 
+/* One line of a description is "len:type|len:name|len:tbl|len:sql|". Copies
+ * "type name" out of it, printable; returns the length of the line. */
+static size_t shape_line(const char *line, char *out, size_t cap)
+{
+    size_t len = 0;
+    while (line[len] != '\0' && line[len] != '\n') { len++; }
+    size_t o = 0, i = 0;
+    for (int field = 0; field < 2 && i < len; field++) {
+        size_t n = 0;
+        while (i < len && line[i] >= '0' && line[i] <= '9') { n = n * 10u + (size_t)(line[i] - '0'); i++; }
+        if (i < len && line[i] == ':') { i++; }
+        if (field == 1 && o + 1u < cap) { out[o++] = ' '; }
+        for (size_t k = 0; k < n && i < len; k++, i++) {
+            const unsigned char c = (unsigned char)line[i];
+            if (o + 1u < cap) { out[o++] = (c >= 0x20u && c <= 0x7eu) ? (char)c : '?'; }
+        }
+        if (i < len && line[i] == '|') { i++; }
+    }
+    out[o] = '\0';
+    return len;
+}
+
 static void shape_note_set(const char *file, const char *ours)
 {
-    const char *line = file;
-    while (*file != '\0' && *file == *ours) {
-        if (*file == '\n' || *file == '#') { line = file + 1; }
-        file++; ours++;
-    }
-    size_t n = 0;
-    if (*line == '\0') {
-        (void)snprintf(g_shape_note, sizeof g_shape_note, "it lacks something this build makes");
+    char f[72], o[72];
+    for (;;) {
+        const size_t fl = shape_line(file, f, sizeof f), ol = shape_line(ours, o, sizeof o);
+        const int f_end = (fl == 0u), o_end = (ol == 0u);
+        if (f_end && o_end) {
+            (void)snprintf(g_shape_note, sizeof g_shape_note, "nothing that can be named");
+            return;
+        }
+        if (!f_end && !o_end && fl == ol && memcmp(file, ours, fl) == 0) {
+            file += fl + ((file[fl] == '\n') ? 1u : 0u);
+            ours += ol + ((ours[ol] == '\n') ? 1u : 0u);
+            continue;
+        }
+        const int cmp = f_end ? 1 : (o_end ? -1 : strcmp(f, o));
+        if (cmp == 0) {
+            (void)snprintf(g_shape_note, sizeof g_shape_note, "it has %s, defined otherwise than this build defines it", f);
+        } else if (cmp < 0) {
+            (void)snprintf(g_shape_note, sizeof g_shape_note, "it has %s, which this build does not make", f);
+        } else {
+            (void)snprintf(g_shape_note, sizeof g_shape_note, "it lacks %s", o);
+        }
         return;
     }
-    for (; line[n] != '\0' && line[n] != '\n' && n + 1u < sizeof g_shape_note; n++) {
-        const unsigned char c = (unsigned char)line[n];
-        g_shape_note[n] = (c >= 0x20u && c <= 0x7eu) ? (char)c : '?';
-    }
-    g_shape_note[n] = '\0';
 }
 
 static store_status_t schema_is_ours(sqlite3 *db)
@@ -722,6 +769,25 @@ static store_status_t connection_harden(sqlite3 *db)
         return STORE_ERR_DB;
     }
     return STORE_OK;
+}
+
+/* F668: is there a row in any of the schema's tables? Asked once the shape
+ * is known to be ours, so the names are there. */
+static store_status_t rows_none(sqlite3 *db, int *none)
+{
+    sqlite3_stmt *st = NULL;
+    *none = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT EXISTS(SELECT 1 FROM meta) + EXISTS(SELECT 1 FROM users) + EXISTS(SELECT 1 FROM devices) + "
+            "EXISTS(SELECT 1 FROM device_keys) + EXISTS(SELECT 1 FROM login_codes) + EXISTS(SELECT 1 FROM tokens) + "
+            "EXISTS(SELECT 1 FROM recovery_codes) + EXISTS(SELECT 1 FROM enroll_tickets) + EXISTS(SELECT 1 FROM audit);",
+            -1, &st, NULL) != SQLITE_OK) {
+        return STORE_ERR_DB;
+    }
+    const int rc = (sqlite3_step)(st);
+    if (rc == SQLITE_ROW) { *none = (sqlite3_column_int(st, 0) == 0); }
+    sqlite3_finalize(st);
+    return (rc == SQLITE_ROW) ? STORE_OK : STORE_ERR_DB;
 }
 
 static store_status_t count_objects(sqlite3 *db, int *n)
@@ -768,6 +834,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         return STORE_ERR_CRYPTO;
     }
 
+    g_shape_note[0] = '\0';     /* F677: never an earlier open's */
     store_t *s = calloc(1, sizeof *s);
     if (s == NULL) {
         return STORE_ERR_CRYPTO;
@@ -825,7 +892,11 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
      * and then refused it. Asked again inside the transaction below, where
      * the answer is the one the rest of the open relies on; both ask
      * schema_version_known(), so the rule is written once. */
-    if (!existing) {
+    /* F669 (V4-342): by a tool's open too. A reader went straight to the
+     * shape, so a newer build's store -- another version AND another table
+     * -- was `store-corrupt` to audit-verify and "a newer schema" to the
+     * daemon, and the runbook sends the first to an incident. */
+    {
         int has_meta = 0;
         if ((r = has_meta_table(s->db, &has_meta)) != STORE_OK) { goto fail; }
         if (has_meta) {
@@ -833,6 +904,11 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
             size_t pvlen = 0;
             int pfound = 0;
             if ((r = meta_get(s->db, "schema_version", pv, sizeof pv, &pvlen, &pfound)) != STORE_OK) {
+                /* F672: a `meta` that cannot be read as ours (a column
+                 * renamed) failed here as a database error, with no note,
+                 * from the daemon; and as store-corrupt from a tool. If the
+                 * shape is the reason, the shape is the answer. */
+                if (r == STORE_ERR_DB && schema_is_ours(s->db) == STORE_ERR_DAMAGED) { r = STORE_ERR_DAMAGED; }
                 goto fail;
             }
             if (pfound && (r = schema_version_known(pv, pvlen)) != STORE_OK) { goto fail; }
@@ -841,6 +917,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     /* Spec §9: WAL, durable commits, foreign keys enforced. None of it for a
      * reader (F290): the journal mode and the schema are the file's, and a
      * reader changes neither. */
+    int blank = 0;      /* F668: nothing in the file but, at most, an empty schema */
     if (!existing) {
         /* F664 (V4-341): a file that already holds anything is LOOKED AT
          * before it is touched, and the schema is run only into an empty
@@ -877,9 +954,16 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         goto fail;
     }
     /* F653: inside it, so that what is checked is what the rest of the open
-     * reads. After the creating open has run the schema: tables a newer
-     * build adds are there by now, and anything else is not ours. */
+     * reads. */
     if ((r = schema_is_ours(s->db)) != STORE_OK) { goto fail_tx; }
+    /* F668 (V4-342): the open CREATES a store's three meta values only in a
+     * file that holds no row at all. It used to write whichever was
+     * missing: a store with a user, a device and an audit chain whose
+     * `store_id` row had gone was given a new random id, committed, and
+     * reported as "created" -- which the daemon takes as leave to remove the
+     * file if the start then fails (F361, F657). A store that holds
+     * anything and lacks one of the three is damaged, and is left. */
+    if (!existing && (r = rows_none(s->db, &blank)) != STORE_OK) { goto fail_tx; }
 
     /* schema_version. Zeroed, so a value shorter than 8 bytes can never be
      * read together with stack bytes, even if the length check went. */
@@ -891,8 +975,8 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     }
     if (found) {
         if ((r = schema_version_known(vbuf, vlen)) != STORE_OK) { goto fail_tx; }
-    } else if (existing) {
-        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
+    } else if (existing || !blank) {
+        r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290); nor is a store completed (F668) */
         goto fail_tx;
     } else {
         uint8_t nv[8];
@@ -905,8 +989,8 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = meta_get(s->db, "store_id", s->store_id, sizeof s->store_id, &n, &found)) != STORE_OK) {
         goto fail_tx;
     }
-    if (!found && existing) {
-        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */
+    if (!found && (existing || !blank)) {
+        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon, or lost its id (F668) */
         goto fail_tx;
     }
     if (!found) {
@@ -924,7 +1008,7 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     if ((r = meta_get(s->db, "decoy_pk", s->decoy_pk, sizeof s->decoy_pk, &n, &found)) != STORE_OK) {
         goto fail_tx;
     }
-    if (!found && existing) {
+    if (!found && (existing || !blank)) {
         r = STORE_ERR_DAMAGED;    /* a reader creates nothing (F290) */
         goto fail_tx;
     }
@@ -940,10 +1024,11 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
         goto fail_tx;
     }
 
-    if ((r = tx_commit(s)) != STORE_OK) {
-        goto fail_tx;
-    }
-
+    /* F657 (V4-342): the keys BEFORE the commit. Derived after it, a
+     * failure here returned an error for a store whose creation was
+     * already in the file: the caller had no handle to ask whether it was
+     * created, the file stayed, and the next start came up on it without
+     * saying so. Now a failure rolls the creation back. */
     /* key_audit = HKDF-SHA256(ikm=root key, salt=store_id, info=label) (§9.2.4).
      * `kek` is whatever keyfile_open returned: the root key of a version-2
      * key file, the envelope KEK of a version-1 one.
@@ -951,14 +1036,14 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     s->key_audit = secure_mem_alloc(STORE_AUDIT_MAC_BYTES);
     if (s->key_audit == NULL) {
         r = STORE_ERR_CRYPTO;
-        goto fail;
+        goto fail_tx;
     }
     if (kex_hkdf_sha256(s->key_audit, STORE_AUDIT_MAC_BYTES,
                         kek, STORE_KEK_BYTES,
                         s->store_id, sizeof s->store_id,
                         (const uint8_t *)AUDIT_LABEL, sizeof(AUDIT_LABEL) - 1u) != 0) {
         r = STORE_ERR_CRYPTO;
-        goto fail;
+        goto fail_tx;
     }
     /* key_log = HKDF-SHA256(ikm=root key, salt=store_id, info=LOG_LABEL) (§15,
      * log_identities = hashed). The same derivation as key_audit under its own
@@ -968,14 +1053,18 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
     s->key_log = secure_mem_alloc(STORE_LOG_KEY_BYTES);
     if (s->key_log == NULL) {
         r = STORE_ERR_CRYPTO;
-        goto fail;
+        goto fail_tx;
     }
     if (kex_hkdf_sha256(s->key_log, STORE_LOG_KEY_BYTES,
                         kek, STORE_KEK_BYTES,
                         s->store_id, sizeof s->store_id,
                         (const uint8_t *)LOG_LABEL, sizeof(LOG_LABEL) - 1u) != 0) {
         r = STORE_ERR_CRYPTO;
-        goto fail;
+        goto fail_tx;
+    }
+
+    if ((r = tx_commit(s)) != STORE_OK) {
+        goto fail_tx;
     }
 
     *out = s;
@@ -984,6 +1073,15 @@ static store_status_t open_impl(const char *path, const uint8_t kek[STORE_KEK_BY
 fail_tx:
     tx_rollback(s);
 fail:
+    /* F671 (V4-342): a file that is refused is not checkpointed on the way
+     * out. Closing the last connection to a WAL-mode database folds the WAL
+     * into the main file and deletes it: a database that was not a store,
+     * left with frames in its WAL by a writer that died, came back from the
+     * daemon's refusal twice the size, with another hash and no WAL, under
+     * a message that said nothing in it was changed. */
+    if (s->db != NULL) {
+        (void)sqlite3_db_config(s->db, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, (int *)NULL);
+    }
     store_close(s);
     return r;
 }

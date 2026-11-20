@@ -95,7 +95,11 @@ int main(void)
 
 with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     d = pathlib.Path(tmp)
-    (d / "CMakeLists.txt").write_text(CMAKE + f'add_test(NAME iprobe COMMAND "{sys.executable}" "${{CMAKE_SOURCE_DIR}}/iprobe.py")\n')
+    (d / "CMakeLists.txt").write_text(CMAKE + f'add_test(NAME iprobe COMMAND "{sys.executable}" "${{CMAKE_SOURCE_DIR}}/iprobe.py")\n'
+                                      + f'add_test(NAME broken COMMAND "{sys.executable}" "${{CMAKE_SOURCE_DIR}}/broken.py")\n')
+    # V4-342 (F675): a test that fails on the clean tree, under the very words
+    # a control would expect.
+    (d / "broken.py").write_text('import sys\nprint("FAIL: the answer is 42")\nsys.exit(1)\n')
     (d / "iprobe.py").write_text(IPROBE)
     (d / "plib.c").write_text(PLIB)
     (d / "probe.c").write_text(PROBE)
@@ -124,6 +128,15 @@ with tempfile.TemporaryDirectory(prefix="mldsa-hc-") as tmp:
     rc, out = hc("return 42;", "return 43;", expect="a message the probe never prints", verdict="KILLED(other)")
     check(rc == 0 and ": KILLED(other) |" in out,
           "the same mutation, expected under a name the probe never prints, is KILLED(other) -- not a named kill")
+    # V4-342 (F675): a test that fails by itself is not a kill. Before, this
+    # was reported KILLED: a nonzero exit and a FAIL line with the text.
+    r = subprocess.run([sys.executable, str(TOOL), "--repo", str(d), "--build", str(b), "--target", "probe",
+                        "--ctest", "^broken$", "--expect", "the answer is 42", "--mutation", "plib.c",
+                        "--old", "return 42;", "--new", "return 43;"], capture_output=True, text=True)
+    print("  " + r.stdout.strip().replace("\n", "\n  "))
+    check(r.returncode == 2 and "THE CLEAN TREE DOES NOT PASS" in r.stdout and "KILLED" not in r.stdout
+          and (d / "plib.c").read_text() == PLIB,
+          "a test that fails on the clean tree is refused before anything is mutated: not a kill (F675)")
     rc, out = hc("return 7;", "return 8;", verdict="SURVIVED")
     check(rc == 0 and ": SURVIVED |" in out, "a mutation the probe cannot see SURVIVES")
     rc, out = hc("/* the probe library */", "/* the probe library, reworded */", verdict="VOID")

@@ -185,6 +185,8 @@ def main():
     ap.add_argument("--id")
     ap.add_argument("--label", default=None)
     ap.add_argument("--expect-verdict", default="KILLED", help="for testing this tool")
+    ap.add_argument("--no-baseline", action="store_true",
+                    help="skip the run of the test on the clean tree (only when it was just run)")
     args = ap.parse_args()
     if args.interpreted and args.campaign:
         sys.exit("--interpreted takes --mutation/--old/--new: campaigns mutate compiled code")
@@ -217,6 +219,21 @@ def main():
         print(f"{label}: CLEAN BUILD FAILED (exit {rc0}) -- nothing tested")
         sys.exit(2)
 
+    # F675 (V4-342): the test must PASS on the clean code first. Without this
+    # a check that fails by itself -- a flaky one, or one this very step
+    # broke -- is a nonzero exit and a FAIL line with the expected text, and
+    # was reported as the mutant's death.
+    if not args.no_baseline:
+        try:
+            r0 = subprocess.run(["ctest", "--test-dir", args.build, "-R", args.ctest],
+                                capture_output=True, text=True, timeout=3600)
+            base_ok = (r0.returncode == 0)
+        except subprocess.TimeoutExpired:
+            base_ok = False
+        if not base_ok:
+            print(f"{label}: THE CLEAN TREE DOES NOT PASS {args.ctest} -- nothing tested")
+            sys.exit(2)
+
     verdict, fails, mutant = "?", [], None
     try:
         if args.campaign:
@@ -241,13 +258,22 @@ def main():
         elif mutant == clean:
             verdict = "VOID (the mutant's code is the clean code)"
         else:
-            r = subprocess.run(["ctest", "--test-dir", args.build, "-R", args.ctest, "-V"],
-                               capture_output=True, text=True, timeout=3600)
-            out = r.stdout
-            fails = [l.split("FAIL: ", 1)[1] for l in out.splitlines() if "FAIL: " in l]
-            named = any(args.expect in f for f in fails) or \
-                any(args.expect in l and ("AssertionError" in l or "not ok" in l) for l in out.splitlines())
-            verdict = "KILLED" if (r.returncode != 0 and named) else ("KILLED(other)" if r.returncode != 0 else "SURVIVED")
+            # A test that never ends is not a named kill, and the tree is
+            # still restored and rebuilt below (F675: the exception used to
+            # leave the mutant's binary beside the restored source).
+            try:
+                r = subprocess.run(["ctest", "--test-dir", args.build, "-R", args.ctest, "-V"],
+                                   capture_output=True, text=True, timeout=3600)
+            except subprocess.TimeoutExpired:
+                r = None
+            if r is None:
+                verdict = "KILLED(other) -- the test did not end in an hour"
+            else:
+                out = r.stdout
+                fails = [l.split("FAIL: ", 1)[1] for l in out.splitlines() if "FAIL: " in l]
+                named = any(args.expect in f for f in fails) or \
+                    any(args.expect in l and ("AssertionError" in l or "not ok" in l) for l in out.splitlines())
+                verdict = "KILLED" if (r.returncode != 0 and named) else ("KILLED(other)" if r.returncode != 0 else "SURVIVED")
     finally:
         for s, b in backups.items():
             (repo / s).write_bytes(b)

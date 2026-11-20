@@ -59,8 +59,10 @@ LC = "apps/authd/localcli.c"
 ST = "apps/authd/store/store.c"
 M = {
  # every Unix socket is 0660 again, so admin.sock is group-reachable (spec 8)
- "S1": (LS, [("    if (chmod(path, mode) != 0) {",
-              "    if (chmod(path, 0660) != 0) { /* MUTATION S1: admin.sock group-reachable */")]),
+ "S1": (LS, [("    const mode_t old = umask((mode_t)(0777 & ~mode));",
+              "    const mode_t old = umask((mode_t)0117); /* MUTATION S1: admin.sock group-reachable */"),
+             ("(made.st_mode & 07777) != mode) {",
+              "(made.st_mode & 07777) != 0660) {")]),
  # a configuration failure exits 1 again instead of 3 (spec 13)
  "C1": (MN, [("        /* Spec 13: 3 = configuration error, distinct from 1 = operation\n         * failed. An operator's start-up script can tell \"your config is\n         * wrong\" from \"the key would not open\" without parsing prose. */\n        return 3;",
               "        return 1; /* MUTATION C1: config error indistinguishable from failure */")]),

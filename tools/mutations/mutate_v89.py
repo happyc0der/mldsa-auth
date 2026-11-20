@@ -40,8 +40,8 @@ M = {
                  "                        (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE), /* MUTATION OE2 */\n")],
     "OE3": [(ST, "        if (!has) { r = STORE_ERR_DAMAGED; goto fail; }\n",
                  "        if (0 && !has) { r = STORE_ERR_DAMAGED; goto fail; } /* MUTATION OE3 */\n")],
-    "OE4": [(ST, "    if (!found && existing) {\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */\n",
-                 "    if (0 && !found && existing) { /* MUTATION OE4 */\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon */\n")],
+    "OE4": [(ST, "    if (!found && (existing || !blank)) {\n        r = STORE_ERR_DAMAGED;   /* a store that was never opened by init or the daemon, or lost its id (F668) */\n",
+                 "    if (0 && !found && (existing || !blank)) { /* MUTATION OE4 */\n        r = STORE_ERR_DAMAGED;\n")],
     # (OE5, the reader given the daemon's short busy timeout, is gone since
     # V4-213: a reader opens read-only and takes a read transaction, which a
     # writer holding the store's lock does not block, so no timeout is ever

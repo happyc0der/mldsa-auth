@@ -22415,3 +22415,84 @@ Spec v1.111: erratum 160 (9.2).
 Counts: 818 mutations, 154 campaigns, 863 anchors; 666 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644 and F657 open); spec v1.111, 160 errata; 66 tests.
+
+## V4-342: a signal during start-up (F657), and what the eighty-seventh review found (F667 to F678)
+
+**F657.** The handlers go in before the key is read. A stop is looked for
+in three places before `started`; each ends the start with exit 0 and
+takes a created store with it. SIGHUP there is logged once the daemon is
+up. Every return after the store's opening now leaves by the one epilogue.
+
+- The test does not hit the window by luck. The daemon's standard error
+  is a pipe that is already full, so it stops in the first line it prints,
+  which is "created a new, empty store", and it is signalled there. Without
+  the fix the SIGTERM kills it where it stands and the store stays; the
+  SIGHUP kills it too.
+- Exit 0, not 1: erratum 89 says a daemon stopped by a signal exits 0, and
+  under systemd a stop that was asked for is not a failure. A stop nobody
+  asked for, before READY, is a failed start to systemd either way.
+- The new leg is the LAST in `tests/authd_e2e.sh`. Put where it belongs by
+  subject, beside F361's, it came before the older checks of SIGHUP, of
+  exit statuses and of `started`, and would have been the check that
+  v97's and v99's mutants died by.
+
+**The eighty-seventh review** read V4-341's commit and the daemon's
+start-up, ran its own programs against the store, and read the listener
+and the hand-control tool. No High or Medium. Four Low, eight Info.
+
+- **F668 (Low) is the one that mattered to this step.** The store's
+  "created" flag meant "had no identifier". The review deleted that row
+  from a populated store, and the open called the store created. F657's
+  remedy, as first written in this step, sent the audit check's failure
+  through the epilogue that removes a created store: the two together
+  would have deleted a populated store and its audit chain. The review was
+  running while that was being written and said so. The open now creates
+  only in a file with no row, and the audit check's failure never removes.
+- **F667 (Low).** V4-341's exemption for SQLite's tables was by prefix.
+  It is three names, each with its definition.
+- **F669 (Low).** A tool asks the version first, as the daemon does. The
+  runbook sentence V4-341 added named an error the daemon does not have;
+  that was mine, written from memory and not from the code.
+- **F670 (Low).** The note says has or lacks, and names the object.
+- **F671, F672, F674, F677 (Info).** Fixed. **F673 (Info).** With F657.
+- **F675 (Info).** The hand-control tool runs the test on the clean tree
+  first. Every control costs one more run of its test.
+- **F676 (Info).** `bind` makes the socket with its mode.
+- **F678 (Info), not changed.** Two first starts at once.
+
+What the review found sound, and ran: every maintenance operation it
+tried on a store (`ANALYZE`, `VACUUM`, `REINDEX`, `VACUUM INTO`,
+`.backup`, dump and restore, `.recover`, the daemon's own backup, another
+journal mode, page size and encoding, a newer SQLite) still opens and
+verifies; the schema's digest is the same in every build back to V4-7.
+
+**Open for the owner, new here.** Whether the daemon should hold a lock
+beside its store (F678).
+
+Campaign v185, all KILLED by hand: SE1 (SIGTERM handled only once the
+listeners are bound), SE2 (a stop is not looked for before `started`),
+SE3 (a daemon stopped early exits 1), SE4 (SIGHUP handled late); RS1 (any
+`sqlite_` name is exempt), RS2 (`sqlite_stat1` whatever its definition),
+RS3 to RS5 (a populated store is given the value it lacks), RS6 (a tool
+does not ask the version first), RS7 (an unreadable `meta` is a database
+error), RS8 (a refused file is checkpointed), RS9 (the note never says
+"lacks"), RS10 (the note is not cleared).
+
+Killed again by hand after this step's changes: v184's eight; v130 RD1 to
+RD4 (RD2 re-anchored); v89 OE4 (re-anchored), OE8 and OE9; v110 IL1; v90
+SC5, SC6 and SC8 (re-anchored); v97 SH1 to SH5; v99 LF2; v147 FS1 and FS2;
+v49b S1 (re-anchored: the socket's mode is the umask's now). v99 LF1
+SURVIVED here, as it does on every macOS run: its leg needs Linux's
+`prlimit` and is listed as Linux's since V4-137. And the tool's own new
+check: with the baseline switched off, the self-test's new case fails.
+
+Three controls in the first batch were pointed at the wrong test binary
+(v89 OE8 and OE9 and v110 IL1 belong to `test_authd_cli`) and came back
+VOID; and the very first batch named the daemon's binary wrongly and the
+tool refused all eight before mutating anything. Both were rerun.
+
+Spec v1.112: erratum 161 (9.2, 16).
+
+Counts: 832 mutations, 155 campaigns, 881 anchors; 678 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.112, 161 errata; 66 tests.

@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.111, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341)
+# mldsa-authd — deployment specification (v1.112, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -762,9 +762,11 @@ audit(seq INTEGER PRIMARY KEY, at INT, event TEXT, user_id BLOB, handle BLOB,
    the indexes of the file must be those of §9.1 and no others, each with
    the definition this build gives it -- its columns, its constraints, an
    index's columns and condition -- and with no trigger and no view; a file
-   that differs is `store-corrupt`, is not served from or verified, and is
-   not changed. The tables SQLite keeps for itself (`sqlite_stat1` after an
-   `ANALYZE`, `sqlite_sequence`) are not part of the shape. The daemon looks
+   that differs is `store-corrupt`, is not served from or verified, and no
+   table, index or row of it is changed. Three tables SQLite keeps for
+   itself (`sqlite_stat1` and `sqlite_stat4` after an `ANALYZE`,
+   `sqlite_sequence`), each as SQLite defines it, are not part of the
+   shape; no other name is exempt (erratum 161). The daemon looks
    before it writes: it creates the schema only in an empty file. On the
    connection triggers and views are switched off, so a trigger or a view
    planted while the daemon runs is not run, and the file is refused at the
@@ -1652,6 +1654,11 @@ and inode, and the same name). The start does not ask about the store: it
 opens it and reports what it finds, exit 1.
 
 **Signals** (erratum 87). `SIGTERM` and `SIGINT` drain and stop the daemon.
+They are handled from before the server key is read (erratum 161): a daemon
+told to stop before it has logged `started` does not start. It says so on
+standard error, removes a store that start created, as a start that failed
+does, and exits 0. A `SIGHUP` in that time is ignored and logged once the
+daemon has started.
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -1800,6 +1807,12 @@ its store there does neither. After the first start that line means the
 configuration names the wrong file. Whoever creates the store — the daemon
 or `init` — creates it mode 0600 whatever the umask is; an existing store
 keeps the mode it has.
+
+**The daemon creates a store only in a file that holds no row** (erratum
+161). The store's identifier, its decoy key and its schema version are
+written by the start that creates it and by no other: a file that holds a
+row in any table and lacks one of the three is `store-corrupt` and is left
+as it is.
 
 **A start that creates the store and then fails removes it again** (erratum
 114), and says so on standard error. Otherwise the next start would find
@@ -2691,3 +2704,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 160 | 9.2 | Invariant 5: each object is compared with its definition, not only its name and columns; SQLite's own tables are not part of the shape; the daemon checks a file that holds anything before it writes to it, and creates the schema only in an empty file; the invariant says what it does not reach | Erratum 159's check refused a store on which `ANALYZE` had been run (F660), and passed a store whose constraints had been taken out, whose one-active-key index had been redefined, or which had a foreign key that deletes audit rows, an action that runs with triggers off (F661, F663). The daemon ran its schema into a file before judging it (F664). And 159 said the schema could not be written on the connection, which is true only of writing it directly (F665) |
+
+### Revision v1.112 (V4-342)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 161 | 9.2, 16 | Signals are handled from before the key is read, and a stop before `started` exits 0 without serving and removes a store that start created; the daemon writes a store's identifier, decoy key and schema version only into a file that holds no row; of SQLite's own tables only `sqlite_stat1`, `sqlite_stat4` and `sqlite_sequence`, as SQLite defines them, are outside the shape; a refused file has no table, index or row changed | The handlers were installed after the last socket was bound: a `SIGTERM` during start-up left a store that start had created, and a `SIGHUP` there, which this section says is ignored, ended the daemon (F657). A populated store that had lost its identifier row was given a new one and reported as created, which is leave to remove it (F668). Erratum 160 exempted every table named `sqlite_…`, and a table can be renamed to that with one write (F667). And "is not changed" was not true of the bytes of a refused file in WAL mode, which was checkpointed as it was closed; it no longer is (F671) |

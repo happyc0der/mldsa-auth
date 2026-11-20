@@ -200,7 +200,7 @@ static void store_say_shape(const char *prog, store_status_t st)
 {
     if (st == STORE_ERR_DAMAGED && store_shape_note()[0] != '\0') {
         fprintf(stderr, "%s: the file is not shaped as this build makes a store; the first difference: %s. "
-                        "Nothing in it was changed\n", prog, store_shape_note());
+                        "No table, index or row of it was changed\n", prog, store_shape_note());
     }
 }
 

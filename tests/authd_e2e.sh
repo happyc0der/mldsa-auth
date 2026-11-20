@@ -2721,5 +2721,138 @@ for f in $(find "$TMP" -type f); do
 done
 [ -z "$found" ] || fail "a plaintext MLDSASK file was written: $found (Req 10)"
 echo "PASS: E2E: after every key operation, still no plaintext secret-key file anywhere under the work directory"
+# V4-342 (F657): a signal DURING start-up. The handlers were installed after
+# the last socket was bound, so a SIGTERM before that killed the daemon where
+# it stood and left a store that start had created; a SIGHUP there, which the
+# spec says is ignored, killed it too. The window is held open here, not hit
+# by luck: the daemon is given a standard error that is a pipe already full,
+# so it stops in the first line it prints -- "created a new, empty store",
+# after the store is made and before anything else -- and stays there until
+# this test reads the pipe. The signal is sent while it waits.
+# LAST in this file on purpose: every older check of a signal, of an exit
+# status and of `started` is named by a committed mutation, and a check put
+# ahead of them would be the one those mutants die by.
+rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm" "$TMP/fsa.sock"
+SG=0
+python3 - "$DAEMON" "$TMP/fs.conf" "$TMP/fs/new.sqlite3" > "$TMP/sig.txt" 2>&1 <<'PYEOF' || SG=$?
+import fcntl, os, signal, subprocess, sys, time
+daemon, conf, store = sys.argv[1:4]
+CREATED = b"created a new, empty store"
+
+def held():
+    """A daemon stopped in its first line of output, and the pipe it is stopped on."""
+    r, w = os.pipe()
+    fl = fcntl.fcntl(w, fcntl.F_GETFL)
+    fcntl.fcntl(w, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+    filled = 0
+    try:
+        while True:
+            filled += os.write(w, b"." * 4095 + b"\n")
+    except BlockingIOError:
+        pass
+    try:
+        while True:
+            filled += os.write(w, b"\n")      # to the last byte
+    except BlockingIOError:
+        pass
+    fcntl.fcntl(w, fcntl.F_SETFL, fl)         # the daemon's writes must BLOCK
+    p = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=w)
+    os.close(w)
+    end = time.monotonic() + 30
+    while not os.path.exists(store):
+        if p.poll() is not None or time.monotonic() > end:
+            print(f"the daemon did not get as far as making its store (exit {p.poll()})"); sys.exit(3)
+        time.sleep(0.01)
+    # The store's file is there, so the daemon is inside store_open or past
+    # it, and it cannot get past the line it prints next. Either place is in
+    # the window; the pause only lets it reach the line.
+    time.sleep(0.5)
+    if p.poll() is not None:
+        print(f"the daemon ended by itself while held (exit {p.returncode})"); sys.exit(3)
+    return p, r, filled
+
+def drain(r, p, until=None, limit=30.0):
+    """Read the pipe until the daemon is gone, or until `until` has been seen."""
+    os.set_blocking(r, False)
+    got, end = b"", time.monotonic() + limit
+    while time.monotonic() < end:
+        try:
+            chunk = os.read(r, 65536)
+        except BlockingIOError:
+            chunk = None
+        if chunk:
+            got += chunk
+            if until is not None and until in got:
+                return got
+            continue
+        if chunk == b"" or (until is None and p.poll() is not None and chunk is None):
+            if chunk == b"":
+                return got
+            time.sleep(0.05)
+            try:
+                got += os.read(r, 65536)
+            except BlockingIOError:
+                pass
+            return got
+        time.sleep(0.01)
+    return got
+
+def said(got, filled):
+    return got[filled:].decode("utf-8", "replace")
+
+try:
+    # Leg 1: SIGTERM.
+    p, r, filled = held()
+    p.send_signal(signal.SIGTERM)
+    time.sleep(0.2)
+    killed = p.poll()
+    got = drain(r, p)
+    try:
+        rc = p.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        p.kill(); print("TERM: the daemon did not stop\n" + said(got, filled)); sys.exit(1)
+    os.close(r)
+    text = said(got, filled)
+    if CREATED.decode() not in text:
+        print(f"TERM: the daemon never printed the line it was held on (exit {rc}, {'dead before the pipe was read' if killed is not None else 'alive'}): {text!r}")
+        sys.exit(1 if killed is not None else 3)
+    left = [s for s in ("", "-wal", "-shm") if os.path.exists(store + s)]
+    if rc != 0 or left or "stopped by a signal before it had started" not in text or "event=started" in text:
+        print(f"TERM: exit {rc}, left {left}:\n{text}"); sys.exit(1)
+    print("TERM: exit 0, the created store removed, never started")
+
+    # Leg 2: SIGHUP in the same place is not a stop.
+    p, r, filled = held()
+    p.send_signal(signal.SIGHUP)
+    time.sleep(0.2)
+    got = drain(r, p, until=b"event=started")
+    if b"event=started" not in got:
+        rc = p.poll()
+        if rc is None:
+            p.kill()
+        print(f"HUP: the daemon did not start after a SIGHUP during start-up (exit {rc}):\n{said(got, filled)}"); sys.exit(2)
+    got += drain(r, p, until=b"event=sighup-ignored", limit=10.0)
+    p.send_signal(signal.SIGTERM)
+    got += drain(r, p)
+    rc = p.wait(timeout=20)
+    os.close(r)
+    text = said(got, filled)
+    if rc != 0 or "warn event=sighup-ignored" not in text or "warn event=store-created" not in text:
+        print(f"HUP: exit {rc}:\n{text}"); sys.exit(2)
+    print("HUP: started, logged sighup-ignored and store-created, stopped 0")
+except SystemExit:
+    raise
+except Exception as e:
+    print(f"the signal test itself failed: {e!r}"); sys.exit(3)
+PYEOF
+case "$SG" in
+0) ;;
+1) cat "$TMP/sig.txt"; fail "a SIGTERM during start-up did not stop the daemon cleanly: it must exit 0, never start, and take the store it created with it (F657)" ;;
+2) cat "$TMP/sig.txt"; fail "a SIGHUP during start-up ended the daemon or was not logged (F657)" ;;
+*) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
+esac
+rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"
+echo "PASS: E2E: a SIGTERM while the daemon is starting stops it with exit 0 and removes the store that start created; a SIGHUP there is logged and ignored (F657)"
 
 echo "All checks passed"

@@ -173,20 +173,26 @@ listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode,
     if (s < 0) {
         return LISTENER_ERR_SOCKET;
     }
-    /* Create with a restrictive umask so there is no window in which the
-     * socket is world-accessible between bind() and chmod(). */
-    const mode_t old = umask(0177);
+    /* Spec 8: admin.sock 0600, site.sock and the proxy listener 0660.
+     * F676 (V4-342): bind() itself makes the socket with that mode, through
+     * the umask. It used to be made 0600 and then chmod()ed BY PATH, and
+     * chmod follows a symbolic link: whoever could write the socket's
+     * directory could put a link there between the two calls and have a
+     * file of the daemon's -- the store -- made 0660. Now nothing is done
+     * to the path after bind; it is only looked at, without following. */
+    const mode_t old = umask((mode_t)(0777 & ~mode));
     const int brc = bind(s, (const struct sockaddr *)&a, sizeof a);
     (void)umask(old);
     if (brc != 0) {
         (void)close(s);
         return LISTENER_ERR_BIND;
     }
-    /* Spec 8: admin.sock 0600, site.sock and the proxy listener 0660. */
-    if (chmod(path, mode) != 0) {
-        (void)close(s);
-        (void)unlink(path);
-        return LISTENER_ERR_PATH;
+    {
+        struct stat made;
+        if (lstat(path, &made) != 0 || !S_ISSOCK(made.st_mode) || (made.st_mode & 07777) != mode) {
+            (void)close(s);
+            return LISTENER_ERR_PATH;    /* not unlinked: whatever is there now is not this socket */
+        }
     }
     if (listen(s, backlog) != 0) {
         (void)close(s);

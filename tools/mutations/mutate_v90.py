@@ -49,8 +49,8 @@ M = {
                    "        authd_log_event(AUTHD_LOG_WARN, \"store-created\");\n")],
     "SC7": [(MAIN, "        authd_log_event(AUTHD_LOG_WARN, \"store-created\");\n",
                    "        authd_log_event(AUTHD_LOG_INFO, \"store-created\"); /* MUTATION SC7 */\n")],
-    "SC8": [(MAIN, "    const int store_created = store_was_created(store);\n",
-                   "    const int store_created = 1; (void)store_was_created(store); /* MUTATION SC8 */\n")],
+    "SC8": [(MAIN, "    store_created = store_was_created(store);\n",
+                   "    store_created = 1; (void)store_was_created(store); /* MUTATION SC8 */\n")],
 }
 
 
