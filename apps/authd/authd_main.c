@@ -45,6 +45,19 @@
 #include "stdfds.h"
 #include "store.h"
 
+/* F740 (V4-353): from here to the end of this file the NAME of standard
+ * error does not compile. Everything the daemon says there goes through
+ * authd_log_say() or an event writer in authd_log.c, which give a stopping
+ * daemon's line a time limit (spec 16); a plain fprintf(stderr, ...) is a
+ * line a daemon held on its standard error waits in for ever, and five
+ * steps were spent finding the ones that were left (F710, F723). A script
+ * looked for them from V4-349 to V4-352, three times rewritten, and each
+ * review found a spelling it did not know. The compiler knows them all:
+ * a use of the name, in a macro or out of one, is now an error.
+ * (#undef first: on some systems it is a macro, and poisoning one warns.) */
+#undef stderr
+#pragma GCC poison stderr perror psignal syslog vsyslog
+
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
  * happens in the handler -- no logging, no allocation, no close(). */
 static volatile sig_atomic_t g_stop = 0;
@@ -121,7 +134,7 @@ static int log_pseudonym(void *ctx, const uint8_t *id, size_t id_len,
 
 static void usage(const char *prog)
 {
-    fprintf(stderr,
+    authd_log_say(
             "usage: %s --config PATH [--check-config]\n"
             "  --config PATH    the daemon configuration file\n"
             "  --check-config   validate the configuration and exit (0 = valid)\n",
@@ -173,10 +186,10 @@ int main(int argc, char **argv)
     }
 
     if (sodium_init() < 0) {
-        fprintf(stderr, "mldsa-authd: libsodium failed to initialise\n");
+        authd_log_say("mldsa-authd: libsodium failed to initialise\n");
         return 1;
     }
-    authd_log_init(stderr, AUTHD_LOG_INFO);
+    authd_log_init(NULL, AUTHD_LOG_INFO);     /* NULL: standard error, which this file cannot name (F740) */
 
     authd_config_t cfg;
     size_t err_line = 0;
@@ -185,17 +198,17 @@ int main(int argc, char **argv)
     if (cs != AUTHD_CFG_OK) {
         /* The operator sees the refusal before systemd starts the service --
          * which is the whole reason --check-config exists. */
-        fprintf(stderr, "mldsa-authd: %s: %s", cfg_path, authd_config_status_name(cs));
+        authd_log_say("mldsa-authd: %s: %s", cfg_path, authd_config_status_name(cs));
         if (cs == AUTHD_CFG_ERR_IO) {
-            fprintf(stderr, " (%s)", authd_config_io_cause(cfg_errno));
+            authd_log_say(" (%s)", authd_config_io_cause(cfg_errno));
         }
         if (authd_config_error_detail()[0] != '\0') {
-            fprintf(stderr, ": %s", authd_config_error_detail());   /* F236 */
+            authd_log_say(": %s", authd_config_error_detail());   /* F236 */
         }
         if (err_line > 0u) {
-            fprintf(stderr, " at line %zu", err_line);
+            authd_log_say(" at line %zu", err_line);
         }
-        fprintf(stderr, "\n");
+        authd_log_say("\n");
         /* Spec 13: 3 = configuration error, distinct from 1 = operation
          * failed. An operator's start-up script can tell "your config is
          * wrong" from "the key would not open" without parsing prose. */
@@ -209,7 +222,7 @@ int main(int argc, char **argv)
         char detail[AUTHD_CONFIG_DETAIL_MAX];
         const authd_config_status_t ps = authd_config_check_paths(&cfg, detail, sizeof detail);
         if (ps != AUTHD_CFG_OK) {
-            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg_path, detail);
+            authd_log_say("mldsa-authd: %s: %s\n", cfg_path, detail);
             return 3;
         }
     }
@@ -229,19 +242,19 @@ int main(int argc, char **argv)
         {
             char detail[AUTHD_CONFIG_DETAIL_MAX];
             if (authd_config_check_store(&cfg, detail, sizeof detail) != AUTHD_CFG_OK) {
-                fprintf(stderr, "mldsa-authd: %s: %s\n", cfg_path, detail);
+                authd_log_say("mldsa-authd: %s: %s\n", cfg_path, detail);
                 return 3;
             }
         }
         const authd_secret_status_t probe_pass = authd_secret_probe(cfg.key_passphrase_file);
         if (probe_pass != AUTHD_SECRET_OK) {
-            fprintf(stderr, "mldsa-authd: passphrase file %s: %s\n", cfg.key_passphrase_file,
+            authd_log_say("mldsa-authd: passphrase file %s: %s\n", cfg.key_passphrase_file,
                     authd_secret_status_name(probe_pass));
             return 3;
         }
         const keyfile_status_t probe_key = keyfile_probe(cfg.key_path);
         if (probe_key != KEYFILE_OK) {
-            fprintf(stderr, "mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(probe_key));
+            authd_log_say("mldsa-authd: %s: %s\n", cfg.key_path, keyfile_status_name(probe_key));
             return 3;
         }
         /* F420, F338: valid, but worth saying. One function for both forms

@@ -195,6 +195,29 @@ try {
           `account: a signup on a session that holds a recovery ticket is refused, and the ticket is kept (${su2.status} ${sb.error}, recovering=${still.recovering}) (F737)`);
     const devices2 = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
     check(/^OK count=1( |$)/.test(devices2), 'account: and neither enrolled anything (F737)');
+    // V4-353 (F743): nor does a second recovery, which is refused before
+    // its code is spent: the same code then redeems on a fresh session.
+    const rv2 = await post('/api/recover', { user, code: codes[1] }, after);
+    const rb2 = await rv2.json();
+    const still2 = await (await get('/api/session', after)).json();
+    check(rv2.status === 409 && rb2.error === 'recovery-in-progress' && still2.recovering === true,
+          `account: a second recovery on a session that holds a ticket is refused, and the ticket is kept (${rv2.status} ${rb2.error}) (F743)`);
+    // Two requests that would each replace one session, sent together while
+    // the daemon is being asked: one is served and the other is told the
+    // session is busy, before its code is spent. Both answered 200, left
+    // two sessions, and spent two codes.
+    // (On a site of its own, so that its two attempts are not this site's.)
+    const rs = await start({ recoverBurst: 50 });
+    const rbase = `http://127.0.0.1:${rs.port}`;
+    const rpost = (obj, sid) => fetch(`${rbase}/api/recover`, { method: 'POST', body: JSON.stringify(obj),
+      headers: { Cookie: `sid=${sid}`, Origin: rbase, 'Content-Type': 'application/json' } });
+    const fresh = idOf(await fetch(`${rbase}/api/session`));
+    const [a1, a2] = await Promise.all([rpost({ user, code: codes[3] }, fresh), rpost({ user, code: codes[4] }, fresh)]);
+    const st = [a1.status, a2.status].sort((x, y) => x - y);
+    const loser = a1.status === 409 ? a1 : a2;
+    const lb = await loser.json();
+    check(st[0] === 200 && st[1] === 409 && lb.error === 'session-busy',
+          `account: two requests that would each replace one session are not both served (${st.join(', ')} ${lb.error}) (F743)`);
   }
 
   // V4-84, F160: a WebSocket upgrade from another origin is refused; the

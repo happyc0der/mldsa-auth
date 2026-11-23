@@ -23163,3 +23163,87 @@ Spec v1.119: erratum 168 (16).
 Counts: 854 mutations, 162 campaigns, 905 anchors; 739 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644 and F725 open); spec v1.119, 168 errata; 66 tests.
+
+## V4-353: what the ninety-fifth review found (F740 to F747), and F725
+
+**The loop stood still from Friday 2026-11-20, 15:10, to Monday 11:13.**
+The command that was waiting for V4-351's runs made its last call to
+GitHub as the network went away, exited, and nothing called again until
+the owner did. V4-351's nightly had ended by then, 176 of 177, and V4-352
+was pushed on Monday. Its CI was green and its nightly under way when this
+step was written. Waiters now try their last call again, and end without
+an error either way.
+
+**The ninety-fifth review** attacked V4-352's gate again, checked its
+other changes by running them, and read the daemon's local API as the
+site process would abuse it, against an ASan and UBSan build. No High or
+Medium. Four Low and four Info as recorded here; three of them open for
+the next bug step. The local API held: no admin command reachable from
+the site socket, single-use operations single under races, no secret in
+the log or the chain, no sanitizer report in 1,500 random lines.
+
+- **F740 (Low): the gate, the fourth time, and the last of this kind.**
+  Three forms of a script that reads C to find writes to standard error,
+  and each review found something it did not read. The mistake was the
+  kind of tool. The daemon's main now poisons the name for the compiler,
+  after its includes, and the compiler has no spellings to miss. Doing so
+  found a use the script had passed every time: the log was initialised
+  with `stderr` as its destination, inside the region the script called
+  clean. It is initialised with NULL, which means the same.
+  - The script is kept for the two things a compiler does not check: that
+    the poison is where it must be, and that no other source names
+    standard error. The second is still a search, and its README entry
+    says so in those words.
+- **F743 (Low).** A second recovery is refused before it spends its code,
+  and one request at a time may replace a session. A login is left able
+  to replace a recovery in progress; the row says why.
+- **F742 (Low), F745, F746 (Info): open for the next bug step.** Each
+  needs something this step did not have room to do well: a change to the
+  store's interface, a new log event with its erratum, a throttle.
+- **F741 (Low).** The owner's question of V4-332, with figures.
+- **F744, F747 (Info).** Fixed, or corrected in the record.
+
+**F725, closed without a change to the code.** The key schedule's four
+stack arrays were read again with the intention of moving them. They are
+copies, wiped on every path, of values that libsodium's own functions hold
+on the stack at the same moment; moving them would put an allocation in
+the handshake's core, change what `LimitMEMLOCK` has to cover, and leave
+the sentence it was meant to satisfy as untrue as before. The row records
+the reasoning and what Req 4.2 does hold of.
+
+**Open for the owner, new here.** Whether a new issue of recovery codes
+should clear a lockout (F747). Whether Req 4.2 of the protocol
+specification should say "held" (F725). The figures for a budget on
+`RECOVERY-ISSUE` (F741) are added to V4-332's question.
+
+No campaign: the daemon's code changed only in how its main prints, which
+the compiler now checks, and the rest is JavaScript, a script and
+documents. Killed by hand with `--interpreted`: J1 (a second recovery is
+not refused), J2 (two requests may each replace a session), J3 (a server
+key of any length is copied in).
+
+Every committed mutation that touches the daemon's main was rerun by hand
+on macOS, 56 by `tools/mutations/list_mutants.py`, each after its test
+passed on the clean tree. 53 were killed by their named checks. The other
+three:
+
+- **v190's RE1 no longer compiles, and that is its kill.** It puts the
+  memlock warning back as a plain write to standard error, which the
+  poison refuses. It is on the list of mutations whose refusal by the
+  compiler is the evidence, with that reason.
+- **v121's EL2 did not compile either, and that was not its point.** It
+  has the daemon print the passphrase, to show that the test which scans
+  the journal for it can fail. It prints through `authd_log_say` now, and
+  is killed by that test again.
+- **v99's LF1 SURVIVED** on macOS, as always.
+
+**The Linux run, before the push:** built with gcc in the container; the
+gate passed; the daemon's nine test programs passed twice; and a macro
+naming `stderr`, added to the daemon's main there, was refused by gcc.
+
+Spec v1.120: erratum 169 (8).
+
+Counts: 854 mutations, 162 campaigns, 905 anchors; 747 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644, F742, F745 and F746 open); spec v1.120, 169
+errata; 66 tests.

@@ -123,6 +123,13 @@ export class AuthdClient {
       throw new TypeError('the server key must be bytes and the server id a string');
     }
     const M = this.M;
+    // F744 (V4-353): refused by its length before it is copied in. Half a
+    // gigabyte of "server key" was copied into the module to be refused
+    // there, and a module's memory, once grown, is never given back.
+    // (16 KiB: several times any ML-DSA public key with its header and id.)
+    if (serverPub.length > 16384) {
+      throw new Error('the server key is longer than a server key can be');
+    }
     const h = M._ccw_new();
     if (!h) { throw new Error('ccw_new failed'); }
     try {

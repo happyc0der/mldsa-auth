@@ -997,7 +997,7 @@ done
 # and there is nothing to check against (see below).
 if systemctl is-active --quiet mldsa-authd \
    && ! sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf; then
-    echo "the new build refuses this configuration: NOT restarted"; false
+    echo "the check of this configuration by the new build did not pass: NOT restarted"; false
 else
     sudo systemctl restart mldsa-authd
 fi
@@ -1015,7 +1015,11 @@ should show `event=started` again, and an existing device logs in as before.
 
 The `--check-config` line is the new build's, run while the old daemon is
 still serving: if it refuses your configuration (exit 3), the restart is
-not made and the block says so; read what the check printed first. It checks
+not made and the block says so; read what the check printed first (a
+`sudo` that could not run ends the same way, with its own message above).
+The new build is installed by then: the service goes on running the old
+one, and the next start, whenever it comes, will be the new build's. Mend
+the configuration, or put the old build back (below), before that. It checks
 less than the start does, as the operator and without the passphrase. It
 is run only while the service is active: the passphrase is a credential
 systemd holds for a running unit (step 6), and with the service down the

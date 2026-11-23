@@ -9,3 +9,4 @@
 #
 # campaign ID  reason
 v24 M8 the ClientHello maximum is pinned by a _Static_assert in transcript.h; refusing to compile the v1 formula is exactly the check (V2-4)
+v190 RE1 since V4-353 authd_main.c poisons `stderr` for the compiler (F740): a plain write to standard error there does not compile, and that refusal is the check this mutation was written to have

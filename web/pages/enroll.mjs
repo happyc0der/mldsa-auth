@@ -35,6 +35,11 @@ action('go', async () => {
     let persisted = false;
     try { persisted = await IdentityStore.persist(); } catch { /* the browser's answer is "no" */ }
     const sess = await session();
+    // F744 (V4-353): the site's server key is checked HERE, before the
+    // signup. flows.enroll checks it too, but by then the invitation has
+    // been used and a logged-in session replaced, for an enrollment that
+    // was never going to be made.
+    client.checkServerPin(hexToBytes(sess.serverPub), sess.serverId);
     // V4-188, F267: with a recovery in progress the key goes to the account
     // being recovered -- the site holds that account's ticket -- and the name
     // and invitation typed here were silently ignored. Someone signing up

@@ -416,6 +416,21 @@ export async function startSite(opt) {
   // token included -- which only forgot it: a second login, a signup or a
   // recovery on a logged-in session left the old token valid at the daemon
   // until it expired, where /api/logout would have ended it.
+  // F743 (V4-353): ONE request at a time may replace a session. A signup
+  // and a recovery sent together on one cookie both answered 200 and left
+  // two live sessions where there had been one; the browser kept whichever
+  // Set-Cookie arrived last, and the other request's work -- a recovery
+  // code spent, a ticket held -- was on a session nobody had the id of.
+  // Claimed before anything is spent at the daemon; node runs one handler
+  // at a time between awaits, so the check and the claim are one step.
+  const claim = (res, s) => {
+    if (s.replacing || sessions.get(s.sid) !== s) {
+      send(res, 409, { error: 'session-busy' });
+      return false;
+    }
+    s.replacing = true;
+    return true;
+  };
   const retire = async (s) => {
     const token = s.token;
     if (token) { try { await withAuthd((a) => logout(a, token)); } catch { /* already gone, or the daemon is away */ } }
@@ -502,6 +517,7 @@ export async function startSite(opt) {
     'POST /api/login': async (req, res, s) => {
       const { code } = await body(req);
       if (!s.state || typeof code !== 'string') { return send(res, 400, { error: 'no login in progress' }); }
+      if (!claim(res, s)) { return; }                      // F743, before the state and the code are spent
       const state = s.state;
       s.state = null;               // one state, one login
       try {
@@ -510,6 +526,7 @@ export async function startSite(opt) {
         authenticate(rotate(res, s), r.user, r.token);     // F131: a new id for the logged-in session
         send(res, 200, { user: r.user, handle: r.handle, role: r.role });
       } catch (e) {
+        s.replacing = false;
         if (away(e)) { return unavailable(res); }          // F210: not a refusal
         // ONE refusal for every reason (V4-96, F166): the daemon's code (a
         // used, expired or revoked code, a disabled user) is not the
@@ -565,6 +582,7 @@ export async function startSite(opt) {
       // The session's ticket was dropped with the session, and the recovery
       // code that had bought it was spent for nothing.
       if (s.ticket) { return send(res, 409, { error: 'recovery-in-progress' }); }
+      if (!claim(res, s)) { return; }
       await retire(s);
       rotate(res, s).signupUser = user;                    // F131: the account a planted id must not be able to claim
       send(res, 200, { user });
@@ -626,16 +644,23 @@ export async function startSite(opt) {
     },
     'POST /api/recover': async (req, res, s) => {
       const { user, code } = await body(req);
+      // F743: a second recovery does not throw away the first's ticket, any
+      // more than a signup does (F737) -- and is refused BEFORE its code is
+      // spent or an attempt counted: nothing was guessed. Nor do two
+      // requests replace one session between them.
+      if (s.ticket) { return send(res, 409, { error: 'recovery-in-progress' }); }
       if (!takeRecoverToken(req)) { return send(res, 429, { error: 'rate-limited' }); }
       // Strings only (V4-89, F178); authd.mjs refuses anything that is not one
       // token, and the refusal is the same single reply as every other.
       if (typeof user !== 'string' || typeof code !== 'string') { return send(res, 403, { error: 'recover-failed' }); }
+      if (!claim(res, s)) { return; }
       try {
         const t = await withAuthd((a) => recoveryUse(a, user, code), AUTHD_SPEND_TIMEOUT_MS);
         await retire(s);
         rotate(res, s).ticket = { user, ticket: t.ticket, expires: t.expires };  // stays on the server, under a new id (F131)
         send(res, 200, { user });
       } catch (e) {
+        s.replacing = false;
         if (away(e)) { return unavailable(res); }          // F210: says nothing about the user or the code
         // ONE reply for every refusal (V4-76, F143). The daemon's codes --
         // invalid, locked, user-disabled, not-permitted -- told anyone which

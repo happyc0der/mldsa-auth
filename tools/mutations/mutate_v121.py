@@ -25,8 +25,8 @@ M = {
     "EL2": [(MAIN,
              "                                                 (const char *)pass, pass_len, &server_kp, kek);\n        authd_secret_free(pass, pass_len);\n",
              "                                                 (const char *)pass, pass_len, &server_kp, kek);\n"
-             "        for (size_t mi = 0; mi < pass_len; mi++) { fprintf(stderr, \"%02x\", (unsigned)pass[mi]); } /* MUTATION EL2 */\n"
-             "        fprintf(stderr, \"\\n\");\n"
+             "        for (size_t mi = 0; mi < pass_len; mi++) { authd_log_say(\"%02x\", (unsigned)pass[mi]); } /* MUTATION EL2 */\n"
+             "        authd_log_say(\"\\n\");\n"
              "        authd_secret_free(pass, pass_len);\n")],
 }
 

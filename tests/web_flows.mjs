@@ -401,7 +401,14 @@ try {
             `enroll: a server key that is not one is refused before a key is made: the site is not asked and nothing is stored (asked ${asked}, stored ${stored}) (F736)`);
       let ok = true;
       try { client.checkServerPin(want.serverPub, want.serverId); } catch { ok = false; }
-      check(ok, 'enroll: the real server key passes the same check (the control) (F736)'); }
+      check(ok, 'enroll: the real server key passes the same check (the control) (F736)');
+      // F744: and one far too long is refused without being copied in.
+      const before = client.M.HEAPU8.length;
+      let long = false;
+      // (More than the module's whole memory, so that copying it in would have to grow it.)
+      try { client.checkServerPin(new Uint8Array(client.M.HEAPU8.length + 32 * 1024 * 1024), want.serverId); } catch { long = true; }
+      check(long && client.M.HEAPU8.length === before,
+            `enroll: a server key far too long is refused before it is copied into the module (memory ${before} -> ${client.M.HEAPU8.length}) (F744)`); }
 
     // F739 (V4-352): the module's source of randomness cannot be replaced.
     { let replaced = true;
