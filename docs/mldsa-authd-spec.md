@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.118, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350)
+# mldsa-authd — deployment specification (v1.119, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1672,7 +1672,10 @@ lost, and the daemon writes nothing more; a line that a signal ends sooner
 is lost, and the next has its own quarter second (erratum 166). That holds
 while it starts as while it runs. So one `SIGTERM` stops a
 daemon whose standard error nobody reads, about a quarter of a second
-later than one whose log is read, without `draining` or `stopped` in the
+later than one whose log is read (longer if stop signals keep coming
+while it runs: each ends the line being written, and the next line has its
+own quarter second, so the most is a quarter second for each line of the
+shutdown; erratum 168), without `draining` or `stopped` in the
 journal, and, if it was starting, without the line that says it stopped
 before it had started. Before it is told to stop, a signal that ends a
 waiting line costs that line, and the log goes on. The unit sets
@@ -1682,7 +1685,8 @@ prints a line before it exits on a failed allocation inside a hash, and the
 C library prints one before it aborts on a smashed stack or a failed
 assertion; those are written by neither the log nor this rule, and a
 daemon in that state whose standard error nobody reads is ended by the
-watchdog (erratum 167).
+watchdog, or, before it has said `READY=1`, by systemd's start timeout
+(errata 167 and 168).
 **To drain** (erratum 93) is to accept no further connection, on any socket;
 to close at once every connection that has no reply queued; and to write each
 reply that is queued, on a protocol connection or a local one, before closing
@@ -2781,3 +2785,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 167 | 16 | A waiting line's quarter second counts from the first stop signal; the lines liboqs and the C library print before they end the process are outside the rule | Every stop signal started the quarter second again, so signals a tenth of a second apart never ended a daemon held on a line while it started (F727). And "each line it writes" could be read to cover lines the daemon does not write (F730) |
+
+### Revision v1.119 (V4-352)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 168 | 16 | "About a quarter of a second later" is for a stop signalled once; with signals that keep coming it is a quarter second for each line of the shutdown at most. A daemon stuck in a line the C library or liboqs prints is ended by the start timeout if it has not yet said it is ready | A running daemon sent `SIGTERM` every 240 ms took 720 ms to stop (F735). And the watchdog does not run before `READY=1` (F735) |

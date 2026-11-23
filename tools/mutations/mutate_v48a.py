@@ -14,8 +14,11 @@ IO = "apps/authd/conn_io.c"
 CF = "apps/authd/authd_config.c"
 M = {
  # deadlines are never enforced
- "D1": (EV, [("        if (now_ms >= s->deadline_ms) {",
-              "        if (0) { /* MUTATION D1: deadline never enforced */")]),
+ "D1": (EV, [("            if (now_ms >= s->deadline_ms) {\n                ev->closed_deadline++;",
+              "            if (0) { /* MUTATION D1: deadline never enforced */\n                ev->closed_deadline++;"),
+             # V4-352: and in the pass before the accept, which closes the same slots sooner in the turn (F728).
+             ("        if (s->state != SLOT_FREE && s->deadline_ms != 0u && now_ms >= s->deadline_ms &&",
+              "        if (0 && s->state != SLOT_FREE && s->deadline_ms != 0u && now_ms >= s->deadline_ms &&")]),
  # the frame-length cap is gone: an oversized declared length is accepted
  "D2": (IO, [("    if (len == 0u || len > (uint32_t)AUTHD_FRAME_MAX) {",
               "    if (len == 0u) { /* MUTATION D2: frame cap removed */")]),

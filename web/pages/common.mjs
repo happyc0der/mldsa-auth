@@ -6,7 +6,14 @@ import { AuthdClient } from '/client/authd-client.mjs';
 import { IdentityStore } from '/client/store.mjs';
 import { siteFetch } from './site-fetch.mjs';
 
-export const hexToBytes = (h) => Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
+// F736 (V4-352): hexadecimal, or an error. It took any string: an odd
+// length lost its last digit and a pair that was not hex became a zero.
+export const hexToBytes = (h) => {
+  if (typeof h !== 'string' || h.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(h)) {
+    throw new Error('the site sent something that is not hexadecimal where bytes were expected');
+  }
+  return Uint8Array.from(h.match(/../g) ?? [], (x) => parseInt(x, 16));
+};
 export const bytesToHex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 // base64url, unpadded -- the login code's encoding for the site (spec 13).
 export const b64url = (b) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

@@ -284,6 +284,11 @@ async function confirmQuietly(store, handle, look = false) {
 //              the answer been lost, and then this is the account's only key.
 //              A login with it settles the question (login() confirms it).
 export async function enroll(client, store, { serverId, serverPub, passphrase }, submit) {
+  // F736 (V4-352): the pin is PARSED before a key is made for it. What the
+  // site said its server key is was stored as given -- an error page, an
+  // empty string, "undefined" -- and the site then enrolled a key whose
+  // every login failed at "server-key: bad-format", with nothing to re-pin.
+  client.checkServerPin(serverPub, serverId);
   const id = client.newIdentity(passphrase);            // refused inside wasm if the policy says no
   // The identity's lock is held from before the record exists until the
   // site's answer has been acted on (F303). forgetUnconfirmed checks and

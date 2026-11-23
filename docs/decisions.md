@@ -23088,3 +23088,78 @@ name; the campaign's line is corrected here.
 Counts: 854 mutations, 162 campaigns, 904 anchors; 732 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644 and F725 open); spec v1.118, 167 errata; 66 tests.
+
+## V4-352: cleanup after V4-350 and V4-351, and what the ninety-fourth review found (F733 to F739)
+
+**Still nothing on main since V4-344**, and for the first time in seven
+steps not because of a defect in the daemon. V4-350's CI was green and its
+nightly passed 175 jobs of 176; the one that failed was a line in campaign
+v104 that named the wrong check (V4-351's entry). V4-351's own runs were
+under way when this step was written. `docs/review/REPRODUCE.md` still
+cites the runs on `48061ef`, which is still main; it is brought up to date
+by the first cleanup after the stack lands.
+
+**The ninety-fourth review** reran V4-350's stop behaviour on Linux and
+macOS and attacked its tests under load, then read the browser client and
+drove it under Node against a hostile server. No High or Medium. Four
+Low, three Info as recorded here.
+
+- **What it found sound, and measured.** The flag that keeps repeated stop
+  signals from re-arming a line's timer has no stale state in any
+  interleaving it tried. On Linux the two legs whose outcome time decides
+  passed 30 times in 30 on a correct daemon, idle and with sixteen
+  processes competing for four CPUs, and failed 30 in 30 with their
+  mutants. In the browser module no secret key and no passphrase was left
+  in memory after any flow, and every hostile-server case ended in a
+  bounded error.
+- **F733 (Low).** The gate, a third time. Its second form was run on this
+  machine before it was pushed and printed OK; this machine's path to the
+  repository has a space in it, and with one the gate read nothing under
+  `src/`. So the run that was taken as its proof proved a third of it.
+  It reads a file list line by line now, fails on a file it cannot read,
+  and its README entry lists what it cannot see.
+- **F736 (Low).** The browser parses a server key before it pins it.
+- **F737 (Low).** The enrollment says which account it means.
+- **F734 (Low).** The runbook's upgrade block is an `if` again, and a
+  refusal says so.
+- **F735, F739 (Info).** Fixed. **F738 (Info).** Recorded.
+
+**Open for the owner, new here.** Whether the passphrase fields should
+invite a password manager (`autocomplete` of `new-password` and
+`current-password`) where they now ask it, in vain, not to (F738).
+
+**V4-351's nightly (44803955597) failed a job too, and was right to:
+campaign v48a's D1**, "deadlines are never enforced". It switched off the
+sweep at the end of a turn. Since V4-351 the pass before the accept closes
+the same idle connection, so the check D1 names passed with it in. D1
+switches off both now, as v83's BP4 was made to in V4-351, and is killed
+by its own check again. That nightly ended at 176
+jobs passed of 177, D1's the only failure; V4-350's had ended at 175 of
+176, RK1's the only one.
+
+- **Why the sweep in V4-351 did not see it, which is worse than the
+  miss.** That sweep, and every "all the mutants of this file" in the six
+  steps before it, took its list from a script that loaded each campaign
+  file as a module. The forty-odd oldest campaigns are scripts that read
+  their arguments as they load; they raised, and were skipped in silence.
+  The lists were short by every mutation written before V4-70. For the
+  loop it was six of fifty-two.
+- The list now comes from `tools/mutations/list_mutants.py`, which reads
+  the files as the anchor check does and sees all 854. By it, 194 mutations in the files those
+  steps changed had not been rerun by hand. The nightly reruns every one
+  on Linux, and V4-350's and V4-351's did: two stale lines between them,
+  RK1 and D1, and no survivor. The six of the loop's were rerun by hand
+  here, all killed.
+
+No campaign: the code changed is JavaScript and a shell script, which the
+campaigns do not mutate. Killed by hand with `tools/hand_control.py
+--interpreted`: J1 (`flows.enroll` does not have the pin parsed), J2 (the
+random source is left writable), J3 (the site enrolls into whatever
+account its session names), J4 (a signup replaces a session that holds a
+ticket).
+
+Spec v1.119: erratum 168 (16).
+
+Counts: 854 mutations, 162 campaigns, 905 anchors; 739 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636, F644 and F725 open); spec v1.119, 168 errata; 66 tests.

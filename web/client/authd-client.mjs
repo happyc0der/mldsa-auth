@@ -38,6 +38,14 @@ export class AuthdClient {
   static async load(factory) {
     const M = await factory();
     if (M._ccw_init() !== 0) { throw new Error('the client module failed to initialise'); }
+    // F739 (V4-352): the module's whole source of randomness is one
+    // property of the module object, which the glue sets while it
+    // initialises and reads for every key, every KEM and every nonce after.
+    // Anything that could reach the object could replace it; with `() => 7`
+    // two new identities had the same handle. It cannot be reassigned now.
+    if (typeof M.getRandomValue === 'function') {
+      Object.defineProperty(M, 'getRandomValue', { value: M.getRandomValue, writable: false, configurable: false });
+    }
     return new AuthdClient(M);
   }
 
@@ -103,6 +111,33 @@ export class AuthdClient {
     const s = this.str(p);
     this.drop(p, 64);
     return s;
+  }
+
+  // F736 (V4-352): is this a server key the module will pin? Throws the
+  // module's own refusal if not. For a caller about to STORE a pin: enroll
+  // stored whatever bytes it was handed and asked the site to enroll the
+  // key; with an error page's text for a pin, the site enrolled a key that
+  // could never log in.
+  checkServerPin(serverPub, serverId) {
+    if (!(serverPub instanceof Uint8Array) || typeof serverId !== 'string') {
+      throw new TypeError('the server key must be bytes and the server id a string');
+    }
+    const M = this.M;
+    const h = M._ccw_new();
+    if (!h) { throw new Error('ccw_new failed'); }
+    try {
+      const sid = te.encode(serverId);
+      let ps = 0, pi = 0, st;
+      try {
+        ps = this.put(serverPub); pi = this.put(sid);
+        st = M._ccw_pin_server_pub(h, ps, serverPub.length, pi, sid.length);
+      } finally {
+        this.drop(ps, serverPub.length); this.drop(pi, sid.length);
+      }
+      if (st !== 0) { throw this.fail(h, st, 0); }
+    } finally {
+      M._ccw_free(h);
+    }
   }
 
   // A new identity for `handle` (a fresh one when omitted), sealed inside the

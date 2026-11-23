@@ -180,6 +180,21 @@ try {
     check(en.status === 409, 'recovery: the id from before the recovery cannot use its ticket to enroll a key');
     const devices = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
     check(/^OK count=1( |$)/.test(devices), `recovery: the visitor still has exactly one device (${devices.split(' ').slice(0, 2).join(' ')})`);
+    // V4-352 (F737): the session `after` holds the visitor's recovery
+    // ticket. A page that means ANOTHER account is refused -- this is the
+    // second tab, whose signup under its own name the recovery overtook --
+    // and a signup does not throw the ticket away.
+    const other = await post('/api/enroll', { handle: atk.handle, pub: hex(atk.publicImage), user: 'someone-else' }, after);
+    const ob = await other.json();
+    check(other.status === 409 && ob.error === 'another-account',
+          `account: an enrollment that names another account than the session's is refused (${other.status} ${ob.error}) (F737)`);
+    const su2 = await post('/api/signup', { user: 'second-tab', invite: 'the-invite' }, after);
+    const sb = await su2.json();
+    const still = await (await get('/api/session', after)).json();
+    check(su2.status === 409 && sb.error === 'recovery-in-progress' && still.recovering === true && still.recoveringUser === user,
+          `account: a signup on a session that holds a recovery ticket is refused, and the ticket is kept (${su2.status} ${sb.error}, recovering=${still.recovering}) (F737)`);
+    const devices2 = await siteLine(`LIST-DEVICES user=${hex(enc(user))}`);
+    check(/^OK count=1( |$)/.test(devices2), 'account: and neither enrolled anything (F737)');
   }
 
   // V4-84, F160: a WebSocket upgrade from another origin is refused; the

@@ -41,6 +41,7 @@ action('go', async () => {
     // under their own name at a browser where another person's recovery was
     // still open got a device on that person's account. A different name is
     // now refused, before any key is made.
+    const intended = sess.recovering ? sess.recoveringUser : val('user').trim();
     if (sess.recovering) {
       const problem = flows.recoveryNameProblem(val('user'), sess.recoveringUser);
       if (problem) { throw new Error(problem); }
@@ -60,7 +61,11 @@ action('go', async () => {
       { serverId: sess.serverId, serverPub: hexToBytes(sess.serverPub), passphrase },
       async (id) => {
         let j;
-        try { j = await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage) }); }
+        // F737 (V4-352): and WHOSE. The site enrolls into whatever account
+        // its session names when this arrives, which another tab can have
+        // changed since this page looked (a recovery begun, a signup made):
+        // it is told the account this page means, and refuses another.
+        try { j = await post('/api/enroll', { handle: id.handle, pub: bytesToHex(id.publicImage), user: intended }); }
         catch (e) { throw (e.status >= 400 && e.status < 500) ? new flows.EnrollRefused(e.message) : e; }
         // F646 (V4-338): an answer without its fields is no answer (F302's
         // rule, which reached the recovery codes and not this). Any 2xx
@@ -69,7 +74,7 @@ action('go', async () => {
         // the page said "Enrolled undefined", and the key could not then be
         // forgotten. Thrown as a plain error, it is "no answer": the key is
         // kept, unconfirmed, and a login settles it.
-        if (typeof j?.user !== 'string' || j.handle !== id.handle) {
+        if (typeof j?.user !== 'string' || j.handle !== id.handle || j.user !== intended) {
           throw new Error('the site answered, but not with the enrollment it was asked for');
         }
         return j;

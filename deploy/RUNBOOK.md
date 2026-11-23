@@ -995,9 +995,12 @@ for u in mldsa-authd-audit.service mldsa-authd-audit.timer; do
 done
 # The restart is made only if the check passes, or the service is down
 # and there is nothing to check against (see below).
-{ ! systemctl is-active --quiet mldsa-authd \
-    || sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf; } \
-    && sudo systemctl restart mldsa-authd
+if systemctl is-active --quiet mldsa-authd \
+   && ! sudo authd_admin --check-config --config /etc/mldsa-authd/authd.conf; then
+    echo "the new build refuses this configuration: NOT restarted"; false
+else
+    sudo systemctl restart mldsa-authd
+fi
 journalctl -u mldsa-authd -n 5 --no-pager
 ```
 
@@ -1011,8 +1014,8 @@ fork, and a login sent straight after found nothing listening). The journal
 should show `event=started` again, and an existing device logs in as before.
 
 The `--check-config` line is the new build's, run while the old daemon is
-still serving: if it refuses your configuration (exit 3), the restart on
-the same line is not made; read what it says first. It checks
+still serving: if it refuses your configuration (exit 3), the restart is
+not made and the block says so; read what the check printed first. It checks
 less than the start does, as the operator and without the passphrase. It
 is run only while the service is active: the passphrase is a credential
 systemd holds for a running unit (step 6), and with the service down the

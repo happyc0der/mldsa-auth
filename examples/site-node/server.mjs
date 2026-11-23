@@ -561,6 +561,10 @@ export async function startSite(opt) {
       if (typeof user !== 'string' || !/^[a-z0-9._-]{1,32}$/.test(user) || !vouched) {
         return send(res, 403, { error: 'signup refused' });
       }
+      // F737: a signup does not throw away a recovery that is under way.
+      // The session's ticket was dropped with the session, and the recovery
+      // code that had bought it was spent for nothing.
+      if (s.ticket) { return send(res, 409, { error: 'recovery-in-progress' }); }
       await retire(s);
       rotate(res, s).signupUser = user;                    // F131: the account a planted id must not be able to claim
       send(res, 200, { user });
@@ -569,9 +573,16 @@ export async function startSite(opt) {
     // account it has vouched for -- or, during recovery, with the ticket it
     // holds server-side.
     'POST /api/enroll': async (req, res, s) => {
-      const { handle, pub } = await body(req);
+      const { handle, pub, user: meant } = await body(req);
       const user = s.ticket ? s.ticket.user : s.signupUser;
       if (!user || typeof handle !== 'string' || typeof pub !== 'string') { return send(res, 403, { error: 'nothing to enroll' }); }
+      // F737 (V4-352): the page says which account it means, and this is
+      // refused if the session now names another. The account was decided
+      // here, when the request arrived: two tabs of one browser share the
+      // session, and a recovery begun in one between the other's signup and
+      // its enrollment put the second tab's new key on the recovered
+      // account. A page that says nothing is served as before.
+      if (meant !== undefined && meant !== user) { return send(res, 409, { error: 'another-account' }); }
       const img = Buffer.from(pub, 'hex');
       const pk = img.subarray(9 + img[8]);            // MLDSAPK1: magic(8) id_len(1) id pk
       try {

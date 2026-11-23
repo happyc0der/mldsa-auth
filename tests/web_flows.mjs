@@ -384,6 +384,32 @@ try {
       catch { return false; }
     };
 
+    // F736 (V4-352): a pin that is not a server key is refused before a key
+    // is made, the site is asked nothing, and nothing is stored.
+    { const junk = [new TextEncoder().encode('<html>502 Bad Gateway</html>'), new Uint8Array(0),
+                    new Uint8Array([0xab]), new TextEncoder().encode('undefined')];
+      let allRefused = true, asked = 0, stored = 0;
+      for (const serverPub of junk) {
+        const store = new MemoryStore();
+        let threw = false;
+        try { await flows.enroll(client, store, { ...want, serverPub }, async () => { asked++; return 'OK'; }); }
+        catch { threw = true; }
+        if (!threw) { allRefused = false; }
+        stored += (await store.list()).length;
+      }
+      check(allRefused && asked === 0 && stored === 0,
+            `enroll: a server key that is not one is refused before a key is made: the site is not asked and nothing is stored (asked ${asked}, stored ${stored}) (F736)`);
+      let ok = true;
+      try { client.checkServerPin(want.serverPub, want.serverId); } catch { ok = false; }
+      check(ok, 'enroll: the real server key passes the same check (the control) (F736)'); }
+
+    // F739 (V4-352): the module's source of randomness cannot be replaced.
+    { let replaced = true;
+      try { client.M.getRandomValue = () => 7; replaced = client.M.getRandomValue() === 7; } catch { replaced = false; }
+      const a = client.newIdentity(PASS), b = client.newIdentity(PASS);
+      check(!replaced && a.handle !== b.handle,
+            'random: the module\'s random source cannot be reassigned, and two new identities differ (F739)'); }
+
     // The site answers no: nothing is left behind.
     { const store = new MemoryStore();
       let name = null, seen = null;
