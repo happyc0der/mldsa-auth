@@ -349,8 +349,13 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
              * an operator nothing about which allowlist was wrong. */
             const char *which = (ev->listen_kind[li] != SLOT_KIND_LOCAL) ? "proxy"
                                 : ev->listen_is_admin[li] ? "admin" : "site";
-            authd_log_peer(AUTHD_LOG_WARN, "listener-peer-rejected",
-                           peer.uid != (uid_t)-1, (unsigned long)peer.uid, which);
+            if (!ev->peer_reject_said[li] ||
+                now_ms - ev->peer_reject_said_ms[li] >= (uint64_t)EVLOOP_PEER_REJECT_LOG_MS) {   /* F746 */
+                ev->peer_reject_said[li] = 1;
+                ev->peer_reject_said_ms[li] = now_ms;
+                authd_log_peer(AUTHD_LOG_WARN, "listener-peer-rejected",
+                               peer.uid != (uid_t)-1, (unsigned long)peer.uid, which);
+            }
             continue;
         }
         if (st != LISTENER_OK) {

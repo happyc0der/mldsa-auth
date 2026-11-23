@@ -696,6 +696,20 @@ static void test_handshake_across_backup(void)
 
 /* ------------------------------------------- revocation reaches live sessions */
 
+/* V4-355: how many lines of the daemon's log, captured in `f`, hold `needle`. */
+static int log_lines(FILE *f, const char *needle)
+{
+    char line[512];
+    int n = 0;
+    if (f == NULL) { return -1; }
+    (void)fflush(f);
+    rewind(f);
+    while (fgets(line, sizeof line, f) != NULL) {
+        if (strstr(line, needle) != NULL) { n++; }
+    }
+    return n;
+}
+
 static void test_revocation_closes_sessions(void)
 {
     h_daemon_t d;
@@ -719,9 +733,15 @@ static void test_revocation_closes_sessions(void)
     CHECK(fd >= 0, "revoke: connect to site.sock");
     char req[512], resp[16384], hh[160];
     hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
+    /* F742 (V4-355): the journal, for the three revocations of one device
+     * that follow. */
+    FILE *rlog = tmpfile();
+    if (rlog != NULL) { authd_log_init(rlog, AUTHD_LOG_INFO); }
     snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=6c656166", hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK"),
           "revoke: REVOKE-DEVICE succeeds");
+    CHECK(log_lines(rlog, "warn event=device-revoked") == 1,
+          "revoke: the revocation is in the journal, once (the canary)");
 
     int still = 0;
     for (size_t i = 0; i < d.nslots; i++) {
@@ -747,6 +767,13 @@ static void test_revocation_closes_sessions(void)
     snprintf(req, sizeof req, "REVOKE-DEVICE handle=%s reason=zz", hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "ERR code=malformed"),
           "revoke: a reason= that is not hex is malformed, though the key is optional");
+    /* F742: two of those named a device that was revoked already. The store
+     * wrote nothing for them and the audit chain has one entry; the journal
+     * had three WARN lines. */
+    CHECK(log_lines(rlog, "warn event=device-revoked") == 1 && log_lines(rlog, "event=device-revoked closed=") == 1,
+          "revoke: revoking a device that is already revoked is not logged as a revocation (F742)");
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    if (rlog != NULL) { (void)fclose(rlog); }
 
     (void)close(fd);
     h_client_close(&c);
@@ -1979,9 +2006,13 @@ static void test_revoke_tokens_scope(void)
     hx(uh2, sizeof uh2, U2, sizeof U2);
     hx(hh, sizeof hh, HANDLE1, sizeof HANDLE1);
 
+    /* F745 (V4-355): and the journal says whose tokens were ended. */
+    FILE *tlog = tmpfile();
+    if (tlog != NULL) { authd_log_init(tlog, AUTHD_LOG_INFO); }
     snprintf(req, sizeof req, "REVOKE-TOKENS user=%s handle=%s", uh2, hh);
     CHECK(h_local_cmd(&d, fd, req, resp, sizeof resp) == 0 && starts(resp, "OK count=0\n"),
           "rvscope: naming another user with this handle revokes nothing: OK count=0 (F123)");
+    CHECK(log_lines(tlog, "event=tokens-revoked") == 0, "rvscope: and a request that ended no token logs no revocation (F745)");
     CHECK(store_verify_token(d.store, th, now, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_OK,
           "rvscope: ...and u1's token on the handle still verifies (F123)");
     snprintf(req, sizeof req, "REVOKE-TOKENS user=%s handle=%s", uh1, hh);
@@ -1989,6 +2020,22 @@ static void test_revoke_tokens_scope(void)
           "rvscope: the handle's own user revokes its token: OK count=1 (the canary)");
     CHECK(store_verify_token(d.store, th, now, 0u, &v, NULL) == STORE_OK && v == STORE_TOKEN_UNKNOWN,
           "rvscope: ...and the token is gone");
+    { char want[96];
+      (void)snprintf(want, sizeof want, "warn event=tokens-revoked slot=");
+      char idline[96];
+      (void)snprintf(idline, sizeof idline, " id=%.*s\n", (int)sizeof U1, (const char *)U1);   /* as the log writes an id: its bytes */
+      int named = 0;
+      if (tlog != NULL) {
+          char line[512];
+          (void)fflush(tlog); rewind(tlog);
+          while (fgets(line, sizeof line, tlog) != NULL) {
+              if (strstr(line, want) != NULL && strstr(line, idline) != NULL) { named++; }
+          }
+      }
+      CHECK(named == 1 && log_lines(tlog, "info event=tokens-revoked count=1") == 1,
+            "rvscope: the revocation is in the journal with the user it was about and how many tokens (F745)"); }
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    if (tlog != NULL) { (void)fclose(tlog); }
 
     (void)close(fd);
     mldsa_keypair_free(&kp);

@@ -716,7 +716,11 @@ int main(void)
               "re-enabling the user restores the lookup");
 
         /* device status gates the lookup */
-        CHECK(store_revoke_device(s, H1, sizeof H1, "admin", NULL, 0) == STORE_OK, "revoke_device");
+        { int said = -1, again = -1;
+          CHECK(store_revoke_device_said(s, H1, sizeof H1, "admin", NULL, 0, &said) == STORE_OK && said == 1,
+                "revoke_device");
+          CHECK(store_revoke_device_said(s, H1, sizeof H1, "admin", NULL, 0, &again) == STORE_OK && again == 0,
+                "revoke_device: a second revocation is OK and says it revoked nothing (F742)"); }
         CHECK(store_lookup_active(s, H1, sizeof H1, got, NULL, 0, NULL, NULL) == STORE_ERR_NOT_FOUND,
               "a revoked device does not resolve");
         /* invariant 2 again: the revoked key can never come back anywhere */

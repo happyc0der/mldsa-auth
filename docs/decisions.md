@@ -23303,3 +23303,52 @@ No code, test, campaign or spec change.
 
 Counts: 854 mutations, 162 campaigns, 905 anchors; 747 findings (the 20
 above open); spec v1.120, 169 errata; 66 tests.
+
+## V4-355: three things the journal said wrongly (F742, F745, F746)
+
+The three findings of the ninety-fifth review that V4-353 left open, each
+about what the daemon writes to its journal.
+
+- **F742.** A `REVOKE-DEVICE` that named a device revoked already was
+  answered OK, wrote nothing to the store, and was logged as a revocation.
+  The store now says which it was. The new function reports "revoked by
+  this call" only after the commit: a revocation that was rolled back is
+  not one.
+- **F745.** `REVOKE-TOKENS` says whose tokens it ended and how many, when
+  it ended any. Considered and not done: an entry in the audit chain. The
+  chain records changes to who may log in; ending a session is not one,
+  and `LOGOUT` leaves none either.
+- **F746.** A listener logs a refused peer at most once a second. The
+  count of them (`closed_peer`) is exact.
+- A request that changes nothing logs no change, in both of the first
+  two: that is the rule they now share with the store, which has written
+  nothing for a repeated revocation since V4-81.
+
+Campaign v193: RH1 (every refused peer is logged), RH2 (`REVOKE-TOKENS`
+logs nothing), RH3 (the store says it revoked a device that was revoked
+already), RH4 (`REVOKE-DEVICE` logs a revocation whatever the store says),
+RH5 (`REVOKE-TOKENS` logs a revocation that ended no token).
+
+Every committed mutation that touches the three files this step changes
+(the loop, the store, the local API) was listed by
+`tools/mutations/list_mutants.py`: 247. On macOS, each after its test
+passed on the clean tree, 237 were run by hand and all 237 were killed by
+every check their campaigns name. Ten are mutations whose test is a gate
+script or a replay of the fuzz corpus and not a test program; the nightly
+runs them. Re-anchored: v62's AO2.
+
+- Nine of the 237 were first reported "killed by another check". They
+  are from campaigns whose lines name two or three checks, and the
+  wrapper round the hand-control tool had passed the list as one string.
+  Each was then checked against its own output: every named check failed
+  for every one.
+
+**The Linux run, before the push:** built with gcc in the container; both
+gates passed; the daemon's nine test programs passed twice; and each of
+RH1 to RH5, built in, failed its test by the line its campaign names.
+
+Spec v1.121: erratum 170 (15).
+
+Counts: 859 mutations, 163 campaigns, 910 anchors; 747 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.121, 170 errata; 66 tests.

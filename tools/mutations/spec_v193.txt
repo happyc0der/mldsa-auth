@@ -1,0 +1,5 @@
+RH1|^test_authd_evloop$|peer-log: five more refused peers in the same second are counted and not logged again (F746)
+RH2|^test_authd_localapi$|rvscope: the revocation is in the journal with the user it was about and how many tokens (F745)
+RH3|^test_authd_store$|revoke_device: a second revocation is OK and says it revoked nothing (F742)
+RH4|^test_authd_localapi$|revoke: revoking a device that is already revoked is not logged as a revocation (F742)
+RH5|^test_authd_localapi$|rvscope: and a request that ended no token logs no revocation (F745)

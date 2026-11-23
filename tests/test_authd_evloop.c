@@ -2187,6 +2187,29 @@ static void test_accept_run_ends_at_refused_peer(void)
     CHECK(ev.accept_failing[0] == 0,
           "accept-run: an accept() that succeeded ends the run of failures, though its peer was refused (F341)");
     if (c >= 0) { (void)close(c); }
+    /* V4-355 (F746): refused peers are counted every time and SAID at most
+     * once a second for a listener. Five more in the same millisecond, then
+     * one a second later. */
+    { FILE *lf = tmpfile();
+      CHECK(lf != NULL, "peer-log: a log file");
+      if (lf != NULL) {
+          authd_log_init(lf, AUTHD_LOG_WARN);
+          int cs[5];
+          for (int i = 0; i < 5; i++) { cs[i] = dial_unix_small(path, 4096); }
+          (void)PUMP_UNTIL(&ev, 1000, ev.closed_peer >= 6u);
+          fflush(lf);
+          CHECK(ev.closed_peer == 6u && count_in_file(lf, "warn event=listener-peer-rejected") == 0,
+                "peer-log: five more refused peers in the same second are counted and not logged again (F746)");
+          const int late = dial_unix_small(path, 4096);
+          (void)PUMP_UNTIL(&ev, 2000, ev.closed_peer >= 7u);
+          fflush(lf);
+          CHECK(ev.closed_peer == 7u && count_in_file(lf, "warn event=listener-peer-rejected") == 1,
+                "peer-log: and one a second later is logged (F746)");
+          for (int i = 0; i < 5; i++) { if (cs[i] >= 0) { (void)close(cs[i]); } }
+          if (late >= 0) { (void)close(late); }
+          authd_log_init(stderr, AUTHD_LOG_ERROR);
+          (void)fclose(lf);
+      } }
     evloop_close_all(&ev);
     listener_close(&lfd, path);
     (void)rmdir(dir);

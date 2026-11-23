@@ -191,6 +191,13 @@ store_status_t store_enroll_device_ex(store_t *s,
 store_status_t store_device_owner_role(const store_t *s, const uint8_t *handle, size_t handle_len,
                                        store_role_t *role_out);
 
+/* As store_revoke_device, and says whether THIS call revoked the device:
+ * 1 if it did, 0 if the device was revoked already and nothing was written
+ * (F742, V4-355). Set only when the answer is STORE_OK. */
+store_status_t store_revoke_device_said(store_t *s,
+                                        const uint8_t *handle, size_t handle_len,
+                                        const char *by, const uint8_t *reason, size_t reason_len,
+                                        int *revoked_now);
 store_status_t store_revoke_device(store_t *s,
                                    const uint8_t *handle, size_t handle_len,
                                    const char *by, const uint8_t *reason, size_t reason_len);

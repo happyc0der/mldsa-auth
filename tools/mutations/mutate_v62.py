@@ -30,8 +30,8 @@ LA = "apps/authd/localapi.c"
 M = {
  "AO1": (ST, [("    int64_t at = now;",
                "    int64_t at = (now > 0) ? now_unix() : now; /* MUTATION AO1 */")]),
- "AO2": (ST, [('                                 (const uint8_t *)"recovery revoke=all", 19u, now);',
-               '                                 (const uint8_t *)"recovery revoke=all", 19u, now_unix()); /* MUTATION AO2 */')]),
+ "AO2": (ST, [('                                 (const uint8_t *)"recovery revoke=all", 19u, now, NULL);',
+               '                                 (const uint8_t *)"recovery revoke=all", 19u, now_unix(), NULL); /* MUTATION AO2 */')]),
  "AO3": (ST, [('                     handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept", now);',
                '                     handle, handle_len, drop_tokens ? "tokens-dropped" : "tokens-kept", now_unix()); /* MUTATION AO3 */')]),
  "AO4": (ST, [('            "SELECT 1 FROM devices WHERE handle=?1 AND user_id=?2 LIMIT 1;",',

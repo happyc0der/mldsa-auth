@@ -812,6 +812,14 @@ static ev_action_t h_revoke_tokens(authd_app_t *app, authd_slot_t *slot, const r
     if (s != STORE_OK) {
         return send_err(slot, "internal");
     }
+    /* F745 (V4-355): whose. The journal had the command's name and nothing
+     * more, for the one revocation that leaves no audit entry either: the
+     * site ended an operator's session and nothing said which. Said when
+     * tokens were ended, with how many. */
+    if (n > 0u) {
+        authd_log_slot_id(AUTHD_LOG_WARN, "tokens-revoked", slot->index, user, user_len);
+        authd_log_num(AUTHD_LOG_INFO, "tokens-revoked", "count", (uint64_t)n);
+    }
     resp_t r;
     resp_init(&r);
     resp_add(&r, "OK count=%zu\n", n);
@@ -854,8 +862,9 @@ static ev_action_t h_revoke_device(authd_app_t *app, authd_slot_t *slot, const r
             return send_err(slot, "not-permitted");
         }
     }
-    const store_status_t s = store_revoke_device(app->store, handle, handle_len, "local-api",
-                                                 (reason_len > 0u) ? reason : NULL, reason_len);
+    int revoked_now = 0;
+    const store_status_t s = store_revoke_device_said(app->store, handle, handle_len, "local-api",
+                                                      (reason_len > 0u) ? reason : NULL, reason_len, &revoked_now);
     if (s == STORE_ERR_NOT_FOUND) {
         return send_err(slot, "unknown");
     }
@@ -864,8 +873,15 @@ static ev_action_t h_revoke_device(authd_app_t *app, authd_slot_t *slot, const r
     }
     /* Req 9: the live connections go too, not just the rows. */
     const size_t closed = authd_app_close_handle(app, handle, handle_len);
-    authd_log_slot_id(AUTHD_LOG_WARN, "device-revoked", slot->index, handle, handle_len);
-    authd_log_num(AUTHD_LOG_INFO, "device-revoked", "closed", (uint64_t)closed);
+    /* F742 (V4-355): said when a device was revoked, and not when one that
+     * was revoked already was named again. The store writes nothing then,
+     * the answer is OK all the same, and the journal used to gain a WARN
+     * `device-revoked` that the audit chain has no entry for -- as many as a
+     * site process cared to ask for. */
+    if (revoked_now) {
+        authd_log_slot_id(AUTHD_LOG_WARN, "device-revoked", slot->index, handle, handle_len);
+        authd_log_num(AUTHD_LOG_INFO, "device-revoked", "closed", (uint64_t)closed);
+    }
 
     resp_t r;
     resp_init(&r);

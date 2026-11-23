@@ -1993,9 +1993,10 @@ store_status_t store_rotate_key(store_t *s,
 static store_status_t revoke_device_locked(store_t *s,
                                            const uint8_t *handle, size_t handle_len,
                                            const char *by, const uint8_t *reason, size_t reason_len,
-                                           int64_t now)
+                                           int64_t now, int *changed)
 {
     store_status_t r = STORE_OK;
+    if (changed != NULL) { *changed = 0; }
 
     /* An already-revoked device is left as it is (V4-81): revoking it again
      * answered OK and overwrote the first revocation's time, actor and
@@ -2023,6 +2024,9 @@ static store_status_t revoke_device_locked(store_t *s,
         if (revoked == -1) { return STORE_ERR_NOT_FOUND; }
         if (revoked == 1) { return STORE_OK; }
     }
+    /* F742 (V4-355): from here on something is written. The caller was told
+     * OK either way, and logged a revocation for a call that made none. */
+    if (changed != NULL) { *changed = 1; }
 
     /* Its outstanding login codes are spent with it (F157 refuses them at
      * EXCHANGE as well; this leaves none to refuse). After the check above,
@@ -2126,17 +2130,29 @@ store_status_t store_revoke_device(store_t *s,
                                    const uint8_t *handle, size_t handle_len,
                                    const char *by, const uint8_t *reason, size_t reason_len)
 {
+    return store_revoke_device_said(s, handle, handle_len, by, reason, reason_len, NULL);
+}
+
+store_status_t store_revoke_device_said(store_t *s,
+                                        const uint8_t *handle, size_t handle_len,
+                                        const char *by, const uint8_t *reason, size_t reason_len,
+                                        int *revoked_now)
+{
+    if (revoked_now != NULL) { *revoked_now = 0; }
     if (s == NULL || !id_ok(handle, handle_len)) { return STORE_ERR_ARG; }
 
+    int changed = 0;
     store_status_t r = tx_begin(s);
     if (r != STORE_OK) { return r; }
-    r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len, now_unix());
+    r = revoke_device_locked(s, handle, handle_len, by, reason, reason_len, now_unix(), &changed);
     if (r != STORE_OK) { tx_rollback(s); return r; }
     /* Fault point (V4-15a, CLAIMS D14): all four writes done, none committed.
      * Here and not inside revoke_device_locked, which revoke=all also runs --
      * its fault test counts the points it passes. */
     if (STORE_FAULT_POINT()) { tx_rollback(s); return STORE_ERR_DB; }
-    return tx_commit(s);
+    r = tx_commit(s);
+    if (r == STORE_OK && revoked_now != NULL) { *revoked_now = changed; }   /* said only once it is in the file */
+    return r;
 }
 
 store_status_t store_lookup_active(const store_t *s,
@@ -2956,7 +2972,7 @@ store_status_t store_recovery_consume_ex(store_t *s, int64_t code_id,
         memcpy(prev, h, hn);
         prevn = hn;
         r = revoke_device_locked(s, h, hn, "recovery",
-                                 (const uint8_t *)"recovery revoke=all", 19u, now);
+                                 (const uint8_t *)"recovery revoke=all", 19u, now, NULL);
         if (r != STORE_OK) { tx_rollback(s); return r; }
         revoked++;
         /* Between two revocations: where the separate-transaction version

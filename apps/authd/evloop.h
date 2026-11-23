@@ -116,6 +116,11 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 #define AUTHD_MAX_LISTENERS 4u
 /* F205: how long a listener whose accept() failed is left unpolled. */
 #define EVLOOP_ACCEPT_RETRY_MS 100u
+/* F746 (V4-355): a listener says `listener-peer-rejected` at most this
+ * often. Every refused connection was a WARN line: a user in a socket's
+ * group and not on its list wrote three thousand in a tenth of a second.
+ * Each is still counted (closed_peer). */
+#define EVLOOP_PEER_REJECT_LOG_MS 1000u
 /* F306: connections taken from ONE listener in one turn of the loop, accepted
  * or refused. The loop used to accept until the queue was empty; a peer that
  * refilled it as fast as it was emptied (refusals at a full pool cost it
@@ -196,6 +201,8 @@ typedef struct {
     /* F205: per listener, whether accept() is in a run of failures (so the
      * run is logged once) and when it is next polled. */
     int      accept_failing[AUTHD_MAX_LISTENERS];
+    int      peer_reject_said[AUTHD_MAX_LISTENERS];        /* F746 */
+    uint64_t peer_reject_said_ms[AUTHD_MAX_LISTENERS];
     uint64_t accept_retry_ms[AUTHD_MAX_LISTENERS];
     /* F307: the listener a connection was last accepted on. The next turn
      * starts with the one after it, so a listener whose queue is never empty
