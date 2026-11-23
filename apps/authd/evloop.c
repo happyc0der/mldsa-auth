@@ -312,6 +312,37 @@ static authd_slot_t *take_slot_for(evloop_t *ev, size_t li)
     return (free_slots >= 2u) ? s : NULL;
 }
 
+/* F746, F750: may this refusal be written? At most once an interval for one
+ * uid on one listener; see EVLOOP_PEER_REJECT_UIDS. */
+int evloop_peer_reject_may_say(evloop_t *ev, size_t li, uint64_t uid, uint64_t now_ms)
+{
+    size_t oldest = 0;
+    for (size_t i = 0; i < (size_t)EVLOOP_PEER_REJECT_UIDS; i++) {
+        if (ev->peer_reject[li][i].used && ev->peer_reject[li][i].uid == uid) {
+            if (now_ms - ev->peer_reject[li][i].said_ms < (uint64_t)EVLOOP_PEER_REJECT_LOG_MS) {
+                return 0;
+            }
+            ev->peer_reject[li][i].said_ms = now_ms;
+            return 1;
+        }
+        if (!ev->peer_reject[li][i].used) {
+            oldest = i;
+            break;
+        }
+        if (ev->peer_reject[li][i].said_ms < ev->peer_reject[li][oldest].said_ms) {
+            oldest = i;
+        }
+    }
+    if (ev->peer_reject[li][oldest].used &&
+        now_ms - ev->peer_reject[li][oldest].said_ms < (uint64_t)EVLOOP_PEER_REJECT_LOG_MS) {
+        return 0;                      /* every place was used within the interval */
+    }
+    ev->peer_reject[li][oldest].used = 1;
+    ev->peer_reject[li][oldest].uid = uid;
+    ev->peer_reject[li][oldest].said_ms = now_ms;
+    return 1;
+}
+
 static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
 {
     for (unsigned taken = 0; taken < EVLOOP_ACCEPT_BURST; taken++) {   /* F306 */
@@ -349,10 +380,8 @@ static void accept_ready(evloop_t *ev, size_t li, uint64_t now_ms)
              * an operator nothing about which allowlist was wrong. */
             const char *which = (ev->listen_kind[li] != SLOT_KIND_LOCAL) ? "proxy"
                                 : ev->listen_is_admin[li] ? "admin" : "site";
-            if (!ev->peer_reject_said[li] ||
-                now_ms - ev->peer_reject_said_ms[li] >= (uint64_t)EVLOOP_PEER_REJECT_LOG_MS) {   /* F746 */
-                ev->peer_reject_said[li] = 1;
-                ev->peer_reject_said_ms[li] = now_ms;
+            if (evloop_peer_reject_may_say(ev, li, (peer.uid != (uid_t)-1) ? (uint64_t)peer.uid : UINT64_MAX,
+                                           now_ms)) {   /* F746, F750 */
                 authd_log_peer(AUTHD_LOG_WARN, "listener-peer-rejected",
                                peer.uid != (uid_t)-1, (unsigned long)peer.uid, which);
             }

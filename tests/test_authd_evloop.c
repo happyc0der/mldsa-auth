@@ -2210,6 +2210,39 @@ static void test_accept_run_ends_at_refused_peer(void)
           authd_log_init(stderr, AUTHD_LOG_ERROR);
           (void)fclose(lf);
       } }
+    /* V4-356 (F750): the limit is one uid's, not the listener's. The test is
+     * one user, so the rule is asked directly, on a listener nothing above
+     * used. */
+    { const size_t li = 1;
+      const uint64_t t = 5000000u;
+      CHECK(evloop_peer_reject_may_say(&ev, li, 1000u, t) == 1
+            && evloop_peer_reject_may_say(&ev, li, 1000u, t + 1u) == 0,
+            "peer-uid: a uid is named once, and not again a millisecond later (F746)");
+      CHECK(evloop_peer_reject_may_say(&ev, li, 1001u, t + 1u) == 1,
+            "peer-uid: another uid refused in the same second is named too (F750)");
+      CHECK(evloop_peer_reject_may_say(&ev, li, UINT64_MAX, t + 1u) == 1
+            && evloop_peer_reject_may_say(&ev, li, UINT64_MAX, t + 2u) == 0,
+            "peer-uid: a peer whose uid the kernel did not give is one more, limited like the rest (F750)");
+      CHECK(evloop_peer_reject_may_say(&ev, li, 1000u, t + 999u) == 0
+            && evloop_peer_reject_may_say(&ev, li, 1000u, t + 1000u) == 1
+            && evloop_peer_reject_may_say(&ev, li, 1000u, t + 1001u) == 0,
+            "peer-uid: the first uid is named again a full second after its last line, and then not for another (F750)");
+      /* 1000 (t+1000), 1001 (t+1), none (t+1): five more fill the eight.
+       * (The clock given never goes back: the loop's does not.) */
+      int filled = 1;
+      for (uint64_t u = 2000u; u < 2005u; u++) {
+          filled = filled && evloop_peer_reject_may_say(&ev, li, u, t + 1000u) == 1;
+      }
+      CHECK(filled, "peer-uid: eight different uids are each named at once (F750)");
+      CHECK(evloop_peer_reject_may_say(&ev, li, 3000u, t + 1000u) == 0,
+            "peer-uid: a ninth within the second is not: eight lines a second for a listener is the bound (F750)");
+      CHECK(evloop_peer_reject_may_say(&ev, li, 3000u, t + 1001u) == 1
+            && evloop_peer_reject_may_say(&ev, li, 2000u, t + 1001u) == 0
+            && evloop_peer_reject_may_say(&ev, li, 3000u, t + 1002u) == 0
+            && evloop_peer_reject_may_say(&ev, li, 1000u, t + 1999u) == 0,
+            "peer-uid: once the uid named longest ago is a second old the ninth takes ITS place, and no other's (F750)");
+      CHECK(evloop_peer_reject_may_say(&ev, 2, 1000u, t + 1001u) == 1,
+            "peer-uid: and another listener keeps its own list (F750)"); }
     evloop_close_all(&ev);
     listener_close(&lfd, path);
     (void)rmdir(dir);

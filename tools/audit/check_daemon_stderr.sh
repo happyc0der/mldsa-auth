@@ -18,8 +18,11 @@
 # then found a spelling for.
 #
 # What is left for this script:
-#   1. that those two lines are in authd_main.c, after the last #include,
-#      before the first function, and not inside a conditional;
+#   1. that those two lines are in authd_main.c's code with nothing but
+#      #include lines before them, and no #include, #pragma or #undef
+#      after; and (1b) that the file reaches no output stream past them by
+#      a name the poison does not cover: a descriptor, <err.h>, assert,
+#      standard output (one call excepted);
 #   2. that no OTHER source or header the daemon could be built from names
 #      standard error at all (a plain search of the code, comments and
 #      literals removed), except the files listed in ALLOW by their full
@@ -35,25 +38,17 @@ REPO="${1:-.}"
 F="$REPO/apps/authd/authd_main.c"
 [ -f "$F" ] || { echo "FAIL: $F not found"; exit 1; }
 
-# ---- 1. the poison is in place -------------------------------------------
-UNDEF=$(grep -n '^#undef stderr$' "$F" | head -1 | cut -d: -f1)
-POISON=$(grep -n '^#pragma GCC poison stderr perror psignal syslog vsyslog$' "$F" | head -1 | cut -d: -f1)
-[ -n "$UNDEF" ] && [ -n "$POISON" ] && [ "$POISON" -eq $((UNDEF + 1)) ] \
-    || { echo "FAIL: authd_main.c does not have '#undef stderr' followed by '#pragma GCC poison stderr perror psignal syslog vsyslog'"; exit 1; }
-LASTINC=$(grep -n '^[ \t]*#[ \t]*include' "$F" | tail -1 | cut -d: -f1)
-FIRSTFN=$(grep -nE '^(static|int|void|uint[0-9]+_t|size_t|const)[ \t].*\(' "$F" | head -1 | cut -d: -f1)
-[ -n "$LASTINC" ] && [ -n "$FIRSTFN" ] && [ "$LASTINC" -lt "$UNDEF" ] && [ "$POISON" -lt "$FIRSTFN" ] \
-    || { echo "FAIL: the poison in authd_main.c must come after the last #include (line ${LASTINC:-?}) and before the first function (line ${FIRSTFN:-?}); it is at line $POISON"; exit 1; }
-OPEN=$(awk -v p="$POISON" 'NR < p && /^[ \t]*#[ \t]*if/ { d++ } NR < p && /^[ \t]*#[ \t]*endif/ { d-- } END { print d + 0 }' "$F")
-[ "$OPEN" -eq 0 ] || { echo "FAIL: the poison in authd_main.c is inside a preprocessor conditional"; exit 1; }
-if grep -n '^[ \t]*#[ \t]*pragma.*\(pop\|diagnostic\)' "$F" > /dev/null 2>&1; then
-    echo "FAIL: authd_main.c has a #pragma that could switch a diagnostic off; none is expected"; exit 1
-fi
-
-# ---- 2. nobody else names it ---------------------------------------------
-PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog)[ \t]*\('
-strip() {   # comments out, the insides of string and character literals emptied
+# C source in; the same lines out with comments removed and the insides of
+# string and character literals emptied. A line that ends in a backslash is
+# joined to the next first, as the compiler does (F749: `std\<newline>err`,
+# and a string continued over a line, hid what followed), and an empty line
+# is put out in its place so that line numbers hold.
+strip() {
     awk '
+    { if (held != "") { $0 = held $0; held = "" ; pad++ }
+      if (substr($0, length($0), 1) == "\\") { held = substr($0, 1, length($0) - 1); next }
+      print; while (pad > 0) { print ""; pad-- } }
+    END { if (held != "") print held }' "$1" | awk '
     BEGIN { st = 0 }
     {
         line = $0; out = ""; n = length(line); i = 1
@@ -76,8 +71,54 @@ strip() {   # comments out, the insides of string and character literals emptied
         }
         if (st == 1 || st == 2) { st = 0 }
         print out
-    }' "$1"
+    }'
 }
+
+# ---- 1. the poison is in place -------------------------------------------
+# Looked for in the CODE (comments and literals removed): the two lines
+# inside a comment passed this check and poisoned nothing (F748).
+MAINC=$(mktemp)
+LIST=$(mktemp)
+trap 'rm -f "$MAINC" "$LIST"' EXIT
+strip "$F" > "$MAINC" || { echo "FAIL: $F could not be read"; exit 1; }
+UNDEF=$(grep -n '^#undef stderr[[:space:]]*$' "$MAINC" | head -1 | cut -d: -f1)
+POISON=$(grep -n '^#pragma GCC poison stderr perror psignal syslog vsyslog[[:space:]]*$' "$MAINC" | head -1 | cut -d: -f1)
+[ -n "$UNDEF" ] && [ -n "$POISON" ] && [ "$POISON" -eq $((UNDEF + 1)) ] \
+    || { echo "FAIL: authd_main.c does not have, in its code, '#undef stderr' followed by '#pragma GCC poison stderr perror psignal syslog vsyslog'"; exit 1; }
+# Nothing but preprocessor lines and blank lines may come before it: no
+# function, no declaration, nothing that could use the name first. (The
+# check used to guess what the first function looks like, and a function
+# whose type it did not know went above the poison unseen: F748.) And no
+# #define there: a macro defined before the poison may expand to the name
+# after it.
+EARLY=$(awk -v p="$UNDEF" 'NR < p && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*#[[:space:]]*include[[:space:]]/' "$MAINC" | head -3)
+[ -z "$EARLY" ] || { echo "FAIL: authd_main.c has something other than #include lines before the poison:"; printf '%s\n' "$EARLY" | sed 's/^/    /'; exit 1; }
+LATE=$(awk -v p="$POISON" 'NR > p && /^[[:space:]]*#[[:space:]]*(include|pragma|undef)/' "$MAINC" | head -3)
+[ -z "$LATE" ] || { echo "FAIL: authd_main.c has an #include, #pragma or #undef after the poison:"; printf '%s\n' "$LATE" | sed 's/^/    /'; exit 1; }
+# cli_common.h's inline helpers print with fprintf(stderr, ...): the tools
+# include it, the daemon's main must not.
+# Read in the file as written (the stripped copy has no file names left in
+# it), and in every header, since a header may bring it in for the file.
+if grep -q '^[[:space:]]*#[[:space:]]*include[[:space:]]*"\(.*/\)\{0,1\}cli_common.h"' "$F"; then
+    echo "FAIL: authd_main.c includes cli_common.h, whose inline functions write to standard error"; exit 1
+fi
+VIA=$(find "$REPO/apps" "$REPO/src" -type f -name '*.h' -exec grep -l '^[[:space:]]*#[[:space:]]*include[[:space:]]*"\(.*/\)\{0,1\}cli_common.h"' {} + | head -3 || true)
+[ -z "$VIA" ] || { echo "FAIL: a header includes cli_common.h, so a file that includes that header has its standard-error helpers:"; printf '%s\n' "$VIA" | sed 's/^/    /'; exit 1; }
+
+# ---- 1b. what the poison does not name, in the same file (F748) -----------
+# The compiler refuses five names. Standard error can be reached without
+# any of them, and this file was exempt from the search below: by
+# descriptor, by another spelling of the symbol, through <err.h> or
+# assert, or on standard output, which is the same journal under systemd.
+# One call to standard output is expected, --check-config's "is valid".
+MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|warn|warnx|verr|vwarn|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf)[[:space:]]*\('
+BADM=$(awk -v p="$POISON" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MPAT" | head -5 || true)
+[ -z "$BADM" ] || { echo "FAIL: authd_main.c reaches an output stream past the poison by a name the poison does not cover:"; printf '%s\n' "$BADM" | sed 's/^/    /'; exit 1; }
+NPRINTF=$(awk -v p="$POISON" 'NR > p' "$MAINC" | grep -cE '(^|[^A-Za-z0-9_])printf[[:space:]]*\(' || true)
+[ "$NPRINTF" -eq 1 ] || { echo "FAIL: authd_main.c has $NPRINTF calls to printf past the poison; exactly one is expected (--check-config's line on standard output)"; exit 1; }
+
+# ---- 2. nobody else names it ---------------------------------------------
+PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog)[[:space:]]*\('
 # By full path. Why each may name standard error:
 #   apps/authd/authd_main.c    checked in part 1: after its includes it cannot
 #   apps/authd/authd_log.c     the log itself
@@ -101,12 +142,10 @@ apps/demo_app.c
 apps/auth_client.c
 apps/auth_server.c
 '
-LIST=$(mktemp)
-trap 'rm -f "$LIST"' EXIT
 : > "$LIST"
 for d in apps src; do
     # A find that fails (a directory that cannot be read) fails the gate.
-    find "$REPO/$d" -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' -o -name '*.cc' \) ! -name '._*' >> "$LIST" \
+    find "$REPO/$d" -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' -o -name '*.inl' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) ! -name '._*' >> "$LIST" \
         || { echo "FAIL: could not list the sources under $d"; exit 1; }
 done
 # The tree is the one expected: these are in the list, or the gate is not looking at it.

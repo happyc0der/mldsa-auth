@@ -56,6 +56,16 @@
  * a browser tab cannot count on a quarter of a gigabyte. */
 #define CC_KDF_OPS_BROWSER 3u
 #define CC_KDF_MEM_BROWSER (64u * 1024u * 1024u)
+/* F753 (V4-356): the most a browser will SPEND opening an envelope. The
+ * cost is read from the envelope's own header, and the format allows ten
+ * passes over a gigabyte (keyfile.h): a page handed such an envelope -- from
+ * a store another script on the origin wrote, or a file the user was told
+ * to import -- grew the module to a gigabyte, which a module never gives
+ * back, and held the tab for as long as that takes. The ceiling admits
+ * what this project seals: the browser's 3 / 64 MiB and the CLI's
+ * 3 / 256 MiB. */
+#define CC_KDF_OPS_BROWSER_MAX 4u
+#define CC_KDF_MEM_BROWSER_MAX (256u * 1024u * 1024u)
 
 /* Spec 3.1: "d1" || 32 lowercase hex characters, plus a NUL. */
 #define CC_HANDLE_LEN 34u

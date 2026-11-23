@@ -113,6 +113,26 @@ export class AuthdClient {
     return s;
   }
 
+  // F744 (V4-353): a server key and id are refused by their length before
+  // they are copied in. Half a gigabyte of "server key" was copied into the
+  // module to be refused there, and a module's memory, once grown, is never
+  // given back. (16 KiB: several times any ML-DSA public key with its header
+  // and id. 1024 characters: the module's own limit on the id is far less,
+  // and refuses the rest under its own name.) F752 (V4-356): the id had no
+  // bound, and login() had neither. Returns the id's bytes.
+  pinSizes(serverPub, serverId) {
+    if (!(serverPub instanceof Uint8Array) || typeof serverId !== 'string') {
+      throw new TypeError('the server key must be bytes and the server id a string');
+    }
+    if (serverPub.length > 16384) {
+      throw new Error('the server key is longer than a server key can be');
+    }
+    if (serverId.length > 1024) {
+      throw new Error('the server id is longer than a server id can be');
+    }
+    return te.encode(serverId);
+  }
+
   // F736 (V4-352): is this a server key the module will pin? Throws the
   // module's own refusal if not. For a caller about to STORE a pin: enroll
   // stored whatever bytes it was handed and asked the site to enroll the
@@ -123,17 +143,10 @@ export class AuthdClient {
       throw new TypeError('the server key must be bytes and the server id a string');
     }
     const M = this.M;
-    // F744 (V4-353): refused by its length before it is copied in. Half a
-    // gigabyte of "server key" was copied into the module to be refused
-    // there, and a module's memory, once grown, is never given back.
-    // (16 KiB: several times any ML-DSA public key with its header and id.)
-    if (serverPub.length > 16384) {
-      throw new Error('the server key is longer than a server key can be');
-    }
+    const sid = this.pinSizes(serverPub, serverId);
     const h = M._ccw_new();
     if (!h) { throw new Error('ccw_new failed'); }
     try {
-      const sid = te.encode(serverId);
       let ps = 0, pi = 0, st;
       try {
         ps = this.put(serverPub); pi = this.put(sid);
@@ -177,6 +190,7 @@ export class AuthdClient {
   async login({ url, serverId, serverPub, handle, envelope, passphrase, keepForRotate = false,
                 now = () => performance.now(), timeoutMs = 20000 }) {
     const M = this.M;
+    const sid = this.pinSizes(serverPub, serverId);   // F752: before anything is allocated
     const h = M._ccw_new();
     if (!h) { throw new Error('ccw_new failed'); }
     const tick = () => { if (M._ccw_set_now_ms(h, now()) !== 0) { throw new Error('clock refused'); } };
@@ -189,7 +203,6 @@ export class AuthdClient {
     const session = new Session(this, h, frame, cap, outLen, tick, timeoutMs);
     try {
       tick();
-      const sid = te.encode(serverId);
       let ps = 0, pi = 0, st;
       try {
         ps = this.put(serverPub); pi = this.put(sid);

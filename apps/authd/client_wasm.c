@@ -139,6 +139,25 @@ int ccw_pin_server_pub(ccw_t *h, const uint8_t *pub, uint32_t pub_len, const uin
     return st;
 }
 
+/* F753: an envelope whose header asks for more than the browser's ceiling
+ * is refused before the KDF, as one outside the format's own bounds is. A
+ * header that does not parse is left to the call that follows, which
+ * refuses it under its own name. */
+static int envelope_cost_refused(ccw_t *h, const uint8_t *ek, uint32_t ek_len)
+{
+    keyfile_header_t hdr;
+    if (ek == NULL || keyfile_parse_header(ek, ek_len, &hdr) != KEYFILE_OK) {
+        return 0;
+    }
+    if (hdr.opslimit <= CC_KDF_OPS_BROWSER_MAX && hdr.memlimit <= (uint64_t)CC_KDF_MEM_BROWSER_MAX) {
+        return 0;
+    }
+    h->cc.diag.kind = CC_DIAG_KEYS;
+    h->cc.diag.stage = "envelope";
+    h->cc.diag.detail = keyfile_status_name(KEYFILE_ERR_PARAMS);
+    return 1;
+}
+
 int ccw_login_begin(ccw_t *h, const uint8_t *hid, uint32_t hid_len,
                     const uint8_t *ek, uint32_t ek_len, const char *pass, uint32_t pass_len,
                     int keep_for_rotate, uint8_t *out, uint32_t out_cap, uint32_t *out_len)
@@ -149,6 +168,9 @@ int ccw_login_begin(ccw_t *h, const uint8_t *hid, uint32_t hid_len,
     *out_len = 0u;
     if (!h->clock_set) {
         return CC_ERR_STATE;   /* the session's clock is the caller's: set it first */
+    }
+    if (envelope_cost_refused(h, ek, ek_len)) {
+        return CC_ERR_KEYFILE;
     }
     size_t n = 0;
     const cc_status_t st = cc_login_begin_sealed(&h->cc, hid, hid_len, ek, ek_len, pass, pass_len,
@@ -210,6 +232,9 @@ int ccw_rotate_build(ccw_t *h, const uint8_t *new_ek, uint32_t new_ek_len,
         return CC_ERR_ARG;
     }
     *out_len = 0u;
+    if (envelope_cost_refused(h, new_ek, new_ek_len)) {
+        return CC_ERR_KEYFILE;
+    }
     mldsa_keypair_t nkp;
     memset(&nkp, 0, sizeof nkp);
     cc_status_t st = cc_open_sealed(new_ek, new_ek_len, h->cc.hid, h->cc.hid_len, pass, pass_len, &nkp,

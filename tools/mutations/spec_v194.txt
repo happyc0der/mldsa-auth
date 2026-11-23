@@ -1,0 +1,7 @@
+RU1|^test_authd_evloop$|peer-uid: another uid refused in the same second is named too (F750)
+RU2|^test_authd_evloop$|peer-uid: a ninth within the second is not: eight lines a second for a listener is the bound (F750)
+RU3|^test_authd_evloop$|peer-uid: the first uid is named again a full second after its last line, and then not for another (F750)
+RU4|^authd_e2e$|the foreign-uid daemon did not stop with 'stopped accepted=1' and 'stopped refused=2' (F750)
+RU5|^test_client_wasm$|cost: an envelope that asks for five passes is refused before the KDF runs (F753)
+RU6|^test_client_wasm$|cost: and one that asks for a kibibyte over 256 MiB (F753)
+RU7|^test_client_wasm$|cost: a new key's envelope that asks for five passes is refused before the KDF runs (F753)

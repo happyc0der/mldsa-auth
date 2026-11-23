@@ -203,6 +203,33 @@ int main(void)
                             sizeof g_out, &n) == CC_ERR_KEYFILE && n == 0u && ccw_state(h) == CC_STATE_PINNED &&
                 strncmp(ccw_diag_detail(h), "decryption-failed", 17) == 0,
             "refuse: a wrong passphrase sends nothing, says decryption-failed, and may be retried");
+      /* V4-356 (F753): the envelope's header names its own Argon2id cost, and
+       * the format allows ten passes over a gigabyte. The browser's module
+       * spends at most 4 passes and 256 MiB: more is refused BEFORE the KDF
+       * (the detail says so; having run it, the answer is decryption-failed,
+       * since the header is authenticated). Bytes 10..13 are the passes and
+       * 14..21 the memory, big-endian (keyfile.h). */
+      { static uint8_t ek2[sizeof d.ek];
+        memcpy(ek2, d.ek, d.ek_len);
+        CHECK(ek2[10] == 0u && ek2[11] == 0u && ek2[12] == 0u && ek2[13] == (uint8_t)CC_KDF_OPS_BROWSER
+              && ek2[18] == 0x04u && ek2[19] == 0u,
+              "cost: the envelope's header is where this test takes it to be (3 passes, 64 MiB)");
+        ek2[13] = 5u;
+        CHECK(ccw_login_begin(h, (const uint8_t *)d.hid, CC_HANDLE_LEN, ek2, d.ek_len, PASS, (uint32_t)strlen(PASS), 0,
+                              g_out, sizeof g_out, &n) == CC_ERR_KEYFILE && n == 0u && ccw_state(h) == CC_STATE_PINNED &&
+                  strcmp(ccw_diag_detail(h), "kdf-parameters-out-of-range") == 0,
+              "cost: an envelope that asks for five passes is refused before the KDF runs (F753)");
+        ek2[13] = (uint8_t)CC_KDF_OPS_BROWSER;
+        ek2[18] = 0x10u; ek2[20] = 0x04u;                  /* 256 MiB and 1 KiB */
+        CHECK(ccw_login_begin(h, (const uint8_t *)d.hid, CC_HANDLE_LEN, ek2, d.ek_len, PASS, (uint32_t)strlen(PASS), 0,
+                              g_out, sizeof g_out, &n) == CC_ERR_KEYFILE && n == 0u &&
+                  strcmp(ccw_diag_detail(h), "kdf-parameters-out-of-range") == 0,
+              "cost: and one that asks for a kibibyte over 256 MiB (F753)");
+        ek2[20] = 0u;                                       /* 256 MiB, 3 passes: the CLI's own */
+        CHECK(ccw_login_begin(h, (const uint8_t *)d.hid, CC_HANDLE_LEN, ek2, d.ek_len, PASS, (uint32_t)strlen(PASS), 0,
+                              g_out, sizeof g_out, &n) == CC_ERR_KEYFILE && n == 0u &&
+                  strncmp(ccw_diag_detail(h), "decryption-failed", 17) == 0,
+              "cost: at the CLI's 3 passes and 256 MiB the KDF is run (the canary: the header changed, so it does not open)"); }
       ccw_free(h); fs_wipe(&fs); }
     { ccw_t *h = ccw_new();
       fs_t fs;
@@ -260,6 +287,15 @@ int main(void)
         (void)fs_send_login_code(&fs, 0u, 1, 1u, g_in, sizeof g_in, &m);
         (void)ccw_on_record(h, g_in, (uint32_t)m, code, &flags, &exp);
         uint32_t n = 0;
+        /* F753: the NEW key's envelope is held to the same ceiling, and a
+         * refusal leaves the session able to rotate. */
+        { static uint8_t nek2[sizeof nx.ek];
+          memcpy(nek2, nx.ek, nx.ek_len);
+          nek2[13] = 5u;
+          n = 99u;
+          CHECK(ccw_rotate_build(h, nek2, nx.ek_len, PASS, (uint32_t)strlen(PASS), g_out, sizeof g_out, &n) == CC_ERR_KEYFILE
+                && n == 0u && strcmp(ccw_diag_detail(h), "kdf-parameters-out-of-range") == 0,
+                "cost: a new key's envelope that asks for five passes is refused before the KDF runs (F753)"); }
         const int bs = ccw_rotate_build(h, nx.ek, nx.ek_len, PASS, (uint32_t)strlen(PASS), g_out, sizeof g_out, &n);
         uint8_t pt[SESSION_MAX_PLAINTEXT_BYTES];
         size_t pl = 0;

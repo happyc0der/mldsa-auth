@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.121, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355)
+# mldsa-authd — deployment specification (v1.122, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1460,7 +1460,8 @@ quantity.
 
 ```
 event slot cmd uid pid id idh fp src detail
-accepted closed codes count logins need port revoked superseded tickets tokens
+accepted closed codes count logins need port refused revoked superseded tickets
+tokens
 ```
 
 `id` is escaped — any byte outside printable ASCII, and the space and `=`
@@ -1485,13 +1486,18 @@ the user (erratum 129): every change of a user's status is in the journal
 with whom it was about. `tokens-revoked` (erratum 170) is written when a
 `REVOKE-TOKENS` ended at least one token: once at WARN with the user's id,
 and once at INFO with `count=`, as `device-revoked` is with `closed=`. A
-`device-revoked` line is written when a device is revoked, and not when
-`REVOKE-DEVICE` names one that was revoked already, which the daemon
-answers OK and writes nothing for (erratum 170).
+`device-revoked` line is written when `REVOKE-DEVICE` revokes a device, and
+not when it names one that was revoked already, which the daemon answers OK
+and writes nothing for (erratum 170). A `RECOVERY-USE` with `revoke=all`
+writes no `device-revoked` line: its `recovery-use` lines name the user and
+give the number of devices it revoked as `revoked=` (erratum 171).
 `listener-peer-rejected` names the uid it refused
-and the listener (erratum 137), and is written at most once a second for a
-listener, however many peers it refuses in that second (erratum 170): `uid=` the kernel reported, or
-`uid=unavailable`, and a detail of `admin`, `site` or `proxy`.
+and the listener (erratum 137), and is written at most once a second for
+one uid on one listener, and at most eight times a second for a listener,
+however many peers it refuses (errata 170, 171): `uid=` the kernel reported, or
+`uid=unavailable`, and a detail of `admin`, `site` or `proxy`. Every refused
+peer is counted, written or not, and the count is the daemon's last line,
+`stopped refused=` (erratum 171).
 
 **Never logged** (Req 13): keys, shared secrets, session keys, signatures,
 nonces, raw frames, decrypted payloads, tokens, login codes, recovery codes,
@@ -2810,3 +2816,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 170 | 15 | The event `tokens-revoked`, with the user's id and a count; `device-revoked` is not written for a device that was revoked already; `listener-peer-rejected` is written at most once a second for a listener | `REVOKE-TOKENS` left no record of whose tokens were ended, where this section says every revocation is logged with whom it was about (F745). A repeated `REVOKE-DEVICE` wrote a WARN line for a revocation the store did not make and the audit chain does not have (F742). And a peer in a socket's group and not on its list could write a WARN line for every connection it made, three thousand in a tenth of a second (F746) |
+
+### Revision v1.122 (V4-356)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 171 | 15 | `listener-peer-rejected` is limited for each uid on a listener, to eight lines a second for the listener; the field `refused`, on a third `stopped` line, counts every peer a uid list turned away; a `RECOVERY-USE revoke=all` is said to write `recovery-use ... revoked=` and no `device-revoked` line | Erratum 170's limit was the listener's alone: one user's stream of refusals took the one line a second, and another uid refused on the same socket was never named; and the count of refusals, which that erratum's reason leaned on, was in no line (F750). Erratum 170 also said a `device-revoked` line is written "when a device is revoked", which has never been so for the devices `revoke=all` revokes (F751) |

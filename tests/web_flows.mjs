@@ -408,7 +408,21 @@ try {
       // (More than the module's whole memory, so that copying it in would have to grow it.)
       try { client.checkServerPin(new Uint8Array(client.M.HEAPU8.length + 32 * 1024 * 1024), want.serverId); } catch { long = true; }
       check(long && client.M.HEAPU8.length === before,
-            `enroll: a server key far too long is refused before it is copied into the module (memory ${before} -> ${client.M.HEAPU8.length}) (F744)`); }
+            `enroll: a server key far too long is refused before it is copied into the module (memory ${before} -> ${client.M.HEAPU8.length}) (F744)`);
+      // F752: the id has a length too, and login() holds both to the same.
+      const huge = 'x'.repeat(client.M.HEAPU8.length + 32 * 1024 * 1024);
+      let longId = false;
+      try { client.checkServerPin(want.serverPub, huge); } catch (e) { longId = /server id is longer/.test(e.message); }
+      check(longId && client.M.HEAPU8.length === before,
+            `enroll: a server id far too long is refused before it is copied into the module (memory ${before} -> ${client.M.HEAPU8.length}) (F752)`);
+      let loginKey = '', loginId = '';
+      try { await client.login({ url: 'ws://127.0.0.1:1/', serverId: want.serverId, handle: 'd1' + '0'.repeat(32),
+                                 serverPub: new Uint8Array(client.M.HEAPU8.length + 32 * 1024 * 1024),
+                                 envelope: new Uint8Array(8), passphrase: 'x' }); } catch (e) { loginKey = e.message; }
+      try { await client.login({ url: 'ws://127.0.0.1:1/', serverId: huge, handle: 'd1' + '0'.repeat(32),
+                                 serverPub: want.serverPub, envelope: new Uint8Array(8), passphrase: 'x' }); } catch (e) { loginId = e.message; }
+      check(/server key is longer/.test(loginKey) && /server id is longer/.test(loginId) && client.M.HEAPU8.length === before,
+            `login: a server key or id far too long is refused before it is copied into the module ('${loginKey}', '${loginId}', memory ${before} -> ${client.M.HEAPU8.length}) (F752)`); }
 
     // F739 (V4-352): the module's source of randomness cannot be replaced.
     { let replaced = true;

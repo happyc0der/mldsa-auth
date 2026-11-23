@@ -15,8 +15,8 @@ ST = "apps/authd/store/store.c"
 LA = "apps/authd/localapi.c"
 
 M = {
-    "RH1": [(EV, "            if (!ev->peer_reject_said[li] ||\n",
-             "            if (1 || !ev->peer_reject_said[li] || /* MUTATION RH1 */\n")],
+    "RH1": [(EV, "            if (evloop_peer_reject_may_say(ev, li, (peer.uid",
+             "            if (1 || /* MUTATION RH1 */ evloop_peer_reject_may_say(ev, li, (peer.uid")],
     "RH2": [(LA, "    if (n > 0u) {\n        authd_log_slot_id(AUTHD_LOG_WARN, \"tokens-revoked\", slot->index, user, user_len);\n",
              "    if (0 && n > 0u) { /* MUTATION RH2 */\n        authd_log_slot_id(AUTHD_LOG_WARN, \"tokens-revoked\", slot->index, user, user_len);\n")],
     "RH3": [(ST, "        if (revoked == 1) { return STORE_OK; }\n    }\n    /* F742 (V4-355)",

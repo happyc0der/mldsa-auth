@@ -2401,6 +2401,12 @@ while kill -0 "$DPID" 2>/dev/null; do
 done
 wait "$DPID" 2>/dev/null || true
 DPID=""
+# F750 (V4-356): the refusals are counted where an operator can read the
+# count, since not every one has a line: two here, admin.sock's and
+# site.sock's, beside one accepted connection (the login).
+grep -q '^info event=stopped accepted=1$' "$TMP/foreign.log" && grep -q '^info event=stopped refused=2$' "$TMP/foreign.log" \
+    || { cat "$TMP/foreign.log"; fail "the foreign-uid daemon did not stop with 'stopped accepted=1' and 'stopped refused=2' (F750)"; }
+echo "PASS: E2E: the daemon's last lines count the peers its uid lists refused (F750)"
 
 # ------------------------------------------ a real second user (V4-22b)
 #

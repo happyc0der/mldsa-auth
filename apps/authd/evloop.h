@@ -119,8 +119,18 @@ typedef void (*evloop_on_close_fn)(void *user, authd_slot_t *slot);
 /* F746 (V4-355): a listener says `listener-peer-rejected` at most this
  * often. Every refused connection was a WARN line: a user in a socket's
  * group and not on its list wrote three thousand in a tenth of a second.
- * Each is still counted (closed_peer). */
+ * Each is still counted (closed_peer).
+ *
+ * F750 (V4-356): at most this often FOR ONE UID. The limit was the
+ * listener's alone, so the same user's stream of refusals took the one
+ * line a second and another uid refused on that socket -- the stranger an
+ * operator would want to hear of -- was never named. Each listener
+ * remembers the last EVLOOP_PEER_REJECT_UIDS uids it named; one it does not
+ * remember is named at once, in the place of the one named longest ago,
+ * unless every place was used within the interval: that many lines a
+ * second for a listener is the bound. The count is in `stopped refused=`. */
 #define EVLOOP_PEER_REJECT_LOG_MS 1000u
+#define EVLOOP_PEER_REJECT_UIDS   8u
 /* F306: connections taken from ONE listener in one turn of the loop, accepted
  * or refused. The loop used to accept until the queue was empty; a peer that
  * refilled it as fast as it was emptied (refusals at a full pool cost it
@@ -201,8 +211,13 @@ typedef struct {
     /* F205: per listener, whether accept() is in a run of failures (so the
      * run is logged once) and when it is next polled. */
     int      accept_failing[AUTHD_MAX_LISTENERS];
-    int      peer_reject_said[AUTHD_MAX_LISTENERS];        /* F746 */
-    uint64_t peer_reject_said_ms[AUTHD_MAX_LISTENERS];
+    /* F746, F750: whom each listener last named as refused, and when.
+     * `uid` is the kernel's, or (uint64_t)-1 where it gave none. */
+    struct {
+        int      used;
+        uint64_t uid;
+        uint64_t said_ms;
+    } peer_reject[AUTHD_MAX_LISTENERS][EVLOOP_PEER_REJECT_UIDS];
     uint64_t accept_retry_ms[AUTHD_MAX_LISTENERS];
     /* F307: the listener a connection was last accepted on. The next turn
      * starts with the one after it, so a listener whose queue is never empty
@@ -296,6 +311,10 @@ void evloop_stop(evloop_t *ev);
 int evloop_drained(const evloop_t *ev);
 
 size_t evloop_active(const evloop_t *ev);
+/* F746, F750: is this refusal of `uid` (UINT64_MAX: the kernel named none)
+ * on listener `li` to be written? Records that it was, when it answers 1.
+ * The loop's own; declared for the test, which cannot be eight users. */
+int evloop_peer_reject_may_say(evloop_t *ev, size_t li, uint64_t uid, uint64_t now_ms);
 
 /* F728 (V4-351): how long the caller may wait in evloop_run_once() before
  * something is due: `cap_ms`, or the time to the nearest armed deadline if

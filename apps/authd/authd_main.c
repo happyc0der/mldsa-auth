@@ -52,8 +52,11 @@
  * line a daemon held on its standard error waits in for ever, and five
  * steps were spent finding the ones that were left (F710, F723). A script
  * looked for them from V4-349 to V4-352, three times rewritten, and each
- * review found a spelling it did not know. The compiler knows them all:
- * a use of the name, in a macro or out of one, is now an error.
+ * review found a spelling it did not know. The compiler knows these five
+ * names in every spelling: a use of one, in a macro or out of one, is now
+ * an error. It does not know the stream by any other name (F748: the
+ * descriptor's number, <err.h>, assert, standard output), and for those
+ * tools/audit/check_daemon_stderr.sh reads this file from here down.
  * (#undef first: on some systems it is a macro, and poisoning one warns.) */
 #undef stderr
 #pragma GCC poison stderr perror psignal syslog vsyslog
@@ -871,6 +874,9 @@ int main(int argc, char **argv)
 
     authd_log_num(AUTHD_LOG_INFO, "stopped", "accepted", ev.accepted);
     authd_log_num(AUTHD_LOG_INFO, "stopped", "logins", app.logins_issued);
+    /* F750: every peer a listener's uid list turned away, said or not
+     * (listener-peer-rejected is written at most once a second for a uid). */
+    authd_log_num(AUTHD_LOG_INFO, "stopped", "refused", ev.closed_peer);
     evloop_close_all(&ev);
     authd_sd_notify_close();   /* the kept notification socket (F437) */
     listener_close(&tcp_fd, NULL);

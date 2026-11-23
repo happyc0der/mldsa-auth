@@ -164,6 +164,10 @@ jobs:
       - name: The daemon writes nothing to standard error past its signal handlers except through the log
         run: sh tools/audit/check_daemon_stderr.sh "$PWD"
 
+      # V4-356 (F748): and that check refuses each thing it says it refuses.
+      - name: The standard-error check fails on every one of its controls
+        run: sh tools/audit/check_daemon_stderr_controls.sh "$PWD"
+
       # V4-14b: the review packet's claim map. Every security requirement of
       # both specifications has an entry, and everything an entry cites -- a
       # test's check text, a mutation, a ProVerif query, a CI job -- still

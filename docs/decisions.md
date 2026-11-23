@@ -23352,3 +23352,91 @@ Spec v1.121: erratum 170 (15).
 Counts: 859 mutations, 163 campaigns, 910 anchors; 747 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.121, 170 errata; 66 tests.
+
+## V4-356: what the ninety-sixth review found (F748 to F753)
+
+**The ninety-sixth review** read V4-353 to V4-355, the check on the
+daemon's standard error for the fifth time, and the browser's module under
+ASan. No High or Medium. Four Low, three Info; two of them are one finding
+here (F748). It found sound: the daemon's output before its log is ready,
+`claim()` in the reference site, the store's and the handlers' paths, and
+errata 169 and 170 apart from one sentence.
+
+- **F748, F749 (Low, Info): the check on standard error, again.** This is
+  the fifth step on that script (F723, F729, F733, F740). V4-353 gave the
+  property to the compiler for five names, and said in a comment that the
+  compiler "knows them all". It does not know descriptor 2, `<err.h>`,
+  `assert`, `__stderrp` or standard output, and the script skipped the one
+  file the poison is in. The script now reads that file from the poison
+  down for those, with the single `printf` of `--check-config` counted;
+  finds the poison in the code and not in a comment; allows only
+  `#include` lines above it; and joins lines at a backslash before reading
+  any file.
+  - What is different this time is that **the controls are committed**.
+    Each rewrite was shown red by hand and the showing was thrown away, so
+    the next rewrite could lose a case and nothing would say so.
+    `tools/audit/check_daemon_stderr_controls.sh` makes twenty edits to a
+    scratch copy and fails unless the check refuses each under the message
+    named for it. CI's `spec` job runs it.
+  - It found a defect in this step's own first draft: the test for
+    `cli_common.h` read the copy with literals emptied, where the file's
+    name is one, and passed the control.
+  - The limits that remain are at the script's head and unchanged: a
+    descriptor reached through a copy, a `FILE*` got some other way in
+    ANOTHER file, a name built by a macro there, and what liboqs and the C
+    library print on their way out.
+- **F750 (Low).** The refusal limit is one uid's on one listener, eight
+  uids remembered, and the count is in `stopped refused=`. Eight colluding
+  users in a socket's group could still hide a ninth for as long as they
+  keep at it; the count shows that something is being refused.
+- **F751 (Low).** The sentence was wrong and the daemon was left as it is.
+  A line for each handle a recovery revokes would be a change to what an
+  operator reads on every `revoke=all`; the recovery's own lines already
+  name the user and the number.
+- **F752 (Info).** One function for both lengths, used by both callers.
+- **F753 (Info).** A ceiling of 4 passes and 256 MiB on what the browser's
+  module will spend opening an envelope. The figure is the command-line
+  tool's own sealing cost, so a key made there still opens in a browser
+  that can afford it.
+
+Campaign v194: RU1 (a refused uid is taken for whichever was named first),
+RU2 (a listener names any number of new uids in a second), RU3 (a uid named
+again does not start its second again), RU4 (the last line gives the
+accepted count as the refused), RU5 (a login opens an envelope at whatever
+cost its header asks), RU6 (the ceiling is on the passes only), RU7 (a
+rotation opens the new envelope at whatever cost). Re-anchored: v193's RH1,
+whose line moved into the new rule.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`, both KILLED: J1, `login()` does not test the lengths; J2, the
+id has no bound.
+
+Every committed mutation of a file this step changes was listed by
+`tools/mutations/list_mutants.py`, with every mutation whose test is the
+end-to-end script: 187. Of the 119 end-to-end ones, 81 are killed by a
+check that comes before this step's new one in the script and cannot be
+affected by it; the other 38 and the 68 unit-test ones, 106, were run by
+hand on macOS, each after its test passed on the clean tree. 102 were
+killed by the check their campaign names. The four that were not:
+
+- v190 RE1 does not compile, which is its kill and is listed as such.
+- v99 LF1, v65 RU1 and v75 KC5 survive on macOS and are killed on Linux:
+  LF1 in a leg that needs Linux's `prlimit`, RU1 and KC5 in the leg that
+  needs a second real user. None of the three is
+  affected by the new check, which passes under each.
+
+One of the 102, v128 SF3, was first reported void: the wrapper built the
+daemon for a mutation of the admin tool. Built for the right target it is
+killed by its named check.
+
+**The Linux run, before the push:** built with gcc in the container; the
+check on standard error, its twenty controls, the vocabulary gate and the
+anchor check passed; the daemon's nine test programs and the module's
+passed twice; and each of RU1 to RU7, built in, failed its test by the
+line its campaign names.
+
+Spec v1.122: erratum 171 (15).
+
+Counts: 866 mutations, 164 campaigns, 917 anchors; 753 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
