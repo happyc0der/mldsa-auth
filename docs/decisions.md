@@ -23247,3 +23247,59 @@ Counts: 854 mutations, 162 campaigns, 905 anchors; 747 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636, F644, F742, F745 and F746 open); spec v1.120, 169
 errata; 66 tests.
+
+## V4-354: cleanup after V4-352 and V4-353
+
+- **V4-345 to V4-352 are on main**, since 2026-11-23, on V4-352's runs:
+  CI 45217010776 (16/16) and nightly 45217015683 (177/177, 162 campaigns),
+  each on its first attempt. `docs/review/REPRODUCE.md` cites them. It had
+  cited the runs on `48061ef` (V4-344) through eight steps, correctly:
+  that was main for all of them.
+- **What kept eight steps off main for three days of work**, in the order
+  it happened, so that the next reader does not have to rebuild it from
+  eight entries:
+  - V4-345, V4-347 and V4-348 each failed CI on Linux for something macOS
+    does not do: a datagram queue's length (F708), `/bin/sh` being a link
+    (F715), the default memlock limit printing a warning (F723). Since
+    V4-349 the tree is built and its tests run in a Linux container
+    before a push, and since V4-350 so are a step's new mutants where the
+    kernel has a say.
+  - V4-349's nightly could not have passed: a test that could not fail
+    on Linux (F726). V4-350's and V4-351's each failed on one line of an
+    old campaign that named a check the step had made pass (v104 RK1,
+    v48a D1). The hand reruns that should have found those were made from
+    a list that silently left out every campaign older than V4-70;
+    `tools/mutations/list_mutants.py` is the list now.
+  - From Friday afternoon to Monday morning nothing ran: a waiting
+    command lost the network and exited.
+  - None of it was a defect on main. The daemon's own defects in the
+    stretch were found by reviews of commits that had not landed: the
+    stop that did not stop (F679 to F723), the store's "created" (F668),
+    the deadline (F728).
+- V4-353's runs were under way when this was written: CI 45233592467,
+  nightly 45233596616.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3), F636 and F644. F742, F745 and F746 are
+  open for the next bug step, not for the owner. Also open, in the
+  entries named: whether F420's overlap should be refused rather than
+  warned of; the questions in V4-246's, V4-274's, V4-281's, V4-284's,
+  V4-285's, V4-291's and V4-300's entries; a budget for `RECOVERY-ISSUE`
+  (F39, F625, F630, and F741's figures), whether `BACKUP` should refuse a
+  destination outside the store's directory (F624), and whether Caddy
+  offers browsers WebSocket over HTTP/2 (F622), in V4-332's; whether the
+  pending ledger's lifetime should be extended by time the daemon was
+  blocked (F629), in V4-333's; a least age for a key before `ROTATE`
+  (F644) and a list of translator prefixes (F651), in V4-338's; a lock
+  beside the store (F678), in V4-342's; a deadline carried by a request
+  on the site socket (F696) and whether the daemon should follow a
+  symbolic link at `store_path` (F694), in V4-345's; a refusal the client
+  can authenticate (F706), in V4-347's; whether the passphrase fields
+  should invite a password manager (F738), in V4-352's; whether a new
+  issue of recovery codes should clear a lockout (F747) and whether Req
+  4.2 should say "held" (F725), in V4-353's.
+
+No code, test, campaign or spec change.
+
+Counts: 854 mutations, 162 campaigns, 905 anchors; 747 findings (the 20
+above open); spec v1.120, 169 errata; 66 tests.
