@@ -9,6 +9,7 @@ Usage: mutate_v199.py <repo> <ID>
     RZ3   the same for the proxy's Unix socket.
     RZ4   the same for the site socket.
     RZ5   the same for the admin socket.
+    RZ7   (V4-363) every failure to bind a Unix path is in-use.
     RZ6   every preamble that is not a client's address counts as refused,
           so one that names no client, with a bad request behind it, is a
           protocol failure.
@@ -29,6 +30,8 @@ M = {
              "            authd_log_say(\"mldsa-authd: site socket %s: %s\\n\", site_path, listener_status_name(ls));\n            socket_in_use = 0; /* MUTATION RZ4 */ (void)(ls == LISTENER_ERR_IN_USE);")],
     "RZ5": [(MA, "            authd_log_say(\"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            socket_in_use = (ls == LISTENER_ERR_IN_USE);",
              "            authd_log_say(\"mldsa-authd: admin socket %s: %s\\n\", admin_path, listener_status_name(ls));\n            socket_in_use = 0; /* MUTATION RZ5 */ (void)(ls == LISTENER_ERR_IN_USE);")],
+    "RZ7": [(LI, "        return (berr == EADDRINUSE) ? LISTENER_ERR_IN_USE : LISTENER_ERR_BIND;\n",
+             "        return (berr == EADDRINUSE || 1) ? LISTENER_ERR_IN_USE : LISTENER_ERR_BIND; /* MUTATION RZ7 */\n")],
     "RZ6": [(CI, "c->proxy.done && c->proxy.result == PROXY_V2_ERR) ? 1 : 0;",
              "c->proxy.done && c->proxy.result != PROXY_V2_OK) ? 1 : 0; /* MUTATION RZ6 */")],
 }

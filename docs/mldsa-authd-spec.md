@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.124, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362)
+# mldsa-authd — deployment specification (v1.125, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -609,7 +609,7 @@ is what separates the site from the proxy (erratum 134):
 | `LOGOUT token=` | `OK deleted=0\|1` |
 | `REVOKE-TOKENS user= [handle=]` | `OK count=` |
 | `REVOKE-DEVICE handle= [reason=]` | `OK` / `ERR code=unknown\|not-permitted` |
-| `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` / `ERR code=too-many` |
+| `LIST-DEVICES user=` | `OK count=` then `DEVICE handle= label= status= enrolled= last_seen= fp=` … `END` (`fp=` is the device's active key's and is empty for a device that has none, which a revoked device does not: erratum 174) / `ERR code=too-many` |
 | `RECOVERY-ISSUE user= count=` | `OK codes=c1,c2,…` (returned once, never again) / `ERR code=invalid\|user-disabled\|not-permitted` |
 | `RECOVERY-USE user= code= [revoke=all\|none]` | `OK ticket= expires=` / `ERR code=invalid\|locked\|user-disabled\|not-permitted\|busy` |
 | `PING` | `OK version= schema= uptime=` |
@@ -1642,10 +1642,14 @@ file that nothing is listening on, which is what a killed daemon leaves, is
 replaced. The daemon tells the two apart by connecting to the path, so the
 running daemon sees one connection opened and closed. This is a look, not a
 lock: two daemons started at the same instant over a leftover socket can both
-find it dead. A `listen_port` that something is already listening on is
-refused with the same status, `loopback listener: in-use`, as is a socket
-path that something binds between the daemon's look and its own bind
-(erratum 173); any other failure to bind is `bind`.
+find it dead. A `listen_port` that something is already listening on at
+127.0.0.1 is refused with the same status, `loopback listener: in-use`, as
+is a socket path that something binds between the daemon's look and its
+own bind (erratum 173); any other failure to bind is `bind`. On Linux a
+listener on the wildcard address holds the port too, and the refusal may
+come when the daemon listens and not when it binds; it is `in-use` there
+as well. macOS lets the daemon bind 127.0.0.1 beside a listener on the
+wildcard address, and it starts (erratum 174).
 
 Configuration is a `key = value` file at `/etc/mldsa-authd/authd.conf`,
 mode 0600 **owned by the service user**, which reads it; `/etc/mldsa-authd/`
@@ -2843,3 +2847,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 173 | 16 | A `listen_port` that is taken is refused as `in-use`, not `bind`, and so is a socket path bound by something else between the daemon's look and its bind; a start that created the store and failed so leaves the store, as erratum 172 has it for a Unix socket found listened on | With `listen_port` set, which the example configuration does, the port is opened before any Unix socket, so it is what a second daemon of the configuration finds taken. That start said `bind`, which erratum 172's rule did not cover, and removed the store the first daemon was serving (F777) |
+
+### Revision v1.125 (V4-363)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 174 | 8, 16 | A taken `listen_port` that Linux reports when the daemon listens, not when it binds, is `in-use` too; the sentence erratum 173 added is about a listener at 127.0.0.1, with what Linux and macOS each do about one on the wildcard address. `LIST-DEVICES` gives an empty `fp=` for a device with no active key | With `SO_REUSEADDR` Linux lets two sockets bind one address while neither listens and refuses the second `listen`: two daemons started together could meet there, where the status was `listen` and the store was removed (F783). Erratum 173's sentence was not true on macOS for a wildcard listener (F785). The listing has always answered so for a revoked device and §8 did not say it (F786) |

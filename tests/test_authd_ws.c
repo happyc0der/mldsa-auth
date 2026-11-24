@@ -1875,6 +1875,24 @@ static void test_listener_paths(void)
     CHECK(lp_count(live) && listener_open_unix(live, 4, LISTENER_MODE_PRIVATE, &fd) == LISTENER_OK && fd >= 0,
           "paths: a stale socket left by a crash is replaced, so it cannot wedge the service -- the canary");
 
+    /* V4-363 (F784): `in-use` is for an address that is taken and for
+     * nothing else. A path that cannot be bound because its directory
+     * cannot be written is `bind`: nothing holds it, and a start that fails
+     * so removes the store it created. (Root can write any directory.) */
+    if (geteuid() != 0) {
+        char rodir[320], ropath[340];
+        snprintf(rodir, sizeof rodir, "%s/ro", dir);
+        snprintf(ropath, sizeof ropath, "%s/x.sock", rodir);
+        int rfd = -1;
+        const int made = mkdir(rodir, 0555);
+        const listener_status_t rr = listener_open_unix(ropath, 4, LISTENER_MODE_PRIVATE, &rfd);
+        CHECK(made == 0 && rr == LISTENER_ERR_BIND && rfd == -1 && strcmp(listener_status_name(rr), "bind") == 0,
+              "paths: a path whose directory cannot be written is refused as bind, not as in-use (F784)");
+        if (rfd >= 0) { (void)close(rfd); }
+        (void)chmod(rodir, 0755);
+        (void)rmdir(rodir);
+    }
+
     /* listener_accept_ex's allowlist bound */
     { uid_t allow[LISTENER_MAX_ALLOW + 1u];
       for (size_t i = 0; i < LISTENER_MAX_ALLOW + 1u; i++) { allow[i] = getuid(); }

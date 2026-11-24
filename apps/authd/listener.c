@@ -82,8 +82,13 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
         return in_use ? LISTENER_ERR_IN_USE : LISTENER_ERR_BIND;
     }
     if (listen(s, backlog) != 0) {
+        /* F783: with SO_REUSEADDR, Linux lets two sockets bind one address
+         * while neither listens, and refuses the second listen(): two
+         * daemons started together can meet HERE and not at bind. It is
+         * the same answer. */
+        const int in_use = (errno == EADDRINUSE);
         (void)close(s);
-        return LISTENER_ERR_LISTEN;
+        return in_use ? LISTENER_ERR_IN_USE : LISTENER_ERR_LISTEN;
     }
     if (set_nonblock_cloexec(s) != 0) {
         (void)close(s);

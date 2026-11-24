@@ -23825,3 +23825,58 @@ Spec v1.124: erratum 173 (16).
 Counts: 883 mutations, 169 campaigns, 934 anchors; 782 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.124, 173 errata; 66 tests.
+
+## V4-363: what the hundred-and-second review found (F783 to F786), and a cleanup
+
+**The hundred-and-second review** read V4-362, ran a held start against a
+held port on both systems, and drove the built daemon's admin and site
+sockets with hostile input under ASan (macOS) and ASan, UBSan and LSan
+(Linux): line lengths at every boundary, NULs, invalid UTF-8, pipelining,
+half-closes, replies never read, every length boundary of every command.
+No crash, no sanitizer report, no leak, a clean exit each time. No High or
+Medium. One Low, three Info.
+
+- **F783 (Low): the third place two starts can meet.** V4-361 covered a
+  Unix socket found listened on, V4-362 a bind refused; on Linux the
+  refusal can come at `listen`. Each step fixed the case its review ran.
+  This one was found by reading the kernel's rule, and the fix is by the
+  same reading: there is no further call between `socket` and a listening
+  port at which "taken" can be reported.
+  - The practical chance is small (the review staged it with a shim and
+    did not win it with two daemons), and the fix is one line.
+  - It has no test, like the Unix path's race in V4-362. Three lines now
+    turn a taken address into `in-use`; two of the three are tested.
+  - The lock (F678) would make all of these moot, and stays the owner's.
+- **F784 (Info).** The other direction: `bind` is still `bind`. One check,
+  one mutant.
+- **F785 (Info).** The spec's sentence, qualified. Nothing is changed for
+  macOS: it is where the project is developed, not where the daemon is
+  deployed.
+- **F786 (Info): recorded, and a question for the owner.** An empty
+  `fp=` for a revoked device is what the listing has always answered.
+  Giving the last key's fingerprint instead would help an operator say
+  which device a row was; it would also change a reply that sites parse.
+  §8 now says what the daemon does. Recommendation: leave it.
+
+Not pursued: the review's build of `test_authd_ws` with gcc's ASan and
+UBSan in its container was still running `limiter_flood` after six
+minutes and was killed. CI's sanitizer jobs run that test on Linux on
+every push and pass it; the review's flags were its own.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair main is on: CI
+45362482661 (16/16) and nightly 45362485922 (183/183, 168 campaigns) on
+`8f027a6`, which is V4-361 and carries V4-359 and V4-360 with it (they
+were held off main for F772 and landed together). V4-362's pair was
+under way when this was written.
+
+Campaign v199 gains RZ7 (every failure to bind a Unix path is in-use).
+
+**The sweep, on the ASan tree:** the 17 mutants in `listener.c`. 16 KILLED under their named checks, RZ7 and RZ1 among them; one SURVIVED, v65 RU1, which needs a second real user and is killed in the nightly. `authd_main.c` and the loop are not changed by this step.
+
+**The Linux run, before the push:** an Ubuntu container as uid 1000, Debug with gcc. The stderr gate passes and its script refuses all 83 controls; the vocabulary gate passes; the daemon's ten tests pass twice. RZ7 fails the new check in `test_authd_ws`, and RZ1 to RZ6 fail theirs as in V4-362. The daemon builds in Release with gcc and with clang. Eight warnings, as before.
+
+Spec v1.125: erratum 174 (8, 16).
+
+Counts: 884 mutations, 169 campaigns, 935 anchors; 786 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.125, 174 errata; 66 tests.

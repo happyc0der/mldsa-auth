@@ -4,3 +4,4 @@ RZ3|^authd_e2e$|a start that failed because another daemon was listening on its 
 RZ4|^authd_e2e$|a start that failed because another daemon was listening on its site or admin socket removed the store it had created (F780)
 RZ5|^authd_e2e$|a start that failed because another daemon was listening on its site or admin socket removed the store it had created (F780)
 RZ6|^test_authd_ws$|proxy-loop: a preamble with no client address and a bad upgrade in one write is refused for the address it lacks, not closed as a protocol failure (F781)
+RZ7|^test_authd_ws$|paths: a path whose directory cannot be written is refused as bind, not as in-use (F784)
