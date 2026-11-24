@@ -2766,6 +2766,7 @@ SG=0
 python3 - "$DAEMON" "$TMP/fs.conf" "$TMP/fs/new.sqlite3" "$TMP/fsp.sock" > "$TMP/sig.txt" 2>&1 <<'PYEOF' || SG=$?
 import fcntl, os, resource, signal, socket, sqlite3, subprocess, sys, time
 daemon, conf, store, psock = sys.argv[1:5]
+CONF = conf
 CREATED = "created a new, empty store"
 STOPPED = "stopped by a signal before it had started"
 kids = []
@@ -2775,7 +2776,7 @@ def gone():
         try: os.unlink(store + s)
         except FileNotFoundError: pass
 
-def spawn(stderr, env=None, alarm_blocked=False, short_memlock=False):
+def spawn(stderr, env=None, alarm_blocked=False, short_memlock=False, conf=None):
     # alarm_blocked (F712, F719): started as from a shell that had SIGALRM
     # and SIGTERM blocked.
     # short_memlock (F723): with a soft RLIMIT_MEMLOCK of 1 MiB, so that the
@@ -2791,7 +2792,7 @@ def spawn(stderr, env=None, alarm_blocked=False, short_memlock=False):
             if hard != resource.RLIM_INFINITY and hard < want:
                 want = hard
             resource.setrlimit(resource.RLIMIT_MEMLOCK, (want, hard))
-    p = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL,
+    p = subprocess.Popen([daemon, "--config", conf or CONF], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=stderr, env=env,
                          preexec_fn=pre if (alarm_blocked or short_memlock) else None)
     kids.append(p)
@@ -2811,12 +2812,12 @@ def fill(w):
     fcntl.fcntl(w, fcntl.F_SETFL, fl)         # the daemon's writes must BLOCK
     return n
 
-def held(until_path):
+def held(until_path, conf=None):
     """A daemon stopped in its first line of output, on a pipe already full.
     `until_path` is what shows it got that far: a file it makes just before."""
     r, w = os.pipe()
     filled = fill(w)
-    p = spawn(w, short_memlock=True)
+    p = spawn(w, short_memlock=True, conf=conf)
     os.close(w)
     end = time.monotonic() + 30
     while not os.path.exists(until_path):
@@ -3189,28 +3190,46 @@ def main():
     # which that other daemon would be serving and has not yet written to,
     # is not removed. (The store looks exactly as a creation leaves it, so
     # F681's question cannot tell.)
-    gone()
-    try: os.unlink(psock)
-    except FileNotFoundError: pass
-    p, r, filled = held(store)
-    other = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    other.bind(psock)
-    other.listen(8)
-    got = drain(r, p)
-    rc = ended(p, limit=20)
-    os.close(r)
-    text = got[filled:].decode("utf-8", "replace")
-    there = os.path.exists(store)
-    other.close()
-    try: os.unlink(psock)
-    except FileNotFoundError: pass
-    gone()
-    if "in-use" not in text or rc != 1:
-        print(f"PEER: the held start did not fail on the socket something else was listening on (exit {rc}): this leg shows nothing\n{text}")
-        return 9
-    if not there or "removed again" in text or "may be using it; it is left in place" not in text:
-        print(f"PEER: exit {rc}, store there: {there}:\n{text}"); return 14
-    print("PEER: a start that failed because another daemon was listening left the store it had created")
+    # V4-362 (F777, F780): and the same on each of the other sockets of the
+    # configuration, the loopback port among them. With listen_port set,
+    # which the example configuration does, the port is the first thing a
+    # second daemon finds taken; that start said `bind` and removed the
+    # store. Each socket has its own line in the daemon and its own flag.
+    base = psock[:-len("p.sock")]
+    for what, said, code in (("proxy", "unix listener", 14), ("site", "site socket", 15),
+                             ("admin", "admin socket", 15), ("port", "loopback listener", 16)):
+        gone()
+        for c in "psa":
+            try: os.unlink(base + c + ".sock")
+            except FileNotFoundError: pass
+        use = conf
+        if what == "port":
+            other = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            other.bind(("127.0.0.1", 0))
+            use = conf + ".port"
+            with open(conf) as f, open(use, "w") as g:
+                g.write(f.read() + f"listen_port = {other.getsockname()[1]}\n")
+        p, r, filled = held(store, use)
+        if what != "port":
+            other = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            other.bind(base + {"proxy": "p", "site": "s", "admin": "a"}[what] + ".sock")
+        other.listen(8)
+        got = drain(r, p)
+        rc = ended(p, limit=20)
+        os.close(r)
+        text = got[filled:].decode("utf-8", "replace")
+        there = os.path.exists(store)
+        other.close()
+        for c in "psa":
+            try: os.unlink(base + c + ".sock")
+            except FileNotFoundError: pass
+        gone()
+        if said not in text or "in-use" not in text or rc != 1:
+            print(f"PEER({what}): the held start did not fail `in-use` at its {said} (exit {rc}): this leg shows nothing\n{text}")
+            return code if what == "port" else 9
+        if not there or "removed again" in text or "may be using it; it is left in place" not in text:
+            print(f"PEER({what}): exit {rc}, store there: {there}:\n{text}"); return code
+    print("PEER: a start that failed because another daemon was listening, on any of its three sockets or its port, left the store it had created")
     return 0
 
 rc = 9
@@ -3242,6 +3261,8 @@ case "$SG" in
 12) cat "$TMP/sig.txt"; fail "a stop that found the daemon waiting in a log line closed the log, to a reader that was there (F720)" ;;
 13) cat "$TMP/sig.txt"; fail "stop signals that kept coming kept a held daemon from stopping (F727)" ;;
 14) cat "$TMP/sig.txt"; fail "a start that failed because another daemon was listening on its socket removed the store it had created, which that daemon may be serving (F773)" ;;
+15) cat "$TMP/sig.txt"; fail "a start that failed because another daemon was listening on its site or admin socket removed the store it had created (F780)" ;;
+16) cat "$TMP/sig.txt"; fail "a start that failed because its loopback port was taken did not say in-use, or removed the store it had created, which the daemon holding the port may be serving (F777)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"

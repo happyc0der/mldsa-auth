@@ -67,6 +67,16 @@ ctl stdout-macro "evloop.h: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/e
 for name in psiginfo putchar_unlocked putc_unlocked err errx errc verr verrx verrc warn warnx warnc vwarn vwarnx vwarnc error error_at_line assert abort perror psignal syslog vsyslog vprintf puts putchar; do
   ctl "other[$name]" "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { '"$name"'(0); }\n")'
 done
+# F778: the six calls F775 added are searched for in authd_main.c too (and
+# poisoned there); F782: the four other names of the two streams, in
+# another source. Each had a control only on the other side.
+for name in error error_at_line errc warnc verrc vwarnc; do
+  ctl "main[$name]" "names an output stream past the poison" "$E"'w(s[:i]+"static void zz(void) { '"$name"'(0); }\n"+s[i:])'
+  ctl "poison2[$name]" "does not name .$name." "$E"'w(s[:k]+s[k:i].replace(" '"$name"'\n"," \n").replace(" '"$name"' "," ")+s[i:])'
+done
+for name in __stderrp STDERR_FILENO __stdoutp STDOUT_FILENO; do
+  ctl "othername[$name]" "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic int zz(void) { return (int)sizeof('"$name"'); }\n")'
+done
 ctl symlink "zl.c: [0-9]" 'import os, pathlib; pathlib.Path("zz.txt").write_text("void zz(void) { fputs(\"x\", stderr); }\n"); os.symlink(os.path.abspath("zz.txt"), "apps/authd/zl.c")'
 ctl crlf-split "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_bytes(); p.write_bytes(s+b"\nstatic void zz(void) { fputs(\"x\", std\\\r\nerr); }\n")'
 # A file that cannot be read fails the check (not for root, who can read it).

@@ -1,0 +1,6 @@
+RZ1|^test_authd_ws$|paths: a loopback port that something is listening on is refused as in-use (F777)
+RZ2|^authd_e2e$|a start that failed because its loopback port was taken did not say in-use, or removed the store it had created, which the daemon holding the port may be serving (F777)
+RZ3|^authd_e2e$|a start that failed because another daemon was listening on its socket removed the store it had created, which that daemon may be serving (F773)
+RZ4|^authd_e2e$|a start that failed because another daemon was listening on its site or admin socket removed the store it had created (F780)
+RZ5|^authd_e2e$|a start that failed because another daemon was listening on its site or admin socket removed the store it had created (F780)
+RZ6|^test_authd_ws$|proxy-loop: a preamble with no client address and a bad upgrade in one write is refused for the address it lacks, not closed as a protocol failure (F781)

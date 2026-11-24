@@ -23763,3 +23763,65 @@ Spec v1.123: erratum 172 (16).
 Counts: 877 mutations, 168 campaigns, 928 anchors; 776 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.123, 172 errata; 66 tests.
+
+## V4-362: what the hundred-and-first review found (F777 to F782)
+
+**The hundred-and-first review** read V4-359 to V4-361, ran a held start
+against a second daemon with and without `listen_port`, on macOS and in
+the Linux container, and read `ratelimit.c`, `recovery.c`, `base32.c`,
+`tokens.c`, `keyfile.c`, `sdnotify.c` and `authd_log.c` whole. No High or
+Medium. One Low, five Info.
+
+- **F777 (Low): V4-361's fix stopped short of the configuration the
+  project ships.** The entry for F773 said a socket `in-use` is the case
+  two starts of one unit produce. With `listen_port` set they meet at the
+  port first, and the port's failure was `bind`. The sentence was written
+  from the run that was made, which had no port; the example configuration
+  was not read against it.
+  - The fix is in the listener: a bind refused because the address is
+    taken is `in-use`, for the port and for a Unix path. `bind` remains
+    for everything else. The line an operator reads changes from
+    `loopback listener: bind` to `loopback listener: in-use` for a taken
+    port; the runbook's entry is renamed and says so.
+  - A Unix path taken between the look and the bind has no test. It is
+    the same line of code as the port's, which has two.
+  - What stays the owner's is unchanged: F678, the lock. Two daemons whose
+    configurations share a store and no socket or port are still not
+    caught.
+- **F778, F782 (Info): the output gate, within V4-357's decision.** Both
+  are the plain spelling in a place the last step did not look: the six
+  names in the file the search skips, and four names with a control on
+  one side only. 83 controls.
+- **F779 (Info): written down, not changed.** A store left because
+  something that is not this configuration's daemon held the socket is an
+  empty store at `store_path`, left by a line that names it. Removing it
+  would be F773 again whenever the holder IS a daemon, and the daemon
+  cannot tell which it is. The runbook now says what the operator should
+  check.
+- **F780, F781 (Info): tests.** Each was shown by a mutant that passed;
+  both mutants are committed.
+
+It found sound, by reading: the failed-push block across one-read and
+split-read cases, for an admitted, a refused and a no-address preamble;
+no counter counted twice; nothing written before the preamble settles;
+every other exit of a failed start. By running: v198's mutants killed on
+macOS; on Linux 2,000 of 2,000 closes of a Unix socket with input unread
+delivered the whole reply (F776).
+
+Campaign v199: RZ1 (a loopback port that is taken is a failure of bind
+like any other), RZ2 to RZ5 (a start that found its port, its proxy
+socket, its site socket or its admin socket in use does not note it, and
+removes the store it created), RZ6 (every preamble that is not a client's
+address counts as refused).
+
+The controls of `check_daemon_stderr.sh`: 83, all refused.
+
+**The sweep, on the ASan tree:** 94 mutants: every one in `listener.c`, `conn_io.c` and `authd_main.c` (63 of the older ones against the end-to-end script), v197's and v198's in `evloop.c`, and this step's six. 88 KILLED under their named checks, RZ1 to RZ6 among them; four do not compile, which is their check (v190 RE1, v195 RV1 to RV3); two SURVIVED, both known and both killed in the nightly: v99 LF1, which needs Linux's `prlimit`, and v65 RU1, which needs a second real user. RZ2 to RZ5 were run after the others, because the sweep's list was made while they were written through a helper the enumerator does not read; they are literal entries now.
+
+**The Linux run, before the push:** an Ubuntu container as uid 1000, Debug with gcc. The stderr gate passes and its script refuses all 83 controls; the vocabulary gate passes; the daemon's ten tests pass twice. RV1 to RV3 and each of the six new names written in `main` are refused by the compiler as poisoned, `error` and `error_at_line` being glibc's. RZ1 and RZ6 fail their checks in `test_authd_ws`; RZ2 to RZ5 fail theirs in `authd_e2e`. The daemon builds in Release with gcc and with clang. The build's eight warnings are the ones every run since V4-358 has had.
+
+Spec v1.124: erratum 173 (16).
+
+Counts: 883 mutations, 169 campaigns, 934 anchors; 782 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.124, 173 errata; 66 tests.

@@ -1536,7 +1536,25 @@ static void test_proxy_through_loop(void)
         if (fd3 >= 0) { (void)close(fd3); }
         (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
         CHECK(wrote3 && d.ev.closed_protocol == proto2 + 1u && d.app.refused_no_address == noaddr2,
-              "proxy-loop: a connection that sends no preamble is closed as a protocol failure and is not reported as a preamble with no client address (F772)"); } }
+              "proxy-loop: a connection that sends no preamble is closed as a protocol failure and is not reported as a preamble with no client address (F772)"); }
+      /* V4-362 (F781): and a preamble that WAS read and names no client,
+       * with the same bad upgrade behind it in one write, is the refusal
+       * it is when the two come apart: reported as no client address, not
+       * as a protocol failure. Only "no preamble" was pinned, so "refused"
+       * could be widened to every preamble but an address's unnoticed. */
+      { uint8_t lb[32 + sizeof bad];
+        size_t ln2 = mk_proxy(lb, 0x20u, 0x00u, NULL, 0u, NULL, 0u);
+        memcpy(lb + ln2, bad, sizeof bad - 1u); ln2 += sizeof bad - 1u;
+        const uint64_t proto3 = d.ev.closed_protocol, noaddr3 = d.app.refused_no_address,
+                       addr3 = d.ev.closed_refused_addr;
+        const int fd4 = h_dial_unix(d.ws_path);
+        const int wrote4 = fd4 >= 0 && write(fd4, lb, ln2) == (ssize_t)ln2;
+        (void)H_PUMP_UNTIL(&d, d.ev.closed_protocol > proto3 || d.ev.closed_refused_addr > addr3);
+        if (fd4 >= 0) { (void)close(fd4); }
+        (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        CHECK(wrote4 && d.app.refused_no_address == noaddr3 + 1u && d.ev.closed_refused_addr == addr3 + 1u
+              && d.ev.closed_protocol == proto3,
+              "proxy-loop: a preamble with no client address and a bad upgrade in one write is refused for the address it lacks, not closed as a protocol failure (F781)"); } }
 
     /* The limiter refuses BEFORE the ServerHello signature. The pending ledger
      * is the pin: handshake_responder_create_server_hello is what inserts into
@@ -1811,6 +1829,18 @@ static void test_listener_paths(void)
             stat(live, &ts) == 0 && S_ISSOCK(ts.st_mode),
             "paths: a symlink at the socket path is refused, not followed or removed, and its target is untouched"); }
     (void)unlink(lnk);
+
+    /* V4-362 (F777): a loopback port that is taken is in use too, and says
+     * so; it said `bind`, like every other failure of bind, and the start
+     * that met it removed a store the port's holder might be serving. */
+    { int a1 = -1, a2 = -1;
+      uint16_t got = 0;
+      const listener_status_t r1 = listener_open_loopback(0, 4, &a1, &got);
+      const listener_status_t r2 = (r1 == LISTENER_OK && got != 0u) ? listener_open_loopback(got, 4, &a2, NULL) : LISTENER_ERR_ARG;
+      CHECK(r1 == LISTENER_OK && r2 == LISTENER_ERR_IN_USE && a2 == -1,
+            "paths: a loopback port that something is listening on is refused as in-use (F777)");
+      if (a1 >= 0) { (void)close(a1); }
+      if (a2 >= 0) { (void)close(a2); } }
 
     /* F204: a socket something is LISTENING on is another daemon's, not a
      * leftover. It is refused, and it stays that listener's: the same file,

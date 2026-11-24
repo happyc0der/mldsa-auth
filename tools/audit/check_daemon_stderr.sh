@@ -119,7 +119,7 @@ EARLY=$(awk -v p="$UNDEF" 'NR < p && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:
 # compiler's now too: a second #pragma GCC poison, which must name every
 # word in NEED, each of them #undef'd first, with nothing but those
 # #undef lines between the two pragmas.
-NEED='stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort'
+NEED='stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort error error_at_line errc warnc verrc vwarnc'
 POISON2=$(awk -v p="$POISON" 'NR > p && /^#pragma GCC poison / { print NR; exit }' "$MAINC")
 [ -n "$POISON2" ] || { echo "FAIL: authd_main.c has no second '#pragma GCC poison' after the first"; exit 1; }
 P2LINE=$(sed -n "${POISON2}p" "$MAINC")
@@ -150,7 +150,7 @@ VIA=$(find "$REPO/apps" "$REPO/src" \( -type f -o -type l \) \( -name '*.h' -o -
 # The poison is the check. This is the search V4-356 added, kept as a
 # second look at the plain spellings; it is a search and has a search's
 # limits.
-MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|warn|warnx|verr|vwarn|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf|printf)[[:space:]]*\('
+MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|errc|warn|warnx|warnc|verr|verrx|verrc|vwarn|vwarnx|vwarnc|error|error_at_line|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf|printf)[[:space:]]*\('
 BADM=$(awk -v p="$POISON2" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MPAT" | head -5 || true)
 [ -z "$BADM" ] || { echo "FAIL: authd_main.c names an output stream past the poison (the compiler should have refused it too):"; printf '%s\n' "$BADM" | sed 's/^/    /'; exit 1; }
 

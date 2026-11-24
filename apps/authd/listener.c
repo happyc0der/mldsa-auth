@@ -73,8 +73,13 @@ listener_status_t listener_open_loopback(uint16_t port, int backlog, int *fd, ui
     a.sin_port = htons(port);
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   /* loopback only, never 0.0.0.0 */
     if (bind(s, (const struct sockaddr *)&a, sizeof a) != 0) {
+        /* F777: the port is taken. Said apart from every other failure of
+         * bind, because it is what a second daemon of this configuration
+         * meets first when listen_port is set, and the start that meets it
+         * must not then remove a store the first may be serving. */
+        const int in_use = (errno == EADDRINUSE);
         (void)close(s);
-        return LISTENER_ERR_BIND;
+        return in_use ? LISTENER_ERR_IN_USE : LISTENER_ERR_BIND;
     }
     if (listen(s, backlog) != 0) {
         (void)close(s);
@@ -185,10 +190,13 @@ listener_status_t listener_open_unix(const char *path, int backlog, mode_t mode,
      * a link either). */
     const mode_t old = umask((mode_t)(0777 & ~mode));
     const int brc = bind(s, (const struct sockaddr *)&a, sizeof a);
+    const int berr = (brc != 0) ? errno : 0;
     (void)umask(old);
     if (brc != 0) {
+        /* F777: something bound the path between the look above and here.
+         * That is in use too, and not this function's socket to remove. */
         (void)close(s);
-        return LISTENER_ERR_BIND;
+        return (berr == EADDRINUSE) ? LISTENER_ERR_IN_USE : LISTENER_ERR_BIND;
     }
     {
         struct stat made;

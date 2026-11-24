@@ -115,7 +115,13 @@
 #undef __builtin_fputs
 #undef __builtin_fwrite
 #undef __builtin_abort
-#pragma GCC poison stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort
+#undef error
+#undef error_at_line
+#undef errc
+#undef warnc
+#undef verrc
+#undef vwarnc
+#pragma GCC poison stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort error error_at_line errc warnc verrc vwarnc
 
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
  * happens in the handler -- no logging, no allocation, no close(). */
@@ -681,6 +687,7 @@ int main(int argc, char **argv)
         const listener_status_t ls = listener_open_loopback(cfg.listen_port, 64, &tcp_fd, &bound);
         if (ls != LISTENER_OK) {
             authd_log_say("mldsa-authd: loopback listener: %s\n", listener_status_name(ls));
+            socket_in_use = (ls == LISTENER_ERR_IN_USE);   /* F777: the port is a socket of this configuration too */
             goto listener_failed;
         }
         /* Checked, like the two local listeners below. AUTHD_MAX_LISTENERS is

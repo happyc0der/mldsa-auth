@@ -1261,12 +1261,20 @@ Common ones, and what they actually are:
   something else narrowed it: in practice a default ACL on the socket's
   directory (`getfacl` shows `default:` lines). Remove the default ACL
   (`setfacl -k <directory>`). The unit's own runtime directory has none.
-- **`loopback listener: bind`** — another program, or a second daemon, holds
-  `listen_port` (8443 in the example) on 127.0.0.1 (F448).
+- **`loopback listener: in-use`** (`bind` before V4-362) — another program,
+  or a second daemon, holds `listen_port` (8443 in the example) on 127.0.0.1
+  (F448). `loopback listener: bind` is now any other failure to bind the
+  port: in practice a port below 1024 without the capability for it.
 - **`this start created the store, and another daemon is listening …; it is left in place`** —
-  follows an `in-use` line below, from a start that had found no store and
-  made one. Two daemons were started on one configuration. The store is the
-  running daemon's now; this start has exited 1 and removed nothing.
+  follows an `in-use` line (the two entries around this one), from a start
+  that had found no store and made one. The usual cause is two daemons
+  started on one configuration: the store is then the running daemon's, and
+  this start has exited 1 and removed nothing. If what holds the socket or
+  the port is NOT a daemon of this configuration (another program on
+  `listen_port`, another configuration that shares a socket path), nothing
+  is using the store: it is empty, it stays where it is, and the next start
+  takes it without saying that a store was created. Check `store_path`
+  before that start if this was the first start of a deployment.
 - **`unix listener …: in-use`** (also `site socket` and `admin socket`) —
   something is listening on that socket: the service is already running, or a
   second unit or a hand-started daemon uses the same configuration. The
