@@ -23653,3 +23653,49 @@ and the daemon built in a release configuration with gcc and with clang.
 Counts: 874 mutations, 167 campaigns, 925 anchors; 771 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
+
+## V4-360: cleanup after V4-355 to V4-359
+
+- **V4-355 to V4-358 are on main**, each landed on its own runs, each on
+  its first attempt: V4-355 on CI 45250989556 and nightly 45250995987
+  (178/178), V4-356 on 45291003154 and 45291008144 (179/179), V4-357 on
+  45302836263 and 45302840049 (180/180), V4-358 on 45314440688 and
+  45314443785 (181/181, 166 campaigns). `docs/review/REPRODUCE.md` cites
+  the last pair, on `28cf742`. V4-359's runs were under way when this was
+  written: CI 45327485815, nightly 45327489487.
+- **Four reviews in one day (96 to 99), none with a High or a Medium.**
+  What they found in the daemon itself, as against its tests, scripts and
+  records, was two things: a WebSocket request buffered ahead of a Close
+  that was never answered (F760), and a refused request behind its PROXY
+  preamble that the limiter never heard of (F766). Both are in the loop's
+  handling of what one read can hold, and both were found by a harness
+  that sends the same bytes cut differently, not by reading. The hundredth
+  review is on the files the last two did not reach.
+- **The check on the daemon's output took a share of every one of the
+  four**, and of the two before them. V4-357 decided what it is: a guard
+  against a line added by mistake. The compiler holds the names in the one
+  file that has reason to print; the script searches the others for the
+  plain spellings and says at its head what it cannot see. Findings
+  against it since then (F761, F767) have been mistakes it should catch,
+  and were taken as such; a further spelling that only someone working
+  round it would write is, by that decision, not a finding.
+- **One mistake of this stretch's own, with no consequence.** V4-359's
+  verification was meant to wait for midnight, clear of the machine's
+  quiet window; the wait compared the clock against a time two minutes
+  ahead instead of the window, and the run started at once. It ended as
+  the window began.
+- Open for the owner, each with a row on the review page: F148, F156,
+  F273, F288, F309, F398, F419, F435, F436, F451 (the wording), F453,
+  F511, F549, F585, F609 (DR3), F636 and F644. Also open, in the entries
+  named: everything V4-354's entry lists; and from this stretch, whether
+  the PROXY parser should refuse the family and transport bytes its
+  specification leaves undefined (F770), and whether the loopback
+  listener should half-close and wait before closing a connection it has
+  refused, so that the refusal is not overtaken by a reset (F771), both
+  in V4-359's. Each is recorded with the reason it was left.
+
+No code, test, campaign or spec change.
+
+Counts: 874 mutations, 167 campaigns, 925 anchors; 771 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
