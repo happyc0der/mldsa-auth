@@ -525,10 +525,11 @@ static void ws_ended_settle(authd_slot_t *s)
     if (s->state != SLOT_ACTIVE || !conn_io_ws_ended(&s->io)) {
         return;
     }
-    const uint8_t *p = NULL;
-    size_t l = 0;
-    if (conn_io_out_unsent(&s->io) > 0u && conn_io_next_frame(&s->io, &p, &l)) {
-        return;                          /* served when the reply has gone */
+    /* F768: an unsent reply is reason enough. Whether a request is buffered
+     * behind it made no difference that anything could see (with none, the
+     * slot drained one write later), so the question is not asked. */
+    if (conn_io_out_unsent(&s->io) > 0u) {
+        return;                          /* what is buffered is served when the reply has gone */
     }
     s->state = SLOT_DRAINING;
 }
@@ -568,6 +569,21 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
     const conn_io_status_t cs = conn_io_push(&s->io, buf, (size_t)n);
     sodium_memzero(buf, sizeof buf);
     if (cs != CONN_IO_OK) {
+        /* F766 (V4-359): the address first, if this read settled it. A
+         * proxy's preamble and the client's request are two writes that the
+         * first read finds together, a new connection having waited a turn
+         * to be accepted; when the request behind the preamble was refused
+         * (a bad upgrade, which any client can send), the connection was
+         * closed here, before the limiter had been told of it and before a
+         * line had named its address: refusals that cost their sender
+         * nothing and that the journal could not attribute. Whatever the
+         * limiter answers, the connection is closed for the failure. */
+        if (!s->addr_settled && conn_io_proxy_settled(&s->io)) {
+            s->addr_settled = 1;
+            if (ev->on_addr != NULL) {
+                (void)ev->on_addr(ev->user, s);
+            }
+        }
         ev->closed_protocol++;
         authd_log_slot_detail(AUTHD_LOG_WARN, "closed-protocol", s->index, conn_io_status_name(cs));
         return -1;

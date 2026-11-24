@@ -1472,6 +1472,37 @@ static void test_proxy_through_loop(void)
       CHECK(n == 0 && d.app.refused_no_address == before + 1u,
             "proxy-loop: a preamble with no client address is closed, and nothing is said"); }
 
+    /* V4-359 (F766): an upgrade that is refused, in the same write as its
+     * preamble, is charged to its address like any other connection. With a
+     * burst of one, the next connection from that address is refused by the
+     * limiter. It used to be closed before the limiter had heard of it. */
+    { ratelimit_init(&d.rl, d.rl_table, RATELIMIT_ENTRIES, 1u, 1u, 10000u, 8u, d.app.now_ms);
+      char resp[512];
+      static const char bad[] =
+          "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+          "Connection: Upgrade\r\nSec-WebSocket-Key: short\r\n"
+          "Sec-WebSocket-Version: 13\r\n\r\n";
+      static uint8_t one[256 + sizeof bad];
+      size_t on = 0;
+      memcpy(one, pre, pre_len); on = pre_len;
+      memcpy(one + on, bad, sizeof bad - 1u); on += sizeof bad - 1u;
+      const uint64_t proto0 = d.ev.closed_protocol;
+      const int fd = h_dial_unix(d.ws_path);
+      const int wrote = fd >= 0 && write(fd, one, on) == (ssize_t)on;
+      (void)H_PUMP_UNTIL(&d, d.ev.closed_protocol > proto0);
+      { char sink[512];
+        for (int i = 0; fd >= 0 && i < 200; i++) {
+            h_tick(&d);
+            if (recv(fd, sink, sizeof sink, MSG_DONTWAIT) == 0) { break; }
+        } }
+      if (fd >= 0) { (void)close(fd); }
+      (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+      CHECK(wrote && d.ev.closed_protocol == proto0 + 1u,
+            "proxy-loop: an upgrade that cannot be one, sent with its preamble in one write, is closed as a protocol failure (not vacuous)");
+      const int n3 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
+      CHECK(n3 > 0 && strncmp(resp, "HTTP/1.1 429", 12) == 0,
+            "proxy-loop: and it was charged to its address: the next connection from there is refused by the limiter (F766)"); }
+
     /* The limiter refuses BEFORE the ServerHello signature. The pending ledger
      * is the pin: handshake_responder_create_server_hello is what inserts into
      * it, so an empty ledger after a refusal is proof no signature was spent --

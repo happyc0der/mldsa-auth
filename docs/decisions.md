@@ -23586,3 +23586,70 @@ in a release configuration with gcc and with clang.
 Counts: 873 mutations, 166 campaigns, 924 anchors; 765 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
+
+## V4-359: what the ninety-ninth review found (F766 to F771)
+
+**The ninety-ninth review** tested V4-358's change to the loop with a
+harness of its own, then read the local API, the protocol connection and
+the PROXY parser in full. No High or Medium. Two Low, six Info, of which
+three are one finding here (F769).
+
+- **What it ran against V4-358's fix.** Random conversations over the real
+  loop, buffers, framing and PROXY parser: an optional preamble, the
+  upgrade, up to six requests that are answered, not answered or end the
+  connection, fragments, Pings and Pongs anywhere, a Close at the end, in
+  the middle or inside a message, and bytes after it; each sent in one
+  write, a byte at a time and in random pieces. 115,559 runs on macOS and
+  19,800 on Linux without a preamble, 39,580 and 19,845 with one, and
+  8,400 with a peer that never reads: the same replies in the same order,
+  nothing after the echo, the slot always released, no spinning. The
+  harness fails the loop as it was before V4-358, and four variants of the
+  fix the review wrote for itself.
+- **F766 (Low).** The one defect in the daemon. The limiter is asked
+  before a connection is closed for a request that failed in the read
+  that settled its address. Whatever the limiter answers, the connection
+  is closed for the failure: a refusal's 429 cannot be written on a
+  connection whose framing has failed, and the count is what was wanted.
+- **F767 (Low).** The search has the calls that reach standard error
+  without its name. `write`, `dprintf` and `fdopen` by descriptor are not
+  searched for in every source: the daemon's own I/O is `write`, and a
+  search that flags every one is a search nobody reads. The script's head
+  says that this is a limit.
+- **F768 (Info).** A condition that changed nothing is removed, and with
+  it the question of whether to call it an equivalent mutant.
+- **F769 (Info).** Three sentences of V4-358, corrected by a row.
+- **F770, F771 (Info): recorded and not changed.** A lenient reading of
+  bytes that only the trusted proxy sends, every outcome of which fails
+  closed; and a reply that a reset can overtake on the operator's own
+  loopback listener, or to a peer that broke the protocol. Each row says
+  why the cure costs more than the fault.
+
+It found sound, by reading the three files in full: the bounds of every
+parse, which socket may ask what, the handling of every store error, one
+Argon2id for each refused recovery, one signature and at most three
+verifications for a connection, the handshake deadline, and the refund
+and release accounting; and by running: 400 random lifecycles behind a
+preamble that left no slot, no connection record and no count behind, and
+300,000 random preambles parsed whole and in pieces with no difference.
+
+Campaign v197: RX1 (a connection whose request fails in the read that
+settled its address is closed without the limiter being told). v196's RW2
+follows the simpler rule.
+
+The controls of `check_daemon_stderr.sh`: 46, all refused.
+
+Every committed mutation of the loop and of the connection's buffers
+was listed again by `tools/mutations/list_mutants.py`, those run by the
+end-to-end script among them: 70. On macOS, each after its test passed on
+the clean tree, all 70 were killed by the check their campaign names.
+
+**The Linux run, before the push:** built with gcc in the container; the
+check on the daemon's output and its forty-six controls, the vocabulary
+gate and the anchor check passed; the daemon's nine test programs and the
+module's passed twice; RX1 failed its test by its named line, as did RW1,
+RW2 and RW3 again; RV1, RV2 and RV3 were refused by gcc as poisoned names;
+and the daemon built in a release configuration with gcc and with clang.
+
+Counts: 874 mutations, 167 campaigns, 925 anchors; 771 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.

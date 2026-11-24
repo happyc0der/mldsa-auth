@@ -41,7 +41,8 @@
 # source by a script will be: a system header included above the poison
 # can declare a function nobody thought to name, an assembly file or a
 # linked library can write anywhere, and parts 1c and 2 are searches. Part
-# 2 does not see descriptor 2 written to by number or through a copy of it
+# 2 does not see descriptor 1 or 2 written to by number (write, dprintf,
+# fdopen: names too common to search every file for) or through a copy of it
 # in another file, a FILE* obtained some other way, or a name built by a
 # macro there. Nor does anything here cover what liboqs and the C library
 # print on their way to exit() or abort(). A reviewer of a new daemon
@@ -155,11 +156,14 @@ BADM=$(awk -v p="$POISON2" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MP
 
 # ---- 2. nobody else names it ---------------------------------------------
 # F761 (V4-358): and standard output, which under systemd is the same
-# journal. authd_main.c has been unable to name it since V4-357; every other
+# journal; and (F767, V4-359) the <err.h> family, assert, abort and
+# psiginfo, which write to standard error without naming it: warnx("debug")
+# is as plain a mistake as printf. authd_main.c has been unable to name
+# standard output since V4-357; every other
 # source could still say printf("debug ...") and pass, and a header could
 # define a macro that does, which the poison does not reach (a macro defined
 # before a name is poisoned may still expand to it).
-PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog|printf|vprintf|puts|putchar)[[:space:]]*\('
+PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|psiginfo|syslog|vsyslog|printf|vprintf|puts|putchar|putchar_unlocked|putc_unlocked|err|errx|verr|verrx|warn|warnx|vwarn|vwarnx|assert|abort)[[:space:]]*\('
 # By full path. Why each may name standard error:
 #   apps/authd/authd_main.c    checked in part 1: after its includes it cannot
 #   apps/authd/authd_log.c     the log itself

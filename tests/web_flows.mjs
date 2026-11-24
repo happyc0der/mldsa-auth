@@ -1139,7 +1139,7 @@ try {
     check(after.pending === null && isDeepStrictEqual(after, before) && said.includes('the rotation was never sent, so the new key is not kept'),
           'rotate, socket closed before ROTATE: no key is left pending, and the store is exactly as it was (F460)');
     // V4-358 (F762): a new envelope refused for its length is a failure
-    // before anything was sent, and says so; the session is still usable.
+    // before anything was sent, and says so.
     const s2 = await flows.login(client, store, params);
     const sent0 = s2.sent;
     let e2 = null;

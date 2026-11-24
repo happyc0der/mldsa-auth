@@ -13,8 +13,8 @@ EV = "apps/authd/evloop.c"
 M = {
     "RW1": [(EV, "        if (conn_io_ws_ended(&s->io) ? conn_io_out_unsent(&s->io) > 0u : conn_io_pending(&s->io) > 0u) {\n",
              "        if (conn_io_pending(&s->io) > 0u) { /* MUTATION RW1 */\n")],
-    "RW2": [(EV, "    if (conn_io_out_unsent(&s->io) > 0u && conn_io_next_frame(&s->io, &p, &l)) {\n",
-             "    if (0 && conn_io_out_unsent(&s->io) > 0u && conn_io_next_frame(&s->io, &p, &l)) { /* MUTATION RW2 */\n")],
+    "RW2": [(EV, "    if (conn_io_out_unsent(&s->io) > 0u) {\n        return;                          /* what is buffered",
+             "    if (0 && conn_io_out_unsent(&s->io) > 0u) { /* MUTATION RW2 */\n        return;                          /* what is buffered")],
     "RW3": [(EV, "                       (conn_io_ws_ended(&s->io) ? conn_io_out_unsent(&s->io) == 0u\n                                                 : conn_io_pending(&s->io) == 0u)) {\n",
              "                       (conn_io_pending(&s->io) == 0u)) { /* MUTATION RW3 */\n")],
 }
