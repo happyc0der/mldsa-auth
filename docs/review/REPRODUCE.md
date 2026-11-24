@@ -103,7 +103,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-866 committed mutations in 164 campaigns, each a defect the tests must catch
+870 committed mutations in 165 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -122,7 +122,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (917 anchors checked; 866 mutations across 164 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (921 anchors checked; 870 mutations across 165 campaigns)
 ```
 
 ## The formal model
@@ -152,7 +152,8 @@ it, audit F406.)
 ```bash
 bash tools/audit/check_spec_constants.sh .          # OK: every derived size appears in the specification
 python3 tools/audit/check_spec_vocabularies.py .    # OK: ... log events and log fields match the daemon exactly
-sh tools/audit/check_daemon_stderr.sh .             # OK: the daemon's ... lines to standard error ... all go through authd_log_say()
+sh tools/audit/check_daemon_stderr.sh .             # OK: authd_main.c cannot name standard error after its includes ..., and none of the ... other sources and headers read names it
+sh tools/audit/check_daemon_stderr_controls.sh .    # OK: check_daemon_stderr.sh refuses all 35 of its controls, each with the message named for it
 python3 tools/audit/check_claim_map.py .            # OK: every requirement is mapped, and everything the map cites exists
 ```
 
@@ -192,8 +193,8 @@ is not compiled). ADVISORIES.md accounts for every one.
   headless-browser job, `caddy proxy (Linux, Docker)`, and the runbook
   rehearsed top to bottom under systemd (V4-99; on two Ubuntus since
   V4-103). 16 jobs; run
-  45217010776 on `ae5406b` (V4-352): 16/16.
+  45250989556 on `c182de4` (V4-355): 16/16.
 - **Nightly** (`.github/workflows/nightly.yml`): every committed mutation
   campaign on fresh ASan trees, 600 s on each of twelve fuzz targets, the
-  ProVerif model and its controls. Run 45217015683 on `ae5406b`: 177/177, all 162
+  ProVerif model and its controls. Run 45250995987 on `c182de4`: 178/178, all 163
   campaigns among them.

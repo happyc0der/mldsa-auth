@@ -90,6 +90,7 @@ export class AuthdClient {
   // The passphrase policy (passphrase.h): { verdict, name, codePoints, bits, reasons }.
   checkPassphrase(passphrase) {
     const M = this.M;
+    this.inputSizes({ passphrase });
     const pass = te.encode(passphrase);
     // F557: allocated INSIDE the try, as login() does since F555. A slot
     // that was refused after the passphrase had been copied in left the copy
@@ -133,6 +134,26 @@ export class AuthdClient {
     return te.encode(serverId);
   }
 
+  // F757 (V4-357): and the same for what else is copied in: the handle, the
+  // passphrase and the envelope, each given only when the caller has one.
+  // F753 named the envelope as the input a page cannot vouch for (a store
+  // another script wrote, a file the user was told to import); 400 MiB of
+  // it was copied in to be refused there as bad-format, with the module
+  // grown to match. (64 KiB: a real envelope is about 6 KiB. 64 characters
+  // of handle, where a handle is 34. 64 KiB of passphrase: the module's own
+  // policy answers "too long" from 1024 bytes, and that answer is kept.)
+  inputSizes({ handle, passphrase, envelope }) {
+    if (handle !== undefined && (typeof handle !== 'string' || handle.length > 64)) {
+      throw new Error('the handle is longer than a handle can be');
+    }
+    if (passphrase !== undefined && (typeof passphrase !== 'string' || passphrase.length > 65536)) {
+      throw new Error('the passphrase is longer than a passphrase can be');
+    }
+    if (envelope !== undefined && (!(envelope instanceof Uint8Array) || envelope.length > 65536)) {
+      throw new Error('the key envelope is longer than a key envelope can be');
+    }
+  }
+
   // F736 (V4-352): is this a server key the module will pin? Throws the
   // module's own refusal if not. For a caller about to STORE a pin: enroll
   // stored whatever bytes it was handed and asked the site to enroll the
@@ -164,6 +185,7 @@ export class AuthdClient {
   // module at the browser's Argon2id parameters.
   newIdentity(passphrase, handle) {
     const M = this.M;
+    this.inputSizes({ passphrase, handle });
     const hid = te.encode(handle ?? this.newHandle());
     const pass = te.encode(passphrase);
     const ekCap = M._ccw_sealed_len(hid.length), pubCap = M._ccw_public_len(hid.length);
@@ -191,6 +213,7 @@ export class AuthdClient {
                 now = () => performance.now(), timeoutMs = 20000 }) {
     const M = this.M;
     const sid = this.pinSizes(serverPub, serverId);   // F752: before anything is allocated
+    this.inputSizes({ handle, passphrase, envelope });  // F757
     const h = M._ccw_new();
     if (!h) { throw new Error('ccw_new failed'); }
     const tick = () => { if (M._ccw_set_now_ms(h, now()) !== 0) { throw new Error('clock refused'); } };
@@ -382,6 +405,7 @@ export class Session {
   async rotate(newEnvelope, passphrase) {
     this.live();
     const c = this.client, M = c.M;
+    c.inputSizes({ passphrase, envelope: newEnvelope });   // F757
     const pass = te.encode(passphrase);
     let st;
     // A failure before the frame was handed to the socket says so: `notSent`

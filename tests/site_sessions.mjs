@@ -636,6 +636,23 @@ try {
     const su = await post('/api/signup', { user: 'retiree', invite: 'the-invite' }, b);
     check(su.status === 200 && !(await alive(tokenB)),
           `retire: a signup on a logged-in session ends that session's token at the daemon (${su.status}) (F366)`);
+    // V4-357 (F756): a logout takes the claim a login takes. While another
+    // request is replacing the session (set by hand here: the race itself
+    // is a matter of which packet arrives first), a logout is told the
+    // session is busy, clears no cookie and ends nothing; afterwards it
+    // logs out, and the token is ended at the daemon.
+    const c = idOf(await login(idOf(await get('/api/session')), vid, PASS));
+    const tokenC = sessions.get(c)?.token;
+    sessions.get(c).replacing = true;
+    const busy = await post('/api/logout', {}, c);
+    const bb = await busy.json();
+    check(busy.status === 409 && bb.error === 'session-busy' && busy.headers.get('set-cookie') === null
+          && sessions.get(c)?.token === tokenC && await alive(tokenC),
+          `logout: a session another request is replacing is not logged out under it, and no cookie is cleared (${busy.status} ${bb.error} ${busy.headers.get('set-cookie')}) (F756)`);
+    sessions.get(c).replacing = false;
+    const gone = await post('/api/logout', {}, c);
+    check(gone.status === 200 && !sessions.has(c) && !(await alive(tokenC)),
+          `logout: and once it is free the logout ends the session and its token at the daemon (${gone.status}) (F756)`);
   }
 
   // Logout forgets the session and the cookie.

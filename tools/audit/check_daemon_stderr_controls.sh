@@ -2,8 +2,12 @@
 # V4-356 (F748, F749): check_daemon_stderr.sh has been rewritten after each of
 # five reviews, and each time it was shown red by hand. These are those
 # controls, kept: every edit below is made to a scratch COPY of apps/ and
-# src/, and the gate must fail on the copy with the text named. A control
+# src/, and the gate must fail on the copy with the text named for that
+# control (several controls share a message: the nine calls do). A control
 # that passes the gate, or fails it for another reason, fails this script.
+#
+# What these do NOT show is that the compiler refuses a poisoned name: that
+# is campaign v195's RV1 to RV3, which must fail to compile.
 #
 # Usage: check_daemon_stderr_controls.sh <repo>
 set -eu
@@ -22,7 +26,9 @@ E='import pathlib,re; p=pathlib.Path("apps/authd/authd_main.c"); s=p.read_text()
 def w(t): p.write_text(t)
 U="#undef stderr\n#pragma GCC poison stderr perror psignal syslog vsyslog\n"
 assert s.count(U)==1
-i=s.index(U)+len(U)
+m=s.index(U)+len(U)
+k=s.index("#pragma GCC poison stdout ", m)
+i=s.index("\n", k)+1
 '
 fresh; sh "$W/t/tools/audit/check_daemon_stderr.sh" "$W/t" > "$W/base.out" 2>&1 \
     || { echo "FAIL: the gate refuses the unedited copy: $(cat "$W/base.out")"; exit 1; }
@@ -36,9 +42,28 @@ for call in 'dprintf(2, "x");' 'write(2, "x", 1);' 'fdopen(2, "w");' 'warnx("x")
   ctl "call[$call]" "by a name the poison does not cover" "$E"'import sys; w(s[:i]+"static void zz(void) { '"$(printf '%s' "$call" | sed 's/"/\\"/g')"' }\n"+s[i:])'
 done
 ctl cli-via-header "a header includes cli_common.h" 'import pathlib; p=pathlib.Path("apps/authd/evloop.h"); p.write_text("#include \"cli_common.h\"\n"+p.read_text())'
-ctl printf2 "calls to printf past the poison" "$E"'w(s[:i]+"static void zz(void) { printf(\"x\"); }\n"+s[i:])'
-ctl split-name "evloop.c" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic void zz(void) { fputs(\"x\", std\\\nerr); }\n")'
-ctl cpp-file "zz.cpp" 'import pathlib; pathlib.Path("apps/authd/zz.cpp").write_text("void zz(void) { fputs(\"x\", stderr); }\n")'
-ctl contstring "evloop.c" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic const char *zs = \"a\\\nb\"; static void zz(void) { perror(zs); }\n")'
+ctl printf "by a name the poison does not cover" "$E"'w(s[:i]+"static void zz(void) { printf(\"x\"); }\n"+s[i:])'
+ctl split-name "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic void zz(void) { fputs(\"x\", std\\\nerr); }\n")'
+ctl cpp-file "zz.cpp: [0-9]" 'import pathlib; pathlib.Path("apps/authd/zz.cpp").write_text("void zz(void) { fputs(\"x\", stderr); }\n")'
+ctl contstring "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic const char *zs = \"a\\\nb\"; static void zz(void) { perror(zs); }\n")'
+# V4-357 (F754, F755): the second poison, and what review 97 wrote past the script.
+ctl poison2-gone "no second" "$E"'w(s[:k]+"/* "+s[k:i-1]+" */\n"+s[i:])'
+ctl poison2-short "does not name .write." "$E"'w(s[:k]+s[k:i].replace(" write "," ")+s[i:])'
+ctl undef-gone "does not .#undef assert." "$E"'w(s.replace("#undef assert\n","",1))'
+ctl between "other than #undef lines between" "$E"'w(s[:m]+"static int zz;\n"+s[m:])'
+ctl digraph-include "#include, #pragma or #undef after" "$E"'w(s[:i]+"%:include <err.h>\n"+s[i:])'
+ctl cli-angle "includes cli_common.h" "$E"'j=s.index(U); w(s[:j]+"#include <cli_common.h>\n"+s[j:])'
+ctl cli-comment "includes cli_common.h" "$E"'j=s.index(U); w(s[:j]+"/**/#include \"cli_common.h\"\n"+s[j:])'
+ctl cli-via-hpp "a header includes cli_common.h" 'import pathlib; pathlib.Path("apps/authd/zz.hpp").write_text("#include <cli_common.h>\n")'
+for ext in cxx inl hpp hh; do
+  ctl "file.$ext" "zz.$ext: [0-9]" 'import pathlib; pathlib.Path("apps/authd/zz.'"$ext"'").write_text("void zz(void) { fputs(\"x\", stderr); }\n")'
+done
+ctl symlink "zl.c: [0-9]" 'import os, pathlib; pathlib.Path("zz.txt").write_text("void zz(void) { fputs(\"x\", stderr); }\n"); os.symlink(os.path.abspath("zz.txt"), "apps/authd/zl.c")'
+ctl crlf-split "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_bytes(); p.write_bytes(s+b"\nstatic void zz(void) { fputs(\"x\", std\\\r\nerr); }\n")'
+# A file that cannot be read fails the check (not for root, who can read it).
+if [ "$(id -u)" -ne 0 ]; then
+  ctl unreadable "evloop.c could not be read" 'import os; os.chmod("apps/authd/evloop.c", 0)'
+  chmod -R u+rw "$W/t" 2>/dev/null || true
+fi
 [ "$BAD" -eq 0 ] || { echo "FAIL: $BAD of $N controls of check_daemon_stderr.sh were not refused"; exit 1; }
-echo "OK: check_daemon_stderr.sh refuses all $N of its controls, each under its own message"
+echo "OK: check_daemon_stderr.sh refuses all $N of its controls, each with the message named for it"

@@ -1,0 +1,4 @@
+RV1|^authd_e2e$|authd_main.c compiled a write to descriptor 2: the second poison is not doing its work (F754)
+RV2|^authd_e2e$|authd_main.c compiled a call to __builtin_printf: the second poison is not doing its work (F754)
+RV3|^authd_e2e$|authd_main.c compiled a write to standard output: the second poison is not doing its work (F754)
+RV4|^test_authd_evloop$|peer-uid: a listener index past the table, or no loop, is answered and remembers nothing (F759)

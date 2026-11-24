@@ -23440,3 +23440,78 @@ Spec v1.122: erratum 171 (15).
 Counts: 866 mutations, 164 campaigns, 917 anchors; 753 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
+
+## V4-357: what the ninety-seventh review found (F754 to F759), and the reproduce guide
+
+**The ninety-seventh review** read V4-356 and ran it on macOS and in the
+container. No High or Medium. Three Low, four Info; two of the Info are
+one finding here (F758). It found sound: the refusal limit (eight million
+calls of a harness, no uid named twice in a second, no second with more
+than eight lines), erratum 171 against a running daemon, the cost ceiling
+and its offsets, and the counts.
+
+- **F754 (Low): the sixth step on one script, and what was decided.** The
+  review wrote a dozen spellings past V4-356's reading of `authd_main.c`.
+  Two things were done, and one was decided.
+  - Done: the names went to the compiler. A second poison in
+    `authd_main.c` covers `write`, `printf`, `stdout` and forty more, and
+    the one legitimate line on standard output moved to `authd_cli.c`.
+    Tried with clang and gcc before it was written: `(write)(2, ...)`, a
+    pointer to `write`, `__builtin_printf`, a pasted `wri##te`,
+    `putchar_unlocked`, `warnx` and `0>write(...)` are all refused, and a
+    file that uses `snprintf` still compiles. Every name is `#undef`'d
+    first: without that, both compilers refused the file for poisoning a
+    macro.
+  - Done: campaign v195's RV1 to RV3 are three of those lines, and must
+    not compile. That is the standing proof that the poison works, on the
+    nightly's compiler.
+  - Decided: **the script is a guard against a mistake and is described as
+    one.** Six reviews have each found a way round a reading of source,
+    and the seventh would. A system header above the poison can declare a
+    function nobody named; an assembly file can write anywhere. The
+    script's head and `tools/README.md` now say so in those words, and
+    name what a reviewer of a new daemon source has to look for. The
+    property spec 16 states is still tested where it can be: the
+    end-to-end legs that hold a daemon on its standard error and stop it.
+- **F755 (Low).** A regression of V4-356, which the controls now hold.
+- **F756 (Low).** Logout takes the claim. The test sets the claim by hand:
+  the race is a matter of which packet arrives first, and a test that
+  raced would pass by luck.
+- **F757 (Info).** One function for the three lengths, four callers.
+- **F758 (Info).** The records of V4-356 are corrected by a row of their
+  own and not rewritten.
+- **F759 (Info).** The argument check, with its test.
+
+**The reproduce guide** cites the runs main was landed on: CI 45250989556
+and nightly 45250995987 on `c182de4` (V4-355), 16/16 and 178/178. Its line
+for the check on standard error quoted a message the check has not
+printed since V4-353, and the controls script was not in it.
+
+Campaign v195: RV1 (`(write)(2, ...)` in the daemon's main file), RV2
+(`__builtin_printf` there), RV3 (`stdout` there), all three refused by the
+compiler and listed in `compile_kills_allowed.txt`; RV4 (a listener index
+past the table is taken for one), KILLED.
+
+Hand controls with `tools/hand_control.py --interpreted`, all KILLED: J3,
+logout without the claim (`site_sessions`); J4, no bound on the envelope;
+J5, `checkPassphrase` without the bound (`web_flows`).
+
+The controls of `check_daemon_stderr.sh`: 35, all refused.
+
+**Not rerun by hand in this step:** the older mutations of the files it
+touches. V4-356 ran 106 of them three hours earlier on the same functions;
+this step adds lines above and below them and changes none (the anchor
+check finds every one). The nightly runs them all before anything lands.
+
+**The Linux run, before the push:** built with gcc in the container; the
+check on standard error and its thirty-five controls, the vocabulary gate
+and the anchor check passed; the daemon's nine test programs and the
+module's passed twice; RV1, RV2 and RV3 were each refused by gcc as an
+"attempt to use poisoned" name (`write`, `__builtin_printf`, `fputs`);
+RV4 failed its test by its named line; and the daemon built in a release
+configuration, where glibc's fortified headers are in use, with gcc and
+with clang.
+
+Counts: 870 mutations, 165 campaigns, 921 anchors; 759 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.

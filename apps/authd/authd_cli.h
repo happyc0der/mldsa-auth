@@ -55,4 +55,9 @@ const char *authd_cli_timeout_hint(const char *cmd);
  * unit's ExecStartPre puts it in the journal. Returns how many it printed. */
 int authd_cli_config_warnings(const authd_config_t *cfg, const char *prog);
 
+/* `mldsa-authd --check-config`'s one line on standard output, "is valid"
+ * with the figures the daemon would run at. Here and not in authd_main.c,
+ * which cannot name standard output (F754). */
+void authd_cli_say_valid(const authd_config_t *cfg, const char *cfg_path);
+
 #endif /* MLDSA_AUTHD_CLI_H */

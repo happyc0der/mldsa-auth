@@ -316,6 +316,9 @@ static authd_slot_t *take_slot_for(evloop_t *ev, size_t li)
  * uid on one listener; see EVLOOP_PEER_REJECT_UIDS. */
 int evloop_peer_reject_may_say(evloop_t *ev, size_t li, uint64_t uid, uint64_t now_ms)
 {
+    if (ev == NULL || li >= (size_t)AUTHD_MAX_LISTENERS) {
+        return 1;                      /* F759: nothing to remember it in; said */
+    }
     size_t oldest = 0;
     for (size_t i = 0; i < (size_t)EVLOOP_PEER_REJECT_UIDS; i++) {
         if (ev->peer_reject[li][i].used && ev->peer_reject[li][i].uid == uid) {

@@ -2242,7 +2242,13 @@ static void test_accept_run_ends_at_refused_peer(void)
             && evloop_peer_reject_may_say(&ev, li, 1000u, t + 1999u) == 0,
             "peer-uid: once the uid named longest ago is a second old the ninth takes ITS place, and no other's (F750)");
       CHECK(evloop_peer_reject_may_say(&ev, 2, 1000u, t + 1001u) == 1,
-            "peer-uid: and another listener keeps its own list (F750)"); }
+            "peer-uid: and another listener keeps its own list (F750)");
+      /* V4-357 (F759): a listener that is not one has no list to keep; its
+       * refusal is said, each time, and nothing is written past the table. */
+      CHECK(evloop_peer_reject_may_say(&ev, (size_t)AUTHD_MAX_LISTENERS, 7u, t) == 1
+            && evloop_peer_reject_may_say(&ev, (size_t)AUTHD_MAX_LISTENERS, 7u, t) == 1
+            && evloop_peer_reject_may_say(NULL, 0, 7u, t) == 1,
+            "peer-uid: a listener index past the table, or no loop, is answered and remembers nothing (F759)"); }
     evloop_close_all(&ev);
     listener_close(&lfd, path);
     (void)rmdir(dir);

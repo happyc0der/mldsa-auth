@@ -421,6 +421,25 @@ try {
                                  envelope: new Uint8Array(8), passphrase: 'x' }); } catch (e) { loginKey = e.message; }
       try { await client.login({ url: 'ws://127.0.0.1:1/', serverId: huge, handle: 'd1' + '0'.repeat(32),
                                  serverPub: want.serverPub, envelope: new Uint8Array(8), passphrase: 'x' }); } catch (e) { loginId = e.message; }
+      // F757: and the envelope, the handle and the passphrase.
+      const big = client.M.HEAPU8.length + 32 * 1024 * 1024;
+      const tryLogin = async (over) => {
+        try { await client.login({ url: 'ws://127.0.0.1:1/', serverId: want.serverId, serverPub: want.serverPub,
+                                   handle: 'd1' + '0'.repeat(32), envelope: new Uint8Array(8), passphrase: 'x', ...over }); }
+        catch (e) { return e.message; }
+        return 'no error';
+      };
+      const eEnv = await tryLogin({ envelope: new Uint8Array(big) });
+      const eHid = await tryLogin({ handle: 'd'.repeat(big) });
+      const ePass = await tryLogin({ passphrase: 'p'.repeat(big) });
+      let eNew = 'no error', eChk = 'no error';
+      try { client.newIdentity('p'.repeat(big)); } catch (e) { eNew = e.message; }
+      try { client.checkPassphrase('p'.repeat(big)); } catch (e) { eChk = e.message; }
+      check(/key envelope is longer/.test(eEnv) && /handle is longer/.test(eHid) && /passphrase is longer/.test(ePass)
+            && /passphrase is longer/.test(eNew) && /passphrase is longer/.test(eChk) && client.M.HEAPU8.length === before,
+            `login: an envelope, a handle or a passphrase far too long is refused before it is copied into the module ('${eEnv}', '${eHid}', '${ePass}', '${eNew}', '${eChk}', memory ${before} -> ${client.M.HEAPU8.length}) (F757)`);
+      check(client.checkPassphrase('p'.repeat(2000)).ok === false,
+            'login: a passphrase of two thousand characters is still the module\'s to judge (the control) (F757)');
       check(/server key is longer/.test(loginKey) && /server id is longer/.test(loginId) && client.M.HEAPU8.length === before,
             `login: a server key or id far too long is refused before it is copied into the module ('${loginKey}', '${loginId}', memory ${before} -> ${client.M.HEAPU8.length}) (F752)`); }
 

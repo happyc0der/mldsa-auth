@@ -60,6 +60,62 @@
  * (#undef first: on some systems it is a macro, and poisoning one warns.) */
 #undef stderr
 #pragma GCC poison stderr perror psignal syslog vsyslog
+/* F754 (V4-357): and the other ways to the same two streams. The check
+ * that reads this file (tools/audit/check_daemon_stderr.sh) looked for
+ * these as text, and a review wrote each past it: (write)(2, ...), a
+ * pointer to write, __builtin_printf, a name pasted together by a macro.
+ * Poisoned, none of those compiles. Standard output is here because under
+ * systemd it is the same journal; --check-config's one line on it is
+ * written by authd_cli_say_valid(). Each name is undefined first: which of
+ * them is a macro differs from one C library to the next, and poisoning a
+ * macro is a warning. */
+#undef stdout
+#undef __stderrp
+#undef __stdoutp
+#undef STDERR_FILENO
+#undef STDOUT_FILENO
+#undef printf
+#undef vprintf
+#undef puts
+#undef putchar
+#undef putchar_unlocked
+#undef putc
+#undef putc_unlocked
+#undef fputc
+#undef fputs
+#undef fwrite
+#undef fprintf
+#undef vfprintf
+#undef dprintf
+#undef vdprintf
+#undef write
+#undef writev
+#undef pwrite
+#undef pwritev
+#undef fdopen
+#undef dup
+#undef dup2
+#undef dup3
+#undef fileno
+#undef err
+#undef errx
+#undef warn
+#undef warnx
+#undef verr
+#undef verrx
+#undef vwarn
+#undef vwarnx
+#undef assert
+#undef abort
+#undef psiginfo
+#undef __builtin_printf
+#undef __builtin_puts
+#undef __builtin_putchar
+#undef __builtin_fprintf
+#undef __builtin_fputs
+#undef __builtin_fwrite
+#undef __builtin_abort
+#pragma GCC poison stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort
 
 /* Set by the signal handler; read by the loop. sig_atomic_t and nothing else
  * happens in the handler -- no logging, no allocation, no close(). */
@@ -263,18 +319,8 @@ int main(int argc, char **argv)
         /* F420, F338: valid, but worth saying. One function for both forms
          * of --check-config (F545). */
         authd_cli_config_warnings(&cfg, "mldsa-authd");
-        printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
-               "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
-               "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "
-               "rate_table=%zu log_identities=%s log_client_ip=%s)\n",
-               cfg_path, cfg.max_slots, cfg.handshake_timeout_ms,
-               cfg.idle_timeout_ms, cfg.pad_bucket,
-               cfg.proxy_protocol_v2 ? "v2" : "none", cfg.rate_per_min,
-               cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_conns_per_addr,
-               cfg.proxy_protocol_v2
-                   ? ratelimit_entries_for(cfg.rate_per_min, cfg.rate_burst, cfg.rate_global_per_sec, cfg.max_slots)
-                   : (size_t)0u,
-               authd_log_ids_name(cfg.log_identities), authd_log_ip_name(cfg.log_client_ip));
+        /* On standard output, and so not written here (F754): see the poison. */
+        authd_cli_say_valid(&cfg, cfg_path);
         return 0;
     }
 

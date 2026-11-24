@@ -1273,6 +1273,22 @@ static int cmd_check_config(int argc, char **argv, const char *prog)
     return EX_OK;
 }
 
+void authd_cli_say_valid(const authd_config_t *cfg, const char *cfg_path)
+{
+    printf("mldsa-authd: %s is valid (max_slots=%u handshake_timeout_ms=%u "
+           "idle_timeout_ms=%u pad_bucket=%u proxy_protocol=%s rate_per_min=%u "
+           "rate_burst=%u rate_global_per_sec=%u max_conns_per_addr=%u "
+           "rate_table=%zu log_identities=%s log_client_ip=%s)\n",
+           cfg_path, cfg->max_slots, cfg->handshake_timeout_ms,
+           cfg->idle_timeout_ms, cfg->pad_bucket,
+           cfg->proxy_protocol_v2 ? "v2" : "none", cfg->rate_per_min,
+           cfg->rate_burst, cfg->rate_global_per_sec, cfg->max_conns_per_addr,
+           cfg->proxy_protocol_v2
+               ? ratelimit_entries_for(cfg->rate_per_min, cfg->rate_burst, cfg->rate_global_per_sec, cfg->max_slots)
+               : (size_t)0u,
+           authd_log_ids_name(cfg->log_identities), authd_log_ip_name(cfg->log_client_ip));
+}
+
 /* ---- authd_admin dispatch ------------------------------------------------ */
 
 static void admin_usage(const char *prog)

@@ -17,22 +17,36 @@
 # tried to recognise a write by reading the source, each of which a review
 # then found a spelling for.
 #
+# Since V4-357 (F754) a second poison names the other ways to the same two
+# streams (write, dprintf, printf, stdout, <err.h>, assert, the builtins):
+# V4-356 had this script search authd_main.c for those, and a review wrote
+# each in a spelling the search did not know.
+#
 # What is left for this script:
-#   1. that those two lines are in authd_main.c's code with nothing but
-#      #include lines before them, and no #include, #pragma or #undef
-#      after; and (1b) that the file reaches no output stream past them by
-#      a name the poison does not cover: a descriptor, <err.h>, assert,
-#      standard output (one call excepted);
+#   1. that the two lines are in authd_main.c's code with nothing but
+#      #include lines before them;
+#  1b. that a second poison follows, naming every word in NEED below, each
+#      #undef'd first, with only those #undef lines between the two; that
+#      no #include, #pragma or #undef comes after it; and that neither the
+#      file nor any header includes cli_common.h;
+#  1c. a search of the same file for the plain spellings, as a second look;
 #   2. that no OTHER source or header the daemon could be built from names
 #      standard error at all (a plain search of the code, comments and
 #      literals removed), except the files listed in ALLOW by their full
 #      path, each with its reason.
-# Part 2 is a search, with a search's limits, and they are these: it does
-# not see descriptor 2 written to by number or through a copy of it, a
-# FILE* obtained some other way (fdopen, /dev/stderr), or a name built by a
-# macro. Nor does anything here cover what liboqs and the C library print
-# on their way to exit() or abort(). The tree has none of the first kind
-# today; a reviewer of a new daemon source should look for them.
+#
+# WHAT THIS IS FOR. It is a guard against a line added by mistake, by
+# someone who did not know the rule. It is not proof against someone who
+# means to get round it, and six reviews have shown that no reading of
+# source by a script will be: a system header included above the poison
+# can declare a function nobody thought to name, an assembly file or a
+# linked library can write anywhere, and parts 1c and 2 are searches. Part
+# 2 does not see descriptor 2 written to by number or through a copy of it
+# in another file, a FILE* obtained some other way, or a name built by a
+# macro there. Nor does anything here cover what liboqs and the C library
+# print on their way to exit() or abort(). A reviewer of a new daemon
+# source should look for these; check_daemon_stderr_controls.sh shows what
+# the script does refuse, and campaign v195 what the compiler does.
 set -eu
 REPO="${1:-.}"
 F="$REPO/apps/authd/authd_main.c"
@@ -44,8 +58,10 @@ F="$REPO/apps/authd/authd_main.c"
 # and a string continued over a line, hid what followed), and an empty line
 # is put out in its place so that line numbers hold.
 strip() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1     # F755: the pipe below ends in an awk that always succeeds
     awk '
-    { if (held != "") { $0 = held $0; held = "" ; pad++ }
+    { sub(/\r$/, "")                          # F754: a CR before the newline hid the backslash
+      if (held != "") { $0 = held $0; held = "" ; pad++ }
       if (substr($0, length($0), 1) == "\\") { held = substr($0, 1, length($0) - 1); next }
       print; while (pad > 0) { print ""; pad-- } }
     END { if (held != "") print held }' "$1" | awk '
@@ -85,7 +101,7 @@ UNDEF=$(grep -n '^#undef stderr[[:space:]]*$' "$MAINC" | head -1 | cut -d: -f1)
 POISON=$(grep -n '^#pragma GCC poison stderr perror psignal syslog vsyslog[[:space:]]*$' "$MAINC" | head -1 | cut -d: -f1)
 [ -n "$UNDEF" ] && [ -n "$POISON" ] && [ "$POISON" -eq $((UNDEF + 1)) ] \
     || { echo "FAIL: authd_main.c does not have, in its code, '#undef stderr' followed by '#pragma GCC poison stderr perror psignal syslog vsyslog'"; exit 1; }
-# Nothing but preprocessor lines and blank lines may come before it: no
+# Nothing but #include lines and blank lines may come before it: no
 # function, no declaration, nothing that could use the name first. (The
 # check used to guess what the first function looks like, and a function
 # whose type it did not know went above the poison unseen: F748.) And no
@@ -93,29 +109,49 @@ POISON=$(grep -n '^#pragma GCC poison stderr perror psignal syslog vsyslog[[:spa
 # after it.
 EARLY=$(awk -v p="$UNDEF" 'NR < p && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*#[[:space:]]*include[[:space:]]/' "$MAINC" | head -3)
 [ -z "$EARLY" ] || { echo "FAIL: authd_main.c has something other than #include lines before the poison:"; printf '%s\n' "$EARLY" | sed 's/^/    /'; exit 1; }
-LATE=$(awk -v p="$POISON" 'NR > p && /^[[:space:]]*#[[:space:]]*(include|pragma|undef)/' "$MAINC" | head -3)
+
+# ---- 1b. the second poison (F754) ------------------------------------------
+# Five names were poisoned, and V4-356 had this script read the file for
+# the other ways to the same streams. A review then wrote each of them in
+# a spelling the reading did not know: (write)(2, ...), a pointer to
+# write, __builtin_printf, a name pasted together by a macro. They are the
+# compiler's now too: a second #pragma GCC poison, which must name every
+# word in NEED, each of them #undef'd first, with nothing but those
+# #undef lines between the two pragmas.
+NEED='stdout __stderrp __stdoutp STDERR_FILENO STDOUT_FILENO printf vprintf puts putchar putchar_unlocked putc putc_unlocked fputc fputs fwrite fprintf vfprintf dprintf vdprintf write writev pwrite pwritev fdopen dup dup2 dup3 fileno err errx warn warnx verr verrx vwarn vwarnx assert abort psiginfo __builtin_printf __builtin_puts __builtin_putchar __builtin_fprintf __builtin_fputs __builtin_fwrite __builtin_abort'
+POISON2=$(awk -v p="$POISON" 'NR > p && /^#pragma GCC poison / { print NR; exit }' "$MAINC")
+[ -n "$POISON2" ] || { echo "FAIL: authd_main.c has no second '#pragma GCC poison' after the first"; exit 1; }
+P2LINE=$(sed -n "${POISON2}p" "$MAINC")
+for n in $NEED; do
+    case " $P2LINE " in *" $n "*) ;; *) echo "FAIL: authd_main.c's second poison does not name '$n'"; exit 1 ;; esac
+    awk -v a="$POISON" -v b="$POISON2" -v n="$n" 'NR > a && NR < b && $0 == "#undef " n { f = 1 } END { exit f ? 0 : 1 }' "$MAINC" \
+        || { echo "FAIL: authd_main.c does not '#undef $n' before poisoning it (where it is a macro, poisoning it is only a warning)"; exit 1; }
+done
+BETWEEN=$(awk -v a="$POISON" -v b="$POISON2" 'NR > a && NR < b && $0 !~ /^[[:space:]]*$/ && $0 !~ /^#undef [A-Za-z_][A-Za-z0-9_]*$/' "$MAINC" | head -3)
+[ -z "$BETWEEN" ] || { echo "FAIL: authd_main.c has something other than #undef lines between its two poisons:"; printf '%s\n' "$BETWEEN" | sed 's/^/    /'; exit 1; }
+# After the second poison: no directive that could bring a name back or
+# switch a diagnostic off, in either spelling of '#'.
+LATE=$(awk -v p="$POISON2" 'NR > p && /^[[:space:]]*(#|%:|\?\?=)[[:space:]]*(include|pragma|undef|import|line)/' "$MAINC" | head -3)
 [ -z "$LATE" ] || { echo "FAIL: authd_main.c has an #include, #pragma or #undef after the poison:"; printf '%s\n' "$LATE" | sed 's/^/    /'; exit 1; }
 # cli_common.h's inline helpers print with fprintf(stderr, ...): the tools
-# include it, the daemon's main must not.
-# Read in the file as written (the stripped copy has no file names left in
-# it), and in every header, since a header may bring it in for the file.
-if grep -q '^[[:space:]]*#[[:space:]]*include[[:space:]]*"\(.*/\)\{0,1\}cli_common.h"' "$F"; then
+# include it, the daemon's main must not. Read in the file as written (the
+# stripped copy has no file names left in it), on any line that has both
+# words, whatever stands between or before them (F754: <cli_common.h>, and
+# a comment in front of the '#'); and in every header, since a header may
+# bring it in for the file.
+if grep -q 'include.*cli_common\.h' "$F"; then
     echo "FAIL: authd_main.c includes cli_common.h, whose inline functions write to standard error"; exit 1
 fi
-VIA=$(find "$REPO/apps" "$REPO/src" -type f -name '*.h' -exec grep -l '^[[:space:]]*#[[:space:]]*include[[:space:]]*"\(.*/\)\{0,1\}cli_common.h"' {} + | head -3 || true)
+VIA=$(find "$REPO/apps" "$REPO/src" \( -type f -o -type l \) \( -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' -o -name '*.inc' -o -name '*.inl' \) ! -name 'cli_common.h' -exec grep -l 'include.*cli_common\.h' {} + | head -3 || true)
 [ -z "$VIA" ] || { echo "FAIL: a header includes cli_common.h, so a file that includes that header has its standard-error helpers:"; printf '%s\n' "$VIA" | sed 's/^/    /'; exit 1; }
 
-# ---- 1b. what the poison does not name, in the same file (F748) -----------
-# The compiler refuses five names. Standard error can be reached without
-# any of them, and this file was exempt from the search below: by
-# descriptor, by another spelling of the symbol, through <err.h> or
-# assert, or on standard output, which is the same journal under systemd.
-# One call to standard output is expected, --check-config's "is valid".
-MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|warn|warnx|verr|vwarn|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf)[[:space:]]*\('
-BADM=$(awk -v p="$POISON" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MPAT" | head -5 || true)
+# ---- 1c. and a reading of the same file, for what it is worth -------------
+# The poison is the check. This is the search V4-356 added, kept as a
+# second look at the plain spellings; it is a search and has a search's
+# limits.
+MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|warn|warnx|verr|vwarn|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf|printf)[[:space:]]*\('
+BADM=$(awk -v p="$POISON2" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MPAT" | head -5 || true)
 [ -z "$BADM" ] || { echo "FAIL: authd_main.c reaches an output stream past the poison by a name the poison does not cover:"; printf '%s\n' "$BADM" | sed 's/^/    /'; exit 1; }
-NPRINTF=$(awk -v p="$POISON" 'NR > p' "$MAINC" | grep -cE '(^|[^A-Za-z0-9_])printf[[:space:]]*\(' || true)
-[ "$NPRINTF" -eq 1 ] || { echo "FAIL: authd_main.c has $NPRINTF calls to printf past the poison; exactly one is expected (--check-config's line on standard output)"; exit 1; }
 
 # ---- 2. nobody else names it ---------------------------------------------
 PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog)[[:space:]]*\('
@@ -145,7 +181,7 @@ apps/auth_server.c
 : > "$LIST"
 for d in apps src; do
     # A find that fails (a directory that cannot be read) fails the gate.
-    find "$REPO/$d" -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' -o -name '*.inl' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) ! -name '._*' >> "$LIST" \
+    find "$REPO/$d" \( -type f -o -type l \) \( -name '*.c' -o -name '*.h' -o -name '*.inc' -o -name '*.inl' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' \) ! -name '._*' >> "$LIST" \
         || { echo "FAIL: could not list the sources under $d"; exit 1; }
 done
 # The tree is the one expected: these are in the list, or the gate is not looking at it.

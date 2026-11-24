@@ -554,7 +554,15 @@ export async function startSite(opt) {
       }
     },
     'POST /api/logout': async (req, res, s) => {
-      if (s.token) { try { await withAuthd((a) => logout(a, s.token)); } catch { /* already gone */ } }
+      // F756 (V4-357): a logout is one of the requests that end a session,
+      // and takes the same claim (F743). It did not: while it waited for the
+      // daemon, a login on the same cookie replaced the session, and the
+      // logout then cleared the cookie by name -- the NEW session's -- and
+      // ended the old token a second time. The visitor was left logged out
+      // in the browser and logged in at the site, on an id nobody held,
+      // with a token nothing would end before it expired.
+      if (!claim(res, s)) { return; }
+      await retire(s);
       end(res, s);
       send(res, 200, { ok: true });
     },
