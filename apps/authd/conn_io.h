@@ -132,6 +132,12 @@ int conn_io_proxy_settled(const conn_io_t *c);
  * will be read from it; the loop flushes what is queued and closes (V4-184,
  * F261). Always 0 on a framed or local connection. */
 int conn_io_ws_ended(const conn_io_t *c);
+/* F760: how much of a reply to a REQUEST is still unsent, leaving aside
+ * what the WebSocket layer queued for itself (a 101, a Pong, a Close
+ * echo). Once the peer's Close has been read this, and not
+ * conn_io_pending(), says whether the next buffered request may be served:
+ * the echo is pending from then on, and waits for every reply. */
+size_t conn_io_out_unsent(const conn_io_t *c);
 
 /* The client address the preamble established, or an address whose `family` is
  * 0 when it established none. Never NULL. The pointer is into the connection's

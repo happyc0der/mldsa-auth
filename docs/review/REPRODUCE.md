@@ -103,7 +103,7 @@ clang ships no libFuzzer runtime, hence Homebrew LLVM.
 
 ## Mutation campaigns
 
-870 committed mutations in 165 campaigns, each a defect the tests must catch
+873 committed mutations in 166 campaigns, each a defect the tests must catch
 **by name**. One campaign, on an ASan tree -- v72's two mutations take about
 twenty minutes; a larger one, such as v56's twenty, takes hours:
 
@@ -122,7 +122,7 @@ off Linux they read `SURVIVED(EXPECTED off Linux)` instead. Before editing sourc
 check that every campaign still applies:
 
 ```bash
-python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (921 anchors checked; 870 mutations across 165 campaigns)
+python3 tools/audit/check_mutation_anchors.py .                       # ALL ANCHORS OK (924 anchors checked; 873 mutations across 166 campaigns)
 ```
 
 ## The formal model
@@ -152,8 +152,8 @@ it, audit F406.)
 ```bash
 bash tools/audit/check_spec_constants.sh .          # OK: every derived size appears in the specification
 python3 tools/audit/check_spec_vocabularies.py .    # OK: ... log events and log fields match the daemon exactly
-sh tools/audit/check_daemon_stderr.sh .             # OK: authd_main.c cannot name standard error after its includes ..., and none of the ... other sources and headers read names it
-sh tools/audit/check_daemon_stderr_controls.sh .    # OK: check_daemon_stderr.sh refuses all 35 of its controls, each with the message named for it
+sh tools/audit/check_daemon_stderr.sh .             # OK: authd_main.c cannot name standard error or standard output after its includes ..., and none of the ... other sources and headers read names either
+sh tools/audit/check_daemon_stderr_controls.sh .    # OK: check_daemon_stderr.sh refuses all 41 of its controls, each with the message named for it
 python3 tools/audit/check_claim_map.py .            # OK: every requirement is mapped, and everything the map cites exists
 ```
 

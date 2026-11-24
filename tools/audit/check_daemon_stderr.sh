@@ -151,10 +151,15 @@ VIA=$(find "$REPO/apps" "$REPO/src" \( -type f -o -type l \) \( -name '*.h' -o -
 # limits.
 MPAT='(^|[^A-Za-z0-9_])(__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(dprintf|vdprintf|write|writev|pwrite|fdopen|dup|dup2|fileno)[[:space:]]*\(|(^|[^A-Za-z0-9_.>])(err|errx|warn|warnx|verr|vwarn|assert|abort|puts|putchar|fputs|fputc|putc|fwrite|fprintf|vfprintf|vprintf|printf)[[:space:]]*\('
 BADM=$(awk -v p="$POISON2" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MPAT" | head -5 || true)
-[ -z "$BADM" ] || { echo "FAIL: authd_main.c reaches an output stream past the poison by a name the poison does not cover:"; printf '%s\n' "$BADM" | sed 's/^/    /'; exit 1; }
+[ -z "$BADM" ] || { echo "FAIL: authd_main.c names an output stream past the poison (the compiler should have refused it too):"; printf '%s\n' "$BADM" | sed 's/^/    /'; exit 1; }
 
 # ---- 2. nobody else names it ---------------------------------------------
-PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog)[[:space:]]*\('
+# F761 (V4-358): and standard output, which under systemd is the same
+# journal. authd_main.c has been unable to name it since V4-357; every other
+# source could still say printf("debug ...") and pass, and a header could
+# define a macro that does, which the poison does not reach (a macro defined
+# before a name is poisoned may still expand to it).
+PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|syslog|vsyslog|printf|vprintf|puts|putchar)[[:space:]]*\('
 # By full path. Why each may name standard error:
 #   apps/authd/authd_main.c    checked in part 1: after its includes it cannot
 #   apps/authd/authd_log.c     the log itself
@@ -205,8 +210,8 @@ $rel: $hit"
     fi
 done < "$LIST"
 if [ -n "$BAD" ]; then
-    echo "FAIL: standard error is named in a source the daemon could be built from, outside the log and the listed tools:"
+    echo "FAIL: standard error or standard output is named in a source the daemon could be built from, outside the log and the listed tools:"
     printf '%s\n' "$BAD" | sed '/^$/d; s/^/    /'
     exit 1
 fi
-echo "OK: authd_main.c cannot name standard error after its includes (the compiler's check), and none of the $SCANNED other sources and headers read names it"
+echo "OK: authd_main.c cannot name standard error or standard output after its includes (the compiler's check), and none of the $SCANNED other sources and headers read names either"

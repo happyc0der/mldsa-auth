@@ -12,4 +12,4 @@ v24 M8 the ClientHello maximum is pinned by a _Static_assert in transcript.h; re
 v190 RE1 since V4-353 authd_main.c poisons `stderr` for the compiler (F740): a plain write to standard error there does not compile, and that refusal is the check this mutation was written to have
 v195 RV1 V4-357 (F754): authd_main.c poisons `write` and the other ways to descriptors 1 and 2; `(write)(2, ...)`, which the script's search did not see, does not compile, and that refusal is the check
 v195 RV2 V4-357 (F754): the same, for `__builtin_printf`
-v195 RV3 V4-357 (F754): the same, for `stdout`
+v195 RV3 V4-357 (F754): the same, for `stdout`: `fflush(stdout)` since V4-358, so that the name is what is refused (as `fputs("x", stdout)` it was refused for `fputs`, and nothing tried the name)

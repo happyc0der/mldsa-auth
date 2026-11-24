@@ -1138,6 +1138,15 @@ try {
           `rotate, socket closed before ROTATE: it fails, says it was not sent, and no frame left (${err && err.message}; ${frames} frames) (F460)`);
     check(after.pending === null && isDeepStrictEqual(after, before) && said.includes('the rotation was never sent, so the new key is not kept'),
           'rotate, socket closed before ROTATE: no key is left pending, and the store is exactly as it was (F460)');
+    // V4-358 (F762): a new envelope refused for its length is a failure
+    // before anything was sent, and says so; the session is still usable.
+    const s2 = await flows.login(client, store, params);
+    const sent0 = s2.sent;
+    let e2 = null;
+    try { await s2.rotate(new Uint8Array(70000), PASS); } catch (e) { e2 = e; }
+    check(e2 !== null && /key envelope is longer/.test(e2.message) && e2.notSent === true && s2.sent === sent0,
+          `rotate: a new envelope far too long is refused before it is copied in, and the error says nothing was sent (${e2 && e2.message}, notSent ${e2 && e2.notSent}) (F757, F762)`);
+    await s2.close();
     const next = [];
     const s = await flows.login(client, store, params, (e) => next.push(e));
     check(s.code.length === 32 && next.length === 0,

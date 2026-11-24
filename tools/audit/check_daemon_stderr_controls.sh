@@ -39,10 +39,10 @@ ctl include-after "#include, #pragma or #undef after" "$E"'w(s[:i]+"#include <er
 ctl pragma-after "#include, #pragma or #undef after" "$E"'w(s[:i]+"#pragma GCC diagnostic ignored \"-Wall\"\n"+s[i:])'
 ctl cli-common "cli_common.h" "$E"'j=s.index(U); w(s[:j]+"#include \"cli_common.h\"\n"+s[j:])'
 for call in 'dprintf(2, "x");' 'write(2, "x", 1);' 'fdopen(2, "w");' 'warnx("x");' 'assert(0);' 'fputs("x", __stderrp);' 'fputs("x", stdout);' 'write(STDERR_FILENO, "x", 1);' 'puts("x");'; do
-  ctl "call[$call]" "by a name the poison does not cover" "$E"'import sys; w(s[:i]+"static void zz(void) { '"$(printf '%s' "$call" | sed 's/"/\\"/g')"' }\n"+s[i:])'
+  ctl "call[$call]" "names an output stream past the poison" "$E"'import sys; w(s[:i]+"static void zz(void) { '"$(printf '%s' "$call" | sed 's/"/\\"/g')"' }\n"+s[i:])'
 done
 ctl cli-via-header "a header includes cli_common.h" 'import pathlib; p=pathlib.Path("apps/authd/evloop.h"); p.write_text("#include \"cli_common.h\"\n"+p.read_text())'
-ctl printf "by a name the poison does not cover" "$E"'w(s[:i]+"static void zz(void) { printf(\"x\"); }\n"+s[i:])'
+ctl printf "names an output stream past the poison" "$E"'w(s[:i]+"static void zz(void) { printf(\"x\"); }\n"+s[i:])'
 ctl split-name "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic void zz(void) { fputs(\"x\", std\\\nerr); }\n")'
 ctl cpp-file "zz.cpp: [0-9]" 'import pathlib; pathlib.Path("apps/authd/zz.cpp").write_text("void zz(void) { fputs(\"x\", stderr); }\n")'
 ctl contstring "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_text(); p.write_text(s+"\nstatic const char *zs = \"a\\\nb\"; static void zz(void) { perror(zs); }\n")'
@@ -55,9 +55,13 @@ ctl digraph-include "#include, #pragma or #undef after" "$E"'w(s[:i]+"%:include 
 ctl cli-angle "includes cli_common.h" "$E"'j=s.index(U); w(s[:j]+"#include <cli_common.h>\n"+s[j:])'
 ctl cli-comment "includes cli_common.h" "$E"'j=s.index(U); w(s[:j]+"/**/#include \"cli_common.h\"\n"+s[j:])'
 ctl cli-via-hpp "a header includes cli_common.h" 'import pathlib; pathlib.Path("apps/authd/zz.hpp").write_text("#include <cli_common.h>\n")'
-for ext in cxx inl hpp hh; do
+for ext in cc inc cxx inl hpp hh hxx; do
   ctl "file.$ext" "zz.$ext: [0-9]" 'import pathlib; pathlib.Path("apps/authd/zz.'"$ext"'").write_text("void zz(void) { fputs(\"x\", stderr); }\n")'
 done
+# F761: standard output in another source, by a call and through a header's macro.
+ctl stdout-call "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { printf(\"debug\\n\"); }\n")'
+ctl stdout-name "localapi.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/localapi.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { fflush(stdout); }\n")'
+ctl stdout-macro "evloop.h: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.h"); p.write_text(p.read_text()+"\n#define EV_TRACE(w) printf(\"%s\\n\", (w))\n")'
 ctl symlink "zl.c: [0-9]" 'import os, pathlib; pathlib.Path("zz.txt").write_text("void zz(void) { fputs(\"x\", stderr); }\n"); os.symlink(os.path.abspath("zz.txt"), "apps/authd/zl.c")'
 ctl crlf-split "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_bytes(); p.write_bytes(s+b"\nstatic void zz(void) { fputs(\"x\", std\\\r\nerr); }\n")'
 # A file that cannot be read fails the check (not for root, who can read it).

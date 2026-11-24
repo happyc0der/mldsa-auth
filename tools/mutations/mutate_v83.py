@@ -24,8 +24,8 @@ import sys, pathlib
 EV = "apps/authd/evloop.c"
 
 M = {
-    "BP1": [(EV, "        if (conn_io_pending(&s->io) > 0u) {\n            break;\n",
-                 "        if (conn_io_pending(&s->io) > 0u && 0) { /* MUTATION BP1: served over an unsent reply */\n            break;\n")],
+    "BP1": [(EV, "        if (conn_io_ws_ended(&s->io) ? conn_io_out_unsent(&s->io) > 0u : conn_io_pending(&s->io) > 0u) {\n            break;\n",
+                 "        if (0 && conn_io_pending(&s->io) > 0u) { /* MUTATION BP1: served over an unsent reply */\n            break;\n")],
     "BP2": [(EV, "            } else if (s->state == SLOT_ACTIVE) {\n",
                  "            }\n            if (s->state == SLOT_ACTIVE) { /* MUTATION BP2: input polled while a reply waits */\n")],
     "BP3": [(EV, "    conn_io_sent(&s->io, (size_t)n);\n",
@@ -35,8 +35,8 @@ M = {
             # V4-351: and in the reclaim before the accept, which closes the same slots sooner in the turn (F728).
             (EV, "            all[npfd + i].revents == 0) {\n",
                  "            all[npfd + i].revents == 0 && conn_io_pending(&s->io) == 0u) { /* MUTATION BP4 */\n")],
-    "BP5": [(EV, "            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u) {\n",
-                 "            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u && 0) { /* MUTATION BP5: F127, a pipelined frame waits */\n")],
+    "BP5": [(EV, "            } else if (s->state == SLOT_ACTIVE &&\n                       (conn_io_ws_ended(&s->io)",
+                 "            } else if (s->state == SLOT_ACTIVE && 0 && /* MUTATION BP5: F127, a pipelined frame waits */\n                       (conn_io_ws_ended(&s->io)")],
     "BP6": [(EV, "        n = read(s->fd, buf, (room < sizeof buf) ? room : sizeof buf);\n",
                  "        n = read(s->fd, buf, sizeof buf); /* MUTATION BP6: F127, a read past the buffer's room */\n")],
 }

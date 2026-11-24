@@ -488,8 +488,10 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
         }
         /* Half-duplex: if a reply is queued, stop consuming input until it has
          * gone out. Otherwise a peer that pipelines could make us queue over an
-         * unsent reply (conn_io_queue would return BUSY) or buffer unboundedly. */
-        if (conn_io_pending(&s->io) > 0u) {
+         * unsent reply (conn_io_queue would return BUSY) or buffer unboundedly.
+         * F760: once the peer's Close has been read its echo is pending
+         * until the end, and is not a reply to wait for: it waits for them. */
+        if (conn_io_ws_ended(&s->io) ? conn_io_out_unsent(&s->io) > 0u : conn_io_pending(&s->io) > 0u) {
             break;
         }
     }
@@ -504,6 +506,31 @@ static void serve_buffered(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
                               conn_io_status_name(CONN_IO_ERR_PROTOCOL));
         s->state = SLOT_DRAINING;
     }
+}
+
+/* V4-184, F261: the peer's Close ends the connection. Its echo (and any
+ * reply still queued) is flushed and the slot closed, as RFC 6455 7.1.1
+ * asks of the server. The slot used to stay ACTIVE, reading and
+ * discarding, until the peer hung up or a deadline fired -- and held its
+ * address's connection count for as long.
+ *
+ * F760 (V4-358): but not while a request that arrived AHEAD of the Close
+ * is still unserved. Two requests and a Close in one read: the first was
+ * served, its reply queued, and the slot set to drain with the second
+ * still in the buffer, never to be answered -- where the same bytes in two
+ * reads answered both. Such a slot stays ACTIVE until the reply has gone
+ * and the rest has been served; the echo is written after the last reply. */
+static void ws_ended_settle(authd_slot_t *s)
+{
+    if (s->state != SLOT_ACTIVE || !conn_io_ws_ended(&s->io)) {
+        return;
+    }
+    const uint8_t *p = NULL;
+    size_t l = 0;
+    if (conn_io_out_unsent(&s->io) > 0u && conn_io_next_frame(&s->io, &p, &l)) {
+        return;                          /* served when the reply has gone */
+    }
+    s->state = SLOT_DRAINING;
 }
 
 static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
@@ -561,14 +588,7 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
     }
 
     serve_buffered(ev, s, now_ms);
-    /* V4-184, F261: the peer's Close ends the connection. Its echo (and any
-     * reply still queued) is flushed and the slot closed, as RFC 6455 7.1.1
-     * asks of the server. The slot used to stay ACTIVE, reading and
-     * discarding, until the peer hung up or a deadline fired -- and held its
-     * address's connection count for as long. */
-    if (s->state == SLOT_ACTIVE && conn_io_ws_ended(&s->io)) {
-        s->state = SLOT_DRAINING;
-    }
+    ws_ended_settle(s);                  /* F261, F760 */
     return 0;
 }
 
@@ -781,8 +801,11 @@ int evloop_run_once(evloop_t *ev, int poll_timeout_ms, uint64_t now_ms)
             if (slot_writable(ev, s) < 0) {
                 evloop_close_slot(ev, s);
                 closed = 1;
-            } else if (s->state == SLOT_ACTIVE && conn_io_pending(&s->io) == 0u) {
+            } else if (s->state == SLOT_ACTIVE &&
+                       (conn_io_ws_ended(&s->io) ? conn_io_out_unsent(&s->io) == 0u
+                                                 : conn_io_pending(&s->io) == 0u)) {
                 serve_buffered(ev, s, now_ms);   /* the reply has gone (F127) */
+                ws_ended_settle(s);              /* F760: and that was the last of them */
             }
         }
         if (!closed && (re & POLLIN) != 0) {

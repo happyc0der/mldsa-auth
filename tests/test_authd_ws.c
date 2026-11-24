@@ -335,6 +335,13 @@ static void test_split_upgrade(void)
     /* V4-294, F497: EVERY offset, as the message says and F50's register row
      * claims. It was one in seven, and none fell inside the final CRLFCRLF,
      * where a split is most likely to break the end-of-headers search. */
+    /* V4-358 (F763): nothing pushed is nothing done, in the upgrade as
+     * anywhere. It reached memcpy with a null pointer, which UBSan refuses. */
+    { static conn_io_t io0;
+      conn_io_reset(&io0);
+      conn_io_set_mode(&io0, CONN_IO_MODE_WS);
+      CHECK(conn_io_push(&io0, NULL, 0u) == CONN_IO_OK && conn_io_pending(&io0) == 0u,
+            "upgrade: a push of no bytes while the request is awaited is accepted and does nothing (F763)"); }
     for (size_t split = 1u; split < n; split++) {
         static conn_io_t io;
         conn_io_reset(&io);

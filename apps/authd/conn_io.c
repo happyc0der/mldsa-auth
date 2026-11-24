@@ -66,6 +66,11 @@ int conn_io_ws_ended(const conn_io_t *c)
     return c != NULL && c->mode == CONN_IO_MODE_WS && c->ws.stage == WS_STAGE_CLOSED;
 }
 
+size_t conn_io_out_unsent(const conn_io_t *c)
+{
+    return (c == NULL || c->out_len <= c->out_sent) ? 0u : c->out_len - c->out_sent;
+}
+
 void conn_io_ws_silence(conn_io_t *c)
 {
     if (c == NULL || c->mode != CONN_IO_MODE_WS) {
@@ -206,6 +211,9 @@ static size_t end_of_headers(const uint8_t *p, size_t n)
 
 static conn_io_status_t push_ws(conn_io_t *c, const uint8_t *data, size_t n)
 {
+    if (n == 0u) {
+        return CONN_IO_OK;               /* F763: conn_io_push admits (NULL, 0); memcpy does not */
+    }
     if (c->ws.stage != WS_STAGE_UPGRADE) {
         return ws_feed(c, data, n);
     }

@@ -5,7 +5,7 @@ Usage: mutate_v195.py <repo> <ID>
 
     RV1   the daemon's main file writes to descriptor 2 by a parenthesised name.
     RV2   the daemon's main file prints with a compiler builtin.
-    RV3   the daemon's main file prints to standard output again.
+    RV3   the daemon's main file names standard output (fflush is not poisoned; the name is).
     RV4   a listener index past the table is taken for one.
 
 RV1 to RV3 must not COMPILE: the second poison in authd_main.c is the check
@@ -19,7 +19,7 @@ SAY = "        authd_cli_say_valid(&cfg, cfg_path);\n"
 M = {
     "RV1": [(MA, SAY, SAY + "        (void)(write)(2, \"x\", 1); /* MUTATION RV1 */\n")],
     "RV2": [(MA, SAY, SAY + "        (void)__builtin_printf(\"x\"); /* MUTATION RV2 */\n")],
-    "RV3": [(MA, SAY, SAY + "        (void)fputs(\"x\", stdout); /* MUTATION RV3 */\n")],
+    "RV3": [(MA, SAY, SAY + "        (void)fflush(stdout); /* MUTATION RV3 */\n")],
     "RV4": [(EV, "    if (ev == NULL || li >= (size_t)AUTHD_MAX_LISTENERS) {\n",
              "    if (ev == NULL) { /* MUTATION RV4 */\n")],
 }

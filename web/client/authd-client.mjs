@@ -140,8 +140,9 @@ export class AuthdClient {
   // another script wrote, a file the user was told to import); 400 MiB of
   // it was copied in to be refused there as bad-format, with the module
   // grown to match. (64 KiB: a real envelope is about 6 KiB. 64 characters
-  // of handle, where a handle is 34. 64 KiB of passphrase: the module's own
-  // policy answers "too long" from 1024 bytes, and that answer is kept.)
+  // of handle, where a handle is 34. 65,536 characters of passphrase, which
+  // is up to three times that in bytes: the module's own policy answers
+  // "too long" from 1024 bytes, and that answer is kept.)
   inputSizes({ handle, passphrase, envelope }) {
     if (handle !== undefined && (typeof handle !== 'string' || handle.length > 64)) {
       throw new Error('the handle is longer than a handle can be');
@@ -405,8 +406,7 @@ export class Session {
   async rotate(newEnvelope, passphrase) {
     this.live();
     const c = this.client, M = c.M;
-    c.inputSizes({ passphrase, envelope: newEnvelope });   // F757
-    const pass = te.encode(passphrase);
+    let pass = new Uint8Array(0);
     let st;
     // A failure before the frame was handed to the socket says so: `notSent`
     // (V4-281, F460). It is the proof F235 and F438 act on -- a ROTATE that
@@ -414,6 +414,10 @@ export class Session {
     // staged key on it. Every failure after that proves nothing.
     const before = this.sent;
     try {
+      // F757, and F762: inside this try, so that a refusal for length says
+      // `notSent` like every other failure before the frame is sent.
+      c.inputSizes({ passphrase, envelope: newEnvelope });
+      pass = te.encode(passphrase);
       let pe = 0, pp = 0;
       // The copies are wiped whatever tick() does (V4-187, F266): it throws on
       // a refused clock, and it used to run between the copy and the wipe.

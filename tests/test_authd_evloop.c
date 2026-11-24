@@ -2321,8 +2321,9 @@ static void test_ws_close(void)
     CHECK(evloop_init(&ev, slots, WSC_SLOTS, 600000u, 600000u, on_frame, on_close, &h) == 0, "wsclose: init");
     CHECK(evloop_add_ws_listener(&ev, lfd, NULL, 0, 0) == 0, "wsclose: WebSocket listener registered");
 
-    for (int variant = 0; variant < 3; variant++) {
-        h.echo = (variant == 2);
+    for (int variant = 0; variant < 5; variant++) {
+        h.echo = (variant == 2 || variant == 3);
+        const int frames0 = (int)h.frames;
         int c = dial(port);
         CHECK(c >= 0, "wsclose: client connects");
         (void)PUMP_UNTIL(&ev, 1000, evloop_active(&ev) == 1u);
@@ -2344,10 +2345,14 @@ static void test_ws_close(void)
         static const uint8_t PING[]  = { 0x89u, 0x81u, 0, 0, 0, 0, 'A' };
         static const uint8_t CLOSE[] = { 0x88u, 0x82u, 0, 0, 0, 0, 0x03u, 0xe8u };
         static const uint8_t DATA[]  = { 0x82u, 0x89u, 0, 0, 0, 0, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A' };
-        uint8_t msg[sizeof DATA + sizeof CLOSE];
+        /* variant 3 (V4-358, F760): TWO requests and a Close in one write.
+         * variant 4: the same, to a handler that answers neither. */
+        static const uint8_t DATB[]  = { 0x82u, 0x89u, 0, 0, 0, 0, 0, 0, 0, 5, 'B', 'B', 'B', 'B', 'B' };
+        uint8_t msg[sizeof DATA + sizeof DATB + sizeof CLOSE];
         size_t ml = 0;
         if (variant == 1) { memcpy(msg, PING, sizeof PING); ml = sizeof PING; }
-        if (variant == 2) { memcpy(msg, DATA, sizeof DATA); ml = sizeof DATA; }
+        if (variant >= 2) { memcpy(msg, DATA, sizeof DATA); ml = sizeof DATA; }
+        if (variant >= 3) { memcpy(msg + ml, DATB, sizeof DATB); ml += sizeof DATB; }
         memcpy(msg + ml, CLOSE, sizeof CLOSE); ml += sizeof CLOSE;
         CHECK(write(c, msg, ml) == (ssize_t)ml, "wsclose: client sends its Close");
         /* 300 turns of 10 ms: far inside the ten-minute deadlines above, so
@@ -2359,7 +2364,9 @@ static void test_ws_close(void)
         }
         CHECK(released, variant == 0 ? "wsclose: after a Close the slot is released (F261)"
                         : variant == 1 ? "wsclose: after a Ping and a Close in one write the slot is released (F261)"
-                                       : "wsclose: after a request and a Close in one write the slot is released");
+                        : variant == 2 ? "wsclose: after a request and a Close in one write the slot is released"
+                        : variant == 4 ? "wsclose: after two unanswered requests and a Close in one write the slot is released (F760)"
+                                       : "wsclose: after two requests and a Close in one write the slot is released (F760)");
         uint8_t tail[64];
         size_t tn = 0;
         int eof = 0;
@@ -2379,6 +2386,17 @@ static void test_ws_close(void)
             CHECK(eof && tn == sizeof PONG + sizeof ECHO && memcmp(tail, PONG, sizeof PONG) == 0 &&
                       memcmp(tail + sizeof PONG, ECHO, sizeof ECHO) == 0,
                   "wsclose: the client reads the Pong, the Close echo and then the end of the connection (F261, F262)");
+        } else if (variant == 3) {
+            static const uint8_t REPLIES[] = { 0x82u, 0x09u, 0, 0, 0, 5, 'A', 'A', 'A', 'A', 'A',
+                                               0x82u, 0x09u, 0, 0, 0, 5, 'B', 'B', 'B', 'B', 'B' };
+            CHECK((int)h.frames - frames0 == 2,
+                  "wsclose: two requests sent with a Close in one write are both served (F760)");
+            CHECK(eof && tn == sizeof REPLIES + sizeof ECHO && memcmp(tail, REPLIES, sizeof REPLIES) == 0 &&
+                      memcmp(tail + sizeof REPLIES, ECHO, sizeof ECHO) == 0,
+                  "wsclose: and the client reads both replies, in order, then the Close echo, then the end (F760)");
+        } else if (variant == 4) {
+            CHECK((int)h.frames - frames0 == 2 && eof && tn == sizeof ECHO && memcmp(tail, ECHO, sizeof ECHO) == 0,
+                  "wsclose: two requests that are not answered, sent with a Close, are both served before the echo (F760)");
         } else {
             /* The reply to the request, THEN the echo: RFC 6455 5.5.1 has
              * nothing follow a Close, and a browser drops what does -- the

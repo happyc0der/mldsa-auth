@@ -1,0 +1,3 @@
+RW1|^test_authd_evloop$|wsclose: two requests that are not answered, sent with a Close, are both served before the echo (F760)
+RW2|^test_authd_evloop$|wsclose: two requests sent with a Close in one write are both served (F760)
+RW3|^test_authd_evloop$|wsclose: and the client reads both replies, in order, then the Close echo, then the end (F760)

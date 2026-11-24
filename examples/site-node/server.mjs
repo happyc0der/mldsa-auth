@@ -549,7 +549,11 @@ export async function startSite(opt) {
         // old token at the daemon and rotates the session away (F366); this
         // request's VERIFY, refused for that, would otherwise clear the
         // cookie by name -- the NEW session's, set by the other tab.
-        if (sessions.get(s.sid) === s) { end(res, s); }
+        // F764 (V4-358): nor one that another request has claimed and is
+        // about to replace: that request ended the token this VERIFY was
+        // refused for, and the cookie it is about to set is not this one's
+        // to clear.
+        if (sessions.get(s.sid) === s && !s.replacing) { end(res, s); }
         send(res, 401, { error: e.code });
       }
     },

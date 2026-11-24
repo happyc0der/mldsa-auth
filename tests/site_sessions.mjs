@@ -653,6 +653,20 @@ try {
     const gone = await post('/api/logout', {}, c);
     check(gone.status === 200 && !sessions.has(c) && !(await alive(tokenC)),
           `logout: and once it is free the logout ends the session and its token at the daemon (${gone.status}) (F756)`);
+    // V4-358 (F764): /api/me, whose token the daemon refuses, clears the
+    // cookie of its session -- but not of one another request has claimed
+    // and is about to replace (that request ended the token).
+    const d = idOf(await login(idOf(await get('/api/session')), vid, PASS));
+    const tokenD = sessions.get(d)?.token;
+    const ended = await siteLine(`LOGOUT token=${tokenD}`);
+    sessions.get(d).replacing = true;
+    const me1 = await get('/api/me', d);
+    check(ended.startsWith('OK') && me1.status === 401 && me1.headers.get('set-cookie') === null && sessions.has(d),
+          `me: a refused token on a session another request is replacing clears no cookie and ends nothing (${me1.status} ${me1.headers.get('set-cookie')}) (F764)`);
+    sessions.get(d).replacing = false;
+    const me2 = await get('/api/me', d);
+    check(me2.status === 401 && /(?:^|,\s*)sid=;\s*Max-Age=0/.test(me2.headers.get('set-cookie') || '') && !sessions.has(d),
+          `me: and on a session nobody is replacing it ends the session and clears its cookie (${me2.status}) (the control) (F764)`);
   }
 
   // Logout forgets the session and the cookie.

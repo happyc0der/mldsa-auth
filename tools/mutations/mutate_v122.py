@@ -18,8 +18,8 @@ WS = "apps/authd/ws.c"
 
 M = {
     "WC1": [(EV,
-             "    if (s->state == SLOT_ACTIVE && conn_io_ws_ended(&s->io)) {\n",
-             "    if (0 && s->state == SLOT_ACTIVE && conn_io_ws_ended(&s->io)) { /* MUTATION WC1 */\n")],
+             "    if (s->state != SLOT_ACTIVE || !conn_io_ws_ended(&s->io)) {\n        return;\n",
+             "    if (1 || s->state != SLOT_ACTIVE || !conn_io_ws_ended(&s->io)) { /* MUTATION WC1 */\n        return;\n")],
     "WC2": [(WS,
              "    if (n > WS_CTRL_MAX) { n = WS_CTRL_MAX; }\n    uint8_t hdr[WS_SRV_HDR_MAX];\n",
              "    if (w->reply_len != 0u) { return; } /* MUTATION WC2 */\n    if (n > WS_CTRL_MAX) { n = WS_CTRL_MAX; }\n    uint8_t hdr[WS_SRV_HDR_MAX];\n")],

@@ -23515,3 +23515,74 @@ with clang.
 Counts: 870 mutations, 165 campaigns, 921 anchors; 759 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
+
+## V4-358: what the ninety-eighth review found (F760 to F765)
+
+**The ninety-eighth review** read V4-357, then the five files earlier
+reviews had read least: the store, the handshake, the session, the
+connection's buffers and the WebSocket framing, all in full, with harnesses
+under ASan and UBSan. No High or Medium. Two Low, four Info. It found the
+store's transactions, the handshake's ledger and wiping, the session's
+ordering and the framing's bounds sound, and the second poison of V4-357
+to compile on every configuration it tried (two compilers on each of two
+systems, three fortify levels, both sanitizers) and to break nothing
+silently.
+
+- **F760 (Low): requests behind a request, ahead of a Close.** The one
+  defect in the daemon. The loop now distinguishes two things it had
+  taken for one: "something is still to be written" and "a reply to a
+  request is still to be written". Once the peer's Close has been read
+  its echo is the first and not the second, and the echo waits for every
+  reply (F343), so a buffered request is served as soon as the reply
+  before it has gone, and the slot drains only when none is left.
+  - The review's own harness was rebuilt against the fix: forty random
+    conversations, each in one write, an item a write and seven bytes a
+    write, with and without a Close: none left a request unanswered. It
+    had been 25 of 40 in one write with a Close.
+  - Left: a WebSocket violation that follows a complete request in the
+    same read closes the connection without serving the request, where
+    the plain framing serves it first. The peer has broken the protocol,
+    and serving after the failure would mean writing on a connection the
+    framing layer has given up on.
+- **F761 (Low).** V4-357 said what the script is for, a guard against a
+  line added by mistake, and then did not guard the likeliest mistake: a
+  `printf` left in some other file. The search covers standard output's
+  names now. This is within what was decided in V4-357, not a seventh
+  round of the spellings.
+- **F762 (Info).** The bound moved inside the code that says `notSent`,
+  with the test it lacked.
+- **F763 (Info).** An empty push does nothing. Only a UBSan build shows
+  the defect, the nightly's trees are ASan, and so it has a test and no
+  mutation.
+- **F764 (Info).** `/api/me` leaves a claimed session alone.
+- **F765 (Info).** Five sentences of V4-357's records, corrected by a row
+  of their own.
+
+Campaign v196: RW1 (the Close echo counts as a reply to wait for), RW2 (a
+slot whose peer sent Close drains with a request still buffered), RW3 (the
+rest is served only once nothing at all is pending). Re-anchored, their
+lines having moved: v122's WC1, v83's BP1 and BP5. v195's RV3 is now
+`fflush(stdout)`.
+
+Hand controls with `tools/hand_control.py --interpreted`, both KILLED: J6,
+`/api/me` ends a claimed session (`site_sessions`); J7, the bound in
+`rotate` outside the code that says `notSent` (`web_flows`).
+
+The controls of `check_daemon_stderr.sh`: 41, all refused.
+
+Every committed mutation of the loop and of the connection's buffers
+was listed by `tools/mutations/list_mutants.py`, those run by the
+end-to-end script among them: 69. On macOS, each after its test passed on
+the clean tree, all 69 were killed by the check their campaign names.
+
+**The Linux run, before the push:** built with gcc in the container; the
+check on the daemon's output and its forty-one controls, the vocabulary
+gate and the anchor check passed; the daemon's nine test programs and the
+module's passed twice; RV1, RV2 and RV3 were refused by gcc as poisoned
+names (`write`, `__builtin_printf`, and now `stdout`); RW1, RW2 and RW3
+each failed the test by the line its campaign names; and the daemon built
+in a release configuration with gcc and with clang.
+
+Counts: 873 mutations, 166 campaigns, 924 anchors; 765 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
