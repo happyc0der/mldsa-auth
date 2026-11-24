@@ -23880,3 +23880,85 @@ Spec v1.125: erratum 174 (8, 16).
 Counts: 884 mutations, 169 campaigns, 935 anchors; 786 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.125, 174 errata; 66 tests.
+
+## V4-364: what the hundred-and-third review found (F787 to F789)
+
+**The hundred-and-third review** read V4-363, then took the command-line
+client against a hostile server (134 scenarios, raw and WebSocket, under
+ASan on macOS and ASan with UBSan on Linux: no report, and no ClientAuth
+sent unless the ServerHello verified under the pin), raced login codes,
+recovery codes and tickets on two and three connections (exactly one
+winner each, every time), and read the deploy files. One Medium, one Low,
+one Info.
+
+- **F787 (Medium): in a rule this project wrote down as the careful
+  one.** §10.2 was rewritten (erratum 17) to say that only `.ek` authenticating lets `.ek.next` be
+  deleted, because the inverse cannot be observed. That was right about
+  what cannot be observed and wrong about what the observation proves: it
+  is a statement about now, and a `ROTATE` in flight is about later.
+  Every later step that touched the rule (F235, F438, F460, F467, F564)
+  refined WHEN a staged key may be discarded and none asked whether the
+  first proof was one.
+  - Why no test found it: every test of an interrupted rotation ends the
+    first attempt before starting the second. The daemon's session
+    outliving the client's patience by forty seconds is not a state a
+    test reaches unless it holds a frame.
+  - **The fix is to stop needing the proof.** A second `rotate` offers the
+    staged key again. If the late request lands first, the daemon is on
+    that key and refuses the second (its old key is not the active one);
+    if the second lands first, the same. Either way the device holds the
+    key. No clock is consulted, and no timeout is assumed.
+  - The alternative was to keep the delete and refuse it for a staged key
+    younger than the longest idle timeout. It needs the client to know a
+    bound that is the server's configuration, and trusts file times.
+  - What follows from it: a rotation that offers a staged key again
+    removes it on NO failure, not even the ones erratum 126 allows a
+    rotation for its own key, because this key's first `ROTATE` did
+    leave. And a staged key that does not open stops the rotation; the
+    operator removes it by hand, after the daemon's idle timeout. In the
+    browser there is no hand: a pending record that does not open keeps
+    `rotate` failing, and login is unaffected. That can only be a damaged
+    record, and it is recorded here as a limit.
+  - The rule's sentence in §10.2 is reworded in place and the change is
+    erratum 175. The protocol specification says nothing of `.ek.next`
+    and is untouched.
+  - Landed without asking, under the standing instruction for verified
+    fixes; reported.
+- **F788 (Low): recorded, and a question for the owner.** The daemon
+  believes the host's clock. Both ways of not believing it have a cost
+  that an operator would feel on an ordinary day, and the choice is not
+  this step's. §12 now says what happens. Recommendation: a high-water
+  mark of the time used, kept in the store, with a tolerance of a few
+  seconds and a log line when the clock is seen behind it.
+- **F789 (Info): recorded, and a question for the owner.** Recommendation:
+  refuse a pin that others can write, and no more.
+
+Campaign v200: SA1 (rotate removes a staged key beside a live one and
+makes a new key, as before), SA2 (a rotation offering a staged key again
+removes it when its session does not open), SA3 (a staged key that does
+not open is removed). Re-anchored: v156's TN1 and v158's SR1, whose line
+gained an `else`.
+
+v132's KL1 survived this step's first sweep, and the reason is the fix.
+KL1 lets a `.ek.next` name that does not fit through; truncated, it is the
+key's own path, so the rotation took the live key for a leftover and,
+before this step, deleted it. Now it offers it again, and a later name
+that does not fit refuses the rotation with the same exit 3, the key
+intact. The mutant's harm is gone and the check could not tell. It now
+also requires `path-too-long` on standard error and no probe of the
+daemon before it.
+
+Hand controls with `tools/hand_control.py --interpreted` against
+`web_flows`: J1, the browser's rotate discards a pending key and makes a
+new one; J2, a rotation offering a pending key again discards it when its
+login fails.
+
+**The sweep, on the ASan tree:** the 75 mutants in `client_cli.c` and `client_core.c`, this step's three first. 72 KILLED under their named checks at the first pass. Three needed a second: SA3 was killed by the wrong check, because the new leg's own clean-up raised when the mutant had removed the file and that exit was read as another failure (the clean-up is guarded now, and any error of the test itself exits 9); v132 KL1 SURVIVED, as above; v69 SM2 was not built, because the sweep's driver had no target for the secure-memory gate. Run again, all three were KILLED under their named checks.
+
+**The Linux run, before the push:** an Ubuntu container as uid 1000, Debug with gcc. The stderr gate passes and its script refuses all 83 controls; the vocabulary and anchor gates pass; the daemon's and the clients' thirteen tests pass twice, `web_flows` and `site_sessions` among them, but for one check. KL1's tightened check failed on the clean tree there: the client's line names the path, which is 4,095 bytes on Linux and 1,023 on macOS, and the test read 4 KiB of it. The buffer now holds four times `PATH_MAX`; run again, `test_authd_cli` passes and KL1 fails its check. SA1 to SA3 each fail the check named for it. The daemon and the client build in Release with gcc and with clang. Eight warnings, as before.
+
+Spec v1.126: erratum 175 (10.2, 12).
+
+Counts: 887 mutations, 170 campaigns, 938 anchors; 789 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.126, 175 errata; 66 tests.

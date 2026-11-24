@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.125, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363)
+# mldsa-authd — deployment specification (v1.126, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -838,10 +838,27 @@ key; a login that found `.ek.next` live goes ahead with that key. A
 client probes with `<handle>.ek` first, and the rule is stated in the only
 direction that is observable:
 
-> **`.ek` authenticating proves the server did not commit** — §9.2's
-> `one_active_key` index means at most one key per handle is ever active — so
-> and only so may `.ek.next` be discarded. **`.ek.next` failing proves
-> nothing** and MUST NOT cause a delete.
+> **`.ek` authenticating proves the server has not committed** — §9.2's
+> `one_active_key` index means at most one key per handle is ever active.
+> It does not prove the server never will (erratum 175): the `ROTATE` that
+> staged `.ek.next` may still be on its way. So `.ek.next` is **not
+> discarded** on it. A login leaves it; a `rotate` offers that same key
+> again and makes no other, and removes it on no failure. **`.ek.next`
+> failing proves nothing** and MUST NOT cause a delete.
+
+Why "has not" and not "never": a client that gets no reply gives up after
+its own deadline and keeps `.ek.next`; the daemon's session lives on until
+its idle timeout, and a connection that stalled delivers what it holds when
+it clears. A `ROTATE` can therefore be committed after a later run has seen
+`.ek` authenticate. Until erratum 175 that later `rotate` deleted `.ek.next`
+on the proof above and staged a new key; the late `ROTATE` then made the
+deleted key the live one, and nothing in the directory logged in again.
+Offering the staged key again closes it without a clock: whichever `ROTATE`
+the daemon takes, it ends on a key the client holds, and it refuses the
+other, whose old key is no longer the active one. A staged key that the
+passphrase does not open cannot be offered again; the rotation stops and
+says so, and the file stays until the operator removes it. The browser's
+store follows the same rule for its pending key.
 
 The inverse rule is not implementable and earlier revisions of this section
 got it wrong: §7.3's uniform responder flow guarantees a client cannot tell an
@@ -854,9 +871,11 @@ other way costs a permanently unusable identity.
 itself (erratum 126): when its login opened no session, or when the frame
 was never handed to the transport (the connection had closed, or the client
 could not build it), nothing was sent, so nothing can have been committed.
-That is the only proof besides the current key authenticating; from the
-moment the frame has left, no outcome but `ROTATE_ACK` proves anything,
-an authenticated `ERROR` included, and the staged key stays.
+That holds for a key this rotation staged itself. A key an earlier
+rotation staged, offered again (erratum 175), is removed on no failure,
+this one included: its first `ROTATE` did leave. From the moment a frame
+has left, no outcome but `ROTATE_ACK` proves anything, an authenticated
+`ERROR` included, and the staged key stays.
 
 A probe is the daemon's refusal of a key only if it failed after `ClientAuth`
 was sent and before the client's deadline (erratum 119). The daemon closes at
@@ -1127,7 +1146,17 @@ costs no Argon2id of its own.
 fails (erratum 133) keeps the last good time, advanced by the monotonic
 clock; it was used as the time, -1, which is before every expiry. A daemon
 that cannot read it at all at start logs `clock-unreadable` at ERROR and does
-not start.
+not start. The daemon takes the host's clock as it is: one **set back**
+extends every outstanding code, token and ticket by the step, and a
+`VERIFY` made meanwhile moves a token's idle limit back with it, so that
+setting the clock right again ends that session as idle (erratum 175). The
+host's clock is the operator's to keep; the daemon neither detects nor logs
+a step.
+
+**The server pin's file** (`--server-pub`) is read whatever its owner and
+mode (erratum 175). It is public, and it is also what the client trusts the
+server by: whoever can write it can name another server. Its custody is the
+operator's, as the directory's that holds it is.
 
 A path that is not a regular file is refused **without waiting on it**
 (erratum 105): a sealed key, a passphrase file and the configuration file are
@@ -2853,3 +2882,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 174 | 8, 16 | A taken `listen_port` that Linux reports when the daemon listens, not when it binds, is `in-use` too; the sentence erratum 173 added is about a listener at 127.0.0.1, with what Linux and macOS each do about one on the wildcard address. `LIST-DEVICES` gives an empty `fp=` for a device with no active key | With `SO_REUSEADDR` Linux lets two sockets bind one address while neither listens and refuses the second `listen`: two daemons started together could meet there, where the status was `listen` and the store was removed (F783). Erratum 173's sentence was not true on macOS for a wildcard listener (F785). The listing has always answered so for a revoked device and §8 did not say it (F786) |
+
+### Revision v1.126 (V4-364)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 175 | 10.2, 12 | `.ek` authenticating proves the server has not committed `.ek.next`, not that it never will: nothing discards a staged key on it. A `rotate` that finds one beside a live `.ek` offers that key again, makes no new one, and removes it on no failure; one it cannot open stops the rotation and is kept. The browser's pending key likewise. §12 says that a wall clock set back extends outstanding codes, tokens and tickets, and that the pin file's owner and mode are not checked | A `ROTATE` held on the path (a stalled connection, or anyone who can delay one flow) arrived after a second `rotate` had deleted the key it names, on the old rule; the daemon's active key was then in no file, and the device was locked out until re-enrolled (F787). The other two are what the daemon and the client have always done, unsaid (F788, F789) |

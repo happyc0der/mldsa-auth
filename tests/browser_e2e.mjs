@@ -365,7 +365,7 @@ try {
   held.push(['the stale pending key', toHex(stale)]);
   r = await act(b, 'login.html', { passphrase: PASS });
   const afterStale = await inPage(b, `const r = await store.get(${JSON.stringify(handle)}); return r.pending !== null;`);
-  check(stale && r.result === 'ok' && /never committed/.test(r.status) && afterStale,
+  check(stale && r.result === 'ok' && /has not been committed/.test(r.status) && afterStale,
         'storage: a stale pending key -- login proves the current key live and leaves the pending one alone');
   await inPage(b, `await store.discardPending(${JSON.stringify(handle)}); return true;`);
 

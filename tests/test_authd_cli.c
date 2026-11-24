@@ -1959,9 +1959,17 @@ static void test_rotate_on_disk(void)
         size_t n0 = 0, n1 = 0;
         const int have = read_bytes(ek, before, sizeof before, &n0) == 0;
         const int named = strlen(longp) == want && access(longp, F_OK) == 0;
+        static uint8_t lerr[4u * PATH_MAX + 4096u];   /* the line names the path, PATH_MAX - 1 bytes (4095 on Linux) */
+        size_t ln = 0;
+        memset(lerr, 0, sizeof lerr);
+        (void)snprintf(g_child_err_path, sizeof g_child_err_path, "%s/long-path.err", g_dir);
+        g_child_pre = child_err_to_file;
         rc = run_client_pumped(&d, (char *[]){ "authd_client", "rotate", "--handle", handle, "--key", longp,
                                                "--passphrase-file", pass, "--server-id", "authd",
                                                "--server-pub", spub, "--port", port, NULL });
+        g_child_pre = NULL;
+        (void)read_bytes(g_child_err_path, lerr, sizeof lerr - 1u, &ln);
+        (void)unlink(g_child_err_path);
         CHECK(named,
               "long path: the padded path is PATH_MAX - 1 bytes and names the key");
         /* An exact status, the refusal (V4-270, F427): `rc != 0` was also
@@ -1969,8 +1977,14 @@ static void test_rotate_on_disk(void)
          * was killed after 60 seconds, and the key file is untouched then
          * too. 3 since V4-318 (F558): a --key whose names do not fit is a
          * path that cannot be used; it was 1. */
+        /* V4-364: and refused for THAT name, before the daemon is asked
+         * anything. Since F787 a rotation that took the truncated name for
+         * a leftover .ek.next offers it again instead of deleting it, and a
+         * later name that does not fit refuses it with the same 3: the key
+         * survived, and the check alone no longer told the two apart. */
         CHECK(have && rc == 3 && read_bytes(ek, after, sizeof after, &n1) == 0 && n1 == n0 &&
-              memcmp(before, after, n0) == 0,
+              memcmp(before, after, n0) == 0 && strstr((const char *)lerr, "path-too-long") != NULL &&
+              strstr((const char *)lerr, "a rotation was interrupted") == NULL,
               "long path: a rotation whose .ek.next name does not fit is refused and the key file is untouched (F293)");
     }
 

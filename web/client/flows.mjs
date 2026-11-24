@@ -4,9 +4,11 @@
 // The rules are the CLI's (client_cli.c), and the decision is literally the
 // same function, client_key_plan in the core:
 //   * a pending key exists only if a rotation was interrupted;
-//   * the CURRENT key logging in proves the daemon never committed the pending
-//     one -- only then may the pending one be discarded, and even then a login
-//     leaves it alone (rotate discards it, as the CLI's rotate does);
+//   * the CURRENT key logging in proves the daemon has not committed the
+//     pending one -- not that it never will (F787): a ROTATE that left an
+//     earlier attempt may still arrive. So nothing discards it on that: a
+//     login leaves it alone, and rotate offers the same key again, as the
+//     CLI's rotate does;
 //   * the pending key logging in (and the current one not) means the daemon
 //     committed and the ACK was lost -- promote it;
 //   * neither -> refuse, and change NOTHING: guessing here destroys the only
@@ -168,7 +170,7 @@ async function resolveHeld(client, store, handle, params, events) {
   const next = ek.verdict === 'live' ? { verdict: 'untried' } : await probe(client, params, r.pending);
   switch (client.keyPlan(ek.verdict === 'live', 1, next.verdict === 'live')) {
   case KEY_PLAN.USE_EK:
-    events('the current key is live; the pending one was never committed');
+    events('the current key is live; the pending one has not been committed');
     return r.envelope;
   case KEY_PLAN.PROMOTE_NEXT:
     await store.promote(handle, r.pending);
@@ -350,13 +352,25 @@ export function recoveryNameProblem(typed, recoveringUser) {
 async function rotateHeld(client, store, params, events) {
   const envelope = await resolveHeld(client, store, params.handle, params, events);
   const r = await store.get(params.handle);
-  if (r.pending) {
-    // resolveKey returned the CURRENT key and would not have without proving it
-    // live, so this pending key is stale. Only now, on that proof, is it discarded.
-    await store.discardPending(params.handle);
+  // V4-364 (F787): a pending key beside a current key that is live is NOT
+  // discarded. It was, on "the daemon never committed it", which is only "has
+  // not yet": the ROTATE of the attempt that staged it may still be on its
+  // way -- that attempt gave up, the daemon's session lives on for its idle
+  // timeout, and a stalled connection delivers what it holds when it clears.
+  // Discarded here and committed a moment later, it was the only copy of the
+  // live key. So this rotation offers THAT key again and makes none:
+  // whichever ROTATE the daemon takes, it ends on a key this store holds.
+  // And since that key may become live without this attempt's doing, this
+  // attempt discards it on no failure; only an ACK promotes it.
+  const reoffer = Boolean(r.pending);
+  let next;
+  if (reoffer) {
+    next = { envelope: r.pending, publicImage: null };
+    events('offering the key an earlier rotation staged again; no new key is made');
+  } else {
+    next = client.newIdentity(params.passphrase, params.handle);
+    await store.stagePending(params.handle, next.envelope);   // durable BEFORE ROTATE leaves
   }
-  const next = client.newIdentity(params.passphrase, params.handle);
-  await store.stagePending(params.handle, next.envelope);   // durable BEFORE ROTATE leaves
   // The login that will carry ROTATE is also the first time the passphrase
   // meets the current key. If it fails there is no session, so ROTATE cannot
   // have left and the daemon cannot hold the new key: the staged key is
@@ -368,6 +382,12 @@ async function rotateHeld(client, store, params, events) {
   try {
     s = await client.login({ ...params, envelope, keepForRotate: true });
   } catch (e) {
+    if (reoffer) {
+      // F787: this is the very case -- the session is refused BECAUSE the
+      // earlier ROTATE has arrived. The key stays; the next login promotes it.
+      events('no session was opened; the key an earlier rotation staged is kept pending');
+      throw e;
+    }
     try { await store.discardPending(params.handle); } catch { /* it stays pending; the next login resolves it */ }
     events('no session was opened, so the new key was never sent; it is not kept');
     throw e;
@@ -383,6 +403,10 @@ async function rotateHeld(client, store, params, events) {
     // be sent, or the module could not build it) cannot have been committed:
     // the staged key goes, as when no session was opened (V4-281, F460).
     // It stayed, and every later login ran the interrupted-rotation probe.
+    if (e && e.notSent === true && reoffer) {
+      events('the rotation was never sent; the key an earlier rotation staged is kept pending');
+      throw e;
+    }
     if (e && e.notSent === true) {
       try { await store.discardPending(params.handle); } catch { /* it stays pending; the next login resolves it */ }
       events('the rotation was never sent, so the new key is not kept');
@@ -396,5 +420,5 @@ async function rotateHeld(client, store, params, events) {
   await s.close();
   await store.promote(params.handle, next.envelope);
   events('rotated; the old key no longer authenticates');
-  return next.publicImage;
+  return next.publicImage;   // null when the key was one an earlier rotation staged (F787)
 }

@@ -92,13 +92,15 @@ try {
     const s = await flows.login(client, store, params, (e) => said.push(e));
     await s.close();
     const after = await store.get(params.handle);
-    check(said.includes('the current key is live; the pending one was never committed') &&
+    check(said.includes('the current key is live; the pending one has not been committed') &&
           after.pending !== null && isDeepStrictEqual(after.pending, stale.envelope),
           'stale pending key: login proves the current key live and LEAVES the pending key alone');
-    await flows.rotate(client, store, params);
+    const saidRot = [];
+    await flows.rotate(client, store, params, (e) => saidRot.push(e));
     const rot = await store.get(params.handle);
-    check(rot.pending === null && !isDeepStrictEqual(rot.envelope, stale.envelope) && rot.rotatedAt !== null,
-          'stale pending key: rotate discards it (proven stale) and rotates to a NEW key');
+    check(rot.pending === null && isDeepStrictEqual(rot.envelope, stale.envelope) && rot.rotatedAt !== null &&
+          saidRot.includes('offering the key an earlier rotation staged again; no new key is made'),
+          'pending key beside a live one: rotate offers THAT key again and rotates to it; it makes no other (F787)');
     const s2 = await flows.login(client, store, params);
     check(s2.code.length === 32, 'stale pending key: the rotated key logs in');
     await s2.close(); }
@@ -319,6 +321,44 @@ try {
     catch { logged = false; }
     check(logged && said.includes('completed the interrupted rotation'),
           'rotate, ACK lost after the daemon committed: the next login completes the rotation with the kept key'); }
+
+  // V4-364 (F787): a ROTATE that arrives LATE. An earlier attempt staged a
+  // key and its ROTATE is still on its way; a second rotate finds the
+  // current key live. It used to discard the pending key on that; the late
+  // ROTATE then committed it, and no key in the store logged in again. Here
+  // the late ROTATE lands after the second rotate's probe and before its own
+  // login (the client's login is wrapped to deliver it at that moment), so
+  // that login is refused -- and the pending key must still be there.
+  { const { store, params } = await fresh();
+    const first = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, first.envelope);     // what the attempt that gave up left
+    const cur = await store.get(params.handle);
+    let delivered = false;
+    const late = new Proxy(client, { get: (t, k) => (k === 'login'
+      ? async (a) => {
+          if (a.keepForRotate && !delivered) {
+            delivered = true;                                    // the held ROTATE arrives now
+            const s0 = await t.login({ ...params, envelope: cur.envelope, keepForRotate: true });
+            await s0.rotate(first.envelope, PASS); await s0.close();
+          }
+          return t.login(a);
+        }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    const said = [];
+    let threw = false;
+    try { await flows.rotate(late, store, params, (e) => said.push(e)); } catch { threw = true; }
+    const mid = await store.get(params.handle);
+    check(delivered && threw && mid.pending !== null && isDeepStrictEqual(mid.pending, first.envelope) &&
+          said.includes('no session was opened; the key an earlier rotation staged is kept pending'),
+          'late ROTATE: a second rotate whose session is refused because the first has landed KEEPS the pending key (F787)');
+    let logged = false;
+    const said2 = [];
+    try { const s = await flows.login(client, store, params, (e) => said2.push(e)); logged = s.code.length === 32; await s.close(); }
+    catch { logged = false; }
+    const end = await store.get(params.handle);
+    check(logged && said2.includes('completed the interrupted rotation') && end.pending === null &&
+          isDeepStrictEqual(end.envelope, first.envelope),
+          'late ROTATE: the next login promotes the key the daemon took, and the device logs in (F787)'); }
 
   // Where the lock cannot span tabs (no Web Locks), rotate refuses and stages nothing.
   { const { store, params } = await fresh();

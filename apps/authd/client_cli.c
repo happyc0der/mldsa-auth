@@ -911,10 +911,11 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
     int rc = EX_FAIL;
     switch (plan) {
     case KEY_PLAN_USE_EK:
-        /* .ek is live, so the server never committed .ek.next. THIS is the only
-         * proof that makes discarding it safe -- and the caller does the
-         * discarding, because login should not delete files. */
-        fprintf(stderr, "%s %s: %s is still the live key; %s was never committed\n",
+        /* .ek is live, so the server has not committed .ek.next. Not "never
+         * will" (F787): a ROTATE that left an earlier run and is still on its
+         * way can commit it after this look. So nobody discards it on this:
+         * login deletes nothing, and rotate offers the same key again. */
+        fprintf(stderr, "%s %s: %s is still the live key; %s has not been committed\n",
                 prog, sub, a->key_path, next_path);
         memcpy(kp_out, &ek_kp, sizeof ek_kp);
         memset(&ek_kp, 0, sizeof ek_kp);
@@ -1187,15 +1188,21 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         return EX_FAIL;
     }
 
-    /* A leftover .ek.next that the probe did NOT promote is stale -- .ek
-     * authenticated, which proves the server never committed it. Only now, on
-     * that proof, is deleting it safe; never on the probe failing. F293: on
-     * the proof itself, not on the file being there -- this used to look
-     * again, and delete a .ek.next that had appeared since and that nobody
-     * had asked the daemon about: another run's newly sealed key. */
-    if (stale_next) {
-        (void)unlink(next_path);
-    }
+    /* V4-364 (F787): a leftover .ek.next beside a live .ek is NOT deleted.
+     * It was, on "the server never committed it", and that is only "has not
+     * yet": the ROTATE of the run that staged it may still be on its way --
+     * that run gave up after twenty seconds, the daemon's session lives for
+     * its idle timeout, and a stalled connection delivers what it holds
+     * when it clears. Deleted here, and committed a moment later, it was
+     * the only copy of the live key. So this rotation offers THAT key
+     * again and makes none: whichever ROTATE the daemon takes, it ends on a
+     * key this directory holds, and it refuses the other (the old key is no
+     * longer the active one). And because the staged key may become live
+     * without this run's doing, this run removes it on NO failure: only an
+     * ACK moves it, into place.
+     * (F293 stands: stale_next is the daemon's answer about a file this run
+     * opened under the lock, not the file being there.) */
+    const int reoffer = stale_next;
 
     /* Seal the new key BEFORE sending anything (spec 10.2). If everything
      * after this dies, the next invocation's probe decides which key is live
@@ -1234,12 +1241,14 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
      * left a fresh .ek.next for the run after it to probe and delete. The
      * key directory's lock is held, so whatever has this name is nobody's. */
     (void)unlink(pub_tmp);
-    rc = client_seal_new_identity(prog, "rotate", next_path, pub_tmp, a.hid, a.hid_len,
-                                  (const char *)pass, pass_len, new_pk);
-    if (rc != EX_OK) {
-        authd_secret_free(pass, pass_len);
-        mldsa_keypair_free(&old_kp);
-        return rc;
+    if (!reoffer) {
+        rc = client_seal_new_identity(prog, "rotate", next_path, pub_tmp, a.hid, a.hid_len,
+                                      (const char *)pass, pass_len, new_pk);
+        if (rc != EX_OK) {
+            authd_secret_free(pass, pass_len);
+            mldsa_keypair_free(&old_kp);
+            return rc;
+        }
     }
 
     mldsa_keypair_t new_kp;
@@ -1251,8 +1260,33 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         mldsa_keypair_free(&old_kp);
         (void)unlink(pub_tmp);   /* F118: every exit after the seal, not only `out:` */
         const int rf = failed(prog, "rotate", next_path, keyfile_status_name(ks));
-        rotate_drop_unsent(prog, next_path); /* F467: nothing was sent */
+        if (reoffer) {
+            /* F787: an earlier rotation's key that this passphrase does not
+             * open. It cannot be offered again and it is not this run's to
+             * remove: its ROTATE may yet arrive. */
+            fprintf(stderr, "%s rotate: not rotating: %s was staged by an earlier rotation and cannot be "
+                            "opened, so it cannot be offered again. It is KEPT: that rotation's request may "
+                            "still reach the daemon, for as long as the daemon's idle timeout (ten minutes "
+                            "at most). After that, if a login still works with %s, remove %s by hand and "
+                            "rotate\n", prog, next_path, a.key_path, next_path);
+        } else {
+            rotate_drop_unsent(prog, next_path); /* F467: nothing was sent */
+        }
         return rf;
+    }
+    if (reoffer) {
+        /* The staged key's public half, for the .pub an ACK publishes. */
+        fprintf(stderr, "%s rotate: offering the key an earlier rotation staged in %s again; no new key "
+                        "is made\n", prog, next_path);
+        memcpy(new_pk, new_kp.public_key, sizeof new_pk);
+        if (demo_keys_write_public(pub_tmp, a.hid, a.hid_len, new_pk) != DEMO_KEYS_OK) {
+            mldsa_keypair_free(&old_kp);
+            mldsa_keypair_free(&new_kp);
+            (void)unlink(pub_tmp);
+            (void)failed(prog, "rotate", pub_tmp, "cannot-write-public-key");
+            fprintf(stderr, "%s rotate: %s is KEPT\n", prog, next_path);
+            return EX_FAIL;
+        }
     }
 
     /* CC_KEEP_FOR_ROTATE: the old key signs ROTATE after the session exists,
@@ -1274,7 +1308,12 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * ClientAuth. ROTATE is built only on a live session, so none was
          * sent either way (erratum 126); the file was kept, before, only
          * because a test scanned it. */
-        if (unlink(next_path) != 0) {
+        if (reoffer) {
+            /* F787: not this run's key to remove. This is the very case: the
+             * session is refused BECAUSE the earlier ROTATE has landed. */
+            fprintf(stderr, "%s rotate: no session was opened; %s, staged by an earlier rotation, is KEPT "
+                            "so the next run can resolve it\n", prog, next_path);
+        } else if (unlink(next_path) != 0) {
             rotate_say_kept(prog, next_path);   /* F645 */
         } else {
             /* F553: when the session failed before the daemon judged the
@@ -1301,7 +1340,11 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (bs != CC_OK) {
         /* F467: ROTATE was not built, so it was not sent: the staged key goes. */
         (void)failed(prog, "rotate", next_path, bs == CC_ERR_SESSION ? "cannot-send-rotate" : "cannot-build-rotate");
-        rotate_drop_unsent(prog, next_path);
+        if (reoffer) {
+            fprintf(stderr, "%s rotate: %s, staged by an earlier rotation, is KEPT\n", prog, next_path);
+        } else {
+            rotate_drop_unsent(prog, next_path);
+        }
         goto out;
     }
     if (cs_send(&cs, tx, n - FRAME_HEADER_BYTES) != FRAME_OK) {
@@ -1312,8 +1355,11 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * of a ROTATE never handed to the transport and as the browser does.
          * It was kept, without a word, and the next login then probed with
          * both keys. */
-        const int unsent_gone = (unlink(next_path) == 0);
-        if (unsent_gone) {
+        const int unsent_gone = !reoffer && (unlink(next_path) == 0);
+        if (reoffer) {
+            fprintf(stderr, "%s rotate: ROTATE could not be sent; %s, staged by an earlier rotation, is "
+                            "KEPT so the next run can resolve it\n", prog, next_path);
+        } else if (unsent_gone) {
             fprintf(stderr, "%s rotate: ROTATE could not be sent, so the new key was never sent; "
                             "it is not kept\n", prog);
         } else {

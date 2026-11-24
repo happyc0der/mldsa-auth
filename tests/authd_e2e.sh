@@ -1390,7 +1390,7 @@ cp "$TMP/save-old.ek" "$NEXT"; chmod 600 "$NEXT"
     || { cat "$TMP/rec1.err"; fail "recovery USE_EK: login with a stale .ek.next present exited nonzero"; }
 [ "$(wc -c < "$TMP/rec1.txt" | tr -d ' ')" -eq 44 ] || fail "recovery USE_EK: no 43-character login code"
 grep -q "is still the live key" "$TMP/rec1.err" || fail "recovery USE_EK: did not report .ek as the live key"
-grep -q "was never committed" "$TMP/rec1.err" || fail "recovery USE_EK: did not report .ek.next as never committed"
+grep -q "has not been committed" "$TMP/rec1.err" || fail "recovery USE_EK: did not report .ek.next as not committed"
 [ -e "$NEXT" ] || fail "recovery USE_EK: login DELETED .ek.next -- login must not delete files"
 [ "$(hash_of "$EK")" = "$LIVE_HASH" ] || fail "recovery USE_EK: login changed .ek"
 echo "PASS: E2E: recovery USE_EK -- a stale .ek.next is reported and left alone; .ek logs in"
@@ -3267,5 +3267,160 @@ case "$SG" in
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"
 echo "PASS: E2E: a SIGTERM while the daemon is starting stops it with exit 0 at either look, and removes the store that start created unless something else has written to it; a SIGHUP there is logged and ignored; a running daemon blocked on its standard error is stopped by one SIGTERM, and one whose log is read again goes on logging; a READY=1 that could not be sent is sent again (F657, F679, F681, F683, F691, F692, F693)"
+
+# V4-364 (F787): a ROTATE that is late, and a second `rotate` meanwhile. The
+# first rotation's request is held on the path (a relay that changes no
+# byte); that run gives up after its twenty seconds and keeps .ek.next. The
+# second run finds .ek live. It used to delete .ek.next on that -- "never
+# committed" -- and when the held ROTATE then arrived, the daemon's active
+# key was the one just deleted: no key in the directory logged in again.
+# Now the second run offers the staged key again and removes nothing, so
+# whichever request the daemon takes, the device still holds its key.
+# After the start-up signal test on purpose, for the reason given there.
+mkdir -p "$TMP/rt" "$TMP/rtdev" && chmod 0700 "$TMP/rtdev" || fail "could not set up the late-ROTATE leg"
+RT=0
+python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/rt.txt" 2>&1 <<'PYEOF' || RT=$?
+import os, signal, socket, struct, subprocess, sys, threading, time
+daemon, client, tmp = sys.argv[1:4]
+def freeport():
+    while True:
+        t = socket.socket(); t.bind(("127.0.0.1", 0)); p = t.getsockname()[1]; t.close()
+        if p not in (4002, 7462):
+            return p
+port = freeport()
+conf = tmp + "/rt.conf"
+with open(conf, "w") as f:
+    f.write(f"store_path = {tmp}/rt/store.sqlite3\nkey_path = {tmp}/su/server.ek\n"
+            f"key_passphrase_file = {tmp}/su/pass\nserver_id = authd\nlisten_port = {port}\n"
+            f"site_socket = {tmp}/rt-s.sock\nadmin_socket = {tmp}/rt-a.sock\n"
+            f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\n")
+dlog = open(tmp + "/rt.log", "w")
+dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
+rc = 9
+try:
+    end = time.monotonic() + 30
+    while not os.path.exists(tmp + "/rt-s.sock"):
+        if dp.poll() is not None or time.monotonic() > end:
+            print("LATE: the daemon did not start"); sys.exit(9)
+        time.sleep(0.05)
+    kg = subprocess.run([client, "keygen", "--dir", tmp + "/rtdev", "--passphrase-file", tmp + "/opass"],
+                        capture_output=True, text=True)
+    handle = kg.stdout.strip()
+    if kg.returncode != 0 or not handle:
+        print("LATE: keygen failed", kg.stderr); sys.exit(9)
+    ek = f"{tmp}/rtdev/{handle}.ek"; nxt = ek + ".next"
+    img = open(f"{tmp}/rtdev/{handle}.pub", "rb").read()
+    pk = img[9 + img[8]:]
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(tmp + "/rt-s.sock")
+    s.sendall(f"ENROLL user={b'late'.hex()} handle={handle.encode().hex()} pk={pk.hex()} via=signup\n".encode())
+    ans = s.recv(256); s.close()
+    if not ans.startswith(b"OK"):
+        print("LATE: enrolment failed", ans); sys.exit(9)
+    def args(sub, p):
+        return [client, sub, "--handle", handle, "--key", ek, "--passphrase-file", tmp + "/opass",
+                "--server-id", "authd", "--server-pub", tmp + "/d/server.pub", "--port", str(p)]
+    def run(a, on_line=None):
+        p = subprocess.Popen(a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        err = ""
+        for line in p.stderr:
+            err += line
+            if on_line: on_line(line)
+        p.stdout.read()
+        return p.wait(), err
+
+    # The path: every byte both ways, but the client's frames from the third
+    # on (ROTATE is the third) are held until `release`.
+    ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(2)
+    rport = ls.getsockname()[1]
+    release, done, held = threading.Event(), threading.Event(), []
+    def rx(c, n):
+        b = b""
+        while len(b) < n:
+            ch = c.recv(n - len(b))
+            if not ch: raise EOFError
+            b += ch
+        return b
+    def path():
+        c, _ = ls.accept(); u = socket.create_connection(("127.0.0.1", port))
+        def back():
+            try:
+                while True:
+                    d = u.recv(65536)
+                    if not d: break
+                    c.sendall(d)
+            except OSError: pass
+        threading.Thread(target=back, daemon=True).start()
+        n = 0
+        try:
+            while True:
+                h = rx(c, 4); body = rx(c, struct.unpack(">I", h)[0]); n += 1
+                if n < 3: u.sendall(h + body)
+                else: held.append(h + body)
+        except (EOFError, OSError): pass
+        release.wait(120)
+        try:
+            for fr in held: u.sendall(fr)
+            time.sleep(1.5)                    # the daemon serves it before the end arrives
+        except OSError: pass
+        u.close(); done.set()
+    threading.Thread(target=path, daemon=True).start()
+
+    r0, e0 = run(args("login", port))
+    if r0 != 0:
+        print("LATE: the device could not log in before anything was tried:\n" + e0); sys.exit(9)
+    r1, e1 = run(args("rotate", rport))
+    if r1 == 0 or "no reply" not in e1 or not os.path.exists(nxt) or len(held) != 1:
+        print(f"LATE: the first rotation was not left waiting for its reply (exit {r1}, held {len(held)}): "
+              f"this leg shows nothing\n{e1}"); sys.exit(9)
+    def watch(line):
+        if "is still the live key" in line: release.set()
+    r2, e2 = run(args("rotate", port), watch)
+    release.set(); done.wait(15)
+    print("second rotate: exit", r2); print(e2)
+    if "offering the key an earlier rotation staged" not in e2:
+        print("LATE: the second rotation did not offer the staged key again"); sys.exit(2)
+    ok = False
+    for _ in range(2):
+        r3, e3 = run(args("login", port)); print("login: exit", r3); print(e3)
+        if r3 == 0: ok = True; break
+    if not ok:
+        print("LATE: no key in the directory logs in"); sys.exit(1)
+    r4, e4 = run(args("login", port))
+    if r4 != 0 or os.path.exists(nxt):
+        print(f"LATE: after the rotation was resolved a login exited {r4}, .ek.next there: {os.path.exists(nxt)}\n{e4}"); sys.exit(3)
+    # And a staged key this passphrase does not open cannot be offered
+    # again; it is not removed either, and nothing else is changed.
+    with open(nxt, "wb") as f: f.write(b"not an envelope\n")
+    os.chmod(nxt, 0o600)
+    before = open(ek, "rb").read()
+    r5, e5 = run(args("rotate", port))
+    kept = os.path.exists(nxt) and open(nxt, "rb").read() == b"not an envelope\n"
+    same = open(ek, "rb").read() == before
+    names = sorted(os.listdir(tmp + "/rtdev"))
+    try: os.unlink(nxt)
+    except FileNotFoundError: pass           # removed: the check below says so
+    if r5 == 0 or not kept or not same or "cannot be offered again" not in e5 or any(".newpub." in n for n in names):
+        print(f"LATE: a staged key that does not open: exit {r5}, kept {kept}, .ek unchanged {same}, {names}\n{e5}"); sys.exit(4)
+    r6, e6 = run(args("login", port))
+    if r6 != 0:
+        print("LATE: the device does not log in after the refused rotation\n" + e6); sys.exit(4)
+    print("LATE: resolved"); rc = 0
+except Exception as e:                       # the test's own failure is not a finding (exit 9)
+    print(f"LATE: the test itself failed: {e!r}"); rc = 9
+finally:
+    dp.send_signal(signal.SIGTERM)
+    try: dp.wait(10)
+    except subprocess.TimeoutExpired: dp.kill(); dp.wait()
+sys.exit(rc)
+PYEOF
+case "$RT" in
+0) ;;
+1) cat "$TMP/rt.txt"; fail "after a ROTATE that arrived late and a second rotate, no key in the device's directory logs in: the staged key was removed (F787)" ;;
+2) cat "$TMP/rt.txt"; fail "a rotate that found a staged key beside the live one did not offer that key again (F787)" ;;
+3) cat "$TMP/rt.txt"; fail "a late ROTATE and a second rotate were not resolved by the next login: a login failed or .ek.next was left (F787)" ;;
+4) cat "$TMP/rt.txt"; fail "a rotate that found a staged key it could not open removed it, changed the key, or did not say that it cannot be offered again (F787)" ;;
+*) cat "$TMP/rt.txt"; fail "the late-ROTATE test could not be made (exit $RT): this says nothing about F787" ;;
+esac
+echo "PASS: E2E: a ROTATE that arrives late and a second rotate meanwhile leave the device able to log in: the staged key is offered again, never removed (F787)"
 
 echo "All checks passed"

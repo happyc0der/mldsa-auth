@@ -926,6 +926,18 @@ the daemon retires it when it acknowledges the rotation, so a copy of the old
 interrupted between the two (the laptop sleeps, the tunnel drops) is finished
 by the next `login` or `rotate`, which asks the daemon which key is live.
 
+A `rotate` that ends with `no reply; … .ek.next is KEPT` may be run again at
+once. The second run does not make another key: it says `offering the key
+an earlier rotation staged … again` and offers the one in `.ek.next`,
+because the first run's request may still reach the daemon (since V4-364).
+If it then says `no session was opened; … is KEPT`, the first request has
+arrived: run `login`, which puts the new key in place. Never remove
+`.ek.next` to "start clean" within ten minutes of a rotation that got no
+reply; it may be the only copy of the key the daemon now accepts. The one
+case where it has to be removed by hand is the line `was staged by an
+earlier rotation and cannot be opened`: wait ten minutes, check that
+`login` still works with `.ek`, then remove it and rotate.
+
 ## 20. Lock a user out
 
 A lost or stolen device, or someone who should no longer have access:
