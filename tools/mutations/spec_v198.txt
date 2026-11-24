@@ -1,0 +1,3 @@
+RY1|^authd_e2e$|a start that failed because another daemon was listening on its socket removed the store it had created, which that daemon may be serving (F773)
+RY2|^test_authd_ws$|proxy-loop: a connection that sends no preamble is closed as a protocol failure and is not reported as a preamble with no client address (F772)
+RY3|^test_authd_ws$|proxy-loop: a bad upgrade from an address the limiter refuses is answered 429 and counted as its refusal, not as a protocol failure (F774)

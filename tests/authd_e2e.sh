@@ -3182,6 +3182,35 @@ def main():
     if not ready or rc != 0:
         print(f"READY: with the queue emptied no READY=1 came in eight seconds (exit {rc})"); return 8
     print("READY: a READY=1 that found the queue full was sent again once there was room")
+
+    # Leg 14 (V4-361, F773): the start that created the store is held, and
+    # meanwhile something listens on its socket, as a second daemon of the
+    # same configuration would. Let go, the start fails `in-use`; the store,
+    # which that other daemon would be serving and has not yet written to,
+    # is not removed. (The store looks exactly as a creation leaves it, so
+    # F681's question cannot tell.)
+    gone()
+    try: os.unlink(psock)
+    except FileNotFoundError: pass
+    p, r, filled = held(store)
+    other = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    other.bind(psock)
+    other.listen(8)
+    got = drain(r, p)
+    rc = ended(p, limit=20)
+    os.close(r)
+    text = got[filled:].decode("utf-8", "replace")
+    there = os.path.exists(store)
+    other.close()
+    try: os.unlink(psock)
+    except FileNotFoundError: pass
+    gone()
+    if "in-use" not in text or rc != 1:
+        print(f"PEER: the held start did not fail on the socket something else was listening on (exit {rc}): this leg shows nothing\n{text}")
+        return 9
+    if not there or "removed again" in text or "may be using it; it is left in place" not in text:
+        print(f"PEER: exit {rc}, store there: {there}:\n{text}"); return 14
+    print("PEER: a start that failed because another daemon was listening left the store it had created")
     return 0
 
 rc = 9
@@ -3212,6 +3241,7 @@ case "$SG" in
 11) cat "$TMP/sig.txt"; fail "a daemon held on its first line of output while starting was not stopped by one SIGTERM (F710)" ;;
 12) cat "$TMP/sig.txt"; fail "a stop that found the daemon waiting in a log line closed the log, to a reader that was there (F720)" ;;
 13) cat "$TMP/sig.txt"; fail "stop signals that kept coming kept a held daemon from stopping (F727)" ;;
+14) cat "$TMP/sig.txt"; fail "a start that failed because another daemon was listening on its socket removed the store it had created, which that daemon may be serving (F773)" ;;
 *) cat "$TMP/sig.txt"; fail "the start-up signal test could not be made (exit $SG): this says nothing about F657" ;;
 esac
 rm -f "$TMP/fs/new.sqlite3" "$TMP/fs/new.sqlite3-wal" "$TMP/fs/new.sqlite3-shm"

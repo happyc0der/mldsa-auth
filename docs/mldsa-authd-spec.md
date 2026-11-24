@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.122, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356)
+# mldsa-authd — deployment specification (v1.123, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1867,7 +1867,10 @@ would otherwise open and fail every request on (erratum 163).
 **A start that creates the store and then fails removes it again** (erratum
 114), and says so on standard error. It asks first whether the file still
 holds only what a creation leaves, and if it holds more, written by some
-other process since, leaves it and says that (erratum 162). Otherwise the next start would find
+other process since, leaves it and says that (erratum 162). It leaves it
+too, and says so, when what failed was a Unix socket that another daemon is
+listening on: that daemon has this configuration and may have opened the
+store already (erratum 172). Otherwise the next start would find
 the file, take it for its store and say nothing: the warning above would
 have gone to a start that never served. A store that was already there is
 never removed.
@@ -2822,3 +2825,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 171 | 15 | `listener-peer-rejected` is limited for each uid on a listener, to eight lines a second for the listener; the field `refused`, on a third `stopped` line, counts every peer a uid list turned away; a `RECOVERY-USE revoke=all` is said to write `recovery-use ... revoked=` and no `device-revoked` line | Erratum 170's limit was the listener's alone: one user's stream of refusals took the one line a second, and another uid refused on the same socket was never named; and the count of refusals, which that erratum's reason leaned on, was in no line (F750). Erratum 170 also said a `device-revoked` line is written "when a device is revoked", which has never been so for the devices `revoke=all` revokes (F751) |
+
+### Revision v1.123 (V4-361)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 172 | 16 | A start that created the store and failed because one of its Unix sockets is `in-use` leaves the store, and says so | A second daemon of the same configuration that opens a store the first has just created, and has not yet written to it, leaves the file looking as a creation leaves it, which is all erratum 162's question can see. The first start, failing `in-use` on the socket the second had bound, removed the store from under it: the second went on serving a file with no name, and what it enrolled was gone at its next restart (F773) |

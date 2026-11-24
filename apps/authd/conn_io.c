@@ -41,6 +41,11 @@ int conn_io_proxy_settled(const conn_io_t *c)
     return (c != NULL && c->proxy_on && c->proxy.done) ? 1 : 0;
 }
 
+int conn_io_proxy_refused(const conn_io_t *c)
+{
+    return (c != NULL && c->proxy_on && c->proxy.done && c->proxy.result == PROXY_V2_ERR) ? 1 : 0;
+}
+
 const authd_addr_t *conn_io_client_addr(const conn_io_t *c)
 {
     static const authd_addr_t none = { 0u, { 0 } };

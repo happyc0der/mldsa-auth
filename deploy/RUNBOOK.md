@@ -1263,6 +1263,10 @@ Common ones, and what they actually are:
   (`setfacl -k <directory>`). The unit's own runtime directory has none.
 - **`loopback listener: bind`** — another program, or a second daemon, holds
   `listen_port` (8443 in the example) on 127.0.0.1 (F448).
+- **`this start created the store, and another daemon is listening …; it is left in place`** —
+  follows an `in-use` line below, from a start that had found no store and
+  made one. Two daemons were started on one configuration. The store is the
+  running daemon's now; this start has exited 1 and removed nothing.
 - **`unix listener …: in-use`** (also `site socket` and `admin socket`) —
   something is listening on that socket: the service is already running, or a
   second unit or a hand-started daemon uses the same configuration. The

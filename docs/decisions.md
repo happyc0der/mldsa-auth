@@ -23699,3 +23699,67 @@ No code, test, campaign or spec change.
 Counts: 874 mutations, 167 campaigns, 925 anchors; 771 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.122, 171 errata; 66 tests.
+
+## V4-361: what the hundredth review found (F772 to F776)
+
+**The hundredth review** read V4-359, then the daemon's start and stop,
+the command-line tools, the client's state machine, the store's opening
+and backup, and the reference site outside its sessions; it ran the built
+daemon through seven kinds of failed start. No High or Medium. Two Low,
+three Info.
+
+- **F772 (Low): a regression of V4-359, caught before V4-359 was on
+  main.** V4-359's block asked the limiter about any connection whose
+  preamble had "settled", and a preamble that was refused has settled. The
+  consequence was a wrong line in the journal for every connection that
+  sent none. V4-359 and V4-360 were held, and go to main with this step.
+  - How it got past V4-359's own checks: the step's test sent a good
+    preamble with a bad request, which is the case it was written for,
+    and nothing sent no preamble through the loop and looked at what was
+    counted. The end-to-end leg for that case looks for `closed-protocol`
+    and found it.
+- **F773 (Low): a store removed from under a daemon serving it.** Fixed
+  for the case where the failure itself says another daemon is there, a
+  socket `in-use`. That is the case the review ran and the one two
+  starts of one unit produce.
+  - Not fixed, and the owner's since V4-342 (F678): a lock held for the
+    life of the daemon. Two daemons whose configurations share a store
+    and no socket are not caught by this step, nor is a second daemon
+    that opens the store and has not yet bound. The review's run is new
+    evidence for that question: it is the first demonstration that the
+    absence of a lock loses data, where F678 had argued it could.
+- **F774 (Info).** V4-359's entry said a refusal could not be written on
+  a connection whose request had failed. That was wrong, and the choice
+  it dressed up was not a good one: the limiter's answer is now acted on
+  there as it is everywhere else.
+- **F775 (Info).** Six more names, and a control for each of the
+  twenty-seven calls the search holds. Within V4-357's decision: `error("...")`
+  is a line someone adds by mistake.
+- **F776 (Info).** F771's row is corrected by a row beside it.
+
+It found sound, by running: each failed start leaves no socket and no
+store it created; a stop during the start exits 0; `READY=1` is sent once
+and only by a start that serves. And by reading: every key write in the
+tools is a temporary file made exclusively, synced and linked, never over
+another; the passphrases are wiped on every path; the client bounds every
+frame before reading it and compares the rotation's acknowledgement in
+constant time; the store writes nothing to a file before judging it; the
+site's relay forwards six named headers and bounds every body.
+
+Campaign v198: RY1 (a start that failed on a socket another daemon
+listens on removes the store it created), RY2 (the limiter is asked about
+a preamble that was refused), RY3 (the limiter's refusal of a connection
+whose request failed is not acted on). Re-anchored: v197's RX1, on the
+block's condition; v49b's R1, whose lines gained one.
+
+The controls of `check_daemon_stderr.sh`: 67, all refused.
+
+**The sweep, on the ASan tree:** 133 mutants, every one in `evloop.c`, `conn_io.c` and `authd_main.c` (63 of them against the end-to-end script) and this step's three. 128 KILLED under their named checks; four do not compile, which is their check (v190 RE1, v195 RV1 to RV3, all listed in `compile_kills_allowed.txt`); one SURVIVED, v99 LF1, which needs Linux's `prlimit` and is killed in the nightly.
+
+**The Linux run, before the push:** an Ubuntu container as uid 1000, Debug with gcc. The stderr gate passes and its script refuses all 67 controls; the vocabulary and anchor gates pass; the daemon's ten tests pass twice. RV1 to RV3 are refused by the compiler for the poisoned name each uses; RW1 to RW3, RX1 and RY1 to RY3 each fail the check named for it (RY1 in `authd_e2e`, the others in `test_authd_evloop` and `test_authd_ws`). The daemon builds in Release with gcc and with clang. The build's eight warnings are the ones every run since V4-358 has had.
+
+Spec v1.123: erratum 172 (16).
+
+Counts: 877 mutations, 168 campaigns, 928 anchors; 776 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.123, 172 errata; 66 tests.

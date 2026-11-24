@@ -443,6 +443,9 @@ int main(int argc, char **argv)
     authd_slot_t *local_slots = NULL;
     int store_created = 0;
     int early_rc = 1;
+    /* F773: a Unix socket of this configuration is being listened on by
+     * something else -- another daemon. See the epilogue. */
+    int socket_in_use = 0;
     static handshake_pending_store_t pending;   /* zeroed: wiping it unused is nothing */
 
     /* F657: a stop that came while the key was being opened. Nothing has
@@ -694,6 +697,7 @@ int main(int argc, char **argv)
         const listener_status_t ls = listener_open_unix(unix_path, 64, LISTENER_MODE_GROUP, &unix_fd);
         if (ls != LISTENER_OK) {
             authd_log_say("mldsa-authd: unix listener %s: %s\n", unix_path, listener_status_name(ls));
+            socket_in_use = (ls == LISTENER_ERR_IN_USE);
             goto listener_failed;
         }
         /* The proxy-facing listener speaks WebSocket (spec §7.1): a browser
@@ -723,6 +727,7 @@ int main(int argc, char **argv)
         const listener_status_t ls = listener_open_unix(site_path, AUTHD_SITE_BACKLOG, LISTENER_MODE_GROUP, &site_fd);
         if (ls != LISTENER_OK) {
             authd_log_say("mldsa-authd: site socket %s: %s\n", site_path, listener_status_name(ls));
+            socket_in_use = (ls == LISTENER_ERR_IN_USE);
             goto listener_failed;
         }
         if (evloop_add_local_listener(&ev, site_fd, cfg.site_uids, cfg.n_site_uids, 0) != 0) {
@@ -735,6 +740,7 @@ int main(int argc, char **argv)
         const listener_status_t ls = listener_open_unix(admin_path, 16, LISTENER_MODE_PRIVATE, &admin_fd);
         if (ls != LISTENER_OK) {
             authd_log_say("mldsa-authd: admin socket %s: %s\n", admin_path, listener_status_name(ls));
+            socket_in_use = (ls == LISTENER_ERR_IN_USE);
             goto listener_failed;
         }
         if (evloop_add_local_listener(&ev, admin_fd, cfg.admin_uids, cfg.n_admin_uids, 1) != 0) {
@@ -965,6 +971,20 @@ listener_failed:
         authd_log_say("mldsa-authd: %s: this start created the store, but it could not be seen to hold only "
                         "what a new store does: something else has written to it, or it could not be read; it is "
                         "left in place\n", cfg.store_path);
+        store_created = 0;
+    }
+    /* F773 (V4-361): nor if this start failed because another daemon is
+     * listening on one of its sockets. That daemon has this configuration,
+     * and so this store: it opened the file this start had just created,
+     * and until it writes something the file still looks as a creation
+     * leaves it, which is all the question above can see. Removing it left
+     * that daemon serving a file with no name: every enrollment it took was
+     * gone at its next restart, and it logged nothing. (A lock held for the
+     * life of the daemon would close this for every case and not only the
+     * one that announces itself; that is F678, and the owner's.) */
+    if (store_created && socket_in_use) {
+        authd_log_say("mldsa-authd: %s: this start created the store, and another daemon is listening on one of "
+                        "this configuration's sockets and may be using it; it is left in place\n", cfg.store_path);
         store_created = 0;
     }
     store_close(store);

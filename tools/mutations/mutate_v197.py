@@ -10,8 +10,8 @@ import sys, pathlib
 EV = "apps/authd/evloop.c"
 
 M = {
-    "RX1": [(EV, "            if (ev->on_addr != NULL) {\n                (void)ev->on_addr(ev->user, s);\n",
-             "            if (ev->on_addr != NULL) {\n                /* MUTATION RX1 */\n")],
+    "RX1": [(EV, "        if (!s->addr_settled && conn_io_proxy_settled(&s->io) && !conn_io_proxy_refused(&s->io)) {\n",
+             "        if (0 && !s->addr_settled && conn_io_proxy_settled(&s->io) && !conn_io_proxy_refused(&s->io)) { /* MUTATION RX1 */\n")],
 }
 
 def main():

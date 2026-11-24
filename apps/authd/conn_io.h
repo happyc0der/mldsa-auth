@@ -126,6 +126,11 @@ void conn_io_set_proxy(conn_io_t *c, int on);
  * yielded an address. Always 0 on a connection that was never expecting one,
  * so a caller can use it as "the client address is now decided, ask me". */
 int conn_io_proxy_settled(const conn_io_t *c);
+/* F772: 1 when the preamble settled by being REFUSED (absent or malformed).
+ * conn_io_proxy_settled() is 1 for that too, since nothing more of it will
+ * be read; a caller that asks "whose connection is this" must not ask it
+ * of a peer that never said. */
+int conn_io_proxy_refused(const conn_io_t *c);
 
 /* 1 once a WebSocket connection has reached its end: the peer sent a Close
  * (its echo is queued), or the upgrade was refused or silenced. Nothing more

@@ -163,7 +163,7 @@ BADM=$(awk -v p="$POISON2" 'NR > p { print NR ": " $0 }' "$MAINC" | grep -E "$MP
 # source could still say printf("debug ...") and pass, and a header could
 # define a macro that does, which the poison does not reach (a macro defined
 # before a name is poisoned may still expand to it).
-PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|psiginfo|syslog|vsyslog|printf|vprintf|puts|putchar|putchar_unlocked|putc_unlocked|err|errx|verr|verrx|warn|warnx|vwarn|vwarnx|assert|abort)[[:space:]]*\('
+PAT='(^|[^A-Za-z0-9_])(stderr|__stderrp|STDERR_FILENO|stdout|__stdoutp|STDOUT_FILENO)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.>])(perror|psignal|psiginfo|syslog|vsyslog|printf|vprintf|puts|putchar|putchar_unlocked|putc_unlocked|err|errx|errc|verr|verrx|verrc|warn|warnx|warnc|vwarn|vwarnx|vwarnc|error|error_at_line|assert|abort)[[:space:]]*\('
 # By full path. Why each may name standard error:
 #   apps/authd/authd_main.c    checked in part 1: after its includes it cannot
 #   apps/authd/authd_log.c     the log itself

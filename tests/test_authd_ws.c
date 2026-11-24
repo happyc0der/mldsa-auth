@@ -1501,7 +1501,42 @@ static void test_proxy_through_loop(void)
             "proxy-loop: an upgrade that cannot be one, sent with its preamble in one write, is closed as a protocol failure (not vacuous)");
       const int n3 = ws_raw_try(&d, pre, pre_len, resp, sizeof resp);
       CHECK(n3 > 0 && strncmp(resp, "HTTP/1.1 429", 12) == 0,
-            "proxy-loop: and it was charged to its address: the next connection from there is refused by the limiter (F766)"); }
+            "proxy-loop: and it was charged to its address: the next connection from there is refused by the limiter (F766)");
+      /* V4-361 (F774): the same bad upgrade from the address now spent is
+       * the limiter's refusal: it is answered 429 and counted as one, and
+       * is not a protocol failure. */
+      { const uint64_t proto1 = d.ev.closed_protocol, addr1 = d.ev.closed_refused_addr;
+        const int fd2 = h_dial_unix(d.ws_path);
+        const int wrote2 = fd2 >= 0 && write(fd2, one, on) == (ssize_t)on;
+        char r2[512];
+        size_t g2 = 0;
+        for (int i = 0; fd2 >= 0 && i < 2000; i++) {
+            h_tick(&d);
+            const ssize_t k = recv(fd2, r2 + g2, sizeof r2 - 1u - g2, MSG_DONTWAIT);
+            if (k > 0) { g2 += (size_t)k; }
+            if (k == 0 || g2 >= sizeof r2 - 1u) { break; }
+        }
+        r2[g2] = '\0';
+        if (fd2 >= 0) { (void)close(fd2); }
+        (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        CHECK(wrote2 && g2 >= 12u && strncmp(r2, "HTTP/1.1 429", 12) == 0
+              && d.ev.closed_refused_addr == addr1 + 1u && d.ev.closed_protocol == proto1,
+              "proxy-loop: a bad upgrade from an address the limiter refuses is answered 429 and counted as its refusal, not as a protocol failure (F774)"); }
+      /* V4-361 (F772): a connection with NO preamble is a protocol failure
+       * and nothing else. V4-359 asked the limiter about it, which logged
+       * it as a preamble that names no client: the runbook's other case. */
+      { static const char plain[] =
+            "GET /authd/v1 HTTP/1.1\r\nHost: authd\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n";
+        const uint64_t proto2 = d.ev.closed_protocol, noaddr2 = d.app.refused_no_address;
+        const int fd3 = h_dial_unix(d.ws_path);
+        const int wrote3 = fd3 >= 0 && write(fd3, plain, sizeof plain - 1u) == (ssize_t)(sizeof plain - 1u);
+        (void)H_PUMP_UNTIL(&d, d.ev.closed_protocol > proto2);
+        if (fd3 >= 0) { (void)close(fd3); }
+        (void)H_PUMP_UNTIL(&d, evloop_active(&d.ev) == 0u);
+        CHECK(wrote3 && d.ev.closed_protocol == proto2 + 1u && d.app.refused_no_address == noaddr2,
+              "proxy-loop: a connection that sends no preamble is closed as a protocol failure and is not reported as a preamble with no client address (F772)"); } }
 
     /* The limiter refuses BEFORE the ServerHello signature. The pending ledger
      * is the pin: handshake_responder_create_server_hello is what inserts into

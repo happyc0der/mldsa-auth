@@ -62,9 +62,10 @@ done
 ctl stdout-call "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { printf(\"debug\\n\"); }\n")'
 ctl stdout-name "localapi.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/localapi.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { fflush(stdout); }\n")'
 ctl stdout-macro "evloop.h: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.h"); p.write_text(p.read_text()+"\n#define EV_TRACE(w) printf(\"%s\\n\", (w))\n")'
-# F767: the calls that write to standard error without naming it.
-for call in 'warnx("debug");' 'err(1, "x");' 'assert(0);' 'abort();' 'putchar_unlocked(120);'; do
-  ctl "other[$call]" "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { '"$(printf '%s' "$call" | sed 's/"/\\"/g')"' }\n")'
+# F767, F775: the calls that write to standard error without naming it. One
+# control for every name the search holds, so that a slip in the list shows.
+for name in psiginfo putchar_unlocked putc_unlocked err errx errc verr verrx verrc warn warnx warnc vwarn vwarnx vwarnc error error_at_line assert abort perror psignal syslog vsyslog vprintf puts putchar; do
+  ctl "other[$name]" "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); p.write_text(p.read_text()+"\nstatic void zz(void) { '"$name"'(0); }\n")'
 done
 ctl symlink "zl.c: [0-9]" 'import os, pathlib; pathlib.Path("zz.txt").write_text("void zz(void) { fputs(\"x\", stderr); }\n"); os.symlink(os.path.abspath("zz.txt"), "apps/authd/zl.c")'
 ctl crlf-split "evloop.c: [0-9]" 'import pathlib; p=pathlib.Path("apps/authd/evloop.c"); s=p.read_bytes(); p.write_bytes(s+b"\nstatic void zz(void) { fputs(\"x\", std\\\r\nerr); }\n")'

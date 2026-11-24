@@ -576,12 +576,22 @@ static int slot_readable(evloop_t *ev, authd_slot_t *s, uint64_t now_ms)
          * (a bad upgrade, which any client can send), the connection was
          * closed here, before the limiter had been told of it and before a
          * line had named its address: refusals that cost their sender
-         * nothing and that the journal could not attribute. Whatever the
-         * limiter answers, the connection is closed for the failure. */
-        if (!s->addr_settled && conn_io_proxy_settled(&s->io)) {
+         * nothing and that the journal could not attribute.
+         *
+         * F772 (V4-361): only a preamble that was READ. One that was
+         * refused has settled too, and V4-359 asked about it: a peer that
+         * sent no preamble at all was logged as a preamble with no client
+         * address, the two lines the runbook tells apart.
+         *
+         * F774: and the limiter's answer is acted on, as it is below. A
+         * refusal it queued (the 429) is written and counted as its
+         * refusal; V4-359 dropped it and counted a protocol failure. */
+        if (!s->addr_settled && conn_io_proxy_settled(&s->io) && !conn_io_proxy_refused(&s->io)) {
             s->addr_settled = 1;
-            if (ev->on_addr != NULL) {
-                (void)ev->on_addr(ev->user, s);
+            if (ev->on_addr != NULL && ev->on_addr(ev->user, s) == EV_ACTION_CLOSE) {
+                ev->closed_refused_addr++;
+                s->state = SLOT_DRAINING;   /* flush the refusal, then close */
+                return 0;
             }
         }
         ev->closed_protocol++;
