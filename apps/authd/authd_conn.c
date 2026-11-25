@@ -17,10 +17,30 @@ uint64_t authd_app_clock(void *ctx)
     return (app != NULL) ? app->now_ms : 0u;
 }
 
-/* V4-366 (F794): the clock a ROTATE's age is read on. */
+/* V4-366 (F794): the clock a ROTATE's age is read on. It must count time the
+ * host spent suspended, which Linux's CLOCK_MONOTONIC does not and its
+ * CLOCK_BOOTTIME does; macOS's CLOCK_MONOTONIC does. It is read when asked,
+ * not pushed, so a pass that a slow handler made long does not make a ROTATE
+ * served later in it look younger than it is. V4-367 (F797): this is the
+ * default, here and not in the daemon's main, so that a daemon that sets no
+ * hook still reads it; the loop's pushed now_ms is never the fallback. */
+static uint64_t rotate_clock_real(void)
+{
+    struct timespec ts;
+#if defined(__linux__) && defined(CLOCK_BOOTTIME)
+    if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+        return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+    }
+#endif
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+    }
+    return 0u;
+}
+
 static uint64_t rotate_clock(const authd_app_t *app)
 {
-    return (app->rotate_clock_ms != NULL) ? app->rotate_clock_ms() : app->now_ms;
+    return (app->rotate_clock_ms != NULL) ? app->rotate_clock_ms() : rotate_clock_real();
 }
 
 static authd_conn_t *conn_of(authd_app_t *app, authd_slot_t *slot)
@@ -615,8 +635,11 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
      * ROTATE of a session that got no reply can land more than the idle
      * timeout after it", which the client and the runbook tell an operator
      * before a staged key is removed by hand, is true of a busy daemon too.
-     * REJECTED, like every refusal below: the client keeps a re-offered key
-     * and discards its own, and nothing is written. */
+     * REJECTED, like every refusal below, and nothing is written. Both
+     * clients keep .ek.next on any refusal, since a refusal proves nothing
+     * either way. A late ROTATE shares 0x03 with a key the daemon will not
+     * take, and the client's advice for that one is safe for it too: it
+     * waits out the same ten minutes (V4-367, F799). */
     if (app->rotate_window_ms != 0u) {
         /* Unsigned: a clock that reads before the code's time wraps to an
          * age far past any window, and is refused with the rest. */

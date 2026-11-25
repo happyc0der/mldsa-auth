@@ -1510,10 +1510,10 @@ static uint64_t fake_rot_clock(void) { return g_rot_clock; }
 static void test_rotate_late(void)
 {
     daemon_t d; client_t c;
-    mldsa_keypair_t k1, k2, k3;
+    mldsa_keypair_t k1, k2, k3, k4;
     CHECK(daemon_start(&d, 8, "rotlate.sqlite3") == 0, "rotate-late: daemon starts");
     CHECK(mldsa_keypair_generate(&k1) == 0 && mldsa_keypair_generate(&k2) == 0 &&
-          mldsa_keypair_generate(&k3) == 0, "rotate-late: keys");
+          mldsa_keypair_generate(&k3) == 0 && mldsa_keypair_generate(&k4) == 0, "rotate-late: keys");
     enroll(&d, HANDLE1, sizeof HANDLE1, &k1);
     d.app.rotate_window_ms = 1000u;
     d.app.rotate_clock_ms = fake_rot_clock;
@@ -1549,16 +1549,52 @@ static void test_rotate_late(void)
           "rotate-late: a ROTATE whose clock reads before its login code is REJECTED (F794)");
     client_close(&c);
 
+    /* V4-367 (F798): late AND signed by a key that is not the session's.
+     * Section 6.3 puts the age before both verifies, so it is refused as
+     * late: one of the journal's four rotate-late, not a bad signature. */
+    CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-late: session (late, bad signature)");
+    g_rot_clock += 1001u;
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k3, &k2, &k2,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED && d.app.rotations == before,
+          "rotate-late: a late ROTATE with a bad signature is REJECTED (F798)");
+    client_close(&c);
+
     /* Exactly the window: accepted, so the bound is the window and no less. */
     CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-late: session (at the window)");
     g_rot_clock += 1000u;
     rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k1, &k3, &k3,
                       AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
     pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
-    authd_log_init(stderr, AUTHD_LOG_ERROR);
     CHECK(rl > 0 && pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK && d.app.rotations == before + 1u,
           "rotate-late: a ROTATE exactly the window after its login code is acknowledged (F794)");
     client_close(&c);
+
+    /* V4-367 (F797): no hook, the daemon's case. The window is judged on
+     * authd_conn.c's own clock, not on the loop's pushed now_ms, which here
+     * stands still as it does for a pass a slow handler made long. In time
+     * first (the clock is a clock), then 1.2 s late with now_ms unmoved. */
+    d.app.rotate_clock_ms = NULL;
+    const uint64_t frozen = d.app.now_ms;
+    CHECK(rotate_session(&d, &c, &k3) == 0, "rotate-late: session (real clock, in time)");
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k3, &k2, &k2,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK && d.app.rotations == before + 2u,
+          "rotate-late: with no hook, a ROTATE at once after its login code is acknowledged (F797)");
+    client_close(&c);
+    CHECK(rotate_session(&d, &c, &k2) == 0, "rotate-late: session (real clock, late)");
+    const struct timespec nap = { 1, 200000000L };
+    (void)nanosleep(&nap, NULL);
+    d.app.now_ms = frozen;
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k2, &k4, &k4,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED && d.app.rotations == before + 2u,
+          "rotate-late: with no hook, a ROTATE 1.2 s after its login code is REJECTED though now_ms stood still (F797)");
+    client_close(&c);
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
 
     char *buf = NULL;
     long sz = 0;
@@ -1569,9 +1605,13 @@ static void test_rotate_late(void)
     }
     CHECK(buf != NULL && strstr(buf, "detail=rotate-late") != NULL,
           "rotate-late: the journal names the refusal rotate-late (F794)");
+    int nlate = 0;
+    for (const char *q = buf; q != NULL && (q = strstr(q, "detail=rotate-late")) != NULL; q++) { nlate++; }
+    CHECK(nlate == 4,
+          "rotate-late: a late ROTATE with a bad signature is refused as late, before either signature is checked (F798)");
     free(buf);
     if (lf != NULL) { (void)fclose(lf); }
-    mldsa_keypair_free(&k1); mldsa_keypair_free(&k2); mldsa_keypair_free(&k3);
+    mldsa_keypair_free(&k1); mldsa_keypair_free(&k2); mldsa_keypair_free(&k3); mldsa_keypair_free(&k4);
     daemon_stop(&d);
 }
 

@@ -24075,3 +24075,36 @@ Spec v1.128: erratum 177 (6.3, 10.2).
 Counts: 895 mutations, 172 campaigns, 946 anchors; 796 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.
+
+## V4-367: what the hundred-and-sixth review found (F797 to F802), and a cleanup
+
+**The hundred-and-sixth review** attacked V4-366's bound on a late
+`ROTATE` from a copy of the tree: its clock, its place among the refusals,
+its tests and mutants, and the client's rotate path read whole. It found no
+fault in the bound; two Low, four Info.
+
+- **F797 (Low).** The daemon's main set the clock and nothing tested that
+  it did. Rather than test one line of wiring, the wiring is gone: the real
+  clock is `authd_conn.c`'s default, and the loop's pushed `now_ms` is no
+  longer any path's fallback. A unit check holds `now_ms` still across
+  1.2 s and requires the refusal. Linux's `CLOCK_BOOTTIME` over
+  `CLOCK_MONOTONIC` still needs a suspend to test, and is not.
+- **F798 (Low).** One check pins the order section 6.3 states.
+- **F799, F800 (Info).** Two texts corrected, and one record: V4-366's
+  entry says a `ROTATE` is sent the moment the login code arrives. That is
+  true of the CLI, not of the browser, which unwraps its staged key first;
+  the runbook now says what that asks of `idle_timeout_ms`.
+- **F801 (Info).** Recorded, no change.
+- **F802 (Info).** The fuzzer reaches both ways through the bound.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-366 landed on: CI
+45646749735 (16/16) and nightly 45646758088 (187/187, 172 campaigns) on `ba05ab4`.
+
+Campaign v203: SD1 (a daemon with no hook reads `now_ms`), SD2 (the age is
+judged after both signatures).
+
+**The sweep, on macOS:** 72 mutants (v203 first, then every older mutant of `authd_conn.c`, `test_authd_conn` and the `authd_conn` fuzz replay, since both new checks come early in `test_authd_conn`): 71 named kills, SD1 and SD2 among them; GB8 is VOID as in every sweep. **A correction to V4-366's entry:** its sweep made 162 named kills of 169, not 137; the tally that gave 137 skipped campaigns with a letter in their name, and the seven verdicts it listed were all there were.
+
+Counts: 897 mutations, 173 campaigns, 949 anchors; 802 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.

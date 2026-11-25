@@ -132,6 +132,9 @@ static authd_slot_t slot;
 static authd_app_t app;
 static handshake_pending_store_t pending;
 
+/* The rotate clock is the harness's, so a crash replays (F802). */
+static uint64_t fuzz_rotate_clock(void) { return app.now_ms; }
+
 static void start_world(void)
 {
     fuzz_rng_reset_stream(STREAM_DAEMON);
@@ -149,6 +152,12 @@ static void start_world(void)
     app.code_ttl_s = AUTHD_LOGIN_CODE_TTL_S;
     app.now_ms = FUZZ_CLOCK_T0;
     app.now_unix = 1700000000;
+    /* V4-367 (F802): the daemon always sets a window (its idle timeout), so
+     * the harness does too, and the clock moves 1 ms per frame (below): a
+     * ROTATE in the frame after the login code is in time, one with a frame
+     * between them is late, and both of on_rotate's ways are fuzzed. */
+    app.rotate_window_ms = 1u;
+    app.rotate_clock_ms = fuzz_rotate_clock;
 
     FUZZ_ASSERT(handshake_pending_store_init(&pending, 8u, 10000u, authd_app_clock, &app) == PENDING_OK,
                 "fixture: the pending-handshake table could not be made");
@@ -212,6 +221,7 @@ static uint64_t run_input(const uint8_t *data, size_t size)
          * in the out buffer for the rest of the input, and the login code
          * that follows a genuine ClientAuth had nowhere to go. */
         conn_io_sent(&slot.io, conn_io_pending(&slot.io));
+        app.now_ms += 1u;
     }
 
     /* 4. the close path leaves nothing behind */

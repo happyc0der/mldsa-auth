@@ -1,0 +1,2 @@
+SD1|^test_authd_conn$|rotate-late: with no hook, a ROTATE 1.2 s after its login code is REJECTED though now_ms stood still (F797)
+SD2|^test_authd_conn$|rotate-late: a late ROTATE with a bad signature is refused as late, before either signature is checked (F798)

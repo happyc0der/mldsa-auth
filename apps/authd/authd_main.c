@@ -159,22 +159,6 @@ static uint64_t now_ms(void)
     return 0u;
 }
 
-/* V4-366 (F794): the clock a ROTATE's age is read on. It must count time the
- * host spent suspended, which Linux's CLOCK_MONOTONIC does not and its
- * CLOCK_BOOTTIME does; macOS's CLOCK_MONOTONIC does. Read when asked, not
- * pushed, so a pass that a slow handler made long does not make a ROTATE
- * served later in it look younger than it is. */
-static uint64_t rotate_clock_ms(void)
-{
-#if defined(__linux__) && defined(CLOCK_BOOTTIME)
-    struct timespec ts;
-    if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
-        return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
-    }
-#endif
-    return now_ms();
-}
-
 /* The loop's clock (F224). The main loop reads the time before each
  * iteration, and the iteration then sleeps in poll() for up to a second; the
  * loop asks this when poll() returns. It refreshes the app's two clocks as
@@ -624,7 +608,6 @@ int main(int argc, char **argv)
     app.now_unix = wall_now(app.now_ms);
     app.started_ms = app.now_ms;
     app.clock_refresh = app_clock_refresh;
-    app.rotate_clock_ms = rotate_clock_ms;
     app.rotate_window_ms = cfg.idle_timeout_ms;
     if (app.now_unix < 0) {
         /* F515: every lifetime is on this clock; with none, nothing can be

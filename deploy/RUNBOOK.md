@@ -954,6 +954,14 @@ by the client:
   a `rotate` more than ten minutes after the rotation that got no reply,
   with a `login` in between that did not complete it. The file holds a key
   the daemon will not take, an old one put back: remove it and rotate.
+  The same line follows a request that reached the daemon late
+  (`detail=rotate-late` in its journal); the advice holds for it as well,
+  since the ten minutes have passed.
+
+The browser client opens its staged key after the login code has arrived,
+which takes seconds on a slow device, so a browser rotation needs an
+`idle_timeout_ms` well above that; the default (60 s) is. With a few seconds
+or less, its `ROTATE` can be refused as late with nothing holding it.
 
 A `.ek.next` that is a byte copy of `.ek` is removed by `rotate` itself,
 which says `was a copy of the live key` (since V4-365).

@@ -176,9 +176,10 @@ typedef struct {
      * the time its handlers spent blocked (F630), so a session held by a
      * relay while the daemon was busy outlived the idle timeout many times
      * over, and a ROTATE it carried committed after the operator had been
-     * told it no longer could. The daemon sets the idle timeout here, and
-     * rotate_clock_ms to a clock that counts suspend and that nothing moves;
-     * 0 is no bound, and NULL reads now_ms (tests). */
+     * told it no longer could. The daemon sets the idle timeout here; 0 is
+     * no bound. rotate_clock_ms NULL reads authd_conn.c's own clock, which
+     * counts suspend and which nothing moves (V4-367, F797); a test or the
+     * fuzzer sets its own. */
     uint32_t rotate_window_ms;
     uint64_t (*rotate_clock_ms)(void);
 
