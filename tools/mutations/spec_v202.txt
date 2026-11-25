@@ -1,5 +1,5 @@
 SC1|^test_authd_conn$|rotate-late: a ROTATE more than the window after its login code is REJECTED and commits nothing (F794)
 SC2|^test_authd_conn$|rotate-late: a ROTATE exactly the window after its login code is acknowledged (F794)
-SC3|^authd_e2e$|a ROTATE held past the idle timeout while the daemon was busy was committed (F794)
+SC3|^authd_e2e$|a ROTATE that reached a stalled daemon after the idle timeout was committed (F794, F803)
 SC4|^test_authd_conn$|rotate-late: a ROTATE exactly the window after its login code is acknowledged (F794)
 SC5|^authd_e2e$|a copy of the live key at .ek.next that could not be removed did not stop the run with a line that says to remove it (F796)

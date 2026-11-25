@@ -3586,10 +3586,19 @@ echo "PASS: E2E: a ROTATE that arrives late and a second rotate meanwhile leave 
 # the ROTATE it carried committed: after the client and the runbook had said
 # that, past the timeout, a .ek.next could be removed by hand. That is F787's
 # lock-out. Now a ROTATE more than the idle timeout after its session's login
-# code is refused, `rotate-late`. The daemon here has idle_timeout_ms = 2000;
-# three site connections keep it busy with RECOVERY-ISSUE while the ROTATE is
-# held for 3 s, then it is let go.
-mkdir -p "$TMP/bz" "$TMP/bzdev" && chmod 0700 "$TMP/bzdev" || fail "could not set up the busy-daemon ROTATE leg"
+# code is refused, `rotate-late`. The daemon here has idle_timeout_ms = 2000.
+# V4-367 (F803): the leg kept the daemon busy with RECOVERY-ISSUE from three
+# threads while the ROTATE was held, and on a fast runner the requests blocked
+# too little to keep the session alive: it was closed before the ROTATE was
+# read, and the leg showed nothing (SC3 survived the nightly). Now ONE such
+# request is sent and the daemon is stopped (SIGSTOP) while it hashes; the
+# ROTATE is written to its socket 3 s after the login code and the daemon is
+# let go. The handler ends having outlasted its pass by the whole stop, the
+# loop moves every deadline on by that much, and the ROTATE is read next:
+# without the bound it commits, every time. (Stopping the daemon in poll()
+# instead does not do it: the wait times out, and the slot is closed as past
+# its deadline before the ROTATE is seen.)
+mkdir -p "$TMP/bz" "$TMP/bzdev" && chmod 0700 "$TMP/bzdev" || fail "could not set up the stalled-daemon ROTATE leg"
 BZ=0
 python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/bz.txt" 2>&1 <<'PYEOF' || BZ=$?
 import os, signal, socket, struct, subprocess, sys, threading, time
@@ -3609,7 +3618,6 @@ with open(conf, "w") as f:
 dlog = open(tmp + "/bz.log", "w")
 dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
 rc = 9
-busy_stop = threading.Event()
 def rx(c, n):
     b = b""
     while len(b) < n:
@@ -3676,16 +3684,24 @@ try:
     cp = subprocess.Popen(args("rotate", rport), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if not got3.wait(30):
         print("BUSY: the ROTATE never reached the relay"); sys.exit(9)
-    issued = []
-    def busy():
-        while not busy_stop.is_set():
-            b = socket.socket(socket.AF_UNIX); b.connect(tmp + "/bz-s.sock")
-            b.sendall(f"RECOVERY-ISSUE user={b'busy'.hex()} count=16\n".encode())
-            issued.append(b.recv(65536)[:3]); b.close()
-    for _ in range(3): threading.Thread(target=busy, daemon=True).start()
-    time.sleep(3.0)                         # 1.5 times the idle timeout
-    release.set()
-    sent.wait(10)
+    # One site request, sixteen Argon2id hashes: a handler that outlasts its
+    # pass and says so (F625), so the loop moves every deadline on by the
+    # time it took. The daemon is stopped while it hashes.
+    site_ans = []
+    def one_issue():
+        b = socket.socket(socket.AF_UNIX); b.connect(tmp + "/bz-s.sock")
+        b.sendall(f"RECOVERY-ISSUE user={b'busy'.hex()} count=16\n".encode())
+        site_ans.append(b.recv(65536)[:3]); b.close()
+    st = threading.Thread(target=one_issue, daemon=True); st.start()
+    time.sleep(0.15)
+    os.kill(dp.pid, signal.SIGSTOP); os.waitpid(dp.pid, os.WUNTRACED)
+    try:
+        time.sleep(3.0)                     # 1.5 times the idle timeout
+        release.set()
+        sent.wait(10)
+        time.sleep(0.3)                     # the ROTATE is in the daemon's socket
+    finally:
+        os.kill(dp.pid, signal.SIGCONT)
     # Judged: committed, refused, or closed by the deadline before it was read.
     end = time.monotonic() + 30
     while time.monotonic() < end:
@@ -3693,17 +3709,17 @@ try:
         if " event=rotate " in j.replace("\n", " \n") or "detail=rotate-late" in j or "closed-deadline" in j:
             break
         time.sleep(0.1)
-    busy_stop.set()
     try: held["c"].shutdown(socket.SHUT_RDWR)   # the client's reply never comes: end it
     except (KeyError, OSError): pass
     cerr = cp.communicate(timeout=60)[1]
     j = journal()
-    print("site requests answered meanwhile:", len(issued), issued[:2])
+    st.join(30)
+    print("ROTATE written to the stopped daemon's socket:", sent.is_set(), "; site request answered:", site_ans)
     print("client:", cerr)
     print("journal:", " | ".join(l for l in j.splitlines() if "rotate" in l or "deadline" in l))
     committed = any(" event=rotate " in l + " " for l in j.splitlines())
     if committed:
-        print("BUSY: a ROTATE held past the idle timeout was COMMITTED"); sys.exit(1)
+        print("BUSY: a ROTATE that reached the daemon after the idle timeout was COMMITTED"); sys.exit(1)
     if "detail=rotate-late" not in j:
         print("BUSY: the held session was closed before its ROTATE was read: this leg shows nothing"); sys.exit(9)
     lr = subprocess.run(args("login", port), capture_output=True, text=True)
@@ -3713,7 +3729,6 @@ try:
 except Exception as e:
     print(f"BUSY: the test itself failed: {e!r}"); rc = 9
 finally:
-    busy_stop.set()
     dp.send_signal(signal.SIGTERM)
     try: dp.wait(10)
     except subprocess.TimeoutExpired: dp.kill(); dp.wait()
@@ -3721,10 +3736,10 @@ sys.exit(rc)
 PYEOF
 case "$BZ" in
 0) ;;
-1) cat "$TMP/bz.txt"; fail "a ROTATE held past the idle timeout while the daemon was busy was committed (F794)" ;;
+1) cat "$TMP/bz.txt"; fail "a ROTATE that reached a stalled daemon after the idle timeout was committed (F794, F803)" ;;
 2) cat "$TMP/bz.txt"; fail "after a ROTATE refused as late, the live key does not log in (F794)" ;;
-*) cat "$TMP/bz.txt"; fail "the busy-daemon ROTATE test could not be made (exit $BZ): this says nothing about F794" ;;
+*) cat "$TMP/bz.txt"; fail "the stalled-daemon ROTATE test could not be made (exit $BZ): this says nothing about F794" ;;
 esac
-echo "PASS: E2E: a ROTATE held past the idle timeout while the daemon is busy is refused as late, and the live key logs in (F794)"
+echo "PASS: E2E: a ROTATE that reaches a stalled daemon after the idle timeout is refused as late, and the live key logs in (F794, F803)"
 
 echo "All checks passed"
