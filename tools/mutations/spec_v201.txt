@@ -1,0 +1,3 @@
+SB1|^authd_e2e$|a re-offered key whose ROTATE could not be written was removed, or was not rotated to afterwards (F791)
+SB2|^authd_e2e$|a copy of the live key at .ek.next stopped the rotation or was kept (F790)
+SB3|^authd_e2e$|a re-offered key the daemon refused was removed, changed the key, or the client did not say what ends it (F790)

@@ -360,6 +360,25 @@ try {
           isDeepStrictEqual(end.envelope, first.envelope),
           'late ROTATE: the next login promotes the key the daemon took, and the device logs in (F787)'); }
 
+  // V4-365 (F791): and a re-offered key whose ROTATE never left this page.
+  // For a key this rotation staged, that is the proof it may go (F460); for
+  // one an earlier rotation staged, whose own ROTATE did leave, it is not.
+  { const { store, params } = await fresh();
+    const first = client.newIdentity(PASS, params.handle);
+    await store.stagePending(params.handle, first.envelope);
+    const closed = new Proxy(client, { get: (t, k) => (k === 'login'
+      ? async (...a) => { const s = await t.login(...a);
+                          s.rotate = async () => { const e = new Error('the socket closed'); e.notSent = true; throw e; };
+                          return s; }
+      : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) });
+    const said = [];
+    let msg = '';
+    try { await flows.rotate(closed, store, params, (e) => said.push(e)); } catch (e) { msg = e.message; }
+    const after = await store.get(params.handle);
+    check(msg === 'the socket closed' && after.pending !== null && isDeepStrictEqual(after.pending, first.envelope) &&
+          said.includes('the rotation was never sent; the key an earlier rotation staged is kept pending'),
+          're-offer, ROTATE never sent: the key an earlier rotation staged is KEPT pending (F791)'); }
+
   // Where the lock cannot span tabs (no Web Locks), rotate refuses and stages nothing.
   { const { store, params } = await fresh();
     const before = await store.get(params.handle);

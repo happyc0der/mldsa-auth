@@ -13,8 +13,8 @@ import sys, pathlib
 CL = "apps/authd/client_cli.c"
 
 M = {
-    "SA1": [(CL, "    const int reoffer = stale_next;\n",
-             "    const int reoffer = 0; if (stale_next) { (void)unlink(next_path); } /* MUTATION SA1 */\n")],
+    "SA1": [(CL, "    int reoffer = stale_next;\n",
+             "    int reoffer = 0; if (stale_next) { (void)unlink(next_path); } /* MUTATION SA1 */\n")],
     "SA2": [(CL, "        if (reoffer) {\n            /* F787: not this run's key to remove. This is the very case: the\n",
              "        if (0 && reoffer) { /* MUTATION SA2 */\n            /* F787: not this run's key to remove. This is the very case: the\n")],
     "SA3": [(CL, "        if (reoffer) {\n            /* F787: an earlier rotation's key that this passphrase does not\n",

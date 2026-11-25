@@ -1202,7 +1202,32 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
      * ACK moves it, into place.
      * (F293 stands: stale_next is the daemon's answer about a file this run
      * opened under the lock, not the file being there.) */
-    const int reoffer = stale_next;
+    int reoffer = stale_next;
+    /* F790 (V4-365): unless it is the live key itself -- a byte copy of
+     * .ek put back by a restore or a sync folder. The daemon refuses a
+     * rotation to the key it already has, every time, so offering it again
+     * stuck every later rotate; and nothing is lost by removing it, since
+     * .ek holds that very key. Compared on the public halves. */
+    if (reoffer) {
+        mldsa_keypair_t same_kp;
+        memset(&same_kp, 0, sizeof same_kp);
+        if (keyfile_open(next_path, a.hid, a.hid_len, (const char *)pass, pass_len, &same_kp, NULL) == KEYFILE_OK) {
+            const int same = memcmp(same_kp.public_key, old_kp.public_key, sizeof same_kp.public_key) == 0;
+            mldsa_keypair_free(&same_kp);
+            if (same) {
+                if (unlink(next_path) != 0 && errno != ENOENT) {
+                    authd_secret_free(pass, pass_len);
+                    mldsa_keypair_free(&old_kp);
+                    fprintf(stderr, "%s rotate: %s is a copy of the live key in %s, and it could not be removed; "
+                                    "remove it by hand and rotate\n", prog, next_path, a.key_path);
+                    return EX_FAIL;
+                }
+                fprintf(stderr, "%s rotate: %s was a copy of the live key in %s, not a key a rotation staged; "
+                                "it is removed and a new key is made\n", prog, next_path, a.key_path);
+                reoffer = 0;
+            }
+        }
+    }
 
     /* Seal the new key BEFORE sending anything (spec 10.2). If everything
      * after this dies, the next invocation's probe decides which key is live
@@ -1267,8 +1292,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
             fprintf(stderr, "%s rotate: not rotating: %s was staged by an earlier rotation and cannot be "
                             "opened, so it cannot be offered again. It is KEPT: that rotation's request may "
                             "still reach the daemon, for as long as the daemon's idle timeout (ten minutes "
-                            "at most). After that, if a login still works with %s, remove %s by hand and "
-                            "rotate\n", prog, next_path, a.key_path, next_path);
+                            "at most). If the passphrase was changed since, a login with the one in use then "
+                            "may complete that rotation. Otherwise, after ten minutes, if a login still works "
+                            "with %s, remove %s by hand and rotate\n", prog, next_path, a.key_path, next_path);
         } else {
             rotate_drop_unsent(prog, next_path); /* F467: nothing was sent */
         }
@@ -1396,6 +1422,16 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
              * nothing at all. Keep the file; the probe decides next time. */
             fprintf(stderr, "%s rotate: %s is KEPT so the next run can resolve it\n",
                     prog, next_path);
+            if (reoffer) {
+                /* F790: the daemon had the session and would not take this
+                 * key. If its first ROTATE has not landed by now, it is a key
+                 * the daemon will never take (one it once had, say), and
+                 * every rotate would end here. Say what ends it. */
+                fprintf(stderr, "%s rotate: the daemon refused the key an earlier rotation staged. If the next "
+                                "login does not complete that rotation, and rotate says this again more than ten "
+                                "minutes after the rotation that got no reply, the daemon will not take that key: "
+                                "remove %s by hand and rotate\n", prog, next_path);
+            }
             goto out;
         }
         /* The core accepts only an ACK naming THIS handle and the key actually

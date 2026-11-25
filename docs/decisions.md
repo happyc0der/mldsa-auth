@@ -23962,3 +23962,63 @@ Spec v1.126: erratum 175 (10.2, 12).
 Counts: 887 mutations, 170 campaigns, 938 anchors; 789 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.126, 175 errata; 66 tests.
+
+## V4-365: what the hundred-and-fourth review found (F790 to F793)
+
+**The hundred-and-fourth review** attacked V4-364's rule. It ran every
+interleaving it could make of two and three rotations, late requests from
+each, a `kill -9` during a re-offer, a passphrase change between two
+rotations, another handle's key and a damaged record, on macOS and on
+Linux, and found no state that loses the only copy of the live key and no
+`ROTATE` the daemon accepts without the active old key. Two Low, two Info.
+
+- **F790 (Low): the rule's cost, which V4-364 did not count.** Keeping
+  every staged key beside a live one means keeping the ones that are not
+  staged keys at all. One of the two can be told by the client alone: a
+  copy of `.ek` has `.ek`'s public half, and removing it loses nothing.
+  The other, a key the daemon once had, cannot: until the daemon refuses
+  it, it looks like a staged key whose request has not landed, and after a
+  refusal the codes are coarse by design (spec 6.5), so a refusal for
+  "already enrolled" is not told from one for any other reason. It is
+  kept, and the client and the runbook now say what ends it.
+  - Not done: having the client remove a re-offered key after a refusal.
+    That would be safe only on a refusal that proves the key can never
+    become live, and the protocol does not give one.
+- **F791 (Low): the branches V4-364 added had no test of their own.**
+  V4-364's sweep showed each new mutant killed and did not ask whether
+  each new branch had one. Two had none. The command-line one is now made
+  to happen: a relay resets the connection under the client when its
+  login code has been passed (with `SO_LINGER` 0, so that the client's
+  next write fails at once). The first version passed on macOS and could
+  not be made in the Linux container, three runs of three: there a close
+  does not release a socket another thread is in `recv()` on, and the
+  relay's reader of the client's side was, so no reset was sent and the
+  client's `ROTATE` was written. The relay now wakes that reader with
+  `shutdown(SHUT_RD)` before the close, and stops the client (`SIGSTOP`)
+  while it passes the frame and makes the reset, so that nothing depends
+  on the scheduler.
+- **F792 (Info).** The leg now orders the two requests itself instead of
+  racing them: the second session waits at the relay for the daemon's
+  `event=rotate`. SA2 is now killed at once, by a check of its own (the
+  leg's exit 5: the refused session must keep the staged key and say so),
+  where before only the later "no key logs in" caught it; its expectation
+  is re-pointed.
+- **F793 (Info).** Three sentences, corrected by runs.
+
+Campaign v201: SB1 (a re-offered key whose ROTATE cannot be written is
+removed), SB2 (a copy of the live key is offered again like a staged key),
+SB3 (a refused re-offer is kept without a word of what ends it).
+Re-anchored: v200's SA1 (`reoffer` is no longer `const`), v73's RL1 (the
+line after its anchor is the new refusal block). Hand control J3 against
+`web_flows`: the browser's re-offer discards the pending key when its
+`ROTATE` was never sent; KILLED.
+
+**The sweep, before the push:** the 59 mutants of `client_cli.c`, v200 and v201 first, on the macOS ASan tree: 58 killed by the check each names, and SA2 killed by another (the leg's new exit 5, which it now names). The leg was changed during the sweep (the reset below, and exit 5), so the 32 of the 59 that `authd_e2e` judges were run again on the finished test: 32 killed, each by its named check. Hand control J3 against `web_flows`: KILLED.
+
+**The Linux run, before the push:** the first run could not make the leg (exit 9, two runs of two): a close did not release the client's socket while the relay's reader was in `recv()` on it, so no reset was sent and the client's `ROTATE` went through. Stopping the client alone did not change that (three of three). With the reader woken by `shutdown(SHUT_RD)` first, `authd_e2e` passed three runs of three. On the finished tree: the 13 tests of the e2e, `test_authd_*`, client, `web_flows` and `site_sessions` set passed two runs of two, and SA1, SA2 (by exit 5), SA3, SB1, SB2 and SB3 were each killed by their named check. The gates, the 83 controls, the vocabularies and the anchors passed; 8 warnings, as before; gcc and clang Release built the daemon and the client.
+
+Spec v1.127: erratum 176 (10.2).
+
+Counts: 890 mutations, 171 campaigns, 941 anchors; 793 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.127, 176 errata; 66 tests.

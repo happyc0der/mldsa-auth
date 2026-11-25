@@ -3319,8 +3319,10 @@ try:
     def args(sub, p):
         return [client, sub, "--handle", handle, "--key", ek, "--passphrase-file", tmp + "/opass",
                 "--server-id", "authd", "--server-pub", tmp + "/d/server.pub", "--port", str(p)]
+    live = {}                                 # the client now running, for the cut below
     def run(a, on_line=None):
         p = subprocess.Popen(a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        live["p"] = p
         err = ""
         for line in p.stderr:
             err += line
@@ -3328,11 +3330,7 @@ try:
         p.stdout.read()
         return p.wait(), err
 
-    # The path: every byte both ways, but the client's frames from the third
-    # on (ROTATE is the third) are held until `release`.
-    ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(2)
-    rport = ls.getsockname()[1]
-    release, done, held = threading.Event(), threading.Event(), []
+    k0 = open(ek, "rb").read()                # the key the first rotation will supersede
     def rx(c, n):
         b = b""
         while len(b) < n:
@@ -3340,45 +3338,130 @@ try:
             if not ch: raise EOFError
             b += ch
         return b
-    def path():
-        c, _ = ls.accept(); u = socket.create_connection(("127.0.0.1", port))
-        def back():
+    def rotations():
+        # The daemon's own word that it committed a rotation: `event=rotate`.
+        try: return sum(1 for l in open(tmp + "/rt.log") if " event=rotate " in l + " " and "event=rotate-" not in l)
+        except OSError: return 0
+    def wait_rotations(n, limit=20):
+        end = time.monotonic() + limit
+        while rotations() < n and time.monotonic() < end: time.sleep(0.05)
+        return rotations() >= n
+
+    class Relay:
+        """Every byte both ways between a client and the daemon, except as a
+        connection's policy says. `policy(i)` for the i-th connection (from 1)
+        returns (hold_from, gate, cut_after): client frames from number
+        `hold_from` on are kept back, until `gate` is set if there is one
+        (never, without); nothing at all of the client's is sent until `gate`
+        is set when hold_from is 1; and the client's side is closed once
+        `cut_after` frames of the daemon's have been passed to it -- with a
+        reset, so that the client's next write fails at once. The client is
+        stopped while its last frame is passed and the reset made, so that it
+        cannot write first whatever the scheduler does."""
+        def __init__(self, policy):
+            self.policy, self.held, self.n = policy, [], 0
+            self.ls = socket.socket(); self.ls.bind(("127.0.0.1", 0))
+            self.up = lambda: socket.create_connection(("127.0.0.1", port))
+            self.ls.listen(4); self.addr = self.ls.getsockname()
+            self.done = threading.Event()
+            threading.Thread(target=self.serve, daemon=True).start()
+        def serve(self):
+            while True:
+                try: c, _ = self.ls.accept()
+                except OSError: return
+                self.n += 1
+                threading.Thread(target=self.one, args=(c, self.n), daemon=True).start()
+        def one(self, c, i):
+            hold_from, gate, cut_after = self.policy(i)
+            u = self.up()
+            reader_out = threading.Event()
+            def back():
+                k = 0
+                try:
+                    while True:
+                        h = rx(u, 4); body = rx(u, struct.unpack(">I", h)[0])
+                        last = bool(cut_after) and k + 1 >= cut_after
+                        if last:
+                            pid = live["p"].pid
+                            os.kill(pid, signal.SIGSTOP); os.waitpid(pid, os.WUNTRACED)
+                        if not last:
+                            c.sendall(h + body); k += 1; continue
+                        try:
+                            c.sendall(h + body)
+                            c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                            # On Linux a close does not release a socket another
+                            # thread is in recv() on, so no reset was sent: the
+                            # reader is woken first and let go.
+                            c.shutdown(socket.SHUT_RD); reader_out.wait(5)
+                            c.close()
+                            time.sleep(0.2)            # the reset reaches the client's socket first
+                        finally:
+                            os.kill(pid, signal.SIGCONT)
+                        return
+                except (EOFError, OSError): pass
+                try: c.close()
+                except OSError: pass
+            threading.Thread(target=back, daemon=True).start()
+            n, mine = 0, []
             try:
                 while True:
-                    d = u.recv(65536)
-                    if not d: break
-                    c.sendall(d)
+                    h = rx(c, 4); body = rx(c, struct.unpack(">I", h)[0]); n += 1
+                    if hold_from and n >= hold_from:
+                        mine.append(h + body)
+                        if hold_from == 1:             # the whole session waits for the gate
+                            gate.wait(60)
+                            for fr in mine: u.sendall(fr)
+                            mine.clear(); hold_from = 0
+                    else:
+                        u.sendall(h + body)
+            except (EOFError, OSError): pass
+            reader_out.set()
+            if mine and gate is not None:
+                self.held.extend(mine)
+                gate.wait(120)
+                try:
+                    for fr in mine: u.sendall(fr)
+                    time.sleep(1.5)                    # the daemon serves it before the end arrives
+                except OSError: pass
+            try: u.close()
             except OSError: pass
-        threading.Thread(target=back, daemon=True).start()
-        n = 0
-        try:
-            while True:
-                h = rx(c, 4); body = rx(c, struct.unpack(">I", h)[0]); n += 1
-                if n < 3: u.sendall(h + body)
-                else: held.append(h + body)
-        except (EOFError, OSError): pass
-        release.wait(120)
-        try:
-            for fr in held: u.sendall(fr)
-            time.sleep(1.5)                    # the daemon serves it before the end arrives
-        except OSError: pass
-        u.close(); done.set()
-    threading.Thread(target=path, daemon=True).start()
+            self.done.set()
 
     r0, e0 = run(args("login", port))
     if r0 != 0:
         print("LATE: the device could not log in before anything was tried:\n" + e0); sys.exit(9)
-    r1, e1 = run(args("rotate", rport))
-    if r1 == 0 or "no reply" not in e1 or not os.path.exists(nxt) or len(held) != 1:
-        print(f"LATE: the first rotation was not left waiting for its reply (exit {r1}, held {len(held)}): "
+
+    # 1. The first rotation's ROTATE (the client's third frame) is held.
+    release = threading.Event()
+    r1path = Relay(lambda i: (3, release, 0))
+    r1, e1 = run(args("rotate", r1path.addr[1]))
+    if r1 == 0 or "no reply" not in e1 or not os.path.exists(nxt) or len(r1path.held) != 1:
+        print(f"LATE: the first rotation was not left waiting for its reply (exit {r1}, held {len(r1path.held)}): "
               f"this leg shows nothing\n{e1}"); sys.exit(9)
+    # 2. A second rotate. Its probe passes; the moment it has said `.ek` is
+    # live, the held ROTATE is let go, and its own session waits until the
+    # daemon has committed that one (V4-365, F792: it was a race of a few
+    # hundred milliseconds, and SA2 was killed only when it went one way).
+    base = rotations()
+    committed = threading.Event()
+    def gatekeeper():
+        release.wait(120)
+        if wait_rotations(base + 1): committed.set()
+        else: committed.set()                  # judged below
+    threading.Thread(target=gatekeeper, daemon=True).start()
+    r2path = Relay(lambda i: (0, None, 0) if i == 1 else (1, committed, 0))
     def watch(line):
         if "is still the live key" in line: release.set()
-    r2, e2 = run(args("rotate", port), watch)
-    release.set(); done.wait(15)
+    r2, e2 = run(args("rotate", r2path.addr[1]), watch)
+    release.set(); r1path.done.wait(15)
     print("second rotate: exit", r2); print(e2)
+    if rotations() != base + 1:
+        print(f"LATE: the held ROTATE was not committed while the second rotation waited ({rotations() - base}): "
+              "this leg shows nothing"); sys.exit(9)
     if "offering the key an earlier rotation staged" not in e2:
         print("LATE: the second rotation did not offer the staged key again"); sys.exit(2)
+    if "no session was opened" not in e2 or "staged by an earlier rotation, is KEPT" not in e2 or not os.path.exists(nxt):
+        print("LATE: the second rotation's session, refused because the late ROTATE had landed, did not keep the staged key"); sys.exit(5)
     ok = False
     for _ in range(2):
         r3, e3 = run(args("login", port)); print("login: exit", r3); print(e3)
@@ -3388,7 +3471,53 @@ try:
     r4, e4 = run(args("login", port))
     if r4 != 0 or os.path.exists(nxt):
         print(f"LATE: after the rotation was resolved a login exited {r4}, .ek.next there: {os.path.exists(nxt)}\n{e4}"); sys.exit(3)
-    # And a staged key this passphrase does not open cannot be offered
+
+    # 3. (V4-365, F791) A re-offered key whose ROTATE cannot be written: the
+    # connection is closed under the client the moment its login code has
+    # come, with a reset. A staged key that never reached the daemon first
+    # (its ROTATE is dropped, not held), then the re-offer through the cut.
+    r3path = Relay(lambda i: (3, None, 0))
+    ra, ea = run(args("rotate", r3path.addr[1]))
+    if ra == 0 or "no reply" not in ea or not os.path.exists(nxt):
+        print(f"LATE: the dropped rotation did not keep its key (exit {ra}): this leg shows nothing\n{ea}"); sys.exit(9)
+    staged = open(nxt, "rb").read()
+    cut = Relay(lambda i: (0, None, 0) if i == 1 else (0, None, 2))
+    rb, eb = run(args("rotate", cut.addr[1]))
+    print("cut rotate: exit", rb); print(eb)
+    if "ROTATE could not be sent" not in eb:
+        print("LATE: the cut connection did not fail the ROTATE's write: this leg shows nothing"); sys.exit(9)
+    if not os.path.exists(nxt) or open(nxt, "rb").read() != staged or "staged by an earlier rotation, is KEPT" not in eb:
+        print("LATE: a re-offered key whose ROTATE could not be written was removed"); sys.exit(6)
+    rc_, ec_ = run(args("rotate", port))
+    if rc_ != 0 or os.path.exists(nxt) or "offering the key an earlier rotation staged" not in ec_:
+        print(f"LATE: the staged key was not then rotated to (exit {rc_})\n{ec_}"); sys.exit(6)
+
+    # 4. (F790) A byte copy of the live key at .ek.next is not a staged key:
+    # it is removed, and the rotation makes a new key and goes ahead.
+    with open(nxt, "wb") as f: f.write(open(ek, "rb").read())
+    os.chmod(nxt, 0o600)
+    rd, ed = run(args("rotate", port))
+    print("copy rotate: exit", rd); print(ed)
+    if rd != 0 or os.path.exists(nxt) or "was a copy of the live key" not in ed:
+        print("LATE: a copy of the live key at .ek.next stopped the rotation, or was kept"); sys.exit(7)
+    re_, ee_ = run(args("login", port))
+    if re_ != 0:
+        print("LATE: the device does not log in after the rotation past a copy\n" + ee_); sys.exit(7)
+
+    # 5. (F790) A key the daemon will never take -- the one the first
+    # rotation superseded -- is refused, kept, and the line says what ends it.
+    with open(nxt, "wb") as f: f.write(k0)
+    os.chmod(nxt, 0o600)
+    before = open(ek, "rb").read()
+    rf, ef = run(args("rotate", port))
+    print("superseded rotate: exit", rf); print(ef)
+    kept = os.path.exists(nxt) and open(nxt, "rb").read() == k0
+    try: os.unlink(nxt)
+    except FileNotFoundError: pass
+    if rf == 0 or not kept or open(ek, "rb").read() != before or "the daemon will not take that key" not in ef:
+        print("LATE: a re-offered key the daemon refused was removed, changed .ek, or was not explained"); sys.exit(8)
+
+    # 6. And a staged key this passphrase does not open cannot be offered
     # again; it is not removed either, and nothing else is changed.
     with open(nxt, "wb") as f: f.write(b"not an envelope\n")
     os.chmod(nxt, 0o600)
@@ -3418,7 +3547,11 @@ case "$RT" in
 1) cat "$TMP/rt.txt"; fail "after a ROTATE that arrived late and a second rotate, no key in the device's directory logs in: the staged key was removed (F787)" ;;
 2) cat "$TMP/rt.txt"; fail "a rotate that found a staged key beside the live one did not offer that key again (F787)" ;;
 3) cat "$TMP/rt.txt"; fail "a late ROTATE and a second rotate were not resolved by the next login: a login failed or .ek.next was left (F787)" ;;
+5) cat "$TMP/rt.txt"; fail "a rotate whose session was refused because a late ROTATE had landed removed the staged key, or did not say it is kept (F787)" ;;
 4) cat "$TMP/rt.txt"; fail "a rotate that found a staged key it could not open removed it, changed the key, or did not say that it cannot be offered again (F787)" ;;
+6) cat "$TMP/rt.txt"; fail "a re-offered key whose ROTATE could not be written was removed, or was not rotated to afterwards (F791)" ;;
+7) cat "$TMP/rt.txt"; fail "a copy of the live key at .ek.next stopped the rotation or was kept (F790)" ;;
+8) cat "$TMP/rt.txt"; fail "a re-offered key the daemon refused was removed, changed the key, or the client did not say what ends it (F790)" ;;
 *) cat "$TMP/rt.txt"; fail "the late-ROTATE test could not be made (exit $RT): this says nothing about F787" ;;
 esac
 echo "PASS: E2E: a ROTATE that arrives late and a second rotate meanwhile leave the device able to log in: the staged key is offered again, never removed (F787)"

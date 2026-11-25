@@ -931,12 +931,25 @@ once. The second run does not make another key: it says `offering the key
 an earlier rotation staged … again` and offers the one in `.ek.next`,
 because the first run's request may still reach the daemon (since V4-364).
 If it then says `no session was opened; … is KEPT`, the first request has
-arrived: run `login`, which puts the new key in place. Never remove
-`.ek.next` to "start clean" within ten minutes of a rotation that got no
-reply; it may be the only copy of the key the daemon now accepts. The one
-case where it has to be removed by hand is the line `was staged by an
-earlier rotation and cannot be opened`: wait ten minutes, check that
-`login` still works with `.ek`, then remove it and rotate.
+probably arrived; read the line above it, which says `cannot connect` if
+the daemon was not reached at all. Run `login`, which puts the new key in
+place if it has. Never remove `.ek.next` to "start clean" within ten
+minutes of a rotation that got no reply; it may be the only copy of the
+key the daemon now accepts. It is removed by hand in two cases, each named
+by the client:
+
+- `was staged by an earlier rotation and cannot be opened`. If the
+  passphrase was changed (`authd_admin rewrap`) since that rotation, first
+  try `login` with the passphrase in use then: if the earlier request
+  landed, that completes it. Otherwise wait ten minutes, check that
+  `login` works with `.ek`, then remove `.ek.next` and rotate.
+- `the daemon refused the key an earlier rotation staged`, said again by
+  a `rotate` more than ten minutes after the rotation that got no reply,
+  with a `login` in between that did not complete it. The file holds a key
+  the daemon will not take, an old one put back: remove it and rotate.
+
+A `.ek.next` that is a byte copy of `.ek` is removed by `rotate` itself,
+which says `was a copy of the live key` (since V4-365).
 
 ## 20. Lock a user out
 

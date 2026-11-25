@@ -1,3 +1,3 @@
 SA1|^authd_e2e$|a rotate that found a staged key beside the live one did not offer that key again (F787)
-SA2|^authd_e2e$|after a ROTATE that arrived late and a second rotate, no key in the device's directory logs in: the staged key was removed (F787)
+SA2|^authd_e2e$|a rotate whose session was refused because a late ROTATE had landed removed the staged key, or did not say it is kept (F787)
 SA3|^authd_e2e$|a rotate that found a staged key it could not open removed it, changed the key, or did not say that it cannot be offered again (F787)
