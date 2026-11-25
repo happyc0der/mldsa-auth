@@ -1585,9 +1585,10 @@ static void test_rotate_late(void)
           "rotate-late: with no hook, a ROTATE at once after its login code is acknowledged (F797)");
     client_close(&c);
     CHECK(rotate_session(&d, &c, &k2) == 0, "rotate-late: session (real clock, late)");
-    const struct timespec nap = { 1, 200000000L };
-    (void)nanosleep(&nap, NULL);
-    d.app.now_ms = frozen;
+    /* V4-368 (F808): the whole 1.2 s, however often the sleep is woken. */
+    struct timespec nap = { 1, 200000000L }, left;
+    while (nanosleep(&nap, &left) != 0) { nap = left; }
+    CHECK(d.app.now_ms == frozen, "rotate-late: nothing in this harness moved now_ms across the sleep (F797)");
     rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k2, &k4, &k4,
                       AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
     pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);

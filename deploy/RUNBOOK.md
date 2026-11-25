@@ -954,9 +954,12 @@ by the client:
   a `rotate` more than ten minutes after the rotation that got no reply,
   with a `login` in between that did not complete it. The file holds a key
   the daemon will not take, an old one put back: remove it and rotate.
-  The same line follows a request that reached the daemon late
-  (`detail=rotate-late` in its journal); the advice holds for it as well,
-  since the ten minutes have passed.
+  The same line follows a re-offer that reached the daemon late
+  (`detail=rotate-late` in its journal). The advice holds for it as well:
+  the re-offer's session began after the rotation that got no reply, so
+  that rotation's request is past the daemon's window too, and the client
+  asks for the ten minutes anyway. (A first rotation refused as late says
+  only that the daemon refused it, and keeps `.ek.next`.)
 
 The browser client opens its staged key after the login code has arrived,
 which takes seconds on a slow device, so a browser rotation needs an

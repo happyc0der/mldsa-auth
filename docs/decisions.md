@@ -24120,3 +24120,32 @@ judged after both signatures).
 Counts: 897 mutations, 173 campaigns, 949 anchors; 803 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.
+
+## V4-368: what the hundred-and-seventh review found (F804 to F808)
+
+**The hundred-and-seventh review** attacked V4-367 from a copy of the tree,
+on macOS and in a Linux container: the stalled-daemon leg against the loop
+and `served_late`, the fuzzer change, the clock code, the unit checks. The
+bound itself held (clean refuses, SC3 commits); one Medium, one Low, three
+Info, all in tests and text.
+
+- **F804 (Medium).** The leg slept where it should have observed, the third
+  time this repo has learnt it (F408, the memory's "observe, don't sample").
+  The daemon says when it starts a request and when its hashes are done; the
+  leg now stops it between the two and checks that it did.
+  - Worth keeping: `poll()` resumed after its timeout ran out during a stop
+    returns 0 on macOS and the ready descriptor on Linux. The review measured
+    it with a twenty-line program.
+- **F805 (Low).** The fuzzer's clock moved only with frames that could not
+  come between a login code and a `ROTATE`; now every chunk is a tick, and
+  a seed with canaries both ways proves the late path is reached.
+- **F806 to F808 (Info).** A reason in the runbook, an `#error` for a Linux
+  without `CLOCK_BOOTTIME`, two nits in the unit check.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-366 and V4-367 landed on together: CI 45691955254 (16/16) and nightly 45691960627 (188/188, 173 campaigns) on `2adda4e`, both read with `gh` before this entry was written.
+
+**The checks, before the push:** the end-to-end suite three times on macOS; a sweep of 52 mutants (SC3, SD1, SD2, and every older mutant of `test_authd_conn` and the `authd_conn` fuzz replay): 52 named kills; in an Ubuntu container as an unprivileged user, the gates, the end-to-end and unit suites with the fuzz replay twice (14/14 both times), SC3 named twice, and the gcc and clang Release builds. The hand control of F805's second canary (a 5 ms window) failed it; restoring the source left a stale object that failed the clean replay until it was rebuilt, the trap this repo has met before.
+
+Counts: 897 mutations, 173 campaigns, 949 anchors; 808 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.

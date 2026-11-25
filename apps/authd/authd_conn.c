@@ -24,10 +24,13 @@ uint64_t authd_app_clock(void *ctx)
  * served later in it look younger than it is. V4-367 (F797): this is the
  * default, here and not in the daemon's main, so that a daemon that sets no
  * hook still reads it; the loop's pushed now_ms is never the fallback. */
+#if defined(__linux__) && !defined(CLOCK_BOOTTIME)
+#error "Linux without CLOCK_BOOTTIME: the late-ROTATE bound would not count suspend (F807)"
+#endif
 static uint64_t rotate_clock_real(void)
 {
     struct timespec ts;
-#if defined(__linux__) && defined(CLOCK_BOOTTIME)
+#if defined(__linux__)
     if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
         return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
     }

@@ -3596,8 +3596,10 @@ echo "PASS: E2E: a ROTATE that arrives late and a second rotate meanwhile leave 
 # let go. The handler ends having outlasted its pass by the whole stop, the
 # loop moves every deadline on by that much, and the ROTATE is read next:
 # without the bound it commits, every time. (Stopping the daemon in poll()
-# instead does not do it: the wait times out, and the slot is closed as past
-# its deadline before the ROTATE is seen.)
+# instead does not do it on macOS, whose poll() then returns with nothing
+# ready, and the slot is closed as past its deadline before the ROTATE is
+# seen; Linux's re-checks the sockets. V4-368, F804: the leg now waits for
+# the daemon to log the request before it stops it.)
 mkdir -p "$TMP/bz" "$TMP/bzdev" && chmod 0700 "$TMP/bzdev" || fail "could not set up the stalled-daemon ROTATE leg"
 BZ=0
 python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/bz.txt" 2>&1 <<'PYEOF' || BZ=$?
@@ -3693,8 +3695,21 @@ try:
         b.sendall(f"RECOVERY-ISSUE user={b'busy'.hex()} count=16\n".encode())
         site_ans.append(b.recv(65536)[:3]); b.close()
     st = threading.Thread(target=one_issue, daemon=True); st.start()
-    time.sleep(0.15)
+    # V4-368 (F804): observed, not slept on. The stop must land inside the
+    # handler: the daemon logs the request before it runs the handler and
+    # the count after its hashes, so stop once the first line is there and
+    # check that the second is not. (A stop in poll() fails the leg on macOS,
+    # whose poll() then reports nothing ready, and a 150 ms sleep was no
+    # proof the request had been read.)
+    seen = time.monotonic() + 15
+    while "event=local-request cmd=RECOVERY-ISSUE" not in journal():
+        if time.monotonic() > seen:
+            print("BUSY: the daemon never logged the site request"); sys.exit(9)
+        time.sleep(0.005)
     os.kill(dp.pid, signal.SIGSTOP); os.waitpid(dp.pid, os.WUNTRACED)
+    if "event=recovery-issue count=" in journal():
+        os.kill(dp.pid, signal.SIGCONT)
+        print("BUSY: the daemon was stopped after the request's hashes, not during them"); sys.exit(9)
     try:
         time.sleep(3.0)                     # 1.5 times the idle timeout
         release.set()

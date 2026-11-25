@@ -153,9 +153,10 @@ static void start_world(void)
     app.now_ms = FUZZ_CLOCK_T0;
     app.now_unix = 1700000000;
     /* V4-367 (F802): the daemon always sets a window (its idle timeout), so
-     * the harness does too, and the clock moves 1 ms per frame (below): a
-     * ROTATE in the frame after the login code is in time, one with a frame
-     * between them is late, and both of on_rotate's ways are fuzzed. */
+     * the harness does too, and the clock moves 1 ms per chunk (below): a
+     * ROTATE in the chunk after the login code is in time, one with an empty
+     * chunk between them is late (V4-368, F805), and both of on_rotate's
+     * ways are fuzzed. */
     app.rotate_window_ms = 1u;
     app.rotate_clock_ms = fuzz_rotate_clock;
 
@@ -185,6 +186,11 @@ static uint64_t run_input(const uint8_t *data, size_t size)
     const uint8_t *chunk = NULL;
     size_t clen = 0;
     while (fuzz_chunks_next(&ch, &chunk, &clen)) {
+        /* V4-368 (F805): every chunk is a millisecond, the ones not delivered
+         * too. Once serving, any frame but an accepted ROTATE closes the
+         * connection, so an empty or oversize chunk is the only thing that
+         * can stand between the login code and a ROTATE and make it late. */
+        app.now_ms += 1u;
         if (clen == 0u || clen > AUTHD_FRAME_MAX) { continue; }
 
         const conn_stage_t before = conn.stage;
@@ -221,7 +227,6 @@ static uint64_t run_input(const uint8_t *data, size_t size)
          * in the out buffer for the rest of the input, and the login code
          * that follows a genuine ClientAuth had nowhere to go. */
         conn_io_sent(&slot.io, conn_io_pending(&slot.io));
-        app.now_ms += 1u;
     }
 
     /* 4. the close path leaves nothing behind */
@@ -425,6 +430,25 @@ void fuzz_target_seeds(fuzz_emit_fn emit, void *ctx)
             const uint8_t *p3[3] = { g_ch, g_ca, rec };
             const size_t l3[3] = { chl, cal, recl };
             emit_chunked(emit, ctx, "login-then-rotate", p3, l3, 3);
+            /* V4-368 (F805): the same ROTATE one empty chunk later is late.
+             * Both are canaries: the first commits, the second does not. */
+            static const uint8_t none[1] = { 0 };
+            const uint8_t *p4[4] = { g_ch, g_ca, none, rec };
+            const size_t l4[4] = { chl, cal, 0u, recl };
+            emit_chunked(emit, ctx, "login-then-late-rotate", p4, l4, 4);
+            static uint8_t seed[16384];
+            size_t off = 0;
+            for (size_t i = 0; i < 3u && (i == 0u || off > 0u); i++) {
+                off = fuzz_seed_put_chunk(seed, off, sizeof seed, 2u, p3[i], l3[i]);
+            }
+            FUZZ_ASSERT(off > 0u && run_input(seed, off) == 1u && app.rotations == 1u,
+                        "fixture: the login-then-rotate seed does not rotate");
+            off = 0;
+            for (size_t i = 0; i < 4u && (i == 0u || off > 0u); i++) {
+                off = fuzz_seed_put_chunk(seed, off, sizeof seed, 2u, p4[i], l4[i]);
+            }
+            FUZZ_ASSERT(off > 0u && run_input(seed, off) == 1u && app.rotations == 0u,
+                        "fixture: the login-then-late-rotate seed rotates: the late path is not reached");
         }
         session_wipe(&sess);
 
