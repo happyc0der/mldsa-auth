@@ -101,6 +101,9 @@ typedef struct {
     int      decoy;             /* 1 = the pin is the decoy, not a real key */
     int      hs_live;           /* a handshake_ctx_t needs wiping */
     int      rotated;           /* one ROTATE per session; see authd_conn.c */
+    /* V4-366 (F794): when this session's login code was issued, on the app's
+     * rotate clock. A ROTATE is judged against it (see on_rotate). */
+    uint64_t code_at_ms;
 } authd_conn_t;
 
 /* Everything the connection layer needs that is not per-connection. One
@@ -167,6 +170,17 @@ typedef struct {
      * was long: expired by less than that, it was accepted. The daemon sets
      * this to read its clock again; NULL (tests) leaves the pushed time. */
     void (*clock_refresh)(void *app);
+    /* V4-366 (F794): a ROTATE that arrives more than rotate_window_ms after
+     * its session's login code was issued is refused. The loop's idle
+     * deadline does not bound it: the loop moves every deadline forward by
+     * the time its handlers spent blocked (F630), so a session held by a
+     * relay while the daemon was busy outlived the idle timeout many times
+     * over, and a ROTATE it carried committed after the operator had been
+     * told it no longer could. The daemon sets the idle timeout here, and
+     * rotate_clock_ms to a clock that counts suspend and that nothing moves;
+     * 0 is no bound, and NULL reads now_ms (tests). */
+    uint32_t rotate_window_ms;
+    uint64_t (*rotate_clock_ms)(void);
 
     /* observable counters (tests and operators) */
     uint64_t logins_issued;

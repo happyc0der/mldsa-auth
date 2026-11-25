@@ -615,9 +615,17 @@ void cc_wipe(cc_t *cc)
  *
  * The sound rule is the contrapositive on the OTHER file, and it is stronger:
  *
- *     .ek authenticating PROVES the server did not commit -- there is exactly
- *     one active key per handle (the one_active_key index, spec 9.1) -- and
- *     only then may .ek.next be discarded. .ek.next failing proves nothing.
+ *     .ek authenticating PROVES the server HAS NOT committed -- there is
+ *     exactly one active key per handle (the one_active_key index, spec
+ *     9.1). .ek.next failing proves nothing.
+ *
+ * "Has not" is not "never will" (V4-364, F787; erratum 175): a ROTATE that
+ * got no reply may still be in flight, and land after .ek has logged in. So
+ * neither client discards .ek.next on KEY_PLAN_USE_EK either: it is kept,
+ * and the next rotate offers that key again. Since V4-366 (F794)
+ * the daemon refuses a ROTATE more than its idle timeout after the login
+ * code its session was given, which is what makes removing such a file by
+ * hand, after that long, safe.
  *
  * So this never deletes on ambiguity. A stale file costs one confusing entry
  * in a directory; a wrong delete costs the only copy of a live key, and there

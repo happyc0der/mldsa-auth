@@ -263,7 +263,7 @@ void cc_wipe(cc_t *cc);
  * is unknown, the server never committed" cannot be implemented, and why only
  * .ek authenticating licenses discarding .ek.next. */
 typedef enum {
-    KEY_PLAN_USE_EK = 0,    /* .ek is current; if .ek.next exists it is stale */
+    KEY_PLAN_USE_EK = 0,    /* .ek is current; a .ek.next is not committed (yet): kept */
     KEY_PLAN_PROMOTE_NEXT,  /* .ek.next is live: finish the interrupted rename */
     KEY_PLAN_REFUSE         /* neither authenticates: say so, change nothing */
 } key_plan_t;

@@ -17,6 +17,12 @@ uint64_t authd_app_clock(void *ctx)
     return (app != NULL) ? app->now_ms : 0u;
 }
 
+/* V4-366 (F794): the clock a ROTATE's age is read on. */
+static uint64_t rotate_clock(const authd_app_t *app)
+{
+    return (app->rotate_clock_ms != NULL) ? app->rotate_clock_ms() : app->now_ms;
+}
+
 static authd_conn_t *conn_of(authd_app_t *app, authd_slot_t *slot)
 {
     /* Only a PROTOCOL slot has a connection. The local-API pool numbers its
@@ -73,6 +79,7 @@ static void conn_reset(authd_conn_t *c)
     c->hsid_set = 0;
     c->decoy = 0;
     c->rotated = 0;
+    c->code_at_ms = 0;
     c->stage = CONN_STAGE_FREE;
 }
 
@@ -556,6 +563,7 @@ static ev_action_t on_client_auth(authd_app_t *app, authd_slot_t *slot, authd_co
         ratelimit_refund(app->rl, conn_io_client_addr(&slot->io), app->now_ms);
     }
     authd_log_slot_id(AUTHD_LOG_INFO, "login-code-issued", slot->index, c->handle, c->handle_len);
+    c->code_at_ms = rotate_clock(app);
     c->stage = CONN_STAGE_SERVING;
     slot->established = 1;   /* the idle deadline applies from here (evloop) */
     return EV_ACTION_CONTINUE;
@@ -602,6 +610,20 @@ static ev_action_t on_rotate(authd_app_t *app, authd_slot_t *slot, authd_conn_t 
     const authmsg_status_t ds = authmsg_decode_rotate(pt, pt_len, &m);
     if (ds != AUTHMSG_OK) {
         return fail_with_error(slot, c, AUTHMSG_ERR_MALFORMED, "rotate-malformed");
+    }
+    /* V4-366 (F794): a ROTATE older than the window is refused, so that "no
+     * ROTATE of a session that got no reply can land more than the idle
+     * timeout after it", which the client and the runbook tell an operator
+     * before a staged key is removed by hand, is true of a busy daemon too.
+     * REJECTED, like every refusal below: the client keeps a re-offered key
+     * and discards its own, and nothing is written. */
+    if (app->rotate_window_ms != 0u) {
+        /* Unsigned: a clock that reads before the code's time wraps to an
+         * age far past any window, and is refused with the rest. */
+        const uint64_t age = rotate_clock(app) - c->code_at_ms;
+        if (age > (uint64_t)app->rotate_window_ms) {
+            return fail_with_error(slot, c, AUTHMSG_ERR_REJECTED, "rotate-late");
+        }
     }
 
     /* The pinned key that authenticated this session IS pk_old: it is what

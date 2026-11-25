@@ -1499,6 +1499,82 @@ static void test_rotate_drop_tokens(void)
     daemon_stop(&d);
 }
 
+/* V4-366 (F794): a ROTATE is refused once more than the window has passed
+ * since its session's login code was issued, on the rotate clock, which the
+ * test sets. The loop's idle deadline did not bound it (it is moved forward
+ * for time handlers spend blocked), and the client and the runbook tell an
+ * operator that a session that got no reply cannot land after it. */
+static uint64_t g_rot_clock;
+static uint64_t fake_rot_clock(void) { return g_rot_clock; }
+
+static void test_rotate_late(void)
+{
+    daemon_t d; client_t c;
+    mldsa_keypair_t k1, k2, k3;
+    CHECK(daemon_start(&d, 8, "rotlate.sqlite3") == 0, "rotate-late: daemon starts");
+    CHECK(mldsa_keypair_generate(&k1) == 0 && mldsa_keypair_generate(&k2) == 0 &&
+          mldsa_keypair_generate(&k3) == 0, "rotate-late: keys");
+    enroll(&d, HANDLE1, sizeof HANDLE1, &k1);
+    d.app.rotate_window_ms = 1000u;
+    d.app.rotate_clock_ms = fake_rot_clock;
+    g_rot_clock = 50000u;
+
+    uint8_t pt[AUTHD_MAX_RECORD];
+    uint8_t rot[AUTHMSG_ROTATE_MAX_CONTENT];
+    authmsg_rotate_ack_t ack;
+    size_t pl = 0, rl = 0;
+    char lpath[512];
+    snprintf(lpath, sizeof lpath, "%s/rotlate.log", g_dir);
+    FILE *lf = fopen(lpath, "w+");
+    if (lf != NULL) { authd_log_init(lf, AUTHD_LOG_INFO); }
+
+    /* One millisecond past the window: refused, nothing written. */
+    const uint64_t before = d.app.rotations;
+    CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-late: session (late)");
+    g_rot_clock += 1001u;
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k1, &k2, &k2,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED && d.app.rotations == before,
+          "rotate-late: a ROTATE more than the window after its login code is REJECTED and commits nothing (F794)");
+    client_close(&c);
+
+    /* The clock behind the code's own time: refused too. */
+    CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-late: session (clock behind)");
+    g_rot_clock -= 1u;
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k1, &k2, &k2,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    CHECK(rl > 0 && pl > 0 && reply_error_code(pt, pl) == AUTHMSG_ERR_REJECTED && d.app.rotations == before,
+          "rotate-late: a ROTATE whose clock reads before its login code is REJECTED (F794)");
+    client_close(&c);
+
+    /* Exactly the window: accepted, so the bound is the window and no less. */
+    CHECK(rotate_session(&d, &c, &k1) == 0, "rotate-late: session (at the window)");
+    g_rot_clock += 1000u;
+    rl = build_rotate(rot, sizeof rot, c.hsid, 0u, 0u, HANDLE1, sizeof HANDLE1, &k1, &k3, &k3,
+                      AUTHMSG_LABEL_ROTATE_OLD, AUTHMSG_LABEL_ROTATE_NEW);
+    pl = exchange_record(&d, &c, rot, rl, pt, sizeof pt);
+    authd_log_init(stderr, AUTHD_LOG_ERROR);
+    CHECK(rl > 0 && pl > 0 && authmsg_decode_rotate_ack(pt, pl, &ack) == AUTHMSG_OK && d.app.rotations == before + 1u,
+          "rotate-late: a ROTATE exactly the window after its login code is acknowledged (F794)");
+    client_close(&c);
+
+    char *buf = NULL;
+    long sz = 0;
+    if (lf != NULL && fflush(lf) == 0 && fseek(lf, 0, SEEK_END) == 0 && (sz = ftell(lf)) > 0 &&
+        fseek(lf, 0, SEEK_SET) == 0) {
+        buf = (char *)calloc((size_t)sz + 1u, 1u);
+        if (buf != NULL && fread(buf, 1u, (size_t)sz, lf) != (size_t)sz) { buf[0] = '\0'; }
+    }
+    CHECK(buf != NULL && strstr(buf, "detail=rotate-late") != NULL,
+          "rotate-late: the journal names the refusal rotate-late (F794)");
+    free(buf);
+    if (lf != NULL) { (void)fclose(lf); }
+    mldsa_keypair_free(&k1); mldsa_keypair_free(&k2); mldsa_keypair_free(&k3);
+    daemon_stop(&d);
+}
+
 /* A BYE is exactly one byte of content (its opcode). One with a byte after it
  * is refused as MALFORMED, not taken as a goodbye; V4-40's coverage run found
  * that refusal had never run. The well-formed BYE is test_login's. */
@@ -1791,6 +1867,7 @@ int main(void)
     test_not_permitted();
     test_rotate();
     test_rotate_drop_tokens();
+    test_rotate_late();
     test_bye_length();
     test_journal_holds_no_key_material();
     test_log_has_no_code();

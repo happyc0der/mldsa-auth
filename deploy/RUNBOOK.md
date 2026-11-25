@@ -935,13 +935,20 @@ probably arrived; read the line above it, which says `cannot connect` if
 the daemon was not reached at all. Run `login`, which puts the new key in
 place if it has. Never remove `.ek.next` to "start clean" within ten
 minutes of a rotation that got no reply; it may be the only copy of the
-key the daemon now accepts. It is removed by hand in two cases, each named
+key the daemon now accepts. After ten minutes (the daemon's
+`idle_timeout_ms`, ten minutes at most) that request can no longer land:
+since V4-366 the daemon refuses one that reaches it later than that after
+its login, however busy it was meanwhile (`record-refused … detail=rotate-late`
+in its journal). A daemon from before V4-366 does not: there, wait until it
+has been restarted, which ends every session such a request could ride on.
+It is removed by hand in two cases, each named
 by the client:
 
 - `was staged by an earlier rotation and cannot be opened`. If the
   passphrase was changed (`authd_admin rewrap`) since that rotation, first
   try `login` with the passphrase in use then: if the earlier request
-  landed, that completes it. Otherwise wait ten minutes, check that
+  landed, that completes it, and the key now in `.ek` is under that older
+  passphrase: rewrap it again. Otherwise wait ten minutes, check that
   `login` works with `.ek`, then remove `.ek.next` and rotate.
 - `the daemon refused the key an earlier rotation staged`, said again by
   a `rotate` more than ten minutes after the rotation that got no reply,

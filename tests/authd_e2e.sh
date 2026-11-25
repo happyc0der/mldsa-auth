@@ -3503,6 +3503,28 @@ try:
     re_, ee_ = run(args("login", port))
     if re_ != 0:
         print("LATE: the device does not log in after the rotation past a copy\n" + ee_); sys.exit(7)
+    # V4-366 (F796): again with the directory read-only, so the copy cannot
+    # be removed: the run stops and says to remove it by hand, and changes
+    # nothing. (Root ignores the mode; the check is skipped then.) After
+    # F790's check above, so a mutant of that branch is named by it.
+    if os.geteuid() != 0:
+        with open(nxt, "wb") as f: f.write(open(ek, "rb").read())
+        os.chmod(nxt, 0o600)
+        live_ek = open(ek, "rb").read()
+        os.chmod(tmp + "/rtdev", 0o500)
+        try:
+            rw, ew = run(args("rotate", port))
+        finally:
+            os.chmod(tmp + "/rtdev", 0o700)
+        print("read-only copy rotate: exit", rw); print(ew)
+        if (rw == 0 or not os.path.exists(nxt) or open(ek, "rb").read() != live_ek
+                or open(nxt, "rb").read() != live_ek
+                or "could not be removed; remove it by hand and rotate" not in ew):
+            print("LATE: a copy of the live key that could not be removed did not stop the run with its line"); sys.exit(10)
+        os.unlink(nxt)
+        re_, ee_ = run(args("login", port))
+        if re_ != 0:
+            print("LATE: the device does not log in after the read-only copy rotate\n" + ee_); sys.exit(10)
 
     # 5. (F790) A key the daemon will never take -- the one the first
     # rotation superseded -- is refused, kept, and the line says what ends it.
@@ -3551,9 +3573,158 @@ case "$RT" in
 4) cat "$TMP/rt.txt"; fail "a rotate that found a staged key it could not open removed it, changed the key, or did not say that it cannot be offered again (F787)" ;;
 6) cat "$TMP/rt.txt"; fail "a re-offered key whose ROTATE could not be written was removed, or was not rotated to afterwards (F791)" ;;
 7) cat "$TMP/rt.txt"; fail "a copy of the live key at .ek.next stopped the rotation or was kept (F790)" ;;
+10) cat "$TMP/rt.txt"; fail "a copy of the live key at .ek.next that could not be removed did not stop the run with a line that says to remove it (F796)" ;;
 8) cat "$TMP/rt.txt"; fail "a re-offered key the daemon refused was removed, changed the key, or the client did not say what ends it (F790)" ;;
 *) cat "$TMP/rt.txt"; fail "the late-ROTATE test could not be made (exit $RT): this says nothing about F787" ;;
 esac
 echo "PASS: E2E: a ROTATE that arrives late and a second rotate meanwhile leave the device able to log in: the staged key is offered again, never removed (F787)"
+
+# V4-366, F794 (found by the hundred-and-fifth review): the idle timeout did
+# not bound a held ROTATE. The loop moves every deadline forward by the time
+# its handlers spend blocked (F630), so a session a relay held while the daemon
+# served slow site requests outlived a 2 s idle timeout many times over, and
+# the ROTATE it carried committed: after the client and the runbook had said
+# that, past the timeout, a .ek.next could be removed by hand. That is F787's
+# lock-out. Now a ROTATE more than the idle timeout after its session's login
+# code is refused, `rotate-late`. The daemon here has idle_timeout_ms = 2000;
+# three site connections keep it busy with RECOVERY-ISSUE while the ROTATE is
+# held for 3 s, then it is let go.
+mkdir -p "$TMP/bz" "$TMP/bzdev" && chmod 0700 "$TMP/bzdev" || fail "could not set up the busy-daemon ROTATE leg"
+BZ=0
+python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/bz.txt" 2>&1 <<'PYEOF' || BZ=$?
+import os, signal, socket, struct, subprocess, sys, threading, time
+daemon, client, tmp = sys.argv[1:4]
+def freeport():
+    while True:
+        t = socket.socket(); t.bind(("127.0.0.1", 0)); p = t.getsockname()[1]; t.close()
+        if p not in (4002, 7462):
+            return p
+port = freeport()
+conf = tmp + "/bz.conf"
+with open(conf, "w") as f:
+    f.write(f"store_path = {tmp}/bz/store.sqlite3\nkey_path = {tmp}/su/server.ek\n"
+            f"key_passphrase_file = {tmp}/su/pass\nserver_id = authd\nlisten_port = {port}\n"
+            f"site_socket = {tmp}/bz-s.sock\nadmin_socket = {tmp}/bz-a.sock\n"
+            f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\nidle_timeout_ms = 2000\n")
+dlog = open(tmp + "/bz.log", "w")
+dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
+rc = 9
+busy_stop = threading.Event()
+def rx(c, n):
+    b = b""
+    while len(b) < n:
+        ch = c.recv(n - len(b))
+        if not ch: raise EOFError
+        b += ch
+    return b
+def journal():
+    dlog.flush()
+    return open(tmp + "/bz.log").read()
+try:
+    end = time.monotonic() + 30
+    while not os.path.exists(tmp + "/bz-s.sock"):
+        if dp.poll() is not None or time.monotonic() > end:
+            print("BUSY: the daemon did not start"); sys.exit(9)
+        time.sleep(0.05)
+    kg = subprocess.run([client, "keygen", "--dir", tmp + "/bzdev", "--passphrase-file", tmp + "/opass"],
+                        capture_output=True, text=True)
+    handle = kg.stdout.strip()
+    if kg.returncode != 0 or not handle:
+        print("BUSY: keygen failed", kg.stderr); sys.exit(9)
+    ek = f"{tmp}/bzdev/{handle}.ek"; nxt = ek + ".next"
+    img = open(f"{tmp}/bzdev/{handle}.pub", "rb").read()
+    pk = img[9 + img[8]:]
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(tmp + "/bz-s.sock")
+    s.sendall(f"ENROLL user={b'busy'.hex()} handle={handle.encode().hex()} pk={pk.hex()} via=signup\n".encode())
+    ans = s.recv(256); s.close()
+    if not ans.startswith(b"OK"):
+        print("BUSY: enrolment failed", ans); sys.exit(9)
+    def args(sub, p):
+        return [client, sub, "--handle", handle, "--key", ek, "--passphrase-file", tmp + "/opass",
+                "--server-id", "authd", "--server-pub", tmp + "/d/server.pub", "--port", str(p)]
+
+    # The relay: everything up to the login code both ways; the client's
+    # third frame (ROTATE) is held until `release`; nothing after the login
+    # code reaches the client, so it ends with "no reply".
+    ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(1); rport = ls.getsockname()[1]
+    got3, release, sent = threading.Event(), threading.Event(), threading.Event()
+    held = {}
+    def path():
+        c, _ = ls.accept(); u = socket.create_connection(("127.0.0.1", port))
+        held["c"] = c
+        def back():
+            k = 0
+            try:
+                while True:
+                    h = rx(u, 4); body = rx(u, struct.unpack(">I", h)[0]); k += 1
+                    if k <= 2: c.sendall(h + body)
+            except (EOFError, OSError): pass
+        threading.Thread(target=back, daemon=True).start()
+        n = 0
+        try:
+            while True:
+                h = rx(c, 4); body = rx(c, struct.unpack(">I", h)[0]); n += 1
+                if n < 3:
+                    u.sendall(h + body)
+                else:
+                    got3.set(); release.wait(60)
+                    u.sendall(h + body); sent.set()
+        except (EOFError, OSError): pass
+        time.sleep(30)
+        u.close()
+    threading.Thread(target=path, daemon=True).start()
+    cp = subprocess.Popen(args("rotate", rport), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if not got3.wait(30):
+        print("BUSY: the ROTATE never reached the relay"); sys.exit(9)
+    issued = []
+    def busy():
+        while not busy_stop.is_set():
+            b = socket.socket(socket.AF_UNIX); b.connect(tmp + "/bz-s.sock")
+            b.sendall(f"RECOVERY-ISSUE user={b'busy'.hex()} count=16\n".encode())
+            issued.append(b.recv(65536)[:3]); b.close()
+    for _ in range(3): threading.Thread(target=busy, daemon=True).start()
+    time.sleep(3.0)                         # 1.5 times the idle timeout
+    release.set()
+    sent.wait(10)
+    # Judged: committed, refused, or closed by the deadline before it was read.
+    end = time.monotonic() + 30
+    while time.monotonic() < end:
+        j = journal()
+        if " event=rotate " in j.replace("\n", " \n") or "detail=rotate-late" in j or "closed-deadline" in j:
+            break
+        time.sleep(0.1)
+    busy_stop.set()
+    try: held["c"].shutdown(socket.SHUT_RDWR)   # the client's reply never comes: end it
+    except (KeyError, OSError): pass
+    cerr = cp.communicate(timeout=60)[1]
+    j = journal()
+    print("site requests answered meanwhile:", len(issued), issued[:2])
+    print("client:", cerr)
+    print("journal:", " | ".join(l for l in j.splitlines() if "rotate" in l or "deadline" in l))
+    committed = any(" event=rotate " in l + " " for l in j.splitlines())
+    if committed:
+        print("BUSY: a ROTATE held past the idle timeout was COMMITTED"); sys.exit(1)
+    if "detail=rotate-late" not in j:
+        print("BUSY: the held session was closed before its ROTATE was read: this leg shows nothing"); sys.exit(9)
+    lr = subprocess.run(args("login", port), capture_output=True, text=True)
+    if lr.returncode != 0:
+        print("BUSY: .ek does not log in after the refused ROTATE\n" + lr.stderr); sys.exit(2)
+    print("BUSY: refused"); rc = 0
+except Exception as e:
+    print(f"BUSY: the test itself failed: {e!r}"); rc = 9
+finally:
+    busy_stop.set()
+    dp.send_signal(signal.SIGTERM)
+    try: dp.wait(10)
+    except subprocess.TimeoutExpired: dp.kill(); dp.wait()
+sys.exit(rc)
+PYEOF
+case "$BZ" in
+0) ;;
+1) cat "$TMP/bz.txt"; fail "a ROTATE held past the idle timeout while the daemon was busy was committed (F794)" ;;
+2) cat "$TMP/bz.txt"; fail "after a ROTATE refused as late, the live key does not log in (F794)" ;;
+*) cat "$TMP/bz.txt"; fail "the busy-daemon ROTATE test could not be made (exit $BZ): this says nothing about F794" ;;
+esac
+echo "PASS: E2E: a ROTATE held past the idle timeout while the daemon is busy is refused as late, and the live key logs in (F794)"
 
 echo "All checks passed"

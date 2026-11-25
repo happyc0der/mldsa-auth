@@ -24022,3 +24022,56 @@ Spec v1.127: erratum 176 (10.2).
 Counts: 890 mutations, 171 campaigns, 941 anchors; 793 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.127, 176 errata; 66 tests.
+
+## V4-366: what the hundred-and-fifth review found (F794 to F796), and a cleanup
+
+**The hundred-and-fifth review** attacked V4-365's rotation rule and its
+test relay on macOS and on Linux, and read `client_core.c` and
+`client_wasm.c` whole (the state machine both clients share and the
+browser's only route to its secrets). One Low, two Info.
+
+- **F794 (Low): the clock in V4-365's advice was not a clock.** V4-365 told
+  an operator that ten minutes after a rotation that got no reply, a
+  `.ek.next` may be removed once `.ek` logs in, on the ground that the idle
+  timeout ends the session. F630 had recorded that the loop moves its
+  deadlines by the time handlers spend blocked; nobody read the two
+  together. The review did, and made the lock-out with a busy daemon.
+  - Two fixes were offered: bound the `ROTATE` in the daemon, or give the
+    operator a remedy with no clock (a restart ends every session). The
+    first is taken: it makes the sentence the client prints true, which
+    the second would not, and it costs one comparison. The second is in
+    the runbook for a daemon from before this step.
+  - The bound is on the `ROTATE`, not on the session: F630's rule for the
+    loop is unchanged, and a session that is busy but legitimate is not cut
+    off. A `ROTATE` is sent the moment the login code arrives, so a window
+    of the idle timeout refuses only one that something held.
+  - The clock counts suspend. On Linux `CLOCK_MONOTONIC` does not, so a
+    host that slept would have stretched the window the same way; that one
+    was found by reading and is not tested.
+  - The check comes after the strict decode, so a malformed `ROTATE` is
+    still `0x01` as erratum 134 has it.
+- **F795 (Info).** A comment, corrected.
+- **F796 (Info).** One branch, given its test.
+
+The review also noted, by reading: after a passphrase change, the runbook's
+"try the old passphrase" can complete a rotation whose key is under the old
+passphrase. Nothing is lost; the runbook now says to rewrap again.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-365 landed on: CI
+45551980171 (16/16) and nightly 45551984007 (186/186, 171 campaigns) on `9c7a355`.
+
+Campaign v202: SC1 (a ROTATE is judged however late), SC2 (one exactly the
+window late is refused), SC3 (the daemon does not set the window), SC4 (the
+login code's time is not recorded), SC5 (a copy that cannot be removed does
+not stop the run). Re-anchored: v139's CL2 (the line before its anchor is
+the new time stamp).
+
+**The sweep, on macOS:** 169 mutants (v202 first, then every older mutant of `authd_conn.c`, `test_authd_conn` and `authd_e2e`): 137 named kills, SC1 to SC5 among them; RE1, RV1 to RV3, LF1 and GB8 gave the verdicts they give on macOS in every sweep. SB2 (v201) was killed by the new F796 check, which ran before F790's; that check now runs after it, and the 33 end-to-end mutants of the clients were run again: SB2 is named by F790's check, and SC5, whose first form skipped the `unlink` so that F790's check fired, was made to keep the call and drop only the stop, and is named by F796's.
+
+**The Linux run, before the push:** in an Ubuntu container as an unprivileged user, the stderr gate and its 83 controls, the vocabulary gate, the anchors, the end-to-end suite twice (13/13 both times), SC1 to SC5 each named, and the gcc and clang Release builds.
+
+Spec v1.128: erratum 177 (6.3, 10.2).
+
+Counts: 895 mutations, 172 campaigns, 946 anchors; 796 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.
