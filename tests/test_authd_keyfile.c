@@ -289,6 +289,64 @@ int main(void) {
       const keyfile_status_t p3 = keyfile_promote_expect(nx, cur, dg);
       CHECK(p3 == KEYFILE_OK && fsize(nx) == -1 && fsize(cur) == (long)bl,
             "promote-expect: a .ek.next that is a hard link to .ek loses that name, and .ek is kept (F817)");
+      /* ---- V4-371 (F821): gone, or no longer private, is changed too ----
+       * The file was opened under the custody checks a moment ago. V4-370
+       * answered io-error and permissions here, and the client then said
+       * .ek.next "is KEPT and holds the new key". */
+      const keyfile_status_t p4 = keyfile_promote_expect(nx, cur, dg);
+      CHECK(p4 == KEYFILE_ERR_CHANGED && fsize(cur) == (long)bl,
+            "promote-expect: a .ek.next that is gone is changed-since-opened, not an I/O error (F821)");
+      F817_PUT(nx, buf, bl);
+      (void)chmod(nx, 0644);
+      const keyfile_status_t p5 = keyfile_promote_expect(nx, cur, dg);
+      CHECK(p5 == KEYFILE_ERR_CHANGED && fsize(cur) == (long)bl && fsize(nx) == (long)bl,
+            "promote-expect: a .ek.next that others can now read is changed-since-opened, and neither file moves (F821)");
+      /* F826: longer than any key file. (Refused unread; only the time
+       * shows that, so this checks the answer and nothing more.) */
+      { FILE *w = fopen(nx, "wb"); if (w) { static const uint8_t z[4096]; for (int i = 0; i < 64; i++) { (void)fwrite(z, 1, sizeof z, w); } fclose(w); } (void)chmod(nx, 0600); }
+      CHECK(keyfile_promote_expect(nx, cur, dg) == KEYFILE_ERR_CHANGED && fsize(cur) == (long)bl,
+            "promote-expect: a .ek.next longer than any key file is changed-since-opened (F826)");
+
+      /* ---- V4-371 (F823): the bytes that were opened, kept and written ---
+       * When .ek.next changed after the daemon took the key, the only copy
+       * of the live key is what this process read. keyfile_open_kept hands
+       * those bytes back and keyfile_replace_sealed writes them over .ek. */
+      F817_PUT(nx, buf, bl);
+      uint8_t dg2[KEYFILE_DIGEST_BYTES]; uint8_t *sl = NULL; size_t sn = 0;
+      memset(&kp, 0, sizeof(kp));
+      const keyfile_status_t ok2 = keyfile_open_kept(nx, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL, dg2, &sl, &sn);
+      if (kp.secret_key) mldsa_keypair_free(&kp);
+      CHECK(ok2 == KEYFILE_OK && sl != NULL && sn == bl && memcmp(sl, buf, bl) == 0 && memcmp(dg2, dg, sizeof dg) == 0,
+            "open-kept: the sealed bytes handed back are the file's, with the same digest (F823)");
+      uint8_t *nsl = (uint8_t *)1; size_t nsn = 1;
+      memset(&kp, 0, sizeof(kp));
+      CHECK(keyfile_open_kept(nx, ID_A, IDLEN, "wrong passphrase", 16u, &kp, NULL, dg2, &nsl, &nsn) == KEYFILE_ERR_DECRYPT &&
+                nsl == NULL && nsn == 0u,
+            "open-kept: a file that does not open hands back no bytes (F823)");
+      F817_PUT(cur, "current", 7u);
+      (void)chmod(cur, 0644);
+      const keyfile_status_t r1 = sl ? keyfile_replace_sealed(cur, sl, sn) : KEYFILE_ERR_ARG;
+      { struct stat cs; memset(&cs, 0, sizeof cs);
+        memset(&kp, 0, sizeof(kp));
+        const keyfile_status_t ro = keyfile_open(cur, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL);
+        if (kp.secret_key) mldsa_keypair_free(&kp);
+        CHECK(r1 == KEYFILE_OK && lstat(cur, &cs) == 0 && S_ISREG(cs.st_mode) && (cs.st_mode & 0777) == 0600 &&
+                  fsize(cur) == (long)bl && ro == KEYFILE_OK && fsize(nx) == (long)bl,
+              "replace-sealed: the kept bytes are written over the current file, owner-only, and it opens (F823)"); }
+      CHECK(keyfile_replace_sealed(cur, (const uint8_t *)"a stranger's file", 17u) != KEYFILE_OK && fsize(cur) == (long)bl,
+            "replace-sealed: bytes that are not an envelope are refused, and the file stays (F823)");
+      free(sl);
+
+      /* ---- V4-371 (F825): .ek a symbolic link to .ek.next ----------------
+       * The two-names test must not follow links: with stat(2) this is "the
+       * same file", .ek.next is unlinked, and the only copy of the key goes
+       * with it. */
+      (void)unlink(cur);
+      CHECK(symlink(nx, cur) == 0, "promote-expect: .ek made a symbolic link to .ek.next");
+      const keyfile_status_t p6 = keyfile_promote_expect(nx, cur, dg);
+      { struct stat cs; memset(&cs, 0, sizeof cs);
+        CHECK(p6 == KEYFILE_OK && lstat(cur, &cs) == 0 && S_ISREG(cs.st_mode) && fsize(cur) == (long)bl && fsize(nx) == -1,
+              "promote-expect: a .ek that is a symbolic link to .ek.next is replaced by the key, not taken for it (F825)"); }
       #undef F817_PUT
       (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn); }
 

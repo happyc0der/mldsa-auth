@@ -1,0 +1,8 @@
+SF1|^test_authd_keyfile$|promote-expect: a .ek.next that is gone is changed-since-opened, not an I/O error (F821)
+SF2|^test_authd_keyfile$|promote-expect: a .ek.next that others can now read is changed-since-opened, and neither file moves (F821)
+SF3|^authd_e2e$|a login that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)
+SF4|^test_authd_keyfile$|replace-sealed: the kept bytes are written over the current file, owner-only, and it opens (F823)
+SF5|^test_authd_keyfile$|promote-expect: a .ek that is a symbolic link to .ek.next is replaced by the key, not taken for it (F825)
+SF6|^authd_e2e$|a rotate that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)
+SF7|^test_authd_keyfile$|open-kept: the sealed bytes handed back are the file's, with the same digest (F823)
+SF8|^test_authd_keyfile$|replace-sealed: bytes that are not an envelope are refused, and the file stays (F823)

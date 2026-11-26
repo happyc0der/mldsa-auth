@@ -86,7 +86,7 @@ static void fsync_parent_dir(const char *path) {
     if (dfd >= 0) { (void)fsync(dfd); (void)close(dfd); }
 }
 
-static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len) {
+static keyfile_status_t publish_how(const char *path, const uint8_t *buf, size_t len, int over) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid()) >= (int)sizeof(tmp)) {
         return KEYFILE_ERR_ARG;
@@ -116,7 +116,10 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
     }
     if (r == KEYFILE_OK && fsync(fd) != 0) { r = KEYFILE_ERR_IO; }
     if (close(fd) != 0 && r == KEYFILE_OK) { r = KEYFILE_ERR_IO; }   /* V4-370, F820 */
-    if (r == KEYFILE_OK) {
+    if (r == KEYFILE_OK && over) {
+        /* V4-371 (F823): keyfile_replace_sealed only. */
+        if (rename(tmp, path) != 0) { r = KEYFILE_ERR_IO; }
+    } else if (r == KEYFILE_OK) {
         if (link(tmp, path) != 0) { r = (errno == EEXIST) ? KEYFILE_ERR_EXISTS : KEYFILE_ERR_IO; }
     }
     (void)unlink(tmp);
@@ -124,6 +127,16 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
         fsync_parent_dir(path);
     }
     return r;
+}
+
+static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len) {
+    return publish_how(path, buf, len, 0);
+}
+
+/* The largest key file there is: the version-2 bound. */
+static size_t keyfile_max_total(void) {
+    return KEYFILE_HEADER_LEN + demo_keys_sk2_image_len(64) + KEYFILE_ROOT_BYTES +
+           crypto_aead_xchacha20poly1305_ietf_ABYTES;
 }
 
 keyfile_status_t keyfile_parse_header(const uint8_t *buf, size_t total, keyfile_header_t *out) {
@@ -291,6 +304,18 @@ keyfile_status_t keyfile_write_sealed(const char *path, const uint8_t *buf, size
     return publish(path, buf, len);
 }
 
+keyfile_status_t keyfile_replace_sealed(const char *to, const uint8_t *buf, size_t len) {
+    if (to == NULL || buf == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    keyfile_header_t hdr;
+    const keyfile_status_t hs = keyfile_parse_header(buf, len, &hdr);
+    if (hs != KEYFILE_OK) {
+        return hs;
+    }
+    return publish_how(to, buf, len, 1);
+}
+
 keyfile_status_t keyfile_open_buf(const uint8_t *buf, size_t total, const uint8_t *expect_id, size_t id_len,
                                   const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                                   uint8_t *kek_out) {
@@ -395,7 +420,24 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
 keyfile_status_t keyfile_open_digest(const char *ek_path, const uint8_t *expect_id, size_t id_len,
                                      const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                                      uint8_t *kek_out, uint8_t digest_out[KEYFILE_DIGEST_BYTES]) {
+    return keyfile_open_kept(ek_path, expect_id, id_len, passphrase, pass_len, kp, kek_out, digest_out,
+                             NULL, NULL);
+}
+
+keyfile_status_t keyfile_open_kept(const char *ek_path, const uint8_t *expect_id, size_t id_len,
+                                   const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                   uint8_t *kek_out, uint8_t digest_out[KEYFILE_DIGEST_BYTES],
+                                   uint8_t **sealed_out, size_t *sealed_len) {
     struct stat st;
+    if (sealed_out != NULL) {
+        *sealed_out = NULL;
+    }
+    if (sealed_len != NULL) {
+        *sealed_len = 0;
+    }
+    if ((sealed_out == NULL) != (sealed_len == NULL) || (sealed_out != NULL && digest_out == NULL)) {
+        return KEYFILE_ERR_ARG;
+    }
     if (digest_out != NULL) {
         memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
     }
@@ -417,9 +459,7 @@ keyfile_status_t keyfile_open_digest(const char *ek_path, const uint8_t *expect_
         return KEYFILE_ERR_IO;
     }
     keyfile_status_t r = KEYFILE_ERR_FORMAT;
-    const size_t max_ct = demo_keys_sk2_image_len(64) + KEYFILE_ROOT_BYTES +
-                          crypto_aead_xchacha20poly1305_ietf_ABYTES;   /* the larger, version-2, bound */
-    const size_t max_total = KEYFILE_HEADER_LEN + max_ct;
+    const size_t max_total = keyfile_max_total();
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         r = KEYFILE_ERR_IO; goto done;
     }
@@ -448,6 +488,20 @@ keyfile_status_t keyfile_open_digest(const char *ek_path, const uint8_t *expect_
         mldsa_keypair_free(kp);
         r = KEYFILE_ERR_CRYPTO;
     }
+    if (r == KEYFILE_OK && sealed_out != NULL) {
+        /* V4-371 (F823): the sealed bytes, kept. No secret: they are what is
+         * on the disk. */
+        uint8_t *copy = malloc(total);
+        if (copy == NULL) {
+            memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
+            mldsa_keypair_free(kp);
+            r = KEYFILE_ERR_CRYPTO;
+        } else {
+            memcpy(copy, fbuf, total);
+            *sealed_out = copy;
+            *sealed_len = total;
+        }
+    }
 freefile:
     secure_mem_free(fbuf, total);
 done:
@@ -467,24 +521,33 @@ keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
     /* Custody first: never promote something that is not ours, is not a
      * regular file, or that anyone else can read. The same three checks
      * keyfile_open applies -- a rename does not get to skip them. */
+    /* V4-371 (F821): with `expect`, the file was opened under these same
+     * checks a moment ago. One that now is not there, is not a regular file
+     * or is not private is one that changed -- and that is the answer, not
+     * "io-error", after which a caller said the file still held the key. */
     struct stat st;
     const int fd = open(from, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);   /* F297 */
     if (fd < 0) {
-        return KEYFILE_ERR_IO;
+        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;
     }
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         (void)close(fd);
-        return KEYFILE_ERR_IO;
+        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;
     }
     if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {
         (void)close(fd);
-        return KEYFILE_ERR_PERMISSIONS;
+        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_PERMISSIONS;
+    }
+    if (expect != NULL && (st.st_size < 0 || (size_t)st.st_size > keyfile_max_total())) {
+        /* V4-371 (F826): no key file is this long, so it is not read. A
+         * 4 GiB file put there was hashed, five seconds under the lock. */
+        (void)close(fd);
+        return KEYFILE_ERR_CHANGED;
     }
     if (expect != NULL) {
         /* V4-370 (F817): the bytes, through this descriptor, against the
          * digest of the ones that were opened. Read in pieces: nothing here
-         * is secret (the envelope is sealed), and a file of any size is just
-         * one that does not match. */
+         * is secret (the envelope is sealed). */
         crypto_generichash_state hs;
         uint8_t got[KEYFILE_DIGEST_BYTES], chunk[4096];
         ssize_t n;

@@ -9,12 +9,14 @@
  * and no plaintext secret key ever touches the disk (Req 10).
  *
  * File layout (all integers big-endian). Bytes [0, KEYFILE_HEADER_LEN) are the
- * AEAD's ASSOCIATED DATA, so the KDF parameters are authenticated: a tampered
- * memlimit makes the open fail. It is not free: the KDF runs with the
- * header's parameters before the tag can be checked, so what limits the cost
- * of such a file is the bounds below (V4-370, F818; erratum 178). An AEAD is used
- * rather than crypto_secretbox precisely because secretbox authenticates
- * nothing outside the box.
+ * AEAD's ASSOCIATED DATA, so every header field is authenticated. For the
+ * KDF parameters and the salt that adds nothing: a changed one derives a
+ * different key and the tag fails anyway. What it adds is the fields the key
+ * does not depend on: the version (which says how the plaintext is split),
+ * the algorithm ids and ct_len (V4-371, F822; erratum 179). Neither makes a
+ * tampered file free to refuse: the KDF runs with the header's parameters
+ * before the tag can be checked, so what limits the cost is the bounds
+ * below (V4-370, F818; erratum 178).
  *
  *   magic     8   "MLDSAEK1"
  *   version   1   0x01
@@ -175,7 +177,8 @@ keyfile_status_t keyfile_write_sealed(const char *path, const uint8_t *buf, size
  * custody the way keyfile_open does: O_NOFOLLOW, a regular file, owned by this
  * euid, no group or other permission bits.
  *
- * This is the ONLY function here that clobbers. Rotation needs it: spec 10.2
+ * This and keyfile_replace_sealed are the only functions here that clobber.
+ * Rotation needs it: spec 10.2
  * has the client write <handle>.ek.next and rename it over <handle>.ek when
  * the daemon acknowledges, and any non-atomic version leaves a window with two
  * key files and no way to know which one the server accepted. Do not reach for
@@ -193,5 +196,21 @@ keyfile_status_t keyfile_promote(const char *from, const char *to);
  * instant between the read and rename(2). */
 keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
                                         const uint8_t expect[KEYFILE_DIGEST_BYTES]);
+
+/* V4-371 (F823): keyfile_open_digest, and a copy of the sealed bytes it read
+ * (malloc'd; the caller frees it; NULL on any failure). Sealed, so no
+ * secret. A rotation keeps them for keyfile_replace_sealed. */
+keyfile_status_t keyfile_open_kept(const char *ek_path, const uint8_t *expect_id, size_t id_len,
+                                   const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                   uint8_t *kek_out, uint8_t digest_out[KEYFILE_DIGEST_BYTES],
+                                   uint8_t **sealed_out, size_t *sealed_len);
+
+/* V4-371 (F823): write a sealed envelope OVER `to`: a private temporary file
+ * beside it, synced, then rename(2). The second and last function here that
+ * clobbers, and for one case: keyfile_promote_expect answered
+ * KEYFILE_ERR_CHANGED after the daemon took the key, so the file at .ek.next
+ * is not that key, .ek holds a dead one, and the only copy of the live key
+ * is the bytes this process opened. Do not reach for it anywhere else. */
+keyfile_status_t keyfile_replace_sealed(const char *to, const uint8_t *buf, size_t len);
 
 #endif

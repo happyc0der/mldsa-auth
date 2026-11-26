@@ -30,8 +30,8 @@ M = {
                  "    if (st.st_uid != geteuid() || (st.st_mode & 007) != 0 /* MUTATION KC2: group bits ignored */) {\n        r = KEYFILE_ERR_PERMISSIONS; goto done;\n")],
     "KC3": [(KF, "    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {\n        r = KEYFILE_ERR_PERMISSIONS; goto done;\n",
                  "    if (st.st_uid != geteuid() || (st.st_mode & 070) != 0 /* MUTATION KC3: other bits ignored */) {\n        r = KEYFILE_ERR_PERMISSIONS; goto done;\n")],
-    "KC4": [(KF, "    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {\n        (void)close(fd);\n        return KEYFILE_ERR_PERMISSIONS;\n",
-                 "    if (st.st_uid != geteuid() || 0 /* MUTATION KC4: promote ignores the mode */) {\n        (void)close(fd);\n        return KEYFILE_ERR_PERMISSIONS;\n")],
+    "KC4": [(KF, "    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {\n        (void)close(fd);\n        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_PERMISSIONS;\n",
+                 "    if (st.st_uid != geteuid() || 0 /* MUTATION KC4: promote ignores the mode */) {\n        (void)close(fd);\n        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_PERMISSIONS;\n")],
     "KC5": [(KF, "    if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {\n        r = KEYFILE_ERR_PERMISSIONS; goto done;\n",
                  "    if (/* MUTATION KC5: owner ignored */ (st.st_mode & 077) != 0) {\n        r = KEYFILE_ERR_PERMISSIONS; goto done;\n")],
 }

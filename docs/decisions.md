@@ -24218,3 +24218,66 @@ Spec v1.129: erratum 178 (12).
 Counts: 901 mutations, 174 campaigns, 953 anchors; 820 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.129, 178 errata; 66 tests.
+
+## V4-371: what the hundred-and-tenth review found (F821 to F829), and a cleanup
+
+**The hundred-and-tenth review** attacked V4-370 from a copy of the tree,
+on macOS and in a Linux container: the relay of the new leg with other
+swaps (a 0644 file, a deletion, a 4 GiB file), its own mutants, the
+clean-up in four shells, and every point at which a rotation can stop.
+V4-370's check held for the swap it tested. Four Low, five Info; three of
+the Low are V4-370 saying more than it did.
+
+- **F823 (Low), and the decision in it.** V4-370 chose between two
+  remedies for F817 and left the second, writing the opened bytes over
+  `.ek`, as a recommendation "for the residual instant". The review
+  showed what the first alone leaves: the swapped file no longer becomes
+  the key, and the device is locked out exactly as before, because the
+  accepted key is nowhere. So the second is taken here, for that case
+  only: the ordinary promote is still the one rename 10.2 describes, and
+  the bytes are written only when the file at `.ek.next` is no longer the
+  one that was opened. What replaced it is left alone; it is not this
+  program's file to judge or delete, and the client says a rotate will
+  stop at it. Erratum 180. The instant between the comparison and
+  `rename(2)` is still open, and writing the bytes always would close it;
+  that remains a recommendation for the owner, since it would make 10.2's
+  rename a write.
+- **F821 (Low).** Gone, or no longer private, is changed. V4-370's row
+  said the client tells the user; it did for one kind of swap.
+- **F822 (Low).** Erratum 179 corrects erratum 178, which corrected one
+  wrong reason with another. What the header binding protects is the
+  fields the key does not depend on.
+- **F824 (Low), a question for the owner, with F819.** The directory lock
+  can be held by anyone who can open the directory. Recommendation: refuse
+  a key directory with any group or other bit, and bound the wait. Not
+  done here: it would refuse directories that work today.
+- **F825 to F829 (Info).** A test for the link the two-names branch must
+  not follow; an oversize file is not read; the secret scans run at the
+  end, as the test's first lines say; 10.2's text; a pid file.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-370 landed on: CI
+45764408078 (16/16) and nightly 45764410631 (189/189, 174 campaigns) on `68df54f`.
+
+Campaign v205: SF1 and SF2 (gone, readable), SF3 and SF6 (the accepted key
+is not written: login, rotate), SF4 (replace links), SF5 (the link is
+followed), SF7 (the kept bytes are not the file's), SF8 (anything is
+written). Re-anchored: v158's PO1, v176's PR1 and PR3, v204's SE3 and SE4
+(the promote is `client_promote_opened`), v75's KC4.
+
+Checks: macOS, 66/66 on the plain, ASan and UBSan trees, 36/36 fuzz
+replays, wasm 3/3, six gcc-16 compiles clean, the build current and no
+residue. A 57-mutant sweep on macOS (v205, v204 and every older mutant of
+the functions touched): 56 killed by the named check, v75's KC5 survived as
+it always does there (it needs a second uid). SF3 and SF6 first scored as
+killed by another check because their two spec lines began with a stray
+"FAIL: "; corrected and run again, both named. Linux container: the
+authd tests twice, 13/13 each; SE1 to SE4, SF1 to SF8 and KC4 each fail at
+the check named; gcc and clang Release builds. The new end-of-run scans
+shown by hand: a server passphrase and a device passphrase appended to a
+late leg's log each fail the run there.
+
+Spec v1.130: errata 179 (12) and 180 (10.2).
+
+Counts: 909 mutations, 175 campaigns, 961 anchors; 829 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.130, 180 errata; 66 tests.

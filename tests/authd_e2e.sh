@@ -2606,11 +2606,17 @@ echo "PASS: E2E: no sanitizer report in any daemon or client log"
 # The passphrase bytes must not appear in any log. Unlike the daemon's logger,
 # which has no arbitrary-buffer sink at all, the CLIs use fprintf freely -- so
 # "it cannot happen by construction" is not an argument available here.
+# V4-371 (F827): a function, run here and again at the very end. This file's
+# first lines say "every log is scanned for secrets at the end", and a dozen
+# legs and their logs had been added after the scans.
 PASSHEX=$(cat "$TMP/opass")
-for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
-    [ -f "$f" ] || continue
-    if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
-done
+scan_device_pass() {
+    for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
+        [ -f "$f" ] || continue
+        if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
+    done
+}
+scan_device_pass
 # V4-254 (F369): every log line the daemon wrote in this whole run is a
 # level and then key=value words, nothing else. Two events used to carry a
 # detail of several words ("ok revoke=all", "invalid (now locked)"), which a
@@ -2634,7 +2640,8 @@ echo "PASS: E2E: all $loglines daemon log lines are a level and key=value words 
 # and as base64, whole and as its first and last 16 bytes, in every regular
 # file under the work directory except the passphrase files themselves. The
 # scan first has to find a planted copy, in each form.
-python3 - "$TMP" <<'PYEOF' || fail "the server key's passphrase scan failed (F257)"
+scan_server_pass() {
+python3 - "$TMP" <<'PYEOF'
 import base64, os, sys
 tmp = sys.argv[1]
 names = [os.path.join(tmp, d, "pass") for d in ("d", "su", "fk")]
@@ -2681,6 +2688,8 @@ if bad:
 print("PASS: E2E: the server key's passphrase appears in none of %d files (%d passphrases; raw, hex, base64) (F257)"
       % (scanned, len(secrets)))
 PYEOF
+}
+scan_server_pass || fail "the server key's passphrase scan failed (F257)"
 
 # No secret-key BYTES are scanned for here: every key this flow writes is
 # sealed, and this script holds no plaintext key to look for. The header scan
@@ -3407,7 +3416,12 @@ try:
                             # stops; the shell's clean-up resumes and ends it
                             # if this Python dies before the SIGCONT below.
                             with open(tmp + "/pystop-rt-client.pid", "w") as pf: pf.write(f"{pid}\n")
-                            os.kill(pid, signal.SIGSTOP); os.waitpid(pid, os.WUNTRACED)
+                            try:
+                                os.kill(pid, signal.SIGSTOP); os.waitpid(pid, os.WUNTRACED)
+                            except OSError:
+                                try: os.unlink(tmp + "/pystop-rt-client.pid")   # F829: not left behind
+                                except OSError: pass
+                                raise
                         if not last:
                             c.sendall(h + body); k += 1; continue
                         try:
@@ -3795,8 +3809,13 @@ echo "PASS: E2E: a ROTATE that reaches a stalled daemon after the idle timeout i
 # became the live key after the daemon had taken another one. The client now
 # promotes only the bytes it opened. Both ways in: a login completing an
 # interrupted rotation (the daemon's login code is held while the file is
-# swapped), and a rotate (its ACK is held). Each time .ek must be unchanged
-# and the client must say the file changed.
+# swapped), and a rotate (its ACK is held). Each time the swapped file must
+# not become .ek and the client must say the file changed.
+# V4-371, F823 (the hundred-and-tenth review): V4-370 stopped there, with
+# .ek holding the old, dead key and the accepted key freed with the process:
+# the same lock-out. The client keeps the bytes it opened and writes them
+# over .ek, so each time .ek must hold the key the daemon accepted, what was
+# swapped in must be left where it is, and the next login must work.
 mkdir -p "$TMP/sw" "$TMP/swdev" && chmod 0700 "$TMP/swdev" || fail "could not set up the swapped-.ek.next leg"
 SW=0
 python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/sw.txt" 2>&1 <<'PYEOF' || SW=$?
@@ -3913,14 +3932,15 @@ try:
     print("login with .ek.next swapped: exit", r1); print(e1)
     if not did.is_set():
         print("SWAP: the relay never held the probe's login code"); sys.exit(9)
-    if open(ek, "rb").read() != k0:
+    if open(ek, "rb").read() == STRANGER:
         print("SWAP: a .ek.next swapped while the login asked the daemon was renamed over .ek"); sys.exit(1)
-    if r1 == 0 or "changed while the daemon was asked" not in e1 or open(nxt, "rb").read() != STRANGER:
-        print("SWAP: the login did not stop and say that .ek.next changed, or moved it"); sys.exit(2)
-    put(nxt, k1)
+    if (r1 != 0 or "changed while the daemon was asked" not in e1 or open(nxt, "rb").read() != STRANGER
+            or open(ek, "rb").read() != k1 or (os.stat(ek).st_mode & 0o777) != 0o600):
+        print("SWAP: the login did not write the accepted key to .ek and say that .ek.next changed, or moved what replaced it"); sys.exit(2)
+    os.remove(nxt)
     r1b, e1b = run(args("login", port))
     if r1b != 0 or open(ek, "rb").read() != k1 or os.path.exists(nxt):
-        print("SWAP: with the real .ek.next back, the login did not complete the rotation\n" + e1b); sys.exit(9)
+        print("SWAP: the key the login wrote to .ek does not log in\n" + e1b); sys.exit(2)
 
     # 2. rotate: its ACK (the daemon's frame 3 on connection 1) is held
     # while .ek.next is swapped.
@@ -3929,11 +3949,17 @@ try:
     print("rotate with .ek.next swapped: exit", r2); print(e2)
     if not did.is_set() or rotations() != 2:
         print("SWAP: the relay never held the ACK, or the daemon did not rotate"); sys.exit(9)
-    if open(ek, "rb").read() != k1:
+    k2 = open(ek, "rb").read()
+    if k2 == STRANGER:
         print("SWAP: a .ek.next swapped while the rotate waited for its ACK was renamed over .ek"); sys.exit(3)
-    if r2 == 0 or "changed while the daemon was asked" not in e2 or open(nxt, "rb").read() != STRANGER:
-        print("SWAP: the rotate did not stop and say that .ek.next changed, or moved it"); sys.exit(4)
-    print("SWAP: refused both times"); rc = 0
+    if (r2 != 0 or "changed while the daemon was asked" not in e2 or open(nxt, "rb").read() != STRANGER
+            or k2 == k1 or (os.stat(ek).st_mode & 0o777) != 0o600):
+        print("SWAP: the rotate did not write the accepted key to .ek and say that .ek.next changed, or moved what replaced it"); sys.exit(4)
+    os.remove(nxt)
+    r2b, e2b = run(args("login", port))
+    if r2b != 0 or open(ek, "rb").read() != k2:
+        print("SWAP: the key the rotate wrote to .ek does not log in\n" + e2b); sys.exit(4)
+    print("SWAP: the swapped file was left and the accepted key written, both times"); rc = 0
 except SystemExit:
     raise
 except Exception as e:
@@ -3947,11 +3973,18 @@ PYEOF
 case "$SW" in
 0) ;;
 1) cat "$TMP/sw.txt"; fail "a .ek.next swapped while a login asked the daemon about it was renamed over .ek (F817)" ;;
-2) cat "$TMP/sw.txt"; fail "a login that found .ek.next swapped did not stop and say so, or moved it (F817)" ;;
+2) cat "$TMP/sw.txt"; fail "a login that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)" ;;
 3) cat "$TMP/sw.txt"; fail "a .ek.next swapped while a rotate waited for its ACK was renamed over .ek (F817)" ;;
-4) cat "$TMP/sw.txt"; fail "a rotate that found .ek.next swapped did not stop and say so, or moved it (F817)" ;;
+4) cat "$TMP/sw.txt"; fail "a rotate that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)" ;;
 *) cat "$TMP/sw.txt"; fail "the swapped-.ek.next test could not be made (exit $SW): this says nothing about F817" ;;
 esac
 echo "PASS: E2E: a .ek.next swapped while the daemon is asked is not renamed over .ek, by login or by rotate, and the client says so (F817)"
+echo "PASS: E2E: and the key the daemon accepted is written to .ek, what was swapped in is left, and the next login works (F823)"
+
+# V4-371 (F827): the two passphrase scans again, over everything the legs
+# since the first scan wrote.
+scan_device_pass
+scan_server_pass > "$TMP/scan-end.out" 2>&1 || { cat "$TMP/scan-end.out"; fail "at the very end, the server key's passphrase scan failed (F827)"; }
+echo "PASS: E2E: at the very end, neither passphrase appears in any file under the work directory (F827)"
 
 echo "All checks passed"

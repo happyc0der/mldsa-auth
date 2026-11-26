@@ -19,10 +19,11 @@ M = {
              "        if (0 && memcmp(got, expect, sizeof got) != 0) { /* MUTATION SE1 */\n")],
     "SE2": [(KF, "    if (lstat(to, &tst) == 0 && tst.st_dev == st.st_dev && tst.st_ino == st.st_ino) {\n",
              "    if (0 && lstat(to, &tst) == 0 && tst.st_dev == st.st_dev && tst.st_ino == st.st_ino) { /* MUTATION SE2 */\n")],
-    "SE3": [(CL, "        const keyfile_status_t ps = keyfile_promote_expect(next_path, a.key_path, next_digest);\n",
-             "        const keyfile_status_t ps = keyfile_promote_expect(next_path, a.key_path, NULL); /* MUTATION SE3 */\n")],
-    "SE4": [(CL, "            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);\n",
-             "            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, NULL); /* MUTATION SE4 */\n")],
+    # V4-371: the promote is client_promote_opened; with no digest it is by name, as before.
+    "SE3": [(CL, "        const keyfile_status_t ps = client_promote_opened(prog, \"rotate\", next_path, a.key_path, next_digest,\n",
+             "        const keyfile_status_t ps = client_promote_opened(prog, \"rotate\", next_path, a.key_path, NULL, /* MUTATION SE3 */\n")],
+    "SE4": [(CL, "            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,\n",
+             "            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, NULL, /* MUTATION SE4 */\n")],
 }
 
 def main():

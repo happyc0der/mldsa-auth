@@ -835,6 +835,35 @@ static int client_key_lock(const char *prog, const char *sub, const char *key_pa
 
 /* *stale_next is set only when the daemon was ASKED and .ek authenticated
  * with a .ek.next present: the one proof that lets the caller delete it. */
+/* V4-371 (F823): put the key the daemon accepted at `key_path`. By renaming
+ * .ek.next over it, when that file still holds the bytes this run opened
+ * (F817); and when it does not, by writing those bytes over `key_path`. At
+ * that point the daemon has taken the key, the file at `key_path` holds a
+ * dead one, and V4-370 stopped there: the stranger's file was no longer
+ * made the live key, but the live key was freed with the process and the
+ * device was locked out all the same. What replaced .ek.next is not this
+ * run's to judge or remove, and is left. KEYFILE_OK when `key_path` holds
+ * the accepted key either way. */
+static keyfile_status_t client_promote_opened(const char *prog, const char *sub, const char *next_path,
+                                              const char *key_path,
+                                              const uint8_t digest[KEYFILE_DIGEST_BYTES],
+                                              const uint8_t *sealed, size_t sealed_len)
+{
+    const keyfile_status_t ps = keyfile_promote_expect(next_path, key_path, digest);
+    if (ps != KEYFILE_ERR_CHANGED) {
+        return ps;
+    }
+    if (sealed == NULL || keyfile_replace_sealed(key_path, sealed, sealed_len) != KEYFILE_OK) {
+        return KEYFILE_ERR_CHANGED;
+    }
+    fprintf(stderr, "%s %s: %s changed while the daemon was asked: it no longer holds the key the daemon "
+                    "accepted, and whatever is there now is left as it is. The accepted key, which this "
+                    "run had opened, was written to %s. If a file is at %s, find what put it there and "
+                    "move it away: a rotate stops at it\n",
+            prog, sub, next_path, key_path, next_path);
+    return KEYFILE_OK;
+}
+
 static int client_resolve_key_locked(const char *prog, const char *sub, const client_args_t *a,
                               const char *pass, size_t pass_len, const uint8_t *server_pk,
                               const char *next_path, int next_seen, mldsa_keypair_t *kp_out,
@@ -876,6 +905,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
     keyfile_status_t ks_ek = KEYFILE_OK, ks_next = KEYFILE_OK;
     uint8_t next_digest[KEYFILE_DIGEST_BYTES];   /* F817: what was opened is what is promoted */
     memset(next_digest, 0, sizeof next_digest);
+    uint8_t *next_sealed = NULL;                 /* F823: and is kept, to be written if the file changes */
+    size_t next_sealed_len = 0;
     int unasked = 0;             /* a probe failed before the daemon saw the key */
     char unasked_why[sizeof g_open_why];
     unasked_why[0] = '\0';
@@ -892,7 +923,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
         }
     }
     if (!ek_ok) {
-        ks_next = keyfile_open_digest(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL, next_digest);
+        ks_next = keyfile_open_kept(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL, next_digest,
+                                    &next_sealed, &next_sealed_len);
     }
     /* F705 (V4-347): not when the first probe never reached the point of
      * showing the daemon a key. A daemon that could not be reached was
@@ -945,14 +977,17 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
             break;
         }
         {
-            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);
+            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,
+                                                              next_sealed, next_sealed_len);
             if (ps == KEYFILE_ERR_CHANGED) {
                 /* F817: replaced while the daemon was asked. The key the
-                 * daemon took is the one that was there; this is not it. */
+                 * daemon took is the one that was there; this is not it.
+                 * F823: and the accepted one could not be written either. */
                 (void)failed(prog, sub, next_path, keyfile_status_name(ps));
                 fprintf(stderr, "%s %s: %s changed while the daemon was asked about it: it is not the key "
-                                "the daemon accepted. Nothing was renamed; find what replaced it\n",
-                        prog, sub, next_path);
+                                "the daemon accepted, and that key could not be written to %s. No key file "
+                                "was renamed; the .pub already names the accepted key\n",
+                        prog, sub, next_path, a->key_path);
                 break;
             }
             if (ps != KEYFILE_OK) {
@@ -1009,6 +1044,7 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
     }
     mldsa_keypair_free(&ek_kp);
     mldsa_keypair_free(&next_kp);
+    free(next_sealed);
     return rc;
 }
 
@@ -1246,7 +1282,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     /* Seal the new key BEFORE sending anything (spec 10.2). If everything
      * after this dies, the next invocation's probe decides which key is live
      * and completes or discards the rename -- there is no state in which the
-     * only copy of a live key is gone. The new key is sealed under the SAME
+     * only copy of a live key is gone, short of a .ek.next replaced while the
+     * daemon is asked AND a .ek that cannot then be written (F823). The new
+     * key is sealed under the SAME
      * passphrase: the probe has only one, and changing a passphrase during a
      * rotation is a different operation (`authd_admin rewrap`). */
     uint8_t new_pk[MLDSA_PUBLIC_KEY_BYTES];
@@ -1293,8 +1331,11 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     mldsa_keypair_t new_kp;
     memset(&new_kp, 0, sizeof new_kp);
     uint8_t next_digest[KEYFILE_DIGEST_BYTES];   /* F817: what is sent is what is promoted */
-    const keyfile_status_t ks = keyfile_open_digest(next_path, a.hid, a.hid_len,
-                                                    (const char *)pass, pass_len, &new_kp, NULL, next_digest);
+    uint8_t *next_sealed = NULL;                 /* F823 */
+    size_t next_sealed_len = 0;
+    const keyfile_status_t ks = keyfile_open_kept(next_path, a.hid, a.hid_len,
+                                                  (const char *)pass, pass_len, &new_kp, NULL, next_digest,
+                                                  &next_sealed, &next_sealed_len);
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         mldsa_keypair_free(&old_kp);
@@ -1323,6 +1364,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         if (demo_keys_write_public(pub_tmp, a.hid, a.hid_len, new_pk) != DEMO_KEYS_OK) {
             mldsa_keypair_free(&old_kp);
             mldsa_keypair_free(&new_kp);
+            free(next_sealed);
             (void)unlink(pub_tmp);
             (void)failed(prog, "rotate", pub_tmp, "cannot-write-public-key");
             fprintf(stderr, "%s rotate: %s is KEPT\n", prog, next_path);
@@ -1339,6 +1381,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (rc != EX_OK) {
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
+        free(next_sealed);
         (void)unlink(pub_tmp);   /* F118 */
         /* F438: a session that failed before ClientAuth was sent -- no
          * daemon, no upgrade, a ServerHello that did not verify -- never
@@ -1477,16 +1520,19 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
                             "completes the rotation\n", prog, pub_path, next_path);
             goto out;
         }
-        const keyfile_status_t ps = keyfile_promote_expect(next_path, a.key_path, next_digest);
+        const keyfile_status_t ps = client_promote_opened(prog, "rotate", next_path, a.key_path, next_digest,
+                                                          next_sealed, next_sealed_len);
         if (ps == KEYFILE_ERR_CHANGED) {
             /* F817: the daemon took the key this run opened and sent; the
              * file at .ek.next is no longer that key. Renaming it over .ek
-             * by name, as before, made a stranger's file the live key. */
+             * by name, as before, made a stranger's file the live key.
+             * F823: and the accepted key could not be written either. */
             (void)failed(prog, "rotate", next_path, keyfile_status_name(ps));
-            fprintf(stderr, "%s rotate: the key ROTATED at the daemon, but %s changed while the daemon was "
-                            "asked: it is not the key the daemon accepted. Nothing was renamed: %s still holds "
-                            "the old key, which no longer authenticates. Find what replaced %s\n",
-                    prog, next_path, a.key_path, next_path);
+            fprintf(stderr, "%s rotate: the key ROTATED at the daemon, and %s names the new key, but %s "
+                            "changed while the daemon was asked: it is not the key the daemon accepted, and "
+                            "that key could not be written to %s, which still holds the old one. The old "
+                            "key no longer authenticates\n",
+                    prog, pub_path, next_path, a.key_path);
             goto out;
         }
         if (ps != KEYFILE_OK) {
@@ -1507,6 +1553,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         rc = EX_OK;
     }
 out:
+    free(next_sealed);
     (void)unlink(pub_tmp);
     client_say_bye(&cs);
     return rc;

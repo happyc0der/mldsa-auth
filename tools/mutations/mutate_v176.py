@@ -16,12 +16,12 @@ import sys, pathlib
 CL = "apps/authd/client_cli.c"
 
 M = {
-    "PR1": [(CL, "            memcpy(kp_out, &next_kp, sizeof next_kp);\n            memset(&next_kp, 0, sizeof next_kp);\n            rc = EX_OK;\n            break;\n        }\n        {\n            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);\n",
-             "        } /* MUTATION PR1: the promotion goes ahead */\n        {\n            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);\n")],
+    "PR1": [(CL, "            memcpy(kp_out, &next_kp, sizeof next_kp);\n            memset(&next_kp, 0, sizeof next_kp);\n            rc = EX_OK;\n            break;\n        }\n        {\n            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,\n                                                              next_sealed, next_sealed_len);\n",
+             "        } /* MUTATION PR1: the promotion goes ahead */\n        {\n            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,\n                                                              next_sealed, next_sealed_len);\n")],
     "PR2": [(CL, "                            \"completes the rotation\\n\", prog, pub_path, next_path);\n            goto out;\n",
              "                            \"completes the rotation\\n\", prog, pub_path, next_path);\n            /* MUTATION PR2 */\n")],
-    "PR3": [(CL, "            memcpy(kp_out, &next_kp, sizeof next_kp);\n            memset(&next_kp, 0, sizeof next_kp);\n            rc = EX_OK;\n            break;\n        }\n        {\n            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);\n",
-             "            break; /* MUTATION PR3: and the login fails */\n        }\n        {\n            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);\n")],
+    "PR3": [(CL, "            memcpy(kp_out, &next_kp, sizeof next_kp);\n            memset(&next_kp, 0, sizeof next_kp);\n            rc = EX_OK;\n            break;\n        }\n        {\n            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,\n                                                              next_sealed, next_sealed_len);\n",
+             "            break; /* MUTATION PR3: and the login fails */\n        }\n        {\n            const keyfile_status_t ps = client_promote_opened(prog, sub, next_path, a->key_path, next_digest,\n                                                              next_sealed, next_sealed_len);\n")],
 }
 
 def main():
