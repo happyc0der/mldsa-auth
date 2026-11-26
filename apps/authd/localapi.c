@@ -1219,7 +1219,14 @@ static ev_action_t h_recovery_issue(authd_app_t *app, authd_slot_t *slot, const 
     size_t superseded = 0;
     const store_status_t rs = store_recovery_replace(app->store, user, user_len, hp, count,
                                                      app->now_unix, &superseded);
-    if (rs == STORE_ERR_NOT_FOUND) { act = send_err(slot, "invalid");  goto done; }
+    if (rs == STORE_ERR_NOT_FOUND) {
+        /* V4-369 (F813): the user went between the check and the write
+         * (another writer); logged like every other refusal (spec 8). */
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-issue", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-issue", slot->index, "invalid");
+        act = send_err(slot, "invalid");
+        goto done;
+    }
     if (rs != STORE_OK)            { act = send_err(slot, "internal"); goto done; }
 
     resp_add(&r, "OK codes=");
@@ -1420,9 +1427,13 @@ static ev_action_t h_recovery_use(authd_app_t *app, authd_slot_t *slot, const re
                                                         thash, app->now_unix, expires,
                                                         revoke_all, &revoked);
     if (cs == STORE_ERR_NOT_FOUND) {
-        /* Verification ran outside the transaction, so another connection may
-         * have spent this code in between. Indistinguishable from a wrong
-         * code, which is the right answer to give. */
+        /* Verification ran outside the transaction, and the store is not
+         * the daemon's alone: another writer may have spent this code or
+         * removed the user in between. Indistinguishable from a wrong code,
+         * which is the right answer to give. V4-369 (F813): logged like
+         * every other refusal of a well-formed request (spec 8). */
+        authd_log_slot_id(AUTHD_LOG_WARN, "recovery-use", slot->index, user, user_len);
+        authd_log_slot_detail(AUTHD_LOG_WARN, "recovery-use", slot->index, "invalid");
         act = send_err(slot, "invalid");
         goto done;
     }

@@ -24149,3 +24149,32 @@ Info, all in tests and text.
 Counts: 897 mutations, 173 campaigns, 949 anchors; 808 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.
+
+## V4-369: what the hundred-and-eighth review found (F809 to F814)
+
+**The hundred-and-eighth review** attacked V4-368 from a copy of the tree
+(the stalled-daemon leg timed: the stop came 0.0 ms after the request's
+log line and the hashes ended 701 ms after it was let go; the fuzz seeds
+written twice, identical; the `#error` compiled under glibc 2.41), then
+read the recovery commands and their store functions whole. Nothing above
+Info.
+
+- **F809.** The legs that stop the daemon now leave its pid where the
+  shell's clean-up finds it. Shown both ways by killing the leg's Python
+  while the daemon was stopped.
+- **F810, F812.** Two error paths in tests say what happened.
+- **F811.** Recorded: the two canaries are one proof.
+- **F813.** Two refusals that only another writer of the store can cause
+  are logged like the rest. Not tested, and said so.
+- **F814, a question for the owner.** New recovery codes do not lift a
+  lock or clear the failure count. Recommendation: keep that, since a
+  reset would let anyone who can ask the site for codes undo the lock, and
+  write it into §10 as an erratum.
+
+The review's timing of `RECOVERY-USE` (120 of each, known user with a wrong
+code against an unknown user: a 2.2 ms difference of means, sd about 11) is
+F156's open question again, with nothing new.
+
+Counts: 897 mutations, 173 campaigns, 949 anchors; 814 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.

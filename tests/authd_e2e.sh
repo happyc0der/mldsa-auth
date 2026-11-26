@@ -52,6 +52,19 @@ cleanup() {
         [ -n "$p" ] || continue
         [ "$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')" = "$$" ] && kill "$p" 2>/dev/null
     done
+    # V4-369 (F809): the two late-ROTATE legs stop their daemon (SIGSTOP)
+    # from Python. Killed while it was stopped, Python's own clean-up never
+    # ran, and the daemon, this shell's grandchild, stayed stopped. Each
+    # leg writes its daemon's pid; one that is still the daemon is let go
+    # and ended here.
+    for pf in "$TMP"/pystop-*.pid; do
+        [ -f "$pf" ] || continue
+        p=$(cat "$pf" 2>/dev/null)
+        [ -n "$p" ] || continue
+        case "$(ps -o comm= -p "$p" 2>/dev/null)" in
+            *"$(basename "$DAEMON")"*) kill -CONT "$p" 2>/dev/null; kill "$p" 2>/dev/null ;;
+        esac
+    done
     rm -rf "$TMP"
     if [ -n "$RU" ]; then rm -rf "$RU"; fi
 }
@@ -3296,6 +3309,7 @@ with open(conf, "w") as f:
             f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\n")
 dlog = open(tmp + "/rt.log", "w")
 dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
+with open(tmp + f"/pystop-{os.path.basename(conf)}.pid", "w") as pf: pf.write(f"{dp.pid}\n")   # F809
 rc = 9
 try:
     end = time.monotonic() + 30
@@ -3619,6 +3633,7 @@ with open(conf, "w") as f:
             f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\nidle_timeout_ms = 2000\n")
 dlog = open(tmp + "/bz.log", "w")
 dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
+with open(tmp + f"/pystop-{os.path.basename(conf)}.pid", "w") as pf: pf.write(f"{dp.pid}\n")   # F809
 rc = 9
 def rx(c, n):
     b = b""
@@ -3706,7 +3721,10 @@ try:
         if time.monotonic() > seen:
             print("BUSY: the daemon never logged the site request"); sys.exit(9)
         time.sleep(0.005)
-    os.kill(dp.pid, signal.SIGSTOP); os.waitpid(dp.pid, os.WUNTRACED)
+    os.kill(dp.pid, signal.SIGSTOP)
+    _, wst = os.waitpid(dp.pid, os.WUNTRACED)
+    if not os.WIFSTOPPED(wst):        # V4-369 (F810): it had exited; say so
+        print(f"BUSY: the daemon exited before it could be stopped (status {wst:#x})"); sys.exit(9)
     if "event=recovery-issue count=" in journal():
         os.kill(dp.pid, signal.SIGCONT)
         print("BUSY: the daemon was stopped after the request's hashes, not during them"); sys.exit(9)
