@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.128, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366)
+# mldsa-authd — deployment specification (v1.129, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366/V4-370)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -1105,9 +1105,12 @@ are libsodium's own, read from the pinned build.
 
 **Bytes [0, 67) are the AEAD's associated data.** This is why an AEAD is used
 rather than `crypto_secretbox`: a secretbox authenticates nothing outside the
-box, so an attacker could rewrite `memlimit` to 1 GiB and turn every start-up
-into a memory exhaustion. The bounds close that anyway; binding the header
-costs nothing and closes it twice.
+box, so an attacker could rewrite `memlimit` and the file would open with
+it. Binding the header makes any such edit fail the open; it does not make
+the edit free, because the key derivation runs with the header's
+parameters before the tag can be checked. What limits the cost is the
+bounds: a file edited to the highest `opslimit` and `memlimit` they allow
+is refused, but only after that derivation (erratum 178).
 
 The plaintext is the **exact `MLDSASK2` image** (`6025 + id_len` bytes,
 including its own integrity digest), so the existing loader validates it
@@ -2922,3 +2925,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 177 | 6.3, 10.2 | A `ROTATE` more than `idle_timeout_ms` after its session's login code is refused `ERROR(0x03)`, `detail=rotate-late`, on a clock that counts suspend and that slow handlers do not move | The idle deadline did not bound a held session: the loop moves it forward by the time handlers spend blocked, and a `ROTATE` a relay held for thirteen times a 2 s idle timeout while the daemon served site requests was committed. The client and the runbook (erratum 176) told an operator that, past the timeout, a `.ek.next` could be removed by hand; doing so after that `ROTATE` landed was F787's lock-out (F794) |
+
+### Revision v1.129 (V4-370)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 178 | 12 | The key file's header binding is no longer said to close a tampered `memlimit` "twice": the bounds limit what such a file costs, and the binding makes it fail the open | The key derivation needs the header's parameters before the AEAD tag can be checked, so a file edited to `opslimit` 10 and a 1 GiB `memlimit` was refused only after 4.57 s and 1195 MiB (F818) |

@@ -10,7 +10,9 @@
  *
  * File layout (all integers big-endian). Bytes [0, KEYFILE_HEADER_LEN) are the
  * AEAD's ASSOCIATED DATA, so the KDF parameters are authenticated: a tampered
- * memlimit cannot turn start-up into a memory-exhaustion DoS. An AEAD is used
+ * memlimit makes the open fail. It is not free: the KDF runs with the
+ * header's parameters before the tag can be checked, so what limits the cost
+ * of such a file is the bounds below (V4-370, F818; erratum 178). An AEAD is used
  * rather than crypto_secretbox precisely because secretbox authenticates
  * nothing outside the box.
  *
@@ -65,7 +67,8 @@ typedef enum {
     KEYFILE_ERR_EXISTS,       /* output already present; never overwritten */
     KEYFILE_ERR_CRYPTO,       /* KDF/allocation failure */
     KEYFILE_ERR_IMAGE,        /* decryption succeeded but the MLDSASK2 image is invalid */
-    KEYFILE_ERR_ID_MISMATCH   /* V4-276, F443: a sound image of ANOTHER identity: the id asked for is not its id */
+    KEYFILE_ERR_ID_MISMATCH,  /* V4-276, F443: a sound image of ANOTHER identity: the id asked for is not its id */
+    KEYFILE_ERR_CHANGED       /* V4-370, F817: the file is not the one that was opened (keyfile_promote_expect) */
 } keyfile_status_t;
 
 const char *keyfile_status_name(keyfile_status_t st);
@@ -125,6 +128,15 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
                               const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                               uint8_t *kek_out);
 
+/* V4-370 (F817): keyfile_open, and the BLAKE2b-256 of the exact bytes it
+ * read and opened into `digest_out` (zeroed on any failure). The envelope is
+ * sealed, so the digest is no secret; it names the file's contents for
+ * keyfile_promote_expect. */
+#define KEYFILE_DIGEST_BYTES 32u
+keyfile_status_t keyfile_open_digest(const char *ek_path, const uint8_t *expect_id, size_t id_len,
+                                     const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                     uint8_t *kek_out, uint8_t digest_out[KEYFILE_DIGEST_BYTES]);
+
 /* ---- buffer in, buffer out (V4-13a) -----------------------------------------
  *
  * The same envelope with no file system: the client core -- and through it the
@@ -170,5 +182,16 @@ keyfile_status_t keyfile_write_sealed(const char *path, const uint8_t *buf, size
  * it anywhere else -- keyfile_seal's refuse-if-exists is the rule, and this is
  * the documented exception. */
 keyfile_status_t keyfile_promote(const char *from, const char *to);
+
+/* V4-370 (F817): keyfile_promote, but only if `from` still holds the bytes
+ * whose digest keyfile_open_digest gave: KEYFILE_ERR_CHANGED, and nothing
+ * renamed, when it does not. A rotation opens .ek.next, waits up to a login
+ * timeout for the daemon, and then promotes it; a file put there meanwhile
+ * (a sync folder, a restore) is not the key the daemon took, and renamed
+ * over .ek by name it was. The check reads through the descriptor it then
+ * stats, so what is compared is what is renamed, short of a swap in the
+ * instant between the read and rename(2). */
+keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
+                                        const uint8_t expect[KEYFILE_DIGEST_BYTES]);
 
 #endif

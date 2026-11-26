@@ -1,0 +1,4 @@
+SE1|^test_authd_keyfile$|promote-expect: a .ek.next replaced after it was opened is refused as changed-since-opened, and neither file moves (F817)
+SE2|^test_authd_keyfile$|promote-expect: a .ek.next that is a hard link to .ek loses that name, and .ek is kept (F817)
+SE3|^authd_e2e$|a .ek.next swapped while a rotate waited for its ACK was renamed over .ek (F817)
+SE4|^authd_e2e$|a .ek.next swapped while a login asked the daemon about it was renamed over .ek (F817)

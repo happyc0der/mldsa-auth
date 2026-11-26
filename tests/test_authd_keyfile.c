@@ -249,6 +249,49 @@ int main(void) {
             "custody: promote renames an owner-only candidate over the current file -- the canary");
       (void)unlink(nx); (void)unlink(cur); }
 
+    /* ---- V4-370 (F817): promote what was opened, or nothing -------------
+     * A rotation opens .ek.next, waits for the daemon, then promotes it. A
+     * file put at that name meanwhile used to be renamed over .ek by name.
+     * keyfile_promote_expect compares the file's bytes with the digest of
+     * the ones keyfile_open_digest opened. And a .ek.next that is a hard
+     * link to .ek, which rename(2) leaves in place, loses its extra name. */
+    { char nx[256], cur[256], tmpn[256];
+      path(nx, sizeof(nx), "f817.ek.next"); path(cur, sizeof(cur), "f817.ek"); path(tmpn, sizeof(tmpn), "f817.tmp");
+      (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn);
+      uint8_t buf[16384]; size_t bl = 0;
+      { FILE *f = fopen(ek, "rb"); if (f) { bl = fread(buf, 1, sizeof(buf), f); fclose(f); } }
+      #define F817_PUT(p_, d_, l_) do { FILE *w_ = fopen((p_), "wb"); if (w_) { (void)fwrite((d_), 1, (l_), w_); fclose(w_); } (void)chmod((p_), 0600); } while (0)
+      F817_PUT(nx, buf, bl);
+      F817_PUT(cur, "current", 7u);
+      uint8_t dg[KEYFILE_DIGEST_BYTES];
+      memset(&kp, 0, sizeof(kp));
+      const keyfile_status_t os = keyfile_open_digest(nx, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL, dg);
+      if (kp.secret_key) mldsa_keypair_free(&kp);
+      uint8_t zero[KEYFILE_DIGEST_BYTES] = {0};
+      CHECK(bl > 0u && os == KEYFILE_OK && memcmp(dg, zero, sizeof dg) != 0,
+            "promote-expect: opening .ek.next gives the digest of its bytes");
+      /* swapped for another owner-only file, as a sync folder would */
+      F817_PUT(tmpn, "a stranger's file", 17u);
+      (void)rename(tmpn, nx);
+      char got[32] = {0};
+      const keyfile_status_t p1 = keyfile_promote_expect(nx, cur, dg);
+      { FILE *c = fopen(cur, "rb"); if (c) { (void)!fread(got, 1, sizeof(got) - 1u, c); fclose(c); } }
+      CHECK(p1 == KEYFILE_ERR_CHANGED && strcmp(got, "current") == 0 && fsize(nx) == 17,
+            "promote-expect: a .ek.next replaced after it was opened is refused as changed-since-opened, and neither file moves (F817)");
+      /* the same bytes again: promoted -- the canary */
+      F817_PUT(tmpn, buf, bl);
+      (void)rename(tmpn, nx);
+      const keyfile_status_t p2 = keyfile_promote_expect(nx, cur, dg);
+      CHECK(p2 == KEYFILE_OK && fsize(cur) == (long)bl && fsize(nx) == -1,
+            "promote-expect: the file that was opened is promoted over the current one -- the canary (F817)");
+      /* a hard link: rename(2) would do nothing and succeed */
+      CHECK(link(cur, nx) == 0, "promote-expect: .ek.next made a hard link to .ek");
+      const keyfile_status_t p3 = keyfile_promote_expect(nx, cur, dg);
+      CHECK(p3 == KEYFILE_OK && fsize(nx) == -1 && fsize(cur) == (long)bl,
+            "promote-expect: a .ek.next that is a hard link to .ek loses that name, and .ek is kept (F817)");
+      #undef F817_PUT
+      (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn); }
+
     /* ---- V4-13a: the buffer API, and parity with the file API ------------ */
     { const size_t want = KEYFILE_HEADER_LEN + ilen + crypto_aead_xchacha20poly1305_ietf_ABYTES;
       CHECK(keyfile_sealed_len(ilen) == want && keyfile_sealed_len(0) == 0u &&

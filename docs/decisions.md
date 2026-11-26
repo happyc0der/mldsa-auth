@@ -24178,3 +24178,43 @@ F156's open question again, with nothing new.
 Counts: 897 mutations, 173 campaigns, 949 anchors; 814 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.128, 177 errata; 66 tests.
+
+## V4-370: what the hundred-and-ninth review found (F815 to F820), and a cleanup
+
+**The hundred-and-ninth review** checked V4-369's clean-up in dash and sh
+on macOS and Linux, then read the device key files whole and attacked them
+with a harness under ASan and UBSan: every truncation and extension of a
+version-1 and a version-2 file, a bit flipped in each header byte, the
+version byte swapped, symlinks, FIFOs and directories. None opened that
+should not have. Three Low, three Info.
+
+- **F815, F816 (Low).** V4-369's clean-up was right for one leg and named
+  two, and a failing `kill` could end it under `set -e`. Its F809 row says
+  the fix was shown both ways: it was, on the stalled-daemon leg; the relay
+  leg stops a client, not a daemon. Corrected here rather than in F809's row.
+- **F817 (Low).** A rotation renames by name, after a wait of up to the
+  login timeout. Two remedies were open: check that the file is the one
+  that was opened, or write the opened bytes over `.ek` and not rename at
+  all. The first is taken: it keeps spec 10.2's "renames it over the
+  current file" and `keyfile_promote` the one place that clobbers. It
+  leaves an instant between the read and `rename(2)`; the second would not,
+  and is recommended for the owner, since it changes what 10.2 describes.
+- **F818 (Info).** Erratum 178: what binding the header buys.
+- **F819 (Info), a question for the owner.** Recommendation: refuse a key
+  directory others can write, as the files are refused.
+- **F820 (Info).** One unchecked `close()`.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-369 landed on: CI
+45733401083 (16/16) and nightly 45733404586 (188/188, 173 campaigns) on `3773403`.
+
+Campaign v204: SE1 (the bytes are not compared), SE2 (a hard link is left),
+SE3 (rotate promotes by name), SE4 (login promotes by name). Re-anchored:
+v158's PO1 and v176's PR1 and PR3 (the promote is now a block).
+
+**Checks.** The sweep of every mutant in the touched files and functions: 49 mutants, 48 killed by their named checks; v75's KC5 survives on macOS as before (it needs a second uid, which CI has). In the Linux container: the suite twice (13/13 each), SE1 to SE4 each failed by its named check, gcc and clang Release builds. The first Linux run failed twice, and both are fixed here: gcc refuses a definition written `*x` where the header says `x[N]` (`-Warray-parameter`), and the leg's relay closed a socket its other thread was reading, which on Linux sends nothing; it calls `shutdown()` first. Fresh ASan and UBSan trees, 66/66 each; 36/36 fuzz; wasm 3/3.
+
+Spec v1.129: erratum 178 (12).
+
+Counts: 901 mutations, 174 campaigns, 953 anchors; 820 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.129, 178 errata; 66 tests.

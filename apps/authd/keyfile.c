@@ -40,6 +40,7 @@ const char *keyfile_status_name(keyfile_status_t st) {
     case KEYFILE_ERR_CRYPTO: return "crypto-error";
     case KEYFILE_ERR_IMAGE: return "decrypted-image-invalid";
     case KEYFILE_ERR_ID_MISMATCH: return "id-mismatch (the key is another identity's: check server_id, --server-id or --handle)";
+    case KEYFILE_ERR_CHANGED: return "changed-since-opened";
     }
     return "unknown";
 }
@@ -114,7 +115,7 @@ static keyfile_status_t publish(const char *path, const uint8_t *buf, size_t len
         off += (size_t)w;
     }
     if (r == KEYFILE_OK && fsync(fd) != 0) { r = KEYFILE_ERR_IO; }
-    (void)close(fd);
+    if (close(fd) != 0 && r == KEYFILE_OK) { r = KEYFILE_ERR_IO; }   /* V4-370, F820 */
     if (r == KEYFILE_OK) {
         if (link(tmp, path) != 0) { r = (errno == EEXIST) ? KEYFILE_ERR_EXISTS : KEYFILE_ERR_IO; }
     }
@@ -388,7 +389,16 @@ keyfile_status_t keyfile_probe(const char *ek_path)
 keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, size_t id_len,
                               const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
                               uint8_t *kek_out) {
+    return keyfile_open_digest(ek_path, expect_id, id_len, passphrase, pass_len, kp, kek_out, NULL);
+}
+
+keyfile_status_t keyfile_open_digest(const char *ek_path, const uint8_t *expect_id, size_t id_len,
+                                     const char *passphrase, size_t pass_len, mldsa_keypair_t *kp,
+                                     uint8_t *kek_out, uint8_t digest_out[KEYFILE_DIGEST_BYTES]) {
     struct stat st;
+    if (digest_out != NULL) {
+        memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
+    }
     if (kek_out != NULL) {
         /* zeroed up front, so every failure path below leaves it clean */
         sodium_memzero(kek_out, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
@@ -432,6 +442,12 @@ keyfile_status_t keyfile_open(const char *ek_path, const uint8_t *expect_id, siz
     }
     /* custody checked and bytes read: the rest is the buffer path, unchanged */
     r = keyfile_open_buf(fbuf, total, expect_id, id_len, passphrase, pass_len, kp, kek_out);
+    if (r == KEYFILE_OK && digest_out != NULL &&
+        crypto_generichash(digest_out, KEYFILE_DIGEST_BYTES, fbuf, total, NULL, 0) != 0) {
+        memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
+        mldsa_keypair_free(kp);
+        r = KEYFILE_ERR_CRYPTO;
+    }
 freefile:
     secure_mem_free(fbuf, total);
 done:
@@ -440,6 +456,11 @@ done:
 }
 
 keyfile_status_t keyfile_promote(const char *from, const char *to) {
+    return keyfile_promote_expect(from, to, NULL);
+}
+
+keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
+                                        const uint8_t expect[KEYFILE_DIGEST_BYTES]) {
     if (from == NULL || to == NULL) {
         return KEYFILE_ERR_ARG;
     }
@@ -459,7 +480,42 @@ keyfile_status_t keyfile_promote(const char *from, const char *to) {
         (void)close(fd);
         return KEYFILE_ERR_PERMISSIONS;
     }
+    if (expect != NULL) {
+        /* V4-370 (F817): the bytes, through this descriptor, against the
+         * digest of the ones that were opened. Read in pieces: nothing here
+         * is secret (the envelope is sealed), and a file of any size is just
+         * one that does not match. */
+        crypto_generichash_state hs;
+        uint8_t got[KEYFILE_DIGEST_BYTES], chunk[4096];
+        ssize_t n;
+        int bad = crypto_generichash_init(&hs, NULL, 0, sizeof got) != 0;
+        while (!bad && (n = read(fd, chunk, sizeof chunk)) != 0) {
+            if (n < 0) { if (errno == EINTR) { continue; } bad = 1; break; }
+            bad = crypto_generichash_update(&hs, chunk, (size_t)n) != 0;
+        }
+        if (!bad) { bad = crypto_generichash_final(&hs, got, sizeof got) != 0; }
+        if (bad) {
+            (void)close(fd);
+            return KEYFILE_ERR_IO;
+        }
+        if (memcmp(got, expect, sizeof got) != 0) {
+            (void)close(fd);
+            return KEYFILE_ERR_CHANGED;
+        }
+    }
     (void)close(fd);
+    /* V4-370 (F817): two names for one file. rename(2) of a file onto a
+     * hard link to itself does nothing and succeeds, which left .ek.next in
+     * place after a "completed" rotation. `to` already is the file: drop the
+     * other name. */
+    struct stat tst;
+    if (lstat(to, &tst) == 0 && tst.st_dev == st.st_dev && tst.st_ino == st.st_ino) {
+        if (unlink(from) != 0) {
+            return KEYFILE_ERR_IO;
+        }
+        fsync_parent_dir(to);
+        return KEYFILE_OK;
+    }
 
     /* THE ONE PLACE in this project that overwrites a key file, and it is
      * deliberate. Spec 12 says "never in place, never clobbering"; spec 10.2

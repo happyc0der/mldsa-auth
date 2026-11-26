@@ -56,14 +56,21 @@ cleanup() {
     # from Python. Killed while it was stopped, Python's own clean-up never
     # ran, and the daemon, this shell's grandchild, stayed stopped. Each
     # leg writes its daemon's pid; one that is still the daemon is let go
-    # and ended here.
+    # and ended here. V4-370: the relay leg stops its CLIENT, which it now
+    # names the same way (F815); a pid file is removed once its process
+    # has been waited for, the name must be the program's exactly, and a
+    # kill that fails (it exited meanwhile, or the pid is now someone
+    # else's) does not end the clean-up under set -e (F816).
     for pf in "$TMP"/pystop-*.pid; do
         [ -f "$pf" ] || continue
-        p=$(cat "$pf" 2>/dev/null)
+        p=$(cat "$pf" 2>/dev/null) || p=""
         [ -n "$p" ] || continue
-        case "$(ps -o comm= -p "$p" 2>/dev/null)" in
-            *"$(basename "$DAEMON")"*) kill -CONT "$p" 2>/dev/null; kill "$p" 2>/dev/null ;;
-        esac
+        c=$(ps -o comm= -p "$p" 2>/dev/null) || c=""
+        c=${c##*/}
+        if [ "$c" = "$(basename "$DAEMON")" ] || [ "$c" = "$(basename "$CLIENT")" ]; then
+            kill -CONT "$p" 2>/dev/null || true
+            kill "$p" 2>/dev/null || true
+        fi
     done
     rm -rf "$TMP"
     if [ -n "$RU" ]; then rm -rf "$RU"; fi
@@ -3309,7 +3316,6 @@ with open(conf, "w") as f:
             f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\n")
 dlog = open(tmp + "/rt.log", "w")
 dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
-with open(tmp + f"/pystop-{os.path.basename(conf)}.pid", "w") as pf: pf.write(f"{dp.pid}\n")   # F809
 rc = 9
 try:
     end = time.monotonic() + 30
@@ -3397,6 +3403,10 @@ try:
                         last = bool(cut_after) and k + 1 >= cut_after
                         if last:
                             pid = live["p"].pid
+                            # F809, F815 (V4-370): it is the CLIENT this leg
+                            # stops; the shell's clean-up resumes and ends it
+                            # if this Python dies before the SIGCONT below.
+                            with open(tmp + "/pystop-rt-client.pid", "w") as pf: pf.write(f"{pid}\n")
                             os.kill(pid, signal.SIGSTOP); os.waitpid(pid, os.WUNTRACED)
                         if not last:
                             c.sendall(h + body); k += 1; continue
@@ -3411,6 +3421,8 @@ try:
                             time.sleep(0.2)            # the reset reaches the client's socket first
                         finally:
                             os.kill(pid, signal.SIGCONT)
+                            try: os.unlink(tmp + "/pystop-rt-client.pid")
+                            except OSError: pass
                         return
                 except (EOFError, OSError): pass
                 try: c.close()
@@ -3765,6 +3777,8 @@ finally:
     dp.send_signal(signal.SIGTERM)
     try: dp.wait(10)
     except subprocess.TimeoutExpired: dp.kill(); dp.wait()
+    try: os.unlink(tmp + f"/pystop-{os.path.basename(conf)}.pid")   # F816: waited for, not left to probe
+    except OSError: pass
 sys.exit(rc)
 PYEOF
 case "$BZ" in
@@ -3774,5 +3788,170 @@ case "$BZ" in
 *) cat "$TMP/bz.txt"; fail "the stalled-daemon ROTATE test could not be made (exit $BZ): this says nothing about F794" ;;
 esac
 echo "PASS: E2E: a ROTATE that reaches a stalled daemon after the idle timeout is refused as late, and the live key logs in (F794, F803)"
+
+# V4-370, F817 (found by the hundred-and-ninth review): a rotation opens
+# .ek.next, asks the daemon, and then renames .ek.next over .ek. It renamed
+# by name, so a file put at .ek.next meanwhile (a sync folder, a restore)
+# became the live key after the daemon had taken another one. The client now
+# promotes only the bytes it opened. Both ways in: a login completing an
+# interrupted rotation (the daemon's login code is held while the file is
+# swapped), and a rotate (its ACK is held). Each time .ek must be unchanged
+# and the client must say the file changed.
+mkdir -p "$TMP/sw" "$TMP/swdev" && chmod 0700 "$TMP/swdev" || fail "could not set up the swapped-.ek.next leg"
+SW=0
+python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/sw.txt" 2>&1 <<'PYEOF' || SW=$?
+import os, signal, socket, struct, subprocess, sys, threading, time
+daemon, client, tmp = sys.argv[1:4]
+def freeport():
+    while True:
+        t = socket.socket(); t.bind(("127.0.0.1", 0)); p = t.getsockname()[1]; t.close()
+        if p not in (4002, 7462):
+            return p
+port = freeport()
+conf = tmp + "/sw.conf"
+with open(conf, "w") as f:
+    f.write(f"store_path = {tmp}/sw/store.sqlite3\nkey_path = {tmp}/su/server.ek\n"
+            f"key_passphrase_file = {tmp}/su/pass\nserver_id = authd\nlisten_port = {port}\n"
+            f"site_socket = {tmp}/sw-s.sock\nadmin_socket = {tmp}/sw-a.sock\n"
+            f"site_uids = {os.getuid()}\nadmin_uids = {os.getuid()}\n")
+dlog = open(tmp + "/sw.log", "w")
+dp = subprocess.Popen([daemon, "--config", conf], stdin=subprocess.DEVNULL, stdout=dlog, stderr=dlog)
+rc = 9
+def rx(c, n):
+    b = b""
+    while len(b) < n:
+        ch = c.recv(n - len(b))
+        if not ch: raise EOFError
+        b += ch
+    return b
+def rotations():
+    return sum(1 for l in open(tmp + "/sw.log") if " event=rotate " in l + " ")
+def put(path, data):
+    t = path + ".swap"
+    with open(t, "wb") as f: f.write(data)
+    os.chmod(t, 0o600); os.replace(t, path)          # one rename: the swap a sync tool makes
+STRANGER = b"not the key the daemon took\n"
+def relay(conn_no, frame_no, swap):
+    """One listener. On connection `conn_no`, the daemon's frame `frame_no`
+    is held while swap() runs, then passed on. Everything else flows."""
+    ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(4)
+    did = threading.Event()
+    def one(c, i):
+        u = socket.create_connection(("127.0.0.1", port))
+        def up():
+            try:
+                while True:
+                    h = rx(c, 4); u.sendall(h + rx(c, struct.unpack(">I", h)[0]))
+            except (EOFError, OSError): pass
+            try: u.shutdown(socket.SHUT_WR)
+            except OSError: pass
+        threading.Thread(target=up, daemon=True).start()
+        k = 0
+        try:
+            while True:
+                h = rx(u, 4); body = rx(u, struct.unpack(">I", h)[0]); k += 1
+                if i == conn_no and k == frame_no:
+                    swap(); did.set()
+                c.sendall(h + body)
+        except (EOFError, OSError): pass
+        # shutdown first: on Linux a close does not release a socket another
+        # thread is in recv() on, no FIN is sent, and the client waits out
+        # its deadline instead of seeing the daemon's refusal.
+        try: c.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+        try: c.close()
+        except OSError: pass
+    def serve():
+        i = 0
+        while True:
+            try: c, _ = ls.accept()
+            except OSError: return
+            i += 1
+            threading.Thread(target=one, args=(c, i), daemon=True).start()
+    threading.Thread(target=serve, daemon=True).start()
+    return ls, did
+try:
+    end = time.monotonic() + 30
+    while not os.path.exists(tmp + "/sw-s.sock"):
+        if dp.poll() is not None or time.monotonic() > end:
+            print("SWAP: the daemon did not start"); sys.exit(9)
+        time.sleep(0.05)
+    kg = subprocess.run([client, "keygen", "--dir", tmp + "/swdev", "--passphrase-file", tmp + "/opass"],
+                        capture_output=True, text=True)
+    handle = kg.stdout.strip()
+    if kg.returncode != 0 or not handle:
+        print("SWAP: keygen failed", kg.stderr); sys.exit(9)
+    ek = f"{tmp}/swdev/{handle}.ek"; nxt = ek + ".next"
+    img = open(f"{tmp}/swdev/{handle}.pub", "rb").read()
+    pk = img[9 + img[8]:]
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(tmp + "/sw-s.sock")
+    s.sendall(f"ENROLL user={b'swap'.hex()} handle={handle.encode().hex()} pk={pk.hex()} via=signup\n".encode())
+    ans = s.recv(256); s.close()
+    if not ans.startswith(b"OK"):
+        print("SWAP: enrolment failed", ans); sys.exit(9)
+    def args(sub, p):
+        return [client, sub, "--handle", handle, "--key", ek, "--passphrase-file", tmp + "/opass",
+                "--server-id", "authd", "--server-pub", tmp + "/d/server.pub", "--port", str(p)]
+    def run(a):
+        r = subprocess.run(a, capture_output=True, text=True, timeout=120)
+        return r.returncode, r.stderr
+
+    # Set-up: rotate K0 -> K1 directly, then put K0 back as .ek and K1 at
+    # .ek.next: the state an interrupted rotation leaves.
+    k0 = open(ek, "rb").read()
+    r0, e0 = run(args("rotate", port))
+    if r0 != 0 or rotations() != 1:
+        print("SWAP: the first rotation failed\n" + e0); sys.exit(9)
+    k1 = open(ek, "rb").read()
+    put(nxt, k1); put(ek, k0)
+
+    # 1. login: .ek is refused (connection 1); the probe of .ek.next is
+    # connection 2, whose login code (frame 2) is held while .ek.next is
+    # swapped.
+    ls, did = relay(2, 2, lambda: put(nxt, STRANGER))
+    r1, e1 = run(args("login", ls.getsockname()[1])); ls.close()
+    print("login with .ek.next swapped: exit", r1); print(e1)
+    if not did.is_set():
+        print("SWAP: the relay never held the probe's login code"); sys.exit(9)
+    if open(ek, "rb").read() != k0:
+        print("SWAP: a .ek.next swapped while the login asked the daemon was renamed over .ek"); sys.exit(1)
+    if r1 == 0 or "changed while the daemon was asked" not in e1 or open(nxt, "rb").read() != STRANGER:
+        print("SWAP: the login did not stop and say that .ek.next changed, or moved it"); sys.exit(2)
+    put(nxt, k1)
+    r1b, e1b = run(args("login", port))
+    if r1b != 0 or open(ek, "rb").read() != k1 or os.path.exists(nxt):
+        print("SWAP: with the real .ek.next back, the login did not complete the rotation\n" + e1b); sys.exit(9)
+
+    # 2. rotate: its ACK (the daemon's frame 3 on connection 1) is held
+    # while .ek.next is swapped.
+    ls, did = relay(1, 3, lambda: put(nxt, STRANGER))
+    r2, e2 = run(args("rotate", ls.getsockname()[1])); ls.close()
+    print("rotate with .ek.next swapped: exit", r2); print(e2)
+    if not did.is_set() or rotations() != 2:
+        print("SWAP: the relay never held the ACK, or the daemon did not rotate"); sys.exit(9)
+    if open(ek, "rb").read() != k1:
+        print("SWAP: a .ek.next swapped while the rotate waited for its ACK was renamed over .ek"); sys.exit(3)
+    if r2 == 0 or "changed while the daemon was asked" not in e2 or open(nxt, "rb").read() != STRANGER:
+        print("SWAP: the rotate did not stop and say that .ek.next changed, or moved it"); sys.exit(4)
+    print("SWAP: refused both times"); rc = 0
+except SystemExit:
+    raise
+except Exception as e:
+    print(f"SWAP: the test itself failed: {e!r}"); rc = 9
+finally:
+    dp.send_signal(signal.SIGTERM)
+    try: dp.wait(10)
+    except subprocess.TimeoutExpired: dp.kill(); dp.wait()
+sys.exit(rc)
+PYEOF
+case "$SW" in
+0) ;;
+1) cat "$TMP/sw.txt"; fail "a .ek.next swapped while a login asked the daemon about it was renamed over .ek (F817)" ;;
+2) cat "$TMP/sw.txt"; fail "a login that found .ek.next swapped did not stop and say so, or moved it (F817)" ;;
+3) cat "$TMP/sw.txt"; fail "a .ek.next swapped while a rotate waited for its ACK was renamed over .ek (F817)" ;;
+4) cat "$TMP/sw.txt"; fail "a rotate that found .ek.next swapped did not stop and say so, or moved it (F817)" ;;
+*) cat "$TMP/sw.txt"; fail "the swapped-.ek.next test could not be made (exit $SW): this says nothing about F817" ;;
+esac
+echo "PASS: E2E: a .ek.next swapped while the daemon is asked is not renamed over .ek, by login or by rotate, and the client says so (F817)"
 
 echo "All checks passed"

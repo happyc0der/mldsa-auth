@@ -874,6 +874,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
      * this key" is the only reason that makes an identity dead; a file that
      * would not open, or a daemon that was never asked, is something else. */
     keyfile_status_t ks_ek = KEYFILE_OK, ks_next = KEYFILE_OK;
+    uint8_t next_digest[KEYFILE_DIGEST_BYTES];   /* F817: what was opened is what is promoted */
+    memset(next_digest, 0, sizeof next_digest);
     int unasked = 0;             /* a probe failed before the daemon saw the key */
     char unasked_why[sizeof g_open_why];
     unasked_why[0] = '\0';
@@ -890,7 +892,7 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
         }
     }
     if (!ek_ok) {
-        ks_next = keyfile_open(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL);
+        ks_next = keyfile_open_digest(next_path, a->hid, a->hid_len, pass, pass_len, &next_kp, NULL, next_digest);
     }
     /* F705 (V4-347): not when the first probe never reached the point of
      * showing the daemon a key. A daemon that could not be reached was
@@ -942,9 +944,21 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
             rc = EX_OK;
             break;
         }
-        if (keyfile_promote(next_path, a->key_path) != KEYFILE_OK) {
-            (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
-            break;
+        {
+            const keyfile_status_t ps = keyfile_promote_expect(next_path, a->key_path, next_digest);
+            if (ps == KEYFILE_ERR_CHANGED) {
+                /* F817: replaced while the daemon was asked. The key the
+                 * daemon took is the one that was there; this is not it. */
+                (void)failed(prog, sub, next_path, keyfile_status_name(ps));
+                fprintf(stderr, "%s %s: %s changed while the daemon was asked about it: it is not the key "
+                                "the daemon accepted. Nothing was renamed; find what replaced it\n",
+                        prog, sub, next_path);
+                break;
+            }
+            if (ps != KEYFILE_OK) {
+                (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
+                break;
+            }
         }
         fprintf(stderr, "%s %s: completed the interrupted rotation; %s now holds the live key\n",
                 prog, sub, a->key_path);
@@ -1278,8 +1292,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
 
     mldsa_keypair_t new_kp;
     memset(&new_kp, 0, sizeof new_kp);
-    const keyfile_status_t ks = keyfile_open(next_path, a.hid, a.hid_len,
-                                             (const char *)pass, pass_len, &new_kp, NULL);
+    uint8_t next_digest[KEYFILE_DIGEST_BYTES];   /* F817: what is sent is what is promoted */
+    const keyfile_status_t ks = keyfile_open_digest(next_path, a.hid, a.hid_len,
+                                                    (const char *)pass, pass_len, &new_kp, NULL, next_digest);
     authd_secret_free(pass, pass_len);
     if (ks != KEYFILE_OK) {
         mldsa_keypair_free(&old_kp);
@@ -1462,7 +1477,19 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
                             "completes the rotation\n", prog, pub_path, next_path);
             goto out;
         }
-        if (keyfile_promote(next_path, a.key_path) != KEYFILE_OK) {
+        const keyfile_status_t ps = keyfile_promote_expect(next_path, a.key_path, next_digest);
+        if (ps == KEYFILE_ERR_CHANGED) {
+            /* F817: the daemon took the key this run opened and sent; the
+             * file at .ek.next is no longer that key. Renaming it over .ek
+             * by name, as before, made a stranger's file the live key. */
+            (void)failed(prog, "rotate", next_path, keyfile_status_name(ps));
+            fprintf(stderr, "%s rotate: the key ROTATED at the daemon, but %s changed while the daemon was "
+                            "asked: it is not the key the daemon accepted. Nothing was renamed: %s still holds "
+                            "the old key, which no longer authenticates. Find what replaced %s\n",
+                    prog, next_path, a.key_path, next_path);
+            goto out;
+        }
+        if (ps != KEYFILE_OK) {
             (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
             /* F645 (V4-338): what that leaves, as F583 says it one step
              * earlier. The line above alone read as a rotation that had not
