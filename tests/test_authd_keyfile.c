@@ -12,6 +12,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <fcntl.h>
 
 #include <sodium.h>
 #include "keyfile.h"
@@ -347,6 +349,74 @@ int main(void) {
       { struct stat cs; memset(&cs, 0, sizeof cs);
         CHECK(p6 == KEYFILE_OK && lstat(cur, &cs) == 0 && S_ISREG(cs.st_mode) && fsize(cur) == (long)bl && fsize(nx) == -1,
               "promote-expect: a .ek that is a symbolic link to .ek.next is replaced by the key, not taken for it (F825)"); }
+
+      /* ---- V4-372 (F834): what V4-371 said and did not test --------------
+       * A .ek.next that became something other than a regular file is
+       * changed; and with no digest the old answers stand. */
+      (void)mkdir(nx, 0700);
+      const keyfile_status_t q1 = keyfile_promote_expect(nx, cur, dg);
+      const keyfile_status_t q1n = keyfile_promote_expect(nx, cur, NULL);
+      (void)rmdir(nx);
+      const keyfile_status_t q0n = keyfile_promote_expect(nx, cur, NULL);   /* nothing there */
+      (void)!symlink(cur, nx);
+      const keyfile_status_t q2 = keyfile_promote_expect(nx, cur, dg);
+      (void)unlink(nx);
+      CHECK(q1 == KEYFILE_ERR_CHANGED && q2 == KEYFILE_ERR_CHANGED && fsize(cur) == (long)bl,
+            "promote-expect: a .ek.next that became a directory or a symbolic link is changed-since-opened (F834)");
+      CHECK(q1n == KEYFILE_ERR_IO && q0n == KEYFILE_ERR_IO && fsize(cur) == (long)bl,
+            "promote: with no digest, a candidate that is missing or not a regular file is an I/O error, as before (F834)");
+      F817_PUT(nx, buf, bl);
+      { uint8_t *asl = (uint8_t *)1; size_t asn = 1;
+        memset(&kp, 0, sizeof(kp));
+        const keyfile_status_t a1 = keyfile_open_kept(nx, ID_A, IDLEN, PASS, strlen(PASS), &kp, NULL, NULL, &asl, &asn);
+        if (kp.secret_key) mldsa_keypair_free(&kp);
+        CHECK(a1 == KEYFILE_ERR_ARG && asl == NULL && asn == 0u,
+              "open-kept: sealed bytes are not handed back without their digest (F834)");
+        if (a1 == KEYFILE_OK) { free(asl); } }
+
+      /* ---- V4-372 (F830): is .ek.next still the staged key? --------------
+       * The exits of a rotation that keep .ek.next never compared it. */
+      { int ex = 7;
+        CHECK(keyfile_staged_is(nx, dg, &ex) == KEYFILE_OK && ex == 0,
+              "staged-is: the file that was opened, still private, is the staged key -- the canary (F830)");
+        (void)chmod(nx, 0644); ex = 7;
+        CHECK(keyfile_staged_is(nx, dg, &ex) == KEYFILE_OK && ex == 1,
+              "staged-is: the same bytes, readable by others, are the staged key and exposed (F830)");
+        (void)chmod(nx, 0600);
+
+        /* F832: a file that cannot be LOOKED at has not been seen to change.
+         * No descriptor is left for the open. */
+        struct rlimit old_rl, rl; int held[512]; int nh = 0;
+        memset(&old_rl, 0, sizeof old_rl);
+        const int have_rl = getrlimit(RLIMIT_NOFILE, &old_rl) == 0;
+        rl = old_rl; if (rl.rlim_cur > 256u) { rl.rlim_cur = 256u; }
+        if (have_rl) { (void)setrlimit(RLIMIT_NOFILE, &rl); }
+        while (nh < 512) { const int d = open("/dev/null", O_RDONLY); if (d < 0) { break; } held[nh++] = d; }
+        const int starved = nh < 512;
+        ex = 7;
+        const keyfile_status_t e1 = keyfile_promote_expect(nx, cur, dg);
+        const keyfile_status_t e2 = keyfile_staged_is(nx, dg, &ex);
+        while (nh > 0) { (void)close(held[--nh]); }
+        if (have_rl) { (void)setrlimit(RLIMIT_NOFILE, &old_rl); }
+        CHECK(starved && e1 == KEYFILE_ERR_IO && e2 == KEYFILE_ERR_IO && fsize(nx) == (long)bl && fsize(cur) == (long)bl,
+              "promote-expect, staged-is: a .ek.next that cannot be opened for want of a descriptor is an I/O error, not changed-since-opened (F832)");
+
+        F817_PUT(nx, "a stranger's file", 17u); ex = 7;
+        const keyfile_status_t c1 = keyfile_staged_is(nx, dg, &ex);
+        char as[320], as2[320];
+        const keyfile_status_t d1 = keyfile_displace(nx, as, sizeof as);
+        CHECK(c1 == KEYFILE_ERR_CHANGED && keyfile_staged_is(nx, dg, &ex) == KEYFILE_ERR_CHANGED,
+              "staged-is: other bytes, and no file, are changed-since-opened (F830)");
+        CHECK(d1 == KEYFILE_OK && strstr(as, ".ek.next.displaced.") != NULL && fsize(as) == 17 && fsize(nx) == -1,
+              "displace: what has the name is moved to <name>.displaced.<pid> (F830)");
+        F817_PUT(nx, "another", 7u);
+        const keyfile_status_t d2 = keyfile_displace(nx, as2, sizeof as2);
+        CHECK(d2 == KEYFILE_ERR_EXISTS && fsize(as) == 17 && fsize(nx) == 7,
+              "displace: never over a file already moved aside (F830)");
+        (void)unlink(nx);
+        CHECK(keyfile_displace(nx, as2, sizeof as2) == KEYFILE_OK && as2[0] == '\0' && fsize(as) == 17,
+              "displace: nothing at the name is not an error, and nothing moves (F830)");
+        (void)unlink(as); }
       #undef F817_PUT
       (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn); }
 

@@ -486,6 +486,9 @@ keyfile_status_t keyfile_open_kept(const char *ek_path, const uint8_t *expect_id
         crypto_generichash(digest_out, KEYFILE_DIGEST_BYTES, fbuf, total, NULL, 0) != 0) {
         memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
         mldsa_keypair_free(kp);
+        if (kek_out != NULL) {   /* V4-372 (F835): the open had filled it */
+            sodium_memzero(kek_out, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+        }
         r = KEYFILE_ERR_CRYPTO;
     }
     if (r == KEYFILE_OK && sealed_out != NULL) {
@@ -495,6 +498,9 @@ keyfile_status_t keyfile_open_kept(const char *ek_path, const uint8_t *expect_id
         if (copy == NULL) {
             memset(digest_out, 0, KEYFILE_DIGEST_BYTES);
             mldsa_keypair_free(kp);
+            if (kek_out != NULL) {   /* V4-372 (F835) */
+                sodium_memzero(kek_out, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+            }
             r = KEYFILE_ERR_CRYPTO;
         } else {
             memcpy(copy, fbuf, total);
@@ -507,6 +513,89 @@ freefile:
 done:
     (void)close(fd);
     return r;
+}
+
+/* V4-372 (F832): a file that would not open. "Changed" is said only of what
+ * was seen to change: the name is gone, or what has it is not a regular
+ * file. Anything else (no descriptor left, no permission) is a file that
+ * could not be looked at, and V4-371 called that changed too, after which
+ * the client told the user the file no longer held the key. */
+static keyfile_status_t unopened_is(const char *path) {
+    struct stat lst;
+    if (lstat(path, &lst) != 0) {
+        return (errno == ENOENT || errno == ENOTDIR) ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;
+    }
+    return S_ISREG(lst.st_mode) ? KEYFILE_ERR_IO : KEYFILE_ERR_CHANGED;
+}
+
+/* The digest of what `fd` reads, in pieces: nothing here is secret (the
+ * envelope is sealed). 0, or -1 when it could not be read. */
+static int digest_fd(int fd, uint8_t got[KEYFILE_DIGEST_BYTES]) {
+    crypto_generichash_state hs;
+    uint8_t chunk[4096];
+    ssize_t n;
+    int bad = crypto_generichash_init(&hs, NULL, 0, KEYFILE_DIGEST_BYTES) != 0;
+    while (!bad && (n = read(fd, chunk, sizeof chunk)) != 0) {
+        if (n < 0) { if (errno == EINTR) { continue; } bad = 1; break; }
+        bad = crypto_generichash_update(&hs, chunk, (size_t)n) != 0;
+    }
+    if (!bad) { bad = crypto_generichash_final(&hs, got, KEYFILE_DIGEST_BYTES) != 0; }
+    return bad ? -1 : 0;
+}
+
+keyfile_status_t keyfile_staged_is(const char *path, const uint8_t expect[KEYFILE_DIGEST_BYTES],
+                                   int *exposed) {
+    if (exposed != NULL) {
+        *exposed = 0;
+    }
+    if (path == NULL || expect == NULL || exposed == NULL) {
+        return KEYFILE_ERR_ARG;
+    }
+    const int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        return unopened_is(path);
+    }
+    struct stat st;
+    uint8_t got[KEYFILE_DIGEST_BYTES];
+    keyfile_status_t r = KEYFILE_OK;
+    if (fstat(fd, &st) != 0) {
+        r = KEYFILE_ERR_IO;
+    } else if (!S_ISREG(st.st_mode) || st.st_size < 0 || (size_t)st.st_size > keyfile_max_total()) {
+        r = KEYFILE_ERR_CHANGED;
+    } else if (digest_fd(fd, got) != 0) {
+        r = KEYFILE_ERR_IO;
+    } else if (memcmp(got, expect, sizeof got) != 0) {
+        r = KEYFILE_ERR_CHANGED;
+    } else if (st.st_uid != geteuid() || (st.st_mode & 077) != 0) {
+        *exposed = 1;   /* the same bytes, no longer this user's alone */
+    }
+    (void)close(fd);
+    return r;
+}
+
+keyfile_status_t keyfile_displace(const char *path, char *aside, size_t aside_cap) {
+    if (path == NULL || aside == NULL || aside_cap == 0u) {
+        return KEYFILE_ERR_ARG;
+    }
+    const int an = snprintf(aside, aside_cap, "%s.displaced.%ld", path, (long)getpid());
+    if (an < 0 || (size_t)an >= aside_cap) {
+        aside[0] = '\0';
+        return KEYFILE_ERR_ARG;
+    }
+    struct stat lst;
+    if (lstat(path, &lst) != 0) {
+        aside[0] = '\0';
+        return (errno == ENOENT) ? KEYFILE_OK : KEYFILE_ERR_IO;   /* nothing to move */
+    }
+    /* Never over anything: rename(2) would replace a file of that name. */
+    if (lstat(aside, &lst) == 0 || errno != ENOENT) {
+        return KEYFILE_ERR_EXISTS;
+    }
+    if (rename(path, aside) != 0) {
+        return KEYFILE_ERR_IO;
+    }
+    fsync_parent_dir(path);
+    return KEYFILE_OK;
 }
 
 keyfile_status_t keyfile_promote(const char *from, const char *to) {
@@ -528,9 +617,13 @@ keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
     struct stat st;
     const int fd = open(from, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);   /* F297 */
     if (fd < 0) {
-        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;
+        return expect != NULL ? unopened_is(from) : KEYFILE_ERR_IO;   /* F832 */
     }
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (fstat(fd, &st) != 0) {
+        (void)close(fd);
+        return KEYFILE_ERR_IO;
+    }
+    if (!S_ISREG(st.st_mode)) {
         (void)close(fd);
         return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;
     }
@@ -548,16 +641,8 @@ keyfile_status_t keyfile_promote_expect(const char *from, const char *to,
         /* V4-370 (F817): the bytes, through this descriptor, against the
          * digest of the ones that were opened. Read in pieces: nothing here
          * is secret (the envelope is sealed). */
-        crypto_generichash_state hs;
-        uint8_t got[KEYFILE_DIGEST_BYTES], chunk[4096];
-        ssize_t n;
-        int bad = crypto_generichash_init(&hs, NULL, 0, sizeof got) != 0;
-        while (!bad && (n = read(fd, chunk, sizeof chunk)) != 0) {
-            if (n < 0) { if (errno == EINTR) { continue; } bad = 1; break; }
-            bad = crypto_generichash_update(&hs, chunk, (size_t)n) != 0;
-        }
-        if (!bad) { bad = crypto_generichash_final(&hs, got, sizeof got) != 0; }
-        if (bad) {
+        uint8_t got[KEYFILE_DIGEST_BYTES];
+        if (digest_fd(fd, got) != 0) {
             (void)close(fd);
             return KEYFILE_ERR_IO;
         }

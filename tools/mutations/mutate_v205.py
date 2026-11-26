@@ -19,8 +19,8 @@ KF = "apps/authd/keyfile.c"
 CL = "apps/authd/client_cli.c"
 
 M = {
-    "SF1": [(KF, "    if (fd < 0) {\n        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;\n",
-             "    if (fd < 0) {\n        return KEYFILE_ERR_IO; /* MUTATION SF1 */\n")],
+    "SF1": [(KF, "        return expect != NULL ? unopened_is(from) : KEYFILE_ERR_IO;   /* F832 */\n",
+             "        return KEYFILE_ERR_IO; /* MUTATION SF1 */\n")],
     "SF2": [(KF, "        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_PERMISSIONS;\n",
              "        return KEYFILE_ERR_PERMISSIONS; /* MUTATION SF2 */\n")],
     "SF3": [(CL, "    if (ps != KEYFILE_ERR_CHANGED) {\n        return ps;\n    }\n",

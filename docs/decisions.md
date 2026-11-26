@@ -24281,3 +24281,62 @@ Spec v1.130: errata 179 (12) and 180 (10.2).
 Counts: 909 mutations, 175 campaigns, 961 anchors; 829 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.130, 180 errata; 66 tests.
+
+## V4-372: what the hundred-and-eleventh review found (F830 to F837)
+
+**The hundred-and-eleventh review** attacked V4-371 from a copy of the
+tree, on macOS and in a Linux container: a relay that holds, swaps and then
+drops the ACK; eight states of the key directory; its own twelve mutants;
+`keyfile_replace_sealed` against links, FIFOs, directories and pre-made
+temporary names. The fallback write held on the two paths V4-371 tested.
+Four Low, four Info; the first is V4-371's title being wider than its fix.
+
+- **F830 (Low).** V4-371 put the comparison in the promote. A rotation has
+  six other exits after `ROTATE` is sent, all of which keep `.ek.next` for
+  the next run, and none looked at it. With the ACK lost the daemon holds
+  the new key and the device's only copy was the bytes in a process about
+  to exit. Every such exit now compares, and puts the staged key back.
+- **The decision in F830 and F833: what replaced `.ek.next` is moved
+  aside.** V4-371 left it "as it is": not this program's to judge or
+  delete. That cannot stand on the exits, where the name is needed for the
+  staged key, and the review showed it does not stand after the promote
+  either: a file left there that opens as a key for the device is offered
+  to the daemon by the next rotate. So it is moved to
+  `.ek.next.displaced.<pid>`, never over an existing file, and the client
+  says where. Nothing is deleted except a copy of the accepted key that
+  had only been made readable (F832), once `.ek` holds that key. Erratum
+  181 amends erratum 180.
+- **F832 (Low).** "Changed" now means seen to change. A file that could not
+  be opened for want of a descriptor is an I/O error, and the client's
+  older message for that case does not assert a change.
+- **F831 (Low).** The device-passphrase scan walks the tree, as the
+  server's does and as its PASS line said.
+- **F834 to F837 (Info).** Three tests; `kek_out` zeroed on two failure
+  paths; erratum 182 (only `version`); the re-read key compared with the
+  sealed one before anything is sent.
+
+**Not tested, and why.** The five other restage calls (no test reaches
+those exits with a swapped file); the comparison F837 adds (no seam); F835
+(the failures cannot be made). **Recorded for the owner:** a process killed
+inside the replace leaves the live key only in a temporary file no recovery
+reads (F837); with F823's "always write" and F819/F824's key-directory
+questions, this is a fourth open point about the same few lines, and the
+recommendation is to settle them together: a recovery that reads one more
+name, a key directory refused unless it is the owner's alone, and a
+deadline on the lock.
+
+**Cleanup.** `docs/review/REPRODUCE.md` cites the pair V4-371 landed on: CI
+45786189529 (16/16) and nightly 45786193668 (190/190, 175 campaigns) on `c61b276`.
+
+Campaign v206: SG1 (unopened is changed), SG2 and SG3 (`keyfile_staged_is`),
+SG4 (`keyfile_displace` clobbers), SG5 (the no-reply exit does not look),
+SG6 (a readable copy is a stranger's), SG7 (the swapped-in file is left),
+SG8 to SG10 (F834's three). Re-anchored: v158's PO1, v49c's W15, v205's SF1.
+
+Checks, before the commit. gcc-16 full compiles of the six changed C files at -O0 and -O2: 0 warnings. macOS: 66/66 on the plain, ASan and UBSan trees, 36/36 fuzz regressions, the WebAssembly build and 3/3, the build current with the tree, no residue. A sweep of 94 mutants by hand control on the ASan tree (every mutant of the functions touched, and every `authd_e2e` mutant of the client): 93 killed, each by the check its campaign names; v75 KC5 survives on macOS as it always has (it needs a second uid). Linux (Ubuntu container, gcc): the keyfile and end-to-end tests twice, 13/13 each; SE1 to SE4, SF1 to SF8, KC4 and SG1 to SG10 each fail the named check there; Release builds with gcc and clang. The F831 control by hand: the device passphrase written to `sw/late.out` before the last scan fails the run with "the device passphrase appears in" that file.
+
+Spec v1.131: errata 181 (10.2) and 182 (12).
+
+Counts: 919 mutations, 176 campaigns, 971 anchors; 837 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.131, 182 errata; 66 tests.

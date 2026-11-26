@@ -12,8 +12,11 @@
  * AEAD's ASSOCIATED DATA, so every header field is authenticated. For the
  * KDF parameters and the salt that adds nothing: a changed one derives a
  * different key and the tag fails anyway. What it adds is the fields the key
- * does not depend on: the version (which says how the plaintext is split),
- * the algorithm ids and ct_len (V4-371, F822; erratum 179). Neither makes a
+ * does not depend on, and of those only the version (which says how the
+ * plaintext is split) is one this parser would otherwise let change: each
+ * algorithm id has one accepted value and ct_len must equal the file's
+ * length less the header, both checked before the KDF (V4-372, F836;
+ * erratum 182, correcting 179). Neither makes a
  * tampered file free to refuse: the KDF runs with the header's parameters
  * before the tag can be checked, so what limits the cost is the bounds
  * below (V4-370, F818; erratum 178).
@@ -212,5 +215,22 @@ keyfile_status_t keyfile_open_kept(const char *ek_path, const uint8_t *expect_id
  * is not that key, .ek holds a dead one, and the only copy of the live key
  * is the bytes this process opened. Do not reach for it anywhere else. */
 keyfile_status_t keyfile_replace_sealed(const char *to, const uint8_t *buf, size_t len);
+
+/* V4-372 (F830): is the file at `path` still the one whose digest
+ * keyfile_open_digest gave? KEYFILE_OK when it is a regular file with those
+ * bytes; *exposed is then 1 if it is no longer this user's alone (the bytes
+ * are compared whatever the mode). KEYFILE_ERR_CHANGED when the name is
+ * gone, is not a regular file, is longer than any key file or holds other
+ * bytes. KEYFILE_ERR_IO when it could not be looked at, which is not a
+ * change (F832). Reads; moves nothing. */
+keyfile_status_t keyfile_staged_is(const char *path, const uint8_t expect[KEYFILE_DIGEST_BYTES],
+                                   int *exposed);
+
+/* V4-372 (F830): move whatever is at `path` to `<path>.displaced.<pid>`,
+ * written to `aside`. Never over anything: KEYFILE_ERR_EXISTS when that
+ * name is taken. KEYFILE_OK with aside[0] == 0 when nothing was at `path`.
+ * For a .ek.next that is not the key this run staged: the name is needed
+ * for that key, and what has it is not this program's to delete. */
+keyfile_status_t keyfile_displace(const char *path, char *aside, size_t aside_cap);
 
 #endif

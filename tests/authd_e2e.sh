@@ -2611,10 +2611,17 @@ echo "PASS: E2E: no sanitizer report in any daemon or client log"
 # legs and their logs had been added after the scans.
 PASSHEX=$(cat "$TMP/opass")
 scan_device_pass() {
-    for f in "$TMP"/*.log "$TMP"/*.err "$TMP"/*.txt; do
-        [ -f "$f" ] || continue
-        if grep -qi "$PASSHEX" "$f"; then fail "the device passphrase appears in $f"; fi
-    done
+    # V4-372 (F831): every file under the work directory, not the top-level
+    # *.log, *.err and *.txt only: the end-of-run line said "any file", and a
+    # passphrase in a leg's own directory, or in a *.out, went unseen.
+    # The passphrase file and its copies are the passphrase and nothing
+    # else; anything that contains it besides is a leak. The scan has to
+    # find the file itself, or it is looking at nothing.
+    DPALL=$(grep -rli -- "$PASSHEX" "$TMP" 2>/dev/null)
+    printf '%s\n' "$DPALL" | grep -qxF "$TMP/opass" \
+        || fail "the device-passphrase scan did not find the passphrase file itself, so it shows nothing (F831)"
+    DPHIT=$(printf '%s\n' "$DPALL" | while IFS= read -r f; do cmp -s "$f" "$TMP/opass" || echo "$f"; done | head -1)
+    [ -z "$DPHIT" ] || fail "the device passphrase appears in $DPHIT"
 }
 scan_device_pass
 # V4-254 (F369): every log line the daemon wrote in this whole run is a
@@ -3815,11 +3822,21 @@ echo "PASS: E2E: a ROTATE that reaches a stalled daemon after the idle timeout i
 # .ek holding the old, dead key and the accepted key freed with the process:
 # the same lock-out. The client keeps the bytes it opened and writes them
 # over .ek, so each time .ek must hold the key the daemon accepted, what was
-# swapped in must be left where it is, and the next login must work.
+# swapped in must be kept, and the next login must work.
+# V4-372, F830 (the hundred-and-eleventh review): that covered the promote
+# and nothing else. A rotate whose ACK never arrives keeps .ek.next "so the
+# next run can resolve it" without looking at it, and with a stranger's file
+# there the device was locked out as before. So a fourth step drops the ACK
+# after the swap: .ek.next must then hold the staged key again, what was
+# swapped in must be beside it under another name, and the next login must
+# complete the rotation. F833: what was swapped in is moved aside after the
+# promote too, not left where a later rotate would offer it to the daemon.
+# F832: and a .ek.next that only stopped being private (step 3) is the same
+# key, said to be, and removed once .ek holds it.
 mkdir -p "$TMP/sw" "$TMP/swdev" && chmod 0700 "$TMP/swdev" || fail "could not set up the swapped-.ek.next leg"
 SW=0
 python3 - "$DAEMON" "$CLIENT" "$TMP" > "$TMP/sw.txt" 2>&1 <<'PYEOF' || SW=$?
-import os, signal, socket, struct, subprocess, sys, threading, time
+import glob, os, signal, socket, struct, subprocess, sys, threading, time
 daemon, client, tmp = sys.argv[1:4]
 def freeport():
     while True:
@@ -3850,9 +3867,17 @@ def put(path, data):
     with open(t, "wb") as f: f.write(data)
     os.chmod(t, 0o600); os.replace(t, path)          # one rename: the swap a sync tool makes
 STRANGER = b"not the key the daemon took\n"
-def relay(conn_no, frame_no, swap):
+def strangers_aside(want):
+    """Exactly `want` files moved aside from .ek.next, each the stranger's;
+    they are removed, so each step counts its own."""
+    got = glob.glob(nxt + ".displaced.*")
+    ok = len(got) == want and all(open(g, "rb").read() == STRANGER for g in got)
+    for g in got: os.remove(g)
+    return ok
+def relay(conn_no, frame_no, swap, drop=False):
     """One listener. On connection `conn_no`, the daemon's frame `frame_no`
-    is held while swap() runs, then passed on. Everything else flows."""
+    is held while swap() runs, then passed on -- or, with `drop`, never
+    passed on: the connection is closed instead. Everything else flows."""
     ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(4)
     did = threading.Event()
     def one(c, i):
@@ -3871,6 +3896,8 @@ def relay(conn_no, frame_no, swap):
                 h = rx(u, 4); body = rx(u, struct.unpack(">I", h)[0]); k += 1
                 if i == conn_no and k == frame_no:
                     swap(); did.set()
+                    if drop:
+                        break
                 c.sendall(h + body)
         except (EOFError, OSError): pass
         # shutdown first: on Linux a close does not release a socket another
@@ -3934,10 +3961,11 @@ try:
         print("SWAP: the relay never held the probe's login code"); sys.exit(9)
     if open(ek, "rb").read() == STRANGER:
         print("SWAP: a .ek.next swapped while the login asked the daemon was renamed over .ek"); sys.exit(1)
-    if (r1 != 0 or "changed while the daemon was asked" not in e1 or open(nxt, "rb").read() != STRANGER
+    if (r1 != 0 or "changed while the daemon was asked" not in e1
             or open(ek, "rb").read() != k1 or (os.stat(ek).st_mode & 0o777) != 0o600):
-        print("SWAP: the login did not write the accepted key to .ek and say that .ek.next changed, or moved what replaced it"); sys.exit(2)
-    os.remove(nxt)
+        print("SWAP: the login did not write the accepted key to .ek and say that .ek.next changed"); sys.exit(2)
+    if os.path.lexists(nxt) or not strangers_aside(1):
+        print("SWAP: after the login, what was swapped in is still at .ek.next, or is not kept beside it"); sys.exit(7)
     r1b, e1b = run(args("login", port))
     if r1b != 0 or open(ek, "rb").read() != k1 or os.path.exists(nxt):
         print("SWAP: the key the login wrote to .ek does not log in\n" + e1b); sys.exit(2)
@@ -3952,14 +3980,51 @@ try:
     k2 = open(ek, "rb").read()
     if k2 == STRANGER:
         print("SWAP: a .ek.next swapped while the rotate waited for its ACK was renamed over .ek"); sys.exit(3)
-    if (r2 != 0 or "changed while the daemon was asked" not in e2 or open(nxt, "rb").read() != STRANGER
+    if (r2 != 0 or "changed while the daemon was asked" not in e2
             or k2 == k1 or (os.stat(ek).st_mode & 0o777) != 0o600):
-        print("SWAP: the rotate did not write the accepted key to .ek and say that .ek.next changed, or moved what replaced it"); sys.exit(4)
-    os.remove(nxt)
+        print("SWAP: the rotate did not write the accepted key to .ek and say that .ek.next changed"); sys.exit(4)
+    if os.path.lexists(nxt) or not strangers_aside(1):
+        print("SWAP: after the rotate, what was swapped in is still at .ek.next, or is not kept beside it"); sys.exit(7)
     r2b, e2b = run(args("login", port))
     if r2b != 0 or open(ek, "rb").read() != k2:
         print("SWAP: the key the rotate wrote to .ek does not log in\n" + e2b); sys.exit(4)
-    print("SWAP: the swapped file was left and the accepted key written, both times"); rc = 0
+
+    # 3. rotate, ACK held while .ek.next is made readable by others: the
+    # same bytes. Not "no longer holds the key": it does. .ek gets the key
+    # and the exposed copy goes.
+    ls, did = relay(1, 3, lambda: os.chmod(nxt, 0o644))
+    r3, e3 = run(args("rotate", ls.getsockname()[1])); ls.close()
+    print("rotate with .ek.next made 0644: exit", r3); print(e3)
+    if not did.is_set() or rotations() != 3:
+        print("SWAP: the relay never held the third ACK, or the daemon did not rotate"); sys.exit(9)
+    k3 = open(ek, "rb").read()
+    if (r3 != 0 or "stopped being this user's alone" not in e3 or "no longer holds the key" in e3
+            or k3 == k2 or (os.stat(ek).st_mode & 0o777) != 0o600 or os.path.lexists(nxt) or not strangers_aside(0)):
+        print("SWAP: a .ek.next that only became readable was not said to be the same key, written to .ek and removed"); sys.exit(5)
+    r3b, e3b = run(args("login", port))
+    if r3b != 0 or open(ek, "rb").read() != k3:
+        print("SWAP: the key the third rotate wrote to .ek does not log in\n" + e3b); sys.exit(5)
+
+    # 4. rotate, ACK held while .ek.next is swapped, and then DROPPED: the
+    # daemon has the new key and the client never hears. It keeps .ek.next
+    # for the next run, so .ek.next has to be the key it staged.
+    ls, did = relay(1, 3, lambda: put(nxt, STRANGER), drop=True)
+    r4, e4 = run(args("rotate", ls.getsockname()[1])); ls.close()
+    print("rotate with .ek.next swapped and the ACK lost: exit", r4); print(e4)
+    if not did.is_set() or rotations() != 4:
+        print("SWAP: the relay never dropped the fourth ACK, or the daemon did not rotate"); sys.exit(9)
+    if r4 != 1 or "no reply" not in e4 or open(ek, "rb").read() != k3:
+        print("SWAP: the rotate whose ACK was dropped did not end as one with no reply"); sys.exit(9)
+    if (not os.path.isfile(nxt) or open(nxt, "rb").read() == STRANGER or (os.stat(nxt).st_mode & 0o777) != 0o600
+            or "the staged key is written back" not in e4 or not strangers_aside(1)):
+        print("SWAP: with the ACK lost, .ek.next was kept holding what was swapped in, not the staged key"); sys.exit(6)
+    k4 = open(nxt, "rb").read()
+    r4b, e4b = run(args("login", port))
+    print("the login after it: exit", r4b); print(e4b)
+    if (r4b != 0 or "completed the interrupted rotation" not in e4b or open(ek, "rb").read() != k4
+            or os.path.lexists(nxt)):
+        print("SWAP: the login after a lost ACK did not complete the rotation with the staged key"); sys.exit(6)
+    print("SWAP: the accepted key reached .ek every time, and what was swapped in was kept aside"); rc = 0
 except SystemExit:
     raise
 except Exception as e:
@@ -3976,10 +4041,14 @@ case "$SW" in
 2) cat "$TMP/sw.txt"; fail "a login that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)" ;;
 3) cat "$TMP/sw.txt"; fail "a .ek.next swapped while a rotate waited for its ACK was renamed over .ek (F817)" ;;
 4) cat "$TMP/sw.txt"; fail "a rotate that found .ek.next swapped did not put the key the daemon accepted at .ek and say so (F823)" ;;
+5) cat "$TMP/sw.txt"; fail "a .ek.next that only became readable while a rotate waited was not treated as the same key (F832)" ;;
+6) cat "$TMP/sw.txt"; fail "a rotate that got no reply kept a swapped .ek.next instead of the key it staged (F830)" ;;
+7) cat "$TMP/sw.txt"; fail "what was swapped in at .ek.next was not moved aside after the accepted key was written (F833)" ;;
 *) cat "$TMP/sw.txt"; fail "the swapped-.ek.next test could not be made (exit $SW): this says nothing about F817" ;;
 esac
 echo "PASS: E2E: a .ek.next swapped while the daemon is asked is not renamed over .ek, by login or by rotate, and the client says so (F817)"
-echo "PASS: E2E: and the key the daemon accepted is written to .ek, what was swapped in is left, and the next login works (F823)"
+echo "PASS: E2E: and the key the daemon accepted is written to .ek, what was swapped in is moved aside, and the next login works (F823, F833)"
+echo "PASS: E2E: a .ek.next that only became readable is the same key and is removed; with the ACK lost, .ek.next is the staged key again and the next login completes the rotation (F830, F832)"
 
 # V4-371 (F827): the two passphrase scans again, over everything the legs
 # since the first scan wrote.
