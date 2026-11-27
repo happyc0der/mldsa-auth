@@ -573,26 +573,100 @@ keyfile_status_t keyfile_staged_is(const char *path, const uint8_t expect[KEYFIL
     return r;
 }
 
+/* V4-373 (F840): a name for what is moved aside that nothing has. The
+ * first is <path>.displaced.<pid>; where every run has the same process id
+ * (a container), the second file moved aside found that name taken, and
+ * V4-372 gave up there. `keep` leaves a regular file's own name in place as
+ * well (two names, one file) for a caller about to rename over it. A
+ * regular file gets its second name by link(2), which never replaces
+ * anything; what cannot be linked (a directory, a symbolic link, a file
+ * the system will not let this user link) is renamed after a look, and
+ * that pair is a check, not a guarantee. */
+static keyfile_status_t move_aside(const char *path, int keep, char *aside, size_t aside_cap) {
+    struct stat lst;
+    aside[0] = '\0';
+    if (lstat(path, &lst) != 0) {
+        return (errno == ENOENT) ? KEYFILE_OK : KEYFILE_ERR_IO;   /* nothing to move */
+    }
+    for (int n = 0; n < KEYFILE_ASIDE_NAMES; n++) {
+        const int an = (n == 0) ? snprintf(aside, aside_cap, "%s.displaced.%ld", path, (long)getpid())
+                                : snprintf(aside, aside_cap, "%s.displaced.%ld.%d", path, (long)getpid(), n);
+        if (an < 0 || (size_t)an >= aside_cap) {
+            aside[0] = '\0';
+            return KEYFILE_ERR_ARG;
+        }
+        if (S_ISREG(lst.st_mode)) {
+            if (link(path, aside) == 0) {
+                if (!keep && unlink(path) != 0) {
+                    return KEYFILE_ERR_IO;
+                }
+                return KEYFILE_OK;
+            }
+            if (errno == EEXIST) {
+                continue;
+            }
+            /* not linkable: by rename, below */
+        }
+        struct stat ast;
+        if (lstat(aside, &ast) == 0) {
+            continue;
+        }
+        if (errno != ENOENT || rename(path, aside) != 0) {
+            aside[0] = '\0';
+            return KEYFILE_ERR_IO;
+        }
+        return KEYFILE_OK;
+    }
+    aside[0] = '\0';
+    return KEYFILE_ERR_EXISTS;
+}
+
 keyfile_status_t keyfile_displace(const char *path, char *aside, size_t aside_cap) {
     if (path == NULL || aside == NULL || aside_cap == 0u) {
         return KEYFILE_ERR_ARG;
     }
-    const int an = snprintf(aside, aside_cap, "%s.displaced.%ld", path, (long)getpid());
-    if (an < 0 || (size_t)an >= aside_cap) {
+    const keyfile_status_t r = move_aside(path, 0, aside, aside_cap);
+    if (r == KEYFILE_OK && aside[0] != '\0') {
+        fsync_parent_dir(path);
+    }
+    return r;
+}
+
+/* V4-373 (F839, F843): put `buf` at `path` whatever is there. The bytes are
+ * written first, to a private file beside it; only then is what has the
+ * name given another, and the new file renamed over the name. A regular
+ * file there never leaves the name empty; anything else does for the
+ * instant between two renames. Nothing is moved if the bytes could not be
+ * written. */
+keyfile_status_t keyfile_restage_sealed(const char *path, const uint8_t *buf, size_t len,
+                                        char *aside, size_t aside_cap) {
+    if (aside != NULL && aside_cap != 0u) {
         aside[0] = '\0';
+    }
+    if (path == NULL || buf == NULL || aside == NULL || aside_cap == 0u) {
         return KEYFILE_ERR_ARG;
     }
-    struct stat lst;
-    if (lstat(path, &lst) != 0) {
-        aside[0] = '\0';
-        return (errno == ENOENT) ? KEYFILE_OK : KEYFILE_ERR_IO;   /* nothing to move */
+    keyfile_header_t hdr;
+    const keyfile_status_t hs = keyfile_parse_header(buf, len, &hdr);
+    if (hs != KEYFILE_OK) {
+        return hs;
     }
-    /* Never over anything: rename(2) would replace a file of that name. */
-    if (lstat(aside, &lst) == 0 || errno != ENOENT) {
-        return KEYFILE_ERR_EXISTS;
+    char fresh[4096];
+    if (snprintf(fresh, sizeof fresh, "%s.restage.%ld", path, (long)getpid()) >= (int)sizeof fresh) {
+        return KEYFILE_ERR_ARG;
     }
-    if (rename(path, aside) != 0) {
-        return KEYFILE_ERR_IO;
+    (void)unlink(fresh);   /* this process id's, so an earlier dead run's (F253) */
+    keyfile_status_t r = publish(fresh, buf, len);
+    if (r != KEYFILE_OK) {
+        return r == KEYFILE_ERR_EXISTS ? KEYFILE_ERR_IO : r;
+    }
+    r = move_aside(path, 1, aside, aside_cap);
+    if (r == KEYFILE_OK && rename(fresh, path) != 0) {
+        r = KEYFILE_ERR_IO;
+    }
+    if (r != KEYFILE_OK) {
+        (void)unlink(fresh);
+        return r;
     }
     fsync_parent_dir(path);
     return KEYFILE_OK;

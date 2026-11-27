@@ -969,6 +969,20 @@ or less, its `ROTATE` can be refused as late with nothing holding it.
 A `.ek.next` that is a byte copy of `.ek` is removed by `rotate` itself,
 which says `was a copy of the live key` (since V4-365).
 
+Files named `<handle>.ek.next.displaced.<pid>` (or that with `.1`, `.2`, …
+after it) beside a key are what the client found at `.ek.next` in place of
+the key it had staged, moved aside so that the staged or accepted key could
+be written (since V4-372; the client says `what was there is now …` or
+`What was at … is now …` when it makes one). The client never reads or
+removes them. They are whatever was put there, with the mode it had: a file
+a restore or a sync tool wrote, or a key envelope. Look at where it came
+from, check that `login` works, and remove it; nothing depends on it. The
+client stops moving files aside when a hundred of one process id's names
+are taken, and then says the staged key `could not be put back`, so do not
+let them collect. A `<handle>.ek.next.restage.<pid>` left by a client
+killed in the middle of that holds the staged key: keep it until `login`
+works.
+
 ## 20. Lock a user out
 
 A lost or stolen device, or someone who should no longer have access:

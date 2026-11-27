@@ -853,27 +853,43 @@ static keyfile_status_t client_promote_opened(const char *prog, const char *sub,
                                               const uint8_t *sealed, size_t sealed_len)
 {
     const keyfile_status_t ps = keyfile_promote_expect(next_path, key_path, digest);
-    if (ps != KEYFILE_ERR_CHANGED) {
+    if (ps == KEYFILE_OK) {
         return ps;
     }
+    /* V4-373 (F838): on ANY refusal, not only "changed". The caller is here
+     * because the daemon accepted the key in `sealed`, so writing it to
+     * `key_path` is right whatever became of .ek.next. V4-372 wrote it only
+     * for a file seen to have changed, and one that could not be opened
+     * (a replacement of mode 000) left the accepted key nowhere. */
     if (sealed == NULL || keyfile_replace_sealed(key_path, sealed, sealed_len) != KEYFILE_OK) {
-        return KEYFILE_ERR_CHANGED;
+        return ps;
     }
     int exposed = 0;
-    if (keyfile_staged_is(next_path, digest, &exposed) == KEYFILE_OK) {
-        /* The same bytes: what changed is who can read them (F832). */
+    const keyfile_status_t is = keyfile_staged_is(next_path, digest, &exposed);
+    if (is == KEYFILE_OK) {
+        /* The same bytes: what changed is who can read them (F832), or
+         * nothing that this run can see. */
         const int gone = unlink(next_path) == 0;
-        fprintf(stderr, "%s %s: %s stopped being this user's alone while the daemon was asked. The key the "
-                        "daemon accepted, which it holds, was written to %s%s\n",
-                prog, sub, next_path, key_path,
+        fprintf(stderr, "%s %s: %s %s. The key the daemon accepted, which it holds, was written to %s%s\n",
+                prog, sub, next_path,
+                exposed ? "stopped being this user's alone while the daemon was asked"
+                        : "could not be renamed, though it holds the key the daemon accepted",
+                key_path,
                 gone ? ", and that copy is removed" : "; that copy could not be removed: remove it by hand");
         return KEYFILE_OK;
     }
     char aside[PATH_MAX];
     const keyfile_status_t ds = keyfile_displace(next_path, aside, sizeof aside);
-    fprintf(stderr, "%s %s: %s changed while the daemon was asked: it no longer holds the key the daemon "
-                    "accepted. The accepted key, which this run had opened, was written to %s. ",
-            prog, sub, next_path, key_path);
+    if (is == KEYFILE_ERR_CHANGED) {
+        fprintf(stderr, "%s %s: %s changed while the daemon was asked: it no longer holds the key the daemon "
+                        "accepted. The accepted key, which this run had opened, was written to %s. ",
+                prog, sub, next_path, key_path);
+    } else {
+        /* F838: not read, so nothing is said of what it holds. */
+        fprintf(stderr, "%s %s: %s could not be read back (%s) after the daemon was asked, so what it holds "
+                        "now is not known. The accepted key, which this run had opened, was written to %s. ",
+                prog, sub, next_path, keyfile_status_name(is), key_path);
+    }
     if (ds == KEYFILE_OK && aside[0] != '\0') {
         fprintf(stderr, "What was at %s is now %s\n", next_path, aside);
     } else if (ds == KEYFILE_OK) {
@@ -892,8 +908,9 @@ static keyfile_status_t client_promote_opened(const char *prog, const char *sub,
  * name, and a file swapped in while the daemon was asked left the device
  * locked out as before V4-370: the daemon may hold the staged key, and no
  * file did. What has the name is moved aside and the staged key written
- * back; nothing is said when the file is as it was. */
-static void client_restage_opened(const char *prog, const char *sub, const char *next_path,
+ * back; nothing is said when the file is as it was. 1 when the name then
+ * holds the staged key, 0 when it does not or that is not known. */
+static int client_restage_opened(const char *prog, const char *sub, const char *next_path,
                                   const char *key_path,
                                   const uint8_t digest[KEYFILE_DIGEST_BYTES],
                                   const uint8_t *sealed, size_t sealed_len)
@@ -901,34 +918,46 @@ static void client_restage_opened(const char *prog, const char *sub, const char 
     int exposed = 0;
     const keyfile_status_t is = keyfile_staged_is(next_path, digest, &exposed);
     if (is == KEYFILE_OK && !exposed) {
-        return;
+        return 1;
     }
     if (is == KEYFILE_OK) {
         const int ok = sealed != NULL && keyfile_replace_sealed(next_path, sealed, sealed_len) == KEYFILE_OK;
         fprintf(stderr, "%s %s: %s holds the staged key but had stopped being this user's alone; %s\n",
                 prog, sub, next_path,
                 ok ? "it is written again, owner-only" : "it could not be written again: correct its owner and mode");
-        return;
+        return 1;
     }
-    if (is != KEYFILE_ERR_CHANGED) {
-        fprintf(stderr, "%s %s: %s could not be read back (%s): whether it still holds the staged key is "
-                        "not known\n", prog, sub, next_path, keyfile_status_name(is));
-        return;
-    }
+    /* V4-373 (F839, F843): changed, or not readable -- either way the
+     * staged key is written, to a file of its own first, and what has the
+     * name is moved aside only once that is done. V4-372 left a file it
+     * could not read where it was ("not known"), and one of mode 000 put
+     * there kept the name while the staged key went with the process. */
     char aside[PATH_MAX];
-    const keyfile_status_t ds = keyfile_displace(next_path, aside, sizeof aside);
-    if (ds == KEYFILE_OK && sealed != NULL && keyfile_write_sealed(next_path, sealed, sealed_len) == KEYFILE_OK) {
-        if (aside[0] != '\0') {
-            fprintf(stderr, "%s %s: %s was no longer the key this run staged: what was there is now %s, and "
-                            "the staged key is written back\n", prog, sub, next_path, aside);
-        } else {
-            fprintf(stderr, "%s %s: %s was gone: the staged key is written back\n", prog, sub, next_path);
-        }
-        return;
+    aside[0] = '\0';
+    const keyfile_status_t rs = sealed == NULL ? KEYFILE_ERR_ARG
+                                               : keyfile_restage_sealed(next_path, sealed, sealed_len, aside,
+                                                                        sizeof aside);
+    if (rs == KEYFILE_OK && aside[0] == '\0') {
+        fprintf(stderr, "%s %s: %s was gone: the staged key is written back\n", prog, sub, next_path);
+    } else if (rs == KEYFILE_OK && is == KEYFILE_ERR_CHANGED) {
+        fprintf(stderr, "%s %s: %s was no longer the key this run staged: what was there is now %s, and "
+                        "the staged key is written back\n", prog, sub, next_path, aside);
+    } else if (rs == KEYFILE_OK) {
+        fprintf(stderr, "%s %s: %s could not be read back (%s): what was there is now %s, and the staged "
+                        "key is written back\n", prog, sub, next_path, keyfile_status_name(is), aside);
+    } else if (is == KEYFILE_ERR_CHANGED) {
+        fprintf(stderr, "%s %s: %s is NOT the key this run staged, and that key could not be put back (%s). "
+                        "If the daemon took it, no file holds it: when a login with %s stops working, an "
+                        "administrator must re-enrol this device\n",
+                prog, sub, next_path, keyfile_status_name(rs), key_path);
+    } else {
+        fprintf(stderr, "%s %s: %s could not be read back (%s), and the staged key could not be written "
+                        "again (%s): whether the file still holds that key is NOT known. If the daemon "
+                        "took the key and the file does not hold it, an administrator must re-enrol this "
+                        "device\n",
+                prog, sub, next_path, keyfile_status_name(is), keyfile_status_name(rs));
     }
-    fprintf(stderr, "%s %s: %s is NOT the key this run staged, and that key could not be put back. If the "
-                    "daemon took it, no file holds it: when a login with %s stops working, an administrator "
-                    "must re-enrol this device\n", prog, sub, next_path, key_path);
+    return rs == KEYFILE_OK;
 }
 
 static int client_resolve_key_locked(const char *prog, const char *sub, const client_args_t *a,
@@ -1035,8 +1064,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
             /* F583: the .pub still names the old key, so the rename is not
              * made: .ek.next stays, and the next run comes back here and
              * tries both again. This login goes ahead with the live key. */
-            client_restage_opened(prog, sub, next_path, a->key_path, next_digest, next_sealed,
-                                  next_sealed_len);   /* F830 */
+            (void)client_restage_opened(prog, sub, next_path, a->key_path, next_digest, next_sealed,
+                                        next_sealed_len);   /* F830 */
             fprintf(stderr, "%s %s: the interrupted rotation is NOT completed: %s is kept, and the next "
                             "run will try again. It holds the live key\n", prog, sub, next_path);
             g_resolve_kept_next = 1;
@@ -1051,7 +1080,10 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
             if (ps == KEYFILE_ERR_CHANGED) {
                 /* F817: replaced while the daemon was asked. The key the
                  * daemon took is the one that was there; this is not it.
-                 * F823: and the accepted one could not be written either. */
+                 * F823: and the accepted one could not be written either.
+                 * V4-373 (F838): so it is put back at .ek.next, if it can be. */
+                (void)client_restage_opened(prog, sub, next_path, a->key_path, next_digest, next_sealed,
+                                            next_sealed_len);
                 (void)failed(prog, sub, next_path, keyfile_status_name(ps));
                 fprintf(stderr, "%s %s: %s changed while the daemon was asked about it: it is not the key "
                                 "the daemon accepted, and that key could not be written to %s. No key file "
@@ -1060,8 +1092,8 @@ static int client_resolve_key_locked(const char *prog, const char *sub, const cl
                 break;
             }
             if (ps != KEYFILE_OK) {
-                client_restage_opened(prog, sub, next_path, a->key_path, next_digest, next_sealed,
-                                      next_sealed_len);   /* F830 */
+                (void)client_restage_opened(prog, sub, next_path, a->key_path, next_digest, next_sealed,
+                                            next_sealed_len);   /* F830 */
                 (void)failed(prog, sub, a->key_path, "cannot-complete-rename");
                 break;
             }
@@ -1444,8 +1476,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         (void)failed(prog, "rotate", next_path, "changed-since-sealed");
         fprintf(stderr, "%s rotate: not rotating: %s is not the key this run sealed a moment ago. Nothing was "
                         "sent. %s%s\n", prog, next_path,
-                (ds == KEYFILE_OK && aside[0] != '\0') ? "What was there is now " : "It could not be moved aside: "
-                                                                                    "move it away and rotate",
+                ds != KEYFILE_OK ? "It could not be moved aside: move it away and rotate"
+                                 : aside[0] != '\0' ? "What was there is now "
+                                                    : "Nothing is there now: rotate again",   /* F844 */
                 (ds == KEYFILE_OK && aside[0] != '\0') ? aside : "");
         return EX_FAIL;
     }
@@ -1474,7 +1507,6 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (rc != EX_OK) {
         mldsa_keypair_free(&old_kp);
         mldsa_keypair_free(&new_kp);
-        free(next_sealed);
         (void)unlink(pub_tmp);   /* F118 */
         /* F438: a session that failed before ClientAuth was sent -- no
          * daemon, no upgrade, a ServerHello that did not verify -- never
@@ -1488,6 +1520,8 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         if (reoffer) {
             /* F787: not this run's key to remove. This is the very case: the
              * session is refused BECAUSE the earlier ROTATE has landed. */
+            /* V4-373 (F841): and it is compared like every other kept one. */
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             fprintf(stderr, "%s rotate: no session was opened; %s, staged by an earlier rotation, is KEPT "
                             "so the next run can resolve it\n", prog, next_path);
         } else if (unlink(next_path) != 0) {
@@ -1503,6 +1537,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
                     : (g_open_why[0] != '\0') ? g_open_why
                     : "the session did not open");
         }
+        free(next_sealed);   /* after the comparison above (F841) */
         return rc;
     }
 
@@ -1518,6 +1553,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         /* F467: ROTATE was not built, so it was not sent: the staged key goes. */
         (void)failed(prog, "rotate", next_path, bs == CC_ERR_SESSION ? "cannot-send-rotate" : "cannot-build-rotate");
         if (reoffer) {
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F841 */
             fprintf(stderr, "%s rotate: %s, staged by an earlier rotation, is KEPT\n", prog, next_path);
         } else {
             rotate_drop_unsent(prog, next_path);
@@ -1534,6 +1570,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
          * both keys. */
         const int unsent_gone = !reoffer && (unlink(next_path) == 0);
         if (reoffer) {
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F841 */
             fprintf(stderr, "%s rotate: ROTATE could not be sent; %s, staged by an earlier rotation, is "
                             "KEPT so the next run can resolve it\n", prog, next_path);
         } else if (unsent_gone) {
@@ -1549,7 +1586,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
     if (cs_recv_for_core(&cs, rx, &m) != 0) {
         /* No answer is NOT proof that nothing happened -- the daemon may have
          * committed and died before sealing the ACK. .ek.next stays. */
-        client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */
+        (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */
         fprintf(stderr, "%s rotate: no reply; %s is KEPT so the next run can resolve it\n",
                 prog, next_path);
         goto out;
@@ -1558,7 +1595,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         uint8_t code = 0;
         const cc_status_t rs = cc_rotate_on_reply(cs.cc, rx, m, &code);
         if (rs == CC_ERR_SESSION || rs == CC_ERR_FRAME) {
-            client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             fprintf(stderr, "%s rotate: the reply did not authenticate; %s is KEPT\n",
                     prog, next_path);
             goto out;
@@ -1573,7 +1610,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
             /* A refusal is not proof either -- the codes are coarse by design
              * (spec 6.5) and a daemon that committed then crashed answers
              * nothing at all. Keep the file; the probe decides next time. */
-            client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             fprintf(stderr, "%s rotate: %s is KEPT so the next run can resolve it\n",
                     prog, next_path);
             if (reoffer) {
@@ -1591,7 +1628,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
         /* The core accepts only an ACK naming THIS handle and the key actually
          * sealed, compared in constant time (Req 3). */
         if (rs != CC_OK) {
-            client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             fprintf(stderr, "%s rotate: the ACK names a different handle or key -- "
                             "NOT promoting %s\n", prog, next_path);
             goto out;
@@ -1612,7 +1649,7 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
              * the new key; it is in .ek.next, which the next login finds
              * live and promotes, publishing the .pub first. Promoted here,
              * nothing would ever have published it, and this exited 0. */
-            client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             fprintf(stderr, "%s rotate: the key rotated at the daemon but %s could not be updated; it "
                             "still names the OLD key. %s is KEPT and holds the new key: the next login "
                             "completes the rotation\n", prog, pub_path, next_path);
@@ -1624,7 +1661,9 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
             /* F817: the daemon took the key this run opened and sent; the
              * file at .ek.next is no longer that key. Renaming it over .ek
              * by name, as before, made a stranger's file the live key.
-             * F823: and the accepted key could not be written either. */
+             * F823: and the accepted key could not be written either.
+             * V4-373 (F838): so it is put back at .ek.next, if it can be. */
+            (void)client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             (void)failed(prog, "rotate", next_path, keyfile_status_name(ps));
             fprintf(stderr, "%s rotate: the key ROTATED at the daemon, and %s names the new key, but %s "
                             "changed while the daemon was asked: it is not the key the daemon accepted, and "
@@ -1634,8 +1673,17 @@ static int client_rotate_run(int argc, char **argv, const char *prog, int *lock_
             goto out;
         }
         if (ps != KEYFILE_OK) {
-            client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
+            const int held = client_restage_opened(prog, "rotate", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);
             (void)failed(prog, "rotate", a.key_path, "cannot-replace-key");
+            if (!held) {
+                /* V4-373 (F838): "is KEPT and holds the new key" was said
+                 * here of a file the line before had just said was not
+                 * known to hold it. */
+                fprintf(stderr, "%s rotate: the key ROTATED at the daemon, and %s names the new key. %s still "
+                                "holds the old one, which no longer authenticates, and %s is NOT known to "
+                                "hold the new key (see above)\n", prog, pub_path, a.key_path, next_path);
+                goto out;
+            }
             /* F645 (V4-338): what that leaves, as F583 says it one step
              * earlier. The line above alone read as a rotation that had not
              * happened; it has, and the only copy of the live key is the

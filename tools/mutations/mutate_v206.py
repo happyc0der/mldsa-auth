@@ -7,7 +7,8 @@ Usage: mutate_v206.py <repo> <ID>
           reason (V4-371).
     SG2   keyfile_staged_is never says the same bytes are exposed.
     SG3   keyfile_staged_is does not compare the bytes.
-    SG4   keyfile_displace moves over a file already moved aside.
+    SG4   what is renamed aside goes over a name that is taken (V4-373:
+          move_aside).
     SG5   a rotate that gets no reply keeps .ek.next without looking at it
           (V4-371's lock-out).
     SG6   a .ek.next that only became readable is treated as a stranger's.
@@ -28,14 +29,15 @@ M = {
              "        *exposed = 0; /* MUTATION SG2 */\n")],
     "SG3": [(KF, "    } else if (memcmp(got, expect, sizeof got) != 0) {\n        r = KEYFILE_ERR_CHANGED;\n    } else if (st.st_uid",
              "    } else if (0 && memcmp(got, expect, sizeof got) != 0) { /* MUTATION SG3 */\n        r = KEYFILE_ERR_CHANGED;\n    } else if (st.st_uid")],
-    "SG4": [(KF, "    if (lstat(aside, &lst) == 0 || errno != ENOENT) {\n        return KEYFILE_ERR_EXISTS;\n",
-             "    if (0 && (lstat(aside, &lst) == 0 || errno != ENOENT)) { /* MUTATION SG4 */\n        return KEYFILE_ERR_EXISTS;\n")],
-    "SG5": [(CL, "        client_restage_opened(prog, \"rotate\", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */\n",
+    # V4-373: move_aside; what is renamed aside goes over a name that is taken.
+    "SG4": [(KF, "        if (lstat(aside, &ast) == 0) {\n            continue;\n",
+             "        if (0 && lstat(aside, &ast) == 0) { /* MUTATION SG4 */\n            continue;\n")],
+    "SG5": [(CL, "        (void)client_restage_opened(prog, \"rotate\", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */\n",
              "        /* MUTATION SG5 */\n")],
-    "SG6": [(CL, "    if (keyfile_staged_is(next_path, digest, &exposed) == KEYFILE_OK) {\n        /* The same bytes: what changed",
-             "    if (0 && keyfile_staged_is(next_path, digest, &exposed) == KEYFILE_OK) { /* MUTATION SG6 */\n        /* The same bytes: what changed")],
-    "SG7": [(CL, "    const keyfile_status_t ds = keyfile_displace(next_path, aside, sizeof aside);\n    fprintf(stderr, \"%s %s: %s changed while",
-             "    const keyfile_status_t ds = KEYFILE_ERR_IO; aside[0] = '\\0'; /* MUTATION SG7 */\n    fprintf(stderr, \"%s %s: %s changed while")],
+    "SG6": [(CL, "    if (is == KEYFILE_OK) {\n        /* The same bytes: what changed",
+             "    if (0 && is == KEYFILE_OK) { /* MUTATION SG6 */\n        /* The same bytes: what changed")],
+    "SG7": [(CL, "    const keyfile_status_t ds = keyfile_displace(next_path, aside, sizeof aside);\n    if (is == KEYFILE_ERR_CHANGED) {\n",
+             "    const keyfile_status_t ds = KEYFILE_ERR_IO; aside[0] = '\\0'; /* MUTATION SG7 */\n    if (is == KEYFILE_ERR_CHANGED) {\n")],
     "SG8": [(KF, "    if (!S_ISREG(st.st_mode)) {\n        (void)close(fd);\n        return expect != NULL ? KEYFILE_ERR_CHANGED : KEYFILE_ERR_IO;\n",
              "    if (!S_ISREG(st.st_mode)) {\n        (void)close(fd);\n        return KEYFILE_ERR_IO; /* MUTATION SG8 */\n")],
     "SG9": [(KF, "        return expect != NULL ? unopened_is(from) : KEYFILE_ERR_IO;   /* F832 */\n",

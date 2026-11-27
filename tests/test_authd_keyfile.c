@@ -411,12 +411,90 @@ int main(void) {
               "displace: what has the name is moved to <name>.displaced.<pid> (F830)");
         F817_PUT(nx, "another", 7u);
         const keyfile_status_t d2 = keyfile_displace(nx, as2, sizeof as2);
-        CHECK(d2 == KEYFILE_ERR_EXISTS && fsize(as) == 17 && fsize(nx) == 7,
-              "displace: never over a file already moved aside (F830)");
+        /* V4-373 (F840): V4-372 answered already-exists here, and the
+         * staged key was then not put back. */
+        CHECK(d2 == KEYFILE_OK && strcmp(as, as2) != 0 && strstr(as2, ".ek.next.displaced.") != NULL &&
+                  fsize(as) == 17 && fsize(as2) == 7 && fsize(nx) == -1,
+              "displace: never over a file already moved aside: the second gets a name of its own (F830, F840)");
+        (void)unlink(as2);
         (void)unlink(nx);
         CHECK(keyfile_displace(nx, as2, sizeof as2) == KEYFILE_OK && as2[0] == '\0' && fsize(as) == 17,
               "displace: nothing at the name is not an error, and nothing moves (F830)");
-        (void)unlink(as); }
+
+        /* ---- V4-373 (F840): what is not a regular file, and no name left */
+        { struct stat ds; memset(&ds, 0, sizeof ds);
+          (void)mkdir(nx, 0700);
+          const keyfile_status_t d3 = keyfile_displace(nx, as2, sizeof as2);
+          CHECK(d3 == KEYFILE_OK && strcmp(as, as2) != 0 && lstat(as2, &ds) == 0 && S_ISDIR(ds.st_mode) &&
+                    lstat(nx, &ds) != 0 && fsize(as) == 17,
+                "displace: a directory at the name is moved aside as well, to a free name (F840)");
+          (void)rmdir(as2); }
+        { char nm[400]; int made = 0;
+          for (int i = 1; i < KEYFILE_ASIDE_NAMES; i++) {
+              snprintf(nm, sizeof nm, "%s.%d", as, i);
+              const int d = open(nm, O_WRONLY | O_CREAT | O_EXCL, 0600);
+              if (d >= 0) { (void)close(d); made++; } }
+          F817_PUT(nx, "one too many", 12u);
+          const keyfile_status_t d4 = keyfile_displace(nx, as2, sizeof as2);
+          int empty = 1;
+          for (int i = 1; i < KEYFILE_ASIDE_NAMES; i++) {
+              snprintf(nm, sizeof nm, "%s.%d", as, i);
+              if (fsize(nm) != 0) { empty = 0; }
+              (void)unlink(nm); }
+          CHECK(made == KEYFILE_ASIDE_NAMES - 1 && d4 == KEYFILE_ERR_EXISTS && as2[0] == '\0' && empty &&
+                    fsize(nx) == 12 && fsize(as) == 17,
+                "displace: with every name taken nothing moves, and nothing is replaced (F840)");
+          (void)unlink(nx); }
+        (void)unlink(as);
+
+        /* ---- V4-373 (F842): staged-is, of what is not a regular file ---- */
+        { (void)mkdir(nx, 0700); ex = 7;
+          const keyfile_status_t s1 = keyfile_staged_is(nx, dg, &ex);
+          (void)rmdir(nx);
+          F817_PUT(cur, buf, bl);                       /* the same bytes, behind a link */
+          (void)!symlink(cur, nx);
+          const keyfile_status_t s2 = keyfile_staged_is(nx, dg, &ex);
+          (void)unlink(nx);
+          CHECK(s1 == KEYFILE_ERR_CHANGED && s2 == KEYFILE_ERR_CHANGED && ex == 0,
+                "staged-is: a directory, and a symbolic link to the same bytes, are changed-since-opened (F842)"); }
+
+        /* ---- V4-373 (F839, F843): the staged key put back at the name --- */
+        /* The id is read on its own line, as below: this is the writer's
+         * temporary name inside the mkdtemp directory, not a scratch
+         * directory (tests/scratch_dirs.sh, F114). */
+        { char rs[400]; struct stat ns; memset(&ns, 0, sizeof ns);
+          const long restage_pid = (long)getpid();
+          snprintf(rs, sizeof rs, "%s.restage.%ld", nx, restage_pid);
+          F817_PUT(nx, "a stranger's file", 17u);
+          const keyfile_status_t r1 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          CHECK(r1 == KEYFILE_OK && fsize(nx) == (long)bl && lstat(nx, &ns) == 0 && (ns.st_mode & 0777) == 0600 &&
+                    keyfile_staged_is(nx, dg, &ex) == KEYFILE_OK && ex == 0 && fsize(as) == 17 && fsize(rs) == -1,
+                "restage: the staged bytes are put at the name, owner-only, and what was there is kept aside (F839)");
+          (void)unlink(as);
+          (void)chmod(nx, 0600);
+          F817_PUT(nx, "unreadable", 10u); (void)chmod(nx, 0000);
+          const keyfile_status_t u0 = keyfile_staged_is(nx, dg, &ex);
+          const keyfile_status_t r2 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          memset(&ns, 0, sizeof ns);
+          CHECK((u0 == KEYFILE_ERR_IO || geteuid() == 0) && r2 == KEYFILE_OK && fsize(nx) == (long)bl &&
+                    lstat(as, &ns) == 0 && ns.st_size == 10 && (ns.st_mode & 0777) == 0000,
+                "restage: a file that cannot be read is an I/O error to staged-is, and is moved aside for the staged bytes all the same (F839)");
+          (void)chmod(as, 0600); (void)unlink(as);
+          (void)unlink(nx);
+          const keyfile_status_t r3 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          CHECK(r3 == KEYFILE_OK && as[0] == '\0' && fsize(nx) == (long)bl,
+                "restage: with nothing at the name the staged bytes are written, and nothing is moved (F839)");
+          (void)unlink(nx); (void)mkdir(nx, 0700);
+          const keyfile_status_t r4 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          memset(&ns, 0, sizeof ns);
+          CHECK(r4 == KEYFILE_OK && fsize(nx) == (long)bl && lstat(as, &ns) == 0 && S_ISDIR(ns.st_mode),
+                "restage: a directory at the name is moved aside for the staged bytes (F839)");
+          (void)rmdir(as);
+          F817_PUT(nx, "a stranger's file", 17u);
+          const keyfile_status_t r5 = keyfile_restage_sealed(nx, (const uint8_t *)"not an envelope!", 16u, as, sizeof as);
+          CHECK(r5 != KEYFILE_OK && as[0] == '\0' && fsize(nx) == 17 && fsize(rs) == -1,
+                "restage: bytes that are not an envelope are refused, and nothing is moved (F839)"); }
+        }
       #undef F817_PUT
       (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn); }
 

@@ -226,11 +226,23 @@ keyfile_status_t keyfile_replace_sealed(const char *to, const uint8_t *buf, size
 keyfile_status_t keyfile_staged_is(const char *path, const uint8_t expect[KEYFILE_DIGEST_BYTES],
                                    int *exposed);
 
-/* V4-372 (F830): move whatever is at `path` to `<path>.displaced.<pid>`,
- * written to `aside`. Never over anything: KEYFILE_ERR_EXISTS when that
- * name is taken. KEYFILE_OK with aside[0] == 0 when nothing was at `path`.
- * For a .ek.next that is not the key this run staged: the name is needed
- * for that key, and what has it is not this program's to delete. */
+/* V4-372 (F830): move whatever is at `path` aside, to the name written to
+ * `aside`. KEYFILE_OK with aside[0] == 0 when nothing was at `path`. For a
+ * .ek.next that is not the key this run staged: the name is needed for
+ * that key, and what has it is not this program's to delete.
+ * V4-373 (F840): the name is `<path>.displaced.<pid>`, or that with `.1` to
+ * `.99` after it when it is taken; KEYFILE_ERR_EXISTS only when all
+ * KEYFILE_ASIDE_NAMES are. A regular file is given the name by link(2),
+ * which replaces nothing; anything else is renamed after a look. */
+#define KEYFILE_ASIDE_NAMES 100
 keyfile_status_t keyfile_displace(const char *path, char *aside, size_t aside_cap);
+
+/* V4-373 (F839, F843): write the sealed envelope `buf` at `path`, whatever
+ * is there now; what was there is moved aside as keyfile_displace moves it
+ * (`aside`, empty when nothing was). The bytes are written to a private
+ * file first, and nothing is moved when that fails. For the staged key of a
+ * rotation whose .ek.next no longer holds it, or can no longer be read. */
+keyfile_status_t keyfile_restage_sealed(const char *path, const uint8_t *buf, size_t len,
+                                        char *aside, size_t aside_cap);
 
 #endif

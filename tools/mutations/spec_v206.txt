@@ -1,7 +1,7 @@
 SG1|^test_authd_keyfile$|promote-expect, staged-is: a .ek.next that cannot be opened for want of a descriptor is an I/O error, not changed-since-opened (F832)
 SG2|^test_authd_keyfile$|staged-is: the same bytes, readable by others, are the staged key and exposed (F830)
 SG3|^test_authd_keyfile$|staged-is: other bytes, and no file, are changed-since-opened (F830)
-SG4|^test_authd_keyfile$|displace: never over a file already moved aside (F830)
+SG4|^test_authd_keyfile$|displace: a directory at the name is moved aside as well, to a free name (F840)
 SG5|^authd_e2e$|a rotate that got no reply kept a swapped .ek.next instead of the key it staged (F830)
 SG6|^authd_e2e$|a .ek.next that only became readable while a rotate waited was not treated as the same key (F832)
 SG7|^authd_e2e$|what was swapped in at .ek.next was not moved aside after the accepted key was written (F833)

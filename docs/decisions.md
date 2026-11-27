@@ -24340,3 +24340,52 @@ Spec v1.131: errata 181 (10.2) and 182 (12).
 Counts: 919 mutations, 176 campaigns, 971 anchors; 837 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.131, 182 errata; 66 tests.
+
+## V4-373: what the hundred-and-twelfth review found (F838 to F846)
+
+**The hundred-and-twelfth review** attacked V4-372 from a copy of the tree
+with a harness made from the end-to-end swap leg, against a real daemon,
+on macOS and in a Linux container, and wrote seventeen mutants of its own.
+It produced four lock-outs. One Medium, five Low, three Info.
+
+- **F838 (Medium): V4-372 was a regression, and was not landed.** F832
+  was right that a file which cannot be opened has not been seen to
+  change, and wrong about what follows. V4-372 let the classification
+  decide whether the accepted key was written, so "not known" meant
+  "nothing is done", and a file of mode 000 at `.ek.next` locked the
+  device out where V4-371 had recovered. The classification now decides
+  only what is said. Whether the key is written depends on one thing: the
+  daemon accepted it. V4-372's commit stays on the branch under this one
+  and the two land together, so `main` never held the regression.
+- **F839, F843 (Low).** The same separation for the exits that keep
+  `.ek.next`: the staged key is written whenever the file is not known to
+  be it, and written first, so a failure to write moves nothing.
+- **F840 (Low).** A hundred names for what is moved aside, and `link(2)`
+  for a regular file. "Never over a file" is now true of regular files and
+  still a check for the rest; the header says which.
+- **F841 (Low).** The re-offering rotate's three early exits.
+- **F842 (Low).** Six of the review's mutants survived everything. Five
+  now have a check; what still has none is listed in the row.
+- **F844 to F846 (Info).** Two messages, the scan's exit status, the
+  runbook.
+
+**A pattern, for the record.** F823, F830 and F838 are one mistake made
+three times: a fix that handles the state the test produced and leaves
+its neighbours. Each review found the neighbour by varying one thing (the
+file's mode, which exit, whether it can be read). The end-to-end leg now
+varies those three; it does not vary a kill, a full disk or a second uid.
+
+Campaign v207: SH1 and SH2 (names for what is moved aside), SH3 and SH11
+(staged-is on a link and a directory), SH4 and SH5 (restage), SH6 and SH10
+(the accepted key after an unreadable swap), SH7 and SH8 (a kept file that
+is unreadable, or exposed), SH9 (the re-offer). Re-anchored: v158's PO1,
+v49c's W15, v205's SF3, v206's SG4 to SG7; SG4 now names the check that a
+directory moved aside does not go over a taken name.
+
+Checks. Hand controls on macOS under ASan: 105 mutants (v207's eleven and every older mutant of a touched function), 104 killed by the named check (one of them at compile) and v75 KC5 surviving as it always does on one uid. In a Linux container, gcc and clang: both suites 100%, every v207 mutant named, Release builds of the daemon and client. gcc-16 at -O0 and -O2 on the changed C files: no warning. 66 of 66 on the plain, ASan and UBSan trees, 36 of 36 fuzz, 3 of 3 WebAssembly, build current, no residue. One thing went red on the way: `scratch_dirs` refused a new keyfile check that formatted a pid into the writer's temporary name on one line; the id is now read on its own line, as the older check beside it does. That one-line change was made after the Linux container run and the mutant sweep, and was checked on the three macOS trees only; CI is its Linux check. Not tested, and said in the rows: two of the three re-offer exits, a kill inside the restage, the owner comparison in staged-is (it needs a second uid), the size bound, ENOTDIR, and the directory fsync.
+
+Spec v1.132: erratum 183 (10.2).
+
+Counts: 930 mutations, 177 campaigns, 982 anchors; 846 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.132, 183 errata; 66 tests.

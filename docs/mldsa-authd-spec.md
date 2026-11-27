@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.131, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366/V4-370/V4-371/V4-372)
+# mldsa-authd — deployment specification (v1.132, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366/V4-370/V4-371/V4-372/V4-373)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -842,7 +842,18 @@ keeps `<handle>.ek.next` after `ROTATE` was sent (no reply, a reply that
 does not authenticate, a refusal, a `.pub` that cannot be replaced) makes
 the same comparison first, and when the file is not the staged key moves it
 aside in the same way and writes the staged key back under the name; a file
-that could not be read is not said to have changed. The device's `.pub` is replaced first and the key second
+that could not be read is not said to have changed. Erratum 183 corrects
+three points of that. On `ROTATE_ACK`, or on the recovery's proof, the
+client writes the bytes it opened over `<handle>.ek` whenever the rename is
+refused or fails, whatever the reason, not only when the file was seen to
+have changed: the daemon has accepted that key. A kept `<handle>.ek.next`
+that cannot be read is replaced by the staged key like one that changed:
+the staged bytes are first written to a private file beside it, then what
+has the name is given another, then the new file is renamed over the name.
+And the name given is `.displaced.<pid>`, or that followed by `.1` to `.99`
+when it is taken. A `rotate` that offers an earlier rotation's staged key
+again makes the comparison on its exits before `ROTATE` is sent as well.
+The device's `.pub` is replaced first and the key second
 (erratum 119): a client stopped between the two then leaves `.ek.next`, which
 the recovery below promotes, replacing the `.pub` again. In the other order
 it left the new key under a `.pub` that named the old one, and nothing
@@ -2964,3 +2975,9 @@ From the defensive review of the reference site:
 |---|---|---|---|
 | 181 | 10.2 | What replaced `.ek.next` is moved to `.ek.next.displaced.<pid>` (or removed, when it is the same bytes made readable), not left; and every exit that keeps `.ek.next` after `ROTATE` was sent compares it and writes the staged key back | Erratum 180 covered the promote only: a rotate whose ACK was lost kept a swapped file "so the next run can resolve it", and the device was locked out as before (F830); left under the name, a swapped-in file that opens as a key for the device is offered to the daemon by the next rotate (F833); and a file that only became readable was said to hold another key (F832) |
 | 182 | 12 | Of the header fields the key does not depend on, only `version` is one whose change the binding alone catches | Erratum 179 listed the algorithm ids and `ct_len` beside it; the parser refuses those before the key derivation (F836) |
+
+### Revision v1.132 (V4-373)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 183 | 10.2 | The opened bytes are written over `.ek` on any refused or failed rename after the daemon accepted the key, not only for a file seen to have changed; a kept `.ek.next` that cannot be read is replaced by the staged key, which is written before anything is moved; what is moved aside takes `.displaced.<pid>` or that with `.1` to `.99`; a re-offering rotate compares `.ek.next` on its exits before `ROTATE` too | Erratum 181 said "a file that could not be read is not said to have changed" and the client then did nothing for it: a file of mode 000 put at `.ek.next` while the daemon was asked left the accepted key in no file, where the revision before recovered (F838, F839). One name for what is moved aside is one displacement per process id, and in a container every run has the same one (F840). A re-offered key's exits were left out of "every exit" (F841) |
