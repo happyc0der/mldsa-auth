@@ -32,8 +32,8 @@ M = {
     # V4-373: move_aside; what is renamed aside goes over a name that is taken.
     "SG4": [(KF, "        if (lstat(aside, &ast) == 0) {\n            continue;\n",
              "        if (0 && lstat(aside, &ast) == 0) { /* MUTATION SG4 */\n            continue;\n")],
-    "SG5": [(CL, "        (void)client_restage_opened(prog, \"rotate\", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */\n",
-             "        /* MUTATION SG5 */\n")],
+    "SG5": [(CL, "        const int held = client_restage_opened(prog, \"rotate\", next_path, a.key_path, next_digest, next_sealed, next_sealed_len);   /* F830 no-reply */\n",
+             "        const int held = 1; /* MUTATION SG5 */\n")],
     "SG6": [(CL, "    if (is == KEYFILE_OK) {\n        /* The same bytes: what changed",
              "    if (0 && is == KEYFILE_OK) { /* MUTATION SG6 */\n        /* The same bytes: what changed")],
     "SG7": [(CL, "    const keyfile_status_t ds = keyfile_displace(next_path, aside, sizeof aside);\n    if (is == KEYFILE_ERR_CHANGED) {\n",

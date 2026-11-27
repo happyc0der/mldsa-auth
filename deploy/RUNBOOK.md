@@ -978,10 +978,15 @@ removes them. They are whatever was put there, with the mode it had: a file
 a restore or a sync tool wrote, or a key envelope. Look at where it came
 from, check that `login` works, and remove it; nothing depends on it. The
 client stops moving files aside when a hundred of one process id's names
-are taken, and then says the staged key `could not be put back`, so do not
-let them collect. A `<handle>.ek.next.restage.<pid>` left by a client
-killed in the middle of that holds the staged key: keep it until `login`
-works.
+are taken, and then says the staged key `could not be put back` or `could
+not be written again`, so do not let them collect. A
+`<handle>.ek.next.restage.<pid>` left by a client killed in the middle of
+that holds the staged key: keep it until `login` works. If `login` does not
+work and `<handle>.ek.next` is not a key file, move that file away and
+rename the `.restage.<pid>` file to `<handle>.ek.next`; the next `login`
+asks the daemon which key is live. A later client with the same process id
+does not remove such a file: it moves it to
+`<handle>.ek.next.restage.<pid>.displaced.<pid>` (since V4-374).
 
 ## 20. Lock a user out
 

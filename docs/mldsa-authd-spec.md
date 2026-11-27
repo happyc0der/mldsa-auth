@@ -1,4 +1,4 @@
-# mldsa-authd — deployment specification (v1.132, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366/V4-370/V4-371/V4-372/V4-373)
+# mldsa-authd — deployment specification (v1.133, V4-3 + V4-10c/V4-11/V4-12/V4-13a/V4-13b/V4-13c/V4-13d/V4-14c/V4-14d/V4-15a/V4-20/V4-25/V4-26/V4-58/V4-60/V4-61/V4-62/V4-67/V4-68/V4-72/V4-76/V4-78/V4-79/V4-80/V4-81/V4-82/V4-83/V4-84/V4-85/V4-88/V4-89/V4-93/V4-94/V4-99/V4-102/V4-104/V4-108/V4-109/V4-111/V4-112/V4-114/V4-115/V4-118/V4-120/V4-121/V4-123/V4-124/V4-126/V4-127/V4-136/V4-137/V4-138/V4-140 errata/V4-143/V4-151/V4-161/V4-163/V4-167/V4-168/V4-198/V4-205/V4-217/V4-220/V4-221/V4-223/V4-224/V4-226/V4-227/V4-238/V4-239/V4-242/V4-251/V4-254/V4-259/V4-260/V4-262/V4-263/V4-265/V4-266/V4-269/V4-272/V4-278/V4-279/V4-281/V4-282/V4-284/V4-285/V4-287/V4-288/V4-299/V4-300/V4-303/V4-305/V4-306/V4-308/V4-309/V4-312/V4-315/V4-317/V4-318/V4-320/V4-321/V4-322/V4-323/V4-324/V4-326/V4-327/V4-329/V4-330/V4-339/V4-341/V4-342/V4-344/V4-345/V4-347/V4-348/V4-349/V4-350/V4-352/V4-353/V4-355/V4-356/V4-361/V4-362/V4-363/V4-364/V4-365/V4-366/V4-370/V4-371/V4-372/V4-373/V4-374)
 
 ## 0. Status and relationship to the protocol specification
 
@@ -917,6 +917,9 @@ other way costs a permanently unusable identity.
 itself (erratum 126): when its login opened no session, or when the frame
 was never handed to the transport (the connection had closed, or the client
 could not build it), nothing was sent, so nothing can have been committed.
+What it discards is that key: if `.ek.next` no longer holds the bytes
+this rotation staged, the file is moved aside (as erratum 181 says of every
+other exit) and not removed (erratum 184).
 That holds for a key this rotation staged itself. A key an earlier
 rotation staged, offered again (erratum 175), is removed on no failure,
 this one included: its first `ROTATE` did leave. From the moment a frame
@@ -2981,3 +2984,9 @@ From the defensive review of the reference site:
 | # | § | Change | Why |
 |---|---|---|---|
 | 183 | 10.2 | The opened bytes are written over `.ek` on any refused or failed rename after the daemon accepted the key, not only for a file seen to have changed; a kept `.ek.next` that cannot be read is replaced by the staged key, which is written before anything is moved; what is moved aside takes `.displaced.<pid>` or that with `.1` to `.99`; a re-offering rotate compares `.ek.next` on its exits before `ROTATE` too | Erratum 181 said "a file that could not be read is not said to have changed" and the client then did nothing for it: a file of mode 000 put at `.ek.next` while the daemon was asked left the accepted key in no file, where the revision before recovered (F838, F839). One name for what is moved aside is one displacement per process id, and in a container every run has the same one (F840). A re-offered key's exits were left out of "every exit" (F841) |
+
+### Revision v1.133 (V4-374)
+
+| # | § | Change | Why |
+|---|---|---|---|
+| 184 | 10.2 | A rotation that discards the key it never sent removes `.ek.next` only when it still holds the bytes that rotation staged; anything else there is moved aside. A file already under the restage's own temporary name is moved aside too, not removed | The three exits of erratum 126 unlinked by name, so a file put there while the session opened was deleted without a word (F849); a client killed between its write and its rename leaves the staged key under that temporary name, and the next client with the same process id removed it (F851) |

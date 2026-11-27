@@ -24389,3 +24389,52 @@ Spec v1.132: erratum 183 (10.2).
 Counts: 930 mutations, 177 campaigns, 982 anchors; 846 findings (F148,
 F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
 F585, F609, F636 and F644 open); spec v1.132, 183 errata; 66 tests.
+
+## V4-374: what the hundred-and-thirteenth review found (F847 to F852)
+
+**The hundred-and-thirteenth review** attacked V4-373 from a copy of the
+tree, against a real daemon, on macOS and in a Linux container, with
+log-only traps in the new code and thirteen mutants of its own. It could
+not make the client lose a key short of an unwritable key directory. Four
+Low, two Info.
+
+- **F847, F848 (Low): what is said after a restage.** V4-373 made the
+  exits put the key back and left their last lines as they were. One said
+  the restored file "is not the key the daemon accepted"; others said "is
+  KEPT and holds the new key" of a file the line before had called not
+  known. Every exit that keeps `.ek.next` now uses the restage's answer.
+- **F849 (Low).** A fresh rotate that never sent its key removed whatever
+  had the name. It compares first, like the exits beside it. One exit is
+  left by name, because there the file did not open and there is no
+  digest: it is said in the code and in the row.
+- **F850 (Low): the traps.** A large part of V4-373 was run by no test,
+  and its central ordering (F843) could be reversed with every test
+  passing. The review's method, a trap that only logs, found this in one
+  run of the suite where mutants find it one line at a time.
+- **F851 (Info).** A stale `.restage.<pid>` file is moved aside, not
+  unlinked; the runbook says how to use one.
+- **F852 (Info).** Three race windows, recorded with what closing them
+  would need.
+
+**The review broke one rule and said so first:** its configure on macOS
+downloaded the pinned dependencies. Nothing of the project was sent, and
+its Linux run was offline. Later briefs say to build with the dependency
+cache.
+
+Campaign v208: SI1 to SI3 (restage: order, a stale file, cleanup), SI4 to
+SI6 (the accepted key put back and said to be), SI7, SI8 and SI11 (kept
+exits that did not look, or did not listen), SI9 (the unsent rotate), SI10
+(which message). Re-anchored: v156's TN1, v158's PO1 and SR1, v201's SB1,
+v206's SG5, v207's SH9, v49c's W15, v73's RL1 and RL2.
+
+Checks. Hand controls on macOS under ASan: 133 mutants, which is v208's eleven and every other mutant of `client_cli.c` and `keyfile.c`; 132 killed by the named check and v75 KC5 surviving as it always does on one uid. In a Linux container, gcc and clang: both suites 100%, every v204 to v208 mutant named, Release builds of the daemon and client. gcc-16 at -O0 and -O2 on the changed C files: no warning. 66 of 66 on the plain, ASan and UBSan trees, 36 of 36 fuzz, 3 of 3 WebAssembly, build current, no residue.
+
+**A correction to V4-373's record.** Its entry says 104 of 105 mutants were killed, "one of them at compile". The one at compile was v158's PO1, and it was not a kill: V4-373's re-anchoring had dropped the half of the mutant that calls `client_republish_pub`, what was left did not compile, and the sweep's line said "KILLED(compile) -- not a kill". It was read as a kill. The nightly on a41d7eb failed on it (run 45975782764, 191 of 192), nothing was landed, and a follow-up commit (e6bfe56) put the mutant back; V4-372 and V4-373 landed together on that commit's runs. The sweep tally now counts only lines that say KILLED and nothing more. Not tested, and said in the rows: the login's two not-held lines, five of the seven kept exits, the rename fallback for a file that cannot be linked, the `cannot-replace-key` exit, and what V4-373 listed.
+
+Spec v1.133: erratum 184 (10.2). REPRODUCE cites V4-373's runs: CI
+45992520979 (16/16) and nightly 45992524649 (192/192) on
+e6bfe56.
+
+Counts: 941 mutations, 178 campaigns, 993 anchors; 852 findings (F148,
+F156, F273, F288, F309, F398, F419, F435, F436, F451, F453, F511, F549,
+F585, F609, F636 and F644 open); spec v1.133, 184 errata; 66 tests.

@@ -13,8 +13,8 @@ import sys, pathlib
 CL = "apps/authd/client_cli.c"
 
 M = {
-    "SB1": [(CL, "        const int unsent_gone = !reoffer && (unlink(next_path) == 0);\n        if (reoffer) {\n",
-             "        const int unsent_gone = (unlink(next_path) == 0);\n        if (0 && reoffer) { /* MUTATION SB1 */\n")],
+    "SB1": [(CL, "        const int unsent = reoffer ? -1 : rotate_drop_unsent(prog, next_path, next_digest);\n        if (reoffer) {\n",
+             "        const int unsent = rotate_drop_unsent(prog, next_path, next_digest);\n        if (0 && reoffer) { /* MUTATION SB1 */\n")],
     "SB2": [(CL, "            if (same) {\n                if (unlink(next_path) != 0 && errno != ENOENT) {\n",
              "            if (0 && same) { /* MUTATION SB2 */\n                if (unlink(next_path) != 0 && errno != ENOENT) {\n")],
     "SB3": [(CL, "            if (reoffer) {\n                /* F790: the daemon had the session and would not take this\n",

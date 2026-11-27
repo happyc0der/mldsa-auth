@@ -493,7 +493,38 @@ int main(void) {
           F817_PUT(nx, "a stranger's file", 17u);
           const keyfile_status_t r5 = keyfile_restage_sealed(nx, (const uint8_t *)"not an envelope!", 16u, as, sizeof as);
           CHECK(r5 != KEYFILE_OK && as[0] == '\0' && fsize(nx) == 17 && fsize(rs) == -1,
-                "restage: bytes that are not an envelope are refused, and nothing is moved (F839)"); }
+                "restage: bytes that are not an envelope are refused, and nothing is moved (F839)");
+          /* ---- V4-374 (F850, F851): the three paths no test reached ----- */
+          char rt[460], rd[460], ab[460], nm[480]; struct stat ts; memset(&ts, 0, sizeof ts);
+          snprintf(rt, sizeof rt, "%s.tmp.%ld", rs, restage_pid);
+          snprintf(rd, sizeof rd, "%s.displaced.%ld", rs, restage_pid);
+          snprintf(ab, sizeof ab, "%s.displaced.%ld", nx, restage_pid);
+          (void)mkdir(rt, 0700);            /* the writer's temporary name cannot be made */
+          const keyfile_status_t r6 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          CHECK(r6 != KEYFILE_OK && as[0] == '\0' && fsize(nx) == 17 && fsize(ab) == -1 && fsize(rs) == -1 &&
+                    lstat(rt, &ts) == 0 && S_ISDIR(ts.st_mode),
+                "restage: when the staged bytes cannot be written nothing is moved, and the name keeps what it had (F843, F850)");
+          (void)rmdir(rt);
+          F817_PUT(rs, "an earlier run's bytes", 22u);
+          const keyfile_status_t r7 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          CHECK(r7 == KEYFILE_OK && fsize(nx) == (long)bl && fsize(as) == 17 && fsize(rd) == 22 && fsize(rs) == -1,
+                "restage: a file an earlier run left under the writer's name is moved aside, not removed (F851)");
+          (void)unlink(as); (void)unlink(rd);
+          int made = 0;
+          F817_PUT(ab, "taken", 5u);
+          for (int i = 1; i < KEYFILE_ASIDE_NAMES; i++) {
+              snprintf(nm, sizeof nm, "%s.%d", ab, i);
+              const int d = open(nm, O_WRONLY | O_CREAT | O_EXCL, 0600);
+              if (d >= 0) { (void)close(d); made++; } }
+          F817_PUT(nx, "one too many", 12u);
+          const keyfile_status_t r8 = keyfile_restage_sealed(nx, buf, bl, as, sizeof as);
+          for (int i = 1; i < KEYFILE_ASIDE_NAMES; i++) {
+              snprintf(nm, sizeof nm, "%s.%d", ab, i);
+              (void)unlink(nm); }
+          CHECK(made == KEYFILE_ASIDE_NAMES - 1 && r8 == KEYFILE_ERR_EXISTS && as[0] == '\0' && fsize(nx) == 12 &&
+                    fsize(ab) == 5 && fsize(rs) == -1,
+                "restage: with every name taken the name keeps what it had, and the written copy is not left behind (F850)");
+          (void)unlink(ab); }
         }
       #undef F817_PUT
       (void)unlink(nx); (void)unlink(cur); (void)unlink(tmpn); }

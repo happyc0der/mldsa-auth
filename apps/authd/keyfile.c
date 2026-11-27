@@ -655,8 +655,17 @@ keyfile_status_t keyfile_restage_sealed(const char *path, const uint8_t *buf, si
     if (snprintf(fresh, sizeof fresh, "%s.restage.%ld", path, (long)getpid()) >= (int)sizeof fresh) {
         return KEYFILE_ERR_ARG;
     }
-    (void)unlink(fresh);   /* this process id's, so an earlier dead run's (F253) */
-    keyfile_status_t r = publish(fresh, buf, len);
+    /* V4-374 (F851): what already has that name was left by an earlier run
+     * with this process id, killed between its write and its rename -- and
+     * may be the only file holding the key THAT run staged, which the
+     * runbook says to keep. V4-373 unlinked it. It is moved aside like
+     * anything else that is in the way. */
+    char stale[4096];
+    keyfile_status_t r = move_aside(fresh, 0, stale, sizeof stale);
+    if (r != KEYFILE_OK) {
+        return r == KEYFILE_ERR_EXISTS ? KEYFILE_ERR_IO : r;
+    }
+    r = publish(fresh, buf, len);
     if (r != KEYFILE_OK) {
         return r == KEYFILE_ERR_EXISTS ? KEYFILE_ERR_IO : r;
     }
